@@ -311,13 +311,9 @@ pub(super) async fn serve_persona_loop_inner(
         let effects = obligations.gate_for(obligation);
         // 2. Compose the turn's RAG context (budget + multi-source composition); inference
         //    runs WITHOUT holding the cognition mutex.
-        //    Beside it, what was said in her room, read from the airc room: two reads, neither
-        //    waits on the other.
-        let (composed, said) = tokio::join!(
-            compose_turn(ctx, turn_room, now_ms, &mut phase_timings, &mut roster_names),
-            heard_in(ctx.identity.peer_id, turn_room),
-        );
-        let reads = TurnReads { composed, said };
+        //    Beside it, what was said in her room: her thread of it, pinned for this turn.
+        let composed = compose_turn(ctx, turn_room, now_ms, &mut phase_timings, &mut roster_names).await;
+        let reads = TurnReads { composed, said: heard_in(ctx.identity.peer_id, turn_room) };
         let workspace_burst = build_turn_burst(ctx, &reads, trigger, now_ms, wake_engram).with_effects(Some(effects.clone()));
         // Mark this world-state as just-deliberated so the next self-cycle doesn't
         // re-run the same burst (the message path and the self-tick share the gate;

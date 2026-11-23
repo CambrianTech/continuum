@@ -212,6 +212,19 @@ pub(super) fn build_turn_burst(
     // room and stay window-derived). The same snapshot rides the burst, so her
     // facts and her world_state read what the anchor read.
     append_ring_anchor_if_starved(&mut ws_turns, &composed.deliveries, said);
+    // The line that woke her can be outside the revision she pinned: a backlog of newer lines
+    // pushed it out, or her thread never heard it (a rejoin replay). The anchor above still
+    // carries it; the thread does not, and says so (Codex on the thread design).
+    if !said.thread().holds(msg.event_id) {
+        continuum_base::probe!(
+            class = "persona.thread.trigger_outside",
+            persona = %ctx.identity.agent_name,
+            room = %msg.room_id,
+            event = %msg.event_id,
+            revision = said.thread().revision,
+            "the line that woke her is outside the thread revision this turn pinned"
+        );
+    }
     // Carry the wake message's engram as this burst's cause, so the turn's acts
     // chain back to what triggered them (CAUSAL-MEMORY-GRAPH.md §3a). `None` when
     // the message was deduped/quarantined — an honest gap, never a made-up link.
@@ -232,26 +245,15 @@ pub(super) fn build_turn_burst(
     .for_turn(composed.turn_id)
 }
 
-/// What was said in `room`, read from the airc room through her own airc runtime (the room is
-/// the one record; nothing here keeps a copy). Empty, and named, where she has no runtime on this
-/// core or the page did not read: a window she cannot see is an empty one, never an invented one.
-pub(super) async fn heard_in(peer: crate::identity::PeerId, room: Uuid) -> std::sync::Arc<crate::cognition::room::said::Said> {
+/// What was said in `room` as this turn reads it: the revision of her thread of the room as it is
+/// now, pinned for the whole turn (read without waiting: her thread took in every event before her
+/// senses heard it). Empty, and named, where she has no thread of the room here: a window she
+/// cannot see is an empty one, never an invented one.
+pub(super) fn heard_in(peer: crate::identity::PeerId, room: Uuid) -> std::sync::Arc<crate::cognition::room::said::Said> {
     use crate::cognition::room::said::Said;
-    use crate::cognition::conversation::transcript_reader::AircTranscriptReader as _;
-    let Some(runtime) = crate::persona::PersonaAircRuntimeRegistry::try_global().and_then(|registry| registry.get(peer.as_uuid())) else {
+    let Some(thread) = crate::persona::senses::of(peer.as_uuid()).and_then(|senses| senses.thread(room)) else {
+        continuum_base::probe!(class = "persona.said.unthreaded", peer = %peer, room = %room, "she has no thread of this room here: her repetition window is empty this turn");
         return std::sync::Arc::default();
     };
-    match runtime.page_recent_in(Some(airc_core::RoomId::from_uuid(room)), Said::PAGE).await {
-        Ok(page) => std::sync::Arc::new(Said::of_room(&page, peer.as_uuid())),
-        Err(error) => {
-            continuum_base::probe!(
-                class = "persona.said.unread",
-                peer = %peer,
-                room = %room,
-                error = %error,
-                "her room's airc page did not read: her repetition window is empty this turn"
-            );
-            std::sync::Arc::default()
-        }
-    }
+    std::sync::Arc::new(Said::of(thread, peer.as_uuid()))
 }

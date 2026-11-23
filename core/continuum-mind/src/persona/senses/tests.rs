@@ -1,5 +1,6 @@
 //! Her senses as a worker: what reaches her, what wakes her, and that a wake she took stops
-//! calling. Driven through the worker's own input, so no test shares the core's one feed.
+//! calling. Driven through the worker's own input, so no test shares the core's one feed, except
+//! the one proving her thread stands before her senses, which hears it in a room no other test uses.
 
 use std::sync::Arc;
 
@@ -11,6 +12,7 @@ use tokio::sync::oneshot;
 use uuid::Uuid;
 
 use crate::cognition::room::feed::{classify, Arrival, Fed};
+use crate::cognition::room::thread::Threaded;
 use super::worker::Sensed;
 use crate::cognition::attention::{AttentionDial, Continuation};
 use crate::cognition::conversation::salience::{BoardChange, Expectation, ObservedVerdict, SalienceLevel, SalienceReason};
@@ -69,14 +71,14 @@ fn reviewed(room: Uuid, reviewer: Uuid) -> TranscriptEvent {
     event
 }
 
-/// A room event as the one feed hands it to her senses: classified once.
+/// A room event as her thread hands it to her senses: classified once by the feed.
 fn heard(event: TranscriptEvent, through: u64) -> Sensed {
     let event: ConversationEvent = match continuum_airc_protocol::classify_inbound(Arc::new(event)) {
         continuum_airc_protocol::InboundEvent::Conversation(conversation) => conversation,
         other => panic!("a room line is conversation: {other:?}"),
     };
     let fed = classify(event.event());
-    Sensed::Heard(Event { value: Arc::new(Arrival { event, fed }), revision: InputRevision { topic: TopicName("mind/feed"), through } })
+    Sensed::Heard(Event { value: Arc::new(Threaded(Arc::new(Arrival { event, fed }))), revision: InputRevision { topic: TopicName("mind/threaded"), through } })
 }
 
 struct Kimi {
@@ -95,7 +97,7 @@ impl Kimi {
         region.set_identity_facts(vec![HUMAN], vec![CARD]);
         region.join(ROOM_A, "career-wrangler");
         region.set_dial(AttentionDial::default(), 0);
-        let resident = super::start(me, "Kimi", region).expect("a fresh mind's calling topic is unclaimed"); // JUSTIFIED: her bus is new here, so nothing has claimed it
+        let resident = super::start(me, "Kimi", region, None).expect("a fresh mind's calling topic is unclaimed"); // JUSTIFIED: her bus is new here, so nothing has claimed it
         let calling = resident.handle().calling();
         Self { resident, calling, home }
     }
@@ -147,7 +149,7 @@ async fn her_senses_take_only_her_rooms_and_typed_verdicts_call_her() {
     }
 
     assert!(matches!(
-        classify(match &heard(reviewed(ROOM_A, PEER), 0) { Sensed::Heard(e) => e.value.event.event(), _ => unreachable!() }),
+        classify(match &heard(reviewed(ROOM_A, PEER), 0) { Sensed::Heard(e) => e.value.0.event.event(), _ => unreachable!() }),
         Fed::Board(BoardChange::Reviewed { card_id: CARD, outcome: ObservedVerdict::Passed, reviewer, .. }) if reviewer == PEER
     ));
     kimi.tell(heard(reviewed(ROOM_A, PEER), 3)).await;
@@ -191,4 +193,31 @@ async fn her_deadline_calls_her_once_and_stops_when_she_takes_it() {
     assert_eq!(kimi.next_wake().await, Some(Wake::Continuation), "her deadline passed");
     kimi.tell(Sensed::Took(Wake::Continuation)).await;
     assert_eq!(kimi.next_wake().await, None, "taken: it stops calling");
+}
+
+// what this catches: the ordering the turn's pinned thread rests on (Codex on the thread design). A
+// line on the one feed reaches her senses only through her thread, so by the time it calls her the
+// revision she pins holds it, and that revision says honestly that the room's history was not read
+// (she has no airc runtime here), never that it was.
+#[tokio::test]
+async fn her_thread_holds_a_line_before_it_calls_her() {
+    let room = Uuid::new_v4();
+    let mut kimi = Kimi::start(Uuid::new_v4());
+    kimi.tell(Sensed::Joined(vec![(room, "thread-order".into())])).await;
+    let line = speech(room, HUMAN, "is the thread ahead of her senses?");
+    let event = line.event_id.as_uuid();
+    let conversation = match continuum_airc_protocol::classify_inbound(Arc::new(line)) {
+        continuum_airc_protocol::InboundEvent::Conversation(conversation) => conversation,
+        other => panic!("a room line is conversation: {other:?}"),
+    };
+    crate::cognition::room::feed::hear(conversation).await;
+    loop {
+        match kimi.next_wake().await {
+            Some(Wake::Perceive { activity, .. }) if activity == room => break,
+            _ => continue,
+        }
+    }
+    let thread = kimi.resident.handle().thread(room).expect("she joined the room, so she threads it"); // JUSTIFIED: Joined reached her thread before her senses
+    assert!(thread.holds(event), "the revision she pins holds the line that called her");
+    assert!(matches!(thread.seed, crate::cognition::room::thread::Seed::Unread(_) | crate::cognition::room::thread::Seed::Pending), "no runtime: the room's history is not claimed read");
 }

@@ -1,7 +1,8 @@
 //! Her senses: the worker that owns her perception region (object model 5.7, step 2a).
 //!
 //! CBAR, not a locked struct: each resident's [`PerceptionRegion`] is owned by one worker, her
-//! Senses, which wakes only on an input: a room event from the one [`feed`](crate::cognition::room::feed), or one of her own
+//! Senses, which wakes only on an input: a room event from the one [`feed`](crate::cognition::room::feed), handed on by her
+//! [`thread`](crate::cognition::room::thread) once it took the event in, or one of her own
 //! acts (`Sensed`). Nothing locks the region and nothing polls it. What she perceives is
 //! published as state: her awareness strip, and what calls her now ([`Calling`]), which her
 //! deliberation reads when it is free. A wake is never queued or dropped; the newest is the
@@ -49,10 +50,21 @@ pub const CALLING: TopicName = TopicName("mind/calling");
 /// dial. The one copy her readers and her parts read (her digest watches it).
 pub const AWARENESS: TopicName = TopicName("mind/awareness");
 
+/// How many room events her parts keep unheard while busy: as many as her room view keeps
+/// unperceived, so the stage before her senses never holds less than they do.
+const UNHEARD: std::num::NonZeroUsize = match std::num::NonZeroUsize::new(super::perception_region::UNPERCEIVED_CAP) {
+    Some(unheard) => unheard,
+    None => std::num::NonZeroUsize::MIN,
+};
+
 /// Where her verbs and readers reach her senses. Cheap to clone.
 #[derive(Clone)]
 pub struct Handle {
     senses: Teller<Senses>,
+    /// Her thread of each room: told her memberships before her senses are.
+    thread: Teller<crate::cognition::room::thread::Thread>,
+    /// Her mind's bus, where her thread of each room is read.
+    bus: Arc<Bus>,
     awareness: Reader<AwarenessSnapshot>,
     calling: Reader<Calling>,
     /// Where her time goes: her parts' measured numbers, read without holding them.
@@ -81,8 +93,21 @@ impl Handle {
         self.calling.clone()
     }
 
-    /// Hand her senses one of her acts; false when they have stopped.
+    /// Her thread of `room` as it is now: the revision a turn pins. `None` before she joined it.
+    pub fn thread(&self, room: Uuid) -> Option<Arc<crate::cognition::room::thread::RoomThread>> {
+        let reader = self.bus.reader::<crate::cognition::room::thread::RoomThread>(crate::cognition::room::thread::THREAD, Key::of(room));
+        reader.latest().map(|snapshot| snapshot.value)
+    }
+
+    /// Hand her senses one of her acts; false when they have stopped. Her memberships reach her
+    /// thread first, so a room she joins is threaded before her senses hear it.
     pub async fn tell(&self, act: Sensed) -> bool {
+        if let Sensed::Joined(rooms) = &act {
+            let rooms = rooms.iter().map(|(room, _)| *room).collect();
+            if !self.thread.tell(crate::cognition::room::thread::Threading::Joined(rooms)).await {
+                return false;
+            }
+        }
         self.senses.tell(act).await
     }
 }
@@ -129,16 +154,25 @@ impl Drop for Resident {
 
 static RESIDENTS: LazyLock<RwLock<HashMap<Uuid, Handle>>> = LazyLock::new(Default::default);
 
-/// Start her parts on her own mind's bus: her senses on `region`, hearing the one feed, and her
-/// channel digest watching what her senses publish. `agent_name` is how a line addresses her
-/// (`PersonaIdentity::mentions`).
-pub fn start(persona: Uuid, agent_name: &str, mut region: PerceptionRegion) -> Result<Resident, Taken> {
+/// Start her parts on her own mind's bus: her thread of each room, hearing the one feed and reading
+/// a room's history through `reader` (her airc runtime; `None` where she has none here); her senses
+/// on `region`, hearing what her thread took in; and her channel digest watching what her senses
+/// publish. `agent_name` is how a line addresses her (`PersonaIdentity::mentions`).
+pub fn start(
+    persona: Uuid,
+    agent_name: &str,
+    mut region: PerceptionRegion,
+    reader: Option<Arc<dyn crate::cognition::conversation::transcript_reader::AircTranscriptReader>>,
+) -> Result<Resident, Taken> {
     let now = EpochMs::now().millis();
     // A saved continuation calls her with `Resume` first; asking the region once takes it.
     let resume_pending = matches!(region.wake_for(now), Some(crate::cognition::conversation::Wake::Resume));
     let bus = Arc::new(Bus::new());
     let calling = bus.reader::<Calling>(CALLING, Key::ONE);
     let awareness = bus.reader::<AwarenessSnapshot>(AWARENESS, Key::ONE);
+    // Her thread starts with the rooms her saved mind state holds, so no line in them can reach the
+    // feed before she threads it.
+    let thread = crate::cognition::room::thread::Thread::new(Arc::clone(&bus), reader, UNHEARD, &region.activities())?;
     let senses = Senses {
         persona,
         peer: airc_core::PeerId::from_uuid(persona),
@@ -154,7 +188,9 @@ pub fn start(persona: Uuid, agent_name: &str, mut region: PerceptionRegion) -> R
         served_due: None,
     };
     let mut parts = Owner::with_bus(Arc::clone(&bus), OwnerId(persona), now);
+    // Her senses first, so they are listening before her thread hands anything on.
     let senses = parts.start(senses);
+    let thread = parts.start(thread);
     // Her channel digest; absent where no runtime registry exists to page her room from (a test).
     if let Some(registry) = crate::persona::PersonaAircRuntimeRegistry::try_global() {
         parts.start(digest::Digest {
@@ -165,7 +201,7 @@ pub fn start(persona: Uuid, agent_name: &str, mut region: PerceptionRegion) -> R
             built: continuum_sage::component::LastSeen::default(),
         });
     }
-    let handle = Handle { senses, awareness, calling, profiler: parts.profiler() };
+    let handle = Handle { senses, thread, bus, awareness, calling, profiler: parts.profiler() };
     RESIDENTS.write().insert(persona, handle.clone());
     continuum_base::probe!(class = "mind.feed.registered", persona = %persona, "her senses are on the one feed");
     Ok(Resident { persona, handle, parts })

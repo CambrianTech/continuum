@@ -356,7 +356,7 @@ async fn a_peer_command_in_a_room_never_reaches_a_mind_and_room_speech_still_doe
     );
     region.join(ROOM, "general");
     region.set_dial(crate::cognition::attention::AttentionDial::default(), 0);
-    let resident = crate::persona::senses::start(persona, "Aiko", region).expect("a fresh mind's calling topic is unclaimed");
+    let resident = crate::persona::senses::start(persona, "Aiko", region, None).expect("a fresh mind's calling topic is unclaimed");
     let mut calling = resident.handle().calling();
     let bus = MessageBus::new();
 

@@ -281,7 +281,9 @@ impl AircPersonaConversation {
         let agent_name = self.runtime.agent_name().to_string();
         if mind.senses.is_none() {
             if let Some(region) = mind.booted.take() {
-                match crate::persona::senses::start(persona, &agent_name, region) {
+                // Her thread of a room reads its history through her own runtime.
+                let reader: Arc<dyn crate::cognition::conversation::transcript_reader::AircTranscriptReader> = Arc::clone(&self.runtime) as _;
+                match crate::persona::senses::start(persona, &agent_name, region, Some(reader)) {
                     Ok(senses) => mind.senses = Some(senses),
                     Err(taken) => {
                         continuum_base::probe!(class = "mind.feed.unbooted", persona = %persona, topic = taken.0.0, "her mind's calling topic already has a writer; her senses did not start");

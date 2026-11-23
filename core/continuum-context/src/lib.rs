@@ -14,6 +14,7 @@
 //! - [`depth`]: how deep a turnover collapses her history, from those re-reads and her growth.
 //! - [`view`]: one mind's epoch fed by its sources; turnover is the only rewrite.
 //! - [`flex`]: the one allocator: claims by floor, min, max and priority.
+//! - [`history`]: what her context needs of a room's history (her thread of it holds that many lines).
 //! - [`ladder`]: the one contract every budget consumer answers: its items' levels, its hard limit.
 //! - [`allocation`]: an act's ONE allocation over everything her prompt holds, run once; its
 //!   [`allocation::search`] chooses every leveled consumer's levels together.
@@ -27,6 +28,7 @@ pub mod cost;
 pub mod depth;
 pub mod epoch;
 pub mod flex;
+pub mod history;
 pub mod ladder;
 #[cfg(test)]
 mod fixtures;
