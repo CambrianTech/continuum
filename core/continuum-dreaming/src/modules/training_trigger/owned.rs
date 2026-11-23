@@ -16,6 +16,8 @@ pub(crate) enum OwnedKind {
     Recover,
     Submit,
     Retire,
+    /// Moving a bucket stranded under a base spelling to the catalog id (genome/training-trigger/rekey).
+    Rekey,
     /// Seating her learner and covering her next example.
     Prepare,
     /// One learning or restoring step.
