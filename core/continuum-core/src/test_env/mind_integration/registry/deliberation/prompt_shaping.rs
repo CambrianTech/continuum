@@ -267,7 +267,7 @@ async fn pinned_act_result_reaches_the_prompt_even_with_an_empty_broadcast() {
     // (a burst to pointers once the share is exceeded), so the window is sized to
     // hold this 16.8k-char inventory beside the next batch; a smaller window would
     // collapse it at the batch's receipt, which is the other mechanism, not this one.
-    let pin = crate::cognition::tool_executor::spill::LivePin::new();
+    let pin = crate::cognition::result_store::LivePin::new();
     let custody = pin.retain(persona, &inventory);
     let handle = custody.handle().expect("saved inventory").to_owned();
     wm.record_receipt_typed(&[], &inventory, Some(ws.activity_room_id), custody);

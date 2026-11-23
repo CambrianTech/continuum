@@ -282,7 +282,7 @@ pub async fn apply_act(
     const TOOL_BATCH_CEILING: std::time::Duration = std::time::Duration::from_secs(30 * 60);
     // Every result this batch saves stays live from before its file is written until working
     // memory has recorded the batch below (card 12b080c3).
-    let pin = crate::cognition::tool_executor::spill::LivePin::new();
+    let pin = crate::cognition::result_store::LivePin::new();
     // Her calls run exactly as she made them: a read returns the selection she asked for, and
     // her view alone decides what of it stays verbatim (HER-TOOLS §Answer, ONE-ACT stage 2).
     let foreground = batch.without_committed(|committed| {

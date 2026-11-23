@@ -14,8 +14,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::cognition::tool_executor::output_id::OutputId;
-use crate::cognition::tool_executor::spill;
+use crate::cognition::result_store::output_id::OutputId;
+use crate::cognition::result_store;
 use crate::cognition::working_memory::{ActOutputRefusal, ActRef};
 use crate::sdk_codegen::{ActionCommand, CommandError, Ctx, ProjectsOutcome, ToolVerdict, VerbRef};
 
@@ -234,7 +234,7 @@ impl ActionCommand for ToolOutput {
         let handle = tokio::task::spawn_blocking(move || named_output(named, act, act_handle))
             .await
             .map_err(|e| CommandError::Internal(format!("reopening an act failed: {e}")))??;
-        let path = spill::resolve_output(persona_id, &handle)
+        let path = result_store::resolve_output(persona_id, &handle)
             .map_err(|e| CommandError::Invalid(e.to_string()))?;
         let range = line_range(params.start_line, params.end_line);
 
@@ -256,7 +256,7 @@ impl ActionCommand for ToolOutput {
         }
         // Disk scanning belongs off the async executor. The same spill owner handles
         // both views; no second content registry or private whole-file retrieval path.
-        tokio::task::spawn_blocking(move || read_saved(&path, handle, params, range, spill::Allowance::Whole))
+        tokio::task::spawn_blocking(move || read_saved(&path, handle, params, range, result_store::Allowance::Whole))
             .await
             .map_err(|e| CommandError::Invalid(format!("saved output reader failed: {e}")))?
             .map_err(CommandError::Invalid)
@@ -281,9 +281,9 @@ pub enum Reopen<'a> {
     Act(u64),
     /// A saved output, by the id its preview named.
     Output(&'a str),
-    /// A range of a saved output's lines (`spill::LineRange`, its end the output's own when
+    /// A range of a saved output's lines (`result_store::LineRange`, its end the output's own when
     /// open): where a page of it shown short continues.
-    Lines { output: &'a str, range: spill::LineRange },
+    Lines { output: &'a str, range: result_store::LineRange },
     /// A saved output's bytes from `offset`: where a page cut inside one line continues.
     Bytes { output: &'a str, offset: u64 },
 }
@@ -350,10 +350,10 @@ impl ProjectsOutcome for ToolOutput {
 
 /// The lines a range names, each half read as she would mean it: `endLine` alone is from the
 /// first line, `startLine` alone is to the last. Neither is no range.
-fn line_range(start: Option<usize>, end: Option<usize>) -> Option<spill::LineRange> {
+fn line_range(start: Option<usize>, end: Option<usize>) -> Option<result_store::LineRange> {
     match (start, end) {
         (None, None) => None,
-        (start, end) => Some(spill::LineRange { start: start.unwrap_or(1), end }), // unwrap_or: a missing start is the first line
+        (start, end) => Some(result_store::LineRange { start: start.unwrap_or(1), end }), // unwrap_or: a missing start is the first line
     }
 }
 
@@ -417,11 +417,11 @@ fn read_saved(
     path: &std::path::Path,
     handle: OutputId,
     params: ToolOutputParams,
-    range: Option<spill::LineRange>,
-    allowance: spill::Allowance,
+    range: Option<result_store::LineRange>,
+    allowance: result_store::Allowance,
 ) -> Result<ToolOutputResult, String> {
     if let Some(offset) = params.byte_offset {
-        let extent = spill::read_extent(path, offset, params.byte_length, allowance)?;
+        let extent = result_store::read_extent(path, offset, params.byte_length, allowance)?;
         return Ok(ToolOutputResult {
             handle,
             total_lines: None,
@@ -440,7 +440,7 @@ fn read_saved(
         .pattern
         .as_deref()
         .or_else(|| params.filter.map(|f| f.pattern()));
-    let inv = spill::investigate_file(
+    let inv = result_store::investigate_file(
         &path,
         effective_pattern,
         params.context_lines.unwrap_or_default(), // unwrap_or_default: no context asked for = the matching lines alone
@@ -513,7 +513,7 @@ mod tests {
         let path = dir.path().join("whole");
         let body: String = (1..=500).map(|n| format!("line {n} error\n")).collect();
         assert!(std::fs::write(&path, &body).is_ok());
-        let read = |params| read_saved(&path, id("ab"), params, None, spill::Allowance::Whole);
+        let read = |params| read_saved(&path, id("ab"), params, None, result_store::Allowance::Whole);
         let Ok(whole) = read(ToolOutputParams::default()) else { panic!("the whole reads back") };
         assert!(whole.content.contains("line 1 error") && whole.content.contains("line 500 error"), "{}", whole.content);
         assert!(!whole.truncated);
@@ -534,7 +534,7 @@ mod tests {
         assert_eq!(Reopen::Act(3).to_string(), r#"tool_output({"act":3})"#);
         assert_eq!(Reopen::Output("deadbeef").to_string(), r#"tool_output({"outputId":"deadbeef"})"#);
         // A page's reading on (`prompt/newest_result.rs`) is the same call with its selection.
-        for reopen in [Reopen::Act(3), Reopen::Output("deadbeef"), Reopen::Lines { output: "deadbeef", range: spill::LineRange { start: 41, end: Some(900) } }, Reopen::Lines { output: "deadbeef", range: spill::LineRange { start: 41, end: None } }, Reopen::Bytes { output: "deadbeef", offset: 4_096 }] {
+        for reopen in [Reopen::Act(3), Reopen::Output("deadbeef"), Reopen::Lines { output: "deadbeef", range: result_store::LineRange { start: 41, end: Some(900) } }, Reopen::Lines { output: "deadbeef", range: result_store::LineRange { start: 41, end: None } }, Reopen::Bytes { output: "deadbeef", offset: 4_096 }] {
             let shown = reopen.to_string();
             let Some(args) = shown.strip_prefix(&format!("{offered}(")).and_then(|s| s.strip_suffix(')')) else {
                 panic!("{shown} is not a call of {offered}")
@@ -650,7 +650,7 @@ mod tests {
         };
         assert_eq!(by_act, by_handle);
         let read =
-            |handle: OutputId| read_saved(&path, handle, ToolOutputParams::default(), None, spill::Allowance::Whole);
+            |handle: OutputId| read_saved(&path, handle, ToolOutputParams::default(), None, result_store::Allowance::Whole);
         let (Ok(act_read), Ok(handle_read)) = (read(by_act), read(by_handle)) else {
             panic!("the saved output reads back")
         };
@@ -717,7 +717,7 @@ mod tests {
         assert!(std::fs::write(&path, "   Compiling foo\ntest it_works ... FAILED\ntest result: ok\n").is_ok());
         let search = |handle: &str| {
             let params = ToolOutputParams { pattern: Some("FAILED".into()), ..Default::default() };
-            let Ok(result) = read_saved(&path, id(handle), params, None, spill::Allowance::Whole) else {
+            let Ok(result) = read_saved(&path, id(handle), params, None, result_store::Allowance::Whole) else {
                 panic!("the search reads back")
             };
             let Ok(value) = serde_json::to_value(&result) else { panic!("a result serializes") };
@@ -746,7 +746,7 @@ mod tests {
         let path = dir.path().join("lines");
         assert!(std::fs::write(&path, "one\ntwo\nthree\nfour\n").is_ok());
         let read = |start, end| {
-            match read_saved(&path, id("ab"), ToolOutputParams::default(), line_range(start, end), spill::Allowance::Whole) {
+            match read_saved(&path, id("ab"), ToolOutputParams::default(), line_range(start, end), result_store::Allowance::Whole) {
                 Ok(read) => read.content.lines().map(|line| line.split_whitespace().last().unwrap_or_default().to_owned()).collect::<Vec<_>>(), // unwrap_or_default: a blank row has no word
                 Err(e) => panic!("{start:?}..{end:?}: {e}"),
             }
@@ -778,7 +778,7 @@ mod tests {
                     ..Default::default()
                 },
                 None,
-                spill::Allowance::Chars(12),
+                result_store::Allowance::Chars(12),
             )
             .unwrap();
             assert!(result.content.len() <= 12);
@@ -813,7 +813,7 @@ mod tests {
                 ..Default::default()
             },
             None,
-            spill::Allowance::Chars(256),
+            result_store::Allowance::Chars(256),
         )
         .unwrap();
         assert_eq!(result.total_lines, Some(4));
@@ -834,7 +834,7 @@ mod tests {
                 ..Default::default()
             },
             None,
-            spill::Allowance::Chars(256),
+            result_store::Allowance::Chars(256),
         )
         .unwrap_err();
         assert!(error.contains("byteOffset 0"));

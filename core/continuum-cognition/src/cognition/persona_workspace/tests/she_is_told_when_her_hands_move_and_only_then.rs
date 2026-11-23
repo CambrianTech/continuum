@@ -204,12 +204,12 @@ use super::*;
         let first = WorkingMemory::new(8);
         first.record_receipt_typed(&[], "a saved result", None, saved("0123456789abcdef"));
         save_volatile(persona, SaveReason::Seam, None, &first).unwrap();
-        let listed = crate::cognition::tool_executor::spill::checkpoint_handles::listed(&path).unwrap().unwrap_or_default();
+        let listed = crate::cognition::result_store::checkpoint_handles::listed(&path).unwrap().unwrap_or_default();
         assert!(listed.contains("0123456789abcdef"), "the first checkpoint's handle is listed beside it: {listed:?}");
         let second = WorkingMemory::new(8);
         second.record_receipt_typed(&[], "another saved result", None, saved("fedcba9876543210"));
         save_volatile(persona, SaveReason::Seam, None, &second).unwrap();
-        let protected = crate::cognition::tool_executor::spill::checkpoint_handles::protected(persona).unwrap();
+        let protected = crate::cognition::result_store::checkpoint_handles::protected(persona).unwrap();
         assert!(protected.contains("fedcba9876543210") && !protected.contains("0123456789abcdef"), "the list follows the checkpoint that landed: {protected:?}");
     }
 

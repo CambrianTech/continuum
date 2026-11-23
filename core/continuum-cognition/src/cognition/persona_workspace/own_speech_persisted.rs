@@ -1,5 +1,5 @@
 use super::*;
-use crate::cognition::tool_executor::spill::checkpoint_handles as handles;
+use crate::cognition::result_store::checkpoint_handles as handles;
 
 /// Her own-speech rings on disk. Room-keyed since 2026-08-14 — a ring restored
 /// without its room would re-create the cross-room repetition fact the keying
@@ -31,7 +31,7 @@ impl OwnSpeechPersisted {
 /// Her checkpoint's path, under the one continuum home (`paths::continuum_home`: `$CONTINUUM_HOME`,
 /// a test build's home, else `~/.continuum`), never a home built by hand.
 pub(super) fn volatile_path(persona_id: Uuid) -> std::io::Result<std::path::PathBuf> {
-    crate::cognition::tool_executor::spill::checkpoint_handles::checkpoint_path(persona_id)
+    crate::cognition::result_store::checkpoint_handles::checkpoint_path(persona_id)
 }
 
 /// What one checkpoint did: nothing (her state is where the last one left it), or wrote this many

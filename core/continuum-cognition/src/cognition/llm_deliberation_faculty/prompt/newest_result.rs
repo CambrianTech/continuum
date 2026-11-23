@@ -124,7 +124,7 @@ impl Saved<'_> {
             Cut::Lines { shown, total } => (
                 format!("lines {first}-{} of {}", first + shown.saturating_sub(1), first - 1 + total),
                 // To the output's own end: a range with no end reads through its last line.
-                Reopen::Lines { output: self.handle, range: crate::cognition::tool_executor::spill::LineRange { start: first + shown, end: None } }.to_string(),
+                Reopen::Lines { output: self.handle, range: crate::cognition::result_store::LineRange { start: first + shown, end: None } }.to_string(),
             ),
             Cut::Bytes { bytes } if first == 1 => (
                 format!("its first {bytes} bytes (its first line alone is longer than the room)"),
@@ -255,7 +255,7 @@ impl LlmDeliberationFaculty {
                 None => act_handle.clone(),
             }
         };
-        let pin = crate::cognition::tool_executor::spill::LivePin::new();
+        let pin = crate::cognition::result_store::LivePin::new();
         let mut saved_now = 0usize;
         let mut slots: Vec<(Option<String>, &mut String)> = slots(group)
             .into_iter()

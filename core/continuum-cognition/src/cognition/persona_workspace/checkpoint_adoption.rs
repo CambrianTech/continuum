@@ -466,7 +466,7 @@ pub fn adopt(
     }
     // The adopted checkpoint names handles the list beside the old one does not know: clear the
     // list first, so until her next save writes one the checkpoint protects everything of hers.
-    crate::cognition::tool_executor::spill::checkpoint_handles::clear(&destination)?;
+    crate::cognition::result_store::checkpoint_handles::clear(&destination)?;
     fs::rename(&staged, &destination)?;
     sync_parent(&destination)?;
     let published = optional_selection(&destination)?;
