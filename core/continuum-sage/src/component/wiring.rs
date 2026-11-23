@@ -22,18 +22,26 @@ pub struct Wiring<'a, P: Component> {
     bus: &'a Bus,
     /// Each subscription, attached to the component's input once its worker exists.
     attach: Vec<Attach<P::Input>>,
+    /// How many inputs its subscriptions declared it keeps: the sum of its windows, one per watched
+    /// state. Its intake holds that many beside one act, so a delivery moves its window in one wake.
+    holds: usize,
     /// Its windows, handed to its context so it can resize them live.
     windows: Windows,
 }
 
 impl<'a, P: Component> Wiring<'a, P> {
     pub(super) fn new(bus: &'a Bus) -> Self {
-        Self { bus, attach: Vec::new(), windows: Windows::default() }
+        Self { bus, attach: Vec::new(), holds: 0, windows: Windows::default() }
     }
 
     /// The windows its context resizes.
     pub(super) fn windows(&self) -> Windows {
         Arc::clone(&self.windows)
+    }
+
+    /// Its intake: one act beside everything its subscriptions declared they keep.
+    pub(super) fn intake(&self) -> std::num::NonZeroUsize {
+        std::num::NonZeroUsize::MIN.saturating_add(self.holds)
     }
 
     /// Attach every declared subscription to its intake, now that it exists.
@@ -64,6 +72,7 @@ impl<'a, P: Component> Wiring<'a, P> {
         T: Send + Sync + 'static,
         P::Input: From<Event<T>>,
     {
+        self.holds = self.holds.saturating_add(window.get());
         let subscribe = bus.subscribe::<T>(topic);
         let windows = Arc::clone(&self.windows);
         self.attach.push(Box::new(move |input| {
@@ -79,6 +88,7 @@ impl<'a, P: Component> Wiring<'a, P> {
         T: Send + Sync + 'static,
         P::Input: From<Snapshot<T>>,
     {
+        self.holds = self.holds.saturating_add(1); // a watched state coalesces to its newest
         let reader = self.bus.reader::<T>(topic, key);
         self.attach.push(Box::new(move |input| reader.attach(input)));
     }

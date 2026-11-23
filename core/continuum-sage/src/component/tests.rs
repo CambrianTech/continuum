@@ -272,3 +272,116 @@ async fn every_input_is_measured_and_the_switch_adds_only_a_probe_line() {
     let measured = telemetry.latest().map(|t| *t.value);
     assert!(measured.is_some_and(|t| t.max_wait >= t.last_wait && t.max_handle >= t.last_handle), "wait and handle times are kept: {measured:?}");
 }
+
+// Timing runs: what the base costs per input, against a bare stage doing the same work.
+#[cfg(feature = "stress-tests")]
+mod stress {
+    use super::*;
+    use crate::{spawn_stage, Capacity, Stage};
+
+    const INPUTS: u64 = 200_000;
+
+    const BURST: TopicName = TopicName("stress/burst");
+    const WINDOW: usize = 256;
+
+    struct Hearer {
+        handled: u64,
+        done: Option<tokio::sync::oneshot::Sender<u64>>,
+    }
+
+    impl Component for Hearer {
+        type Input = Event<u64>;
+        const NAME: &'static str = "hearer";
+        const QOS: Qos = Qos::Work;
+        fn wire(&self, wiring: &mut Wiring<'_, Self>) {
+            wiring.hear::<u64>(BURST, std::num::NonZeroUsize::new(WINDOW).unwrap_or(std::num::NonZeroUsize::MIN));
+        }
+        async fn handle(&mut self, input: Event<u64>, _: &mut Ctx<Self>) {
+            self.handled += 1;
+            if *input.value == INPUTS {
+                if let Some(done) = self.done.take() {
+                    let _ = done.send(self.handled);
+                }
+            }
+        }
+    }
+
+    struct Bare {
+        sum: u64,
+        done: Option<tokio::sync::oneshot::Sender<u64>>,
+    }
+
+    impl Stage for Bare {
+        type Input = u64;
+        const QOS: Qos = Qos::Work;
+        async fn handle(&mut self, input: u64) {
+            self.sum += input;
+            if input == INPUTS {
+                if let Some(done) = self.done.take() {
+                    let _ = done.send(self.sum);
+                }
+            }
+        }
+    }
+
+    struct Counted {
+        sum: u64,
+        done: Option<tokio::sync::oneshot::Sender<u64>>,
+    }
+
+    impl Component for Counted {
+        type Input = u64;
+        const NAME: &'static str = "counted";
+        const QOS: Qos = Qos::Work;
+        fn wire(&self, _: &mut Wiring<'_, Self>) {}
+        async fn handle(&mut self, input: u64, _: &mut Ctx<Self>) {
+            self.sum += input;
+            if input == INPUTS {
+                if let Some(done) = self.done.take() {
+                    let _ = done.send(self.sum);
+                }
+            }
+        }
+    }
+
+    // what this catches: per-input cost the base adds to every component (publishes, clock reads,
+    // allocations) growing unseen. Prints ns per input for a bare stage and for a component; run with
+    // `cargo test -p continuum-sage --release --features stress-tests -- --nocapture per_input`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn per_input_cost_of_the_base_against_a_bare_stage() {
+        let (done, sum) = tokio::sync::oneshot::channel();
+        let (input, _worker) = spawn_stage(Bare { sum: 0, done: Some(done) }, Capacity::granted(std::num::NonZeroUsize::MIN));
+        let started = std::time::Instant::now();
+        for value in 1..=INPUTS {
+            assert!(input.send(value).await.is_ok());
+        }
+        assert!(sum.await.is_ok());
+        let bare = started.elapsed().as_nanos() as f64 / INPUTS as f64;
+
+        let bus = Bus::new();
+        let (done, sum) = tokio::sync::oneshot::channel();
+        let part = start(Counted { sum: 0, done: Some(done) }, &bus, OwnerId(Uuid::from_u128(7)), 1);
+        let started = std::time::Instant::now();
+        for value in 1..=INPUTS {
+            assert!(part.tell(value).await);
+        }
+        assert!(sum.await.is_ok());
+        let component = started.elapsed().as_nanos() as f64 / INPUTS as f64;
+        println!("per input: bare stage {bare:.0} ns, component {component:.0} ns, base adds {:.0} ns", component - bare);
+
+        // A burst on a topic it hears: its intake holds its window, so a delivery moves many per wake.
+        let (done, heard) = tokio::sync::oneshot::channel();
+        let mut emitter = match bus.emitter::<u64>(BURST) {
+            Ok(emitter) => emitter,
+            Err(taken) => return assert_eq!(Some(taken), None, "the burst topic is unclaimed"),
+        };
+        let _hearer = start(Hearer { handled: 0, done: Some(done) }, &bus, OwnerId(Uuid::from_u128(8)), 1);
+        let started = std::time::Instant::now();
+        for value in 1..=INPUTS {
+            emitter.emit(value);
+        }
+        let handled = heard.await.unwrap_or(0);
+        let burst = started.elapsed().as_nanos() as f64 / INPUTS as f64;
+        println!("burst heard: {burst:.0} ns per event emitted, {handled} of {INPUTS} handled (window {WINDOW}; the rest dropped oldest-first)");
+    }
+}

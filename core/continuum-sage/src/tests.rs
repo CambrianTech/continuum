@@ -245,9 +245,9 @@ async fn a_deep_stage_queues_its_depth_and_handles_all_waiting_in_one_wake_in_or
         type Input = u32;
         const QOS: Qos = Qos::Interactive;
         async fn handle(&mut self, _input: u32) {}
-        async fn handle_all(&mut self, inputs: Vec<u32>) {
+        async fn handle_all(&mut self, inputs: &mut std::collections::VecDeque<u32>) {
             self.1.notified().await; // hold the worker so the queue fills behind it
-            self.0.lock().unwrap_or_else(|e| e.into_inner()).push(inputs); // test: plain data
+            self.0.lock().unwrap_or_else(|e| e.into_inner()).push(inputs.drain(..).collect()); // test: plain data
         }
     }
     let (wakes, gate) = (Arc::new(Mutex::new(Vec::new())), Arc::new(tokio::sync::Notify::new()));
