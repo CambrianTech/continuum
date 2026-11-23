@@ -22,7 +22,7 @@
 
 use super::*;
 use crate::ai::types::{ContentPart, MessageContent};
-use crate::cognition::tool_executor::tool_output::Reopen;
+use crate::cognition::result_store::reopen::Reopen;
 use continuum_context::allocation::Newest;
 
 /// One text slot of the newest result group: a native tool result's content or a legacy

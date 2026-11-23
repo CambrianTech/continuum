@@ -29,6 +29,7 @@ use uuid::Uuid;
 
 use crate::ai::types::ResultCustody;
 pub mod output_id;
+pub mod reopen;
 pub use output_id::OutputId;
 
 /// The handles live minds still point at, one set per holder (a working memory's instance).
@@ -785,7 +786,7 @@ impl<R: std::io::BufRead> Scan<R> {
             let n = newline.map_or(chunk.len(), |i| i + 1);
             if retain {
                 if n > self.allowance.saturating_sub(bytes.len()) {
-                    return Err(format!("line {} at byteOffset {offset} exceeds scan allowance {} bytes; use {} with byteOffset {offset} for exact byte pages (regex was not evaluated on a partial line)", self.line + 1, self.allowance, crate::cognition::tool_executor::tool_output::TOOL_OUTPUT));
+                    return Err(format!("line {} at byteOffset {offset} exceeds scan allowance {} bytes; use {} with byteOffset {offset} for exact byte pages (regex was not evaluated on a partial line)", self.line + 1, self.allowance, reopen::offered()));
                 }
                 bytes.extend_from_slice(&chunk[..n]);
             }
