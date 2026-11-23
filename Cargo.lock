@@ -3061,6 +3061,7 @@ dependencies = [
  "chrono",
  "continuum-academy",
  "continuum-base",
+ "continuum-capture",
  "continuum-client",
  "continuum-engine",
  "continuum-genome",
