@@ -110,6 +110,11 @@ impl Resident {
         self.parts.need()
     }
 
+    /// Where her time goes: every part's measured waits and handle times, slowest-waiting first.
+    pub fn profile(&self) -> Vec<(&'static str, continuum_sage::component::Telemetry)> {
+        self.parts.profile()
+    }
+
     /// Rest her: every part gives back what it holds and wakes on its next input.
     pub async fn rest(&self) -> bool {
         self.parts.rest().await

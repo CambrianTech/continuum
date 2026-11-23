@@ -13,7 +13,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use super::{need_key, node, start, Bus, Component, Need, Teller, NEED};
+use super::{need_key, node, presence_key, start, Bus, Component, Need, Telemetry, Teller, NEED, TELEMETRY};
 use crate::dataflow::{OwnerId, Reader};
 
 /// Where an owner's parts hear and say: the node's bus, or one the owner holds (a mind's own).
@@ -28,6 +28,8 @@ type Resting = Pin<Box<dyn Future<Output = bool> + Send>>;
 struct Part {
     _running: Box<dyn Any + Send + Sync>,
     need: Reader<Need>,
+    name: &'static str,
+    telemetry: Reader<Telemetry>,
     rest: Box<dyn Fn() -> Resting + Send + Sync>,
 }
 
@@ -59,6 +61,8 @@ impl Owner {
         self.parts.push(Part {
             _running: Box::new(running),
             need: self.bus().reader::<Need>(NEED, need_key(P::NAME)),
+            name: P::NAME,
+            telemetry: self.bus().reader::<Telemetry>(TELEMETRY, presence_key(P::NAME)),
             rest: Box::new(move || {
                 let teller = resting.clone();
                 Box::pin(async move { teller.rest().await })
@@ -90,6 +94,18 @@ impl Owner {
             .iter()
             .filter_map(|part| part.need.latest().map(|snapshot| *snapshot.value))
             .fold(Need::default(), Need::max)
+    }
+
+    /// Every part's measured numbers, the longest-waiting first: where this owner's time goes, read
+    /// now without waiting on any part. A part that has handled nothing yet reads as zero.
+    pub fn profile(&self) -> Vec<(&'static str, Telemetry)> {
+        let mut profile: Vec<_> = self
+            .parts
+            .iter()
+            .map(|part| (part.name, part.telemetry.latest().map(|snapshot| *snapshot.value).unwrap_or_default())) // JUSTIFIED: nothing handled yet is zero time, not a missing fact
+            .collect();
+        profile.sort_by(|a, b| b.1.max_wait.cmp(&a.1.max_wait).then(b.1.max_handle.cmp(&a.1.max_handle)));
+        profile
     }
 
     /// Rest every part (the owner rests, or its memory is wanted elsewhere): each gives back what
@@ -192,5 +208,26 @@ mod tests {
         }
         assert_eq!(owner.need().urgency, Urgency::Urgent, "the loudest part decides");
         assert!(owner.rest().await, "every part takes the rest");
+    }
+
+    // what this catches: a bottleneck found by hand, part by part. Every part's numbers are read in
+    // one place, slowest-waiting first, without waiting on any part.
+    #[tokio::test]
+    async fn her_profile_names_every_part_with_its_numbers() {
+        let (heard, mut values) = tokio::sync::mpsc::unbounded_channel();
+        let mut owner = owner();
+        let echo = owner.start(Echo { heard });
+        owner.start(Quiet);
+        assert!(echo.tell(1).await);
+        assert_eq!(values.recv().await, Some(1));
+        let mut telemetry = owner.bus().reader::<Telemetry>(TELEMETRY, presence_key("echo"));
+        while telemetry.latest().map(|t| t.value.handled) != Some(1) {
+            let _ = telemetry.changed().await;
+        }
+        let profile = owner.profile();
+        assert_eq!(profile.len(), 2, "every part is in it: {profile:?}");
+        let echo = profile.iter().find(|(name, _)| *name == "echo").map(|(_, t)| t.handled);
+        let quiet = profile.iter().find(|(name, _)| *name == "quiet").map(|(_, t)| t.handled);
+        assert_eq!((echo, quiet), (Some(1), Some(0)), "measured parts carry their numbers; an idle one reads zero");
     }
 }
