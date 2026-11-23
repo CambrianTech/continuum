@@ -292,7 +292,9 @@ async fn pinned_act_result_reaches_the_prompt_even_with_an_empty_broadcast() {
     };
     let corrected = faculty.refit_rejected_prompt(snapshot, estimate as u32 + 1, estimate as u32, 0).unwrap();
     assert!(corrected.estimated_prompt_tokens < estimate);
-    assert!(corrected.messages.iter().any(|m| m.content_text().contains(&handle)));
+    // The inventory stays reachable: whole in her view (a whole result carries no reopen call,
+    // ae790c5218) or collapsed to the pointer that names its handle.
+    assert!(corrected.messages.iter().any(|m| m.content_text().contains(&handle) || m.content_text().contains(inventory.trim())), "the inventory is whole or reachable by its handle");
     let corrected_wire = crate::inference::request_body::wire_messages(&corrected.messages, None, true, false, "llama-server");
     let call_at = corrected_wire.iter().position(|m| m["tool_calls"][0]["id"] == "capture").unwrap();
     for (i, observation) in batch.iter().enumerate() {

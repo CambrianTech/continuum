@@ -343,6 +343,10 @@ impl crate::persona::room_board_source::RoomBoardReader for PersonaAircRuntime {
 
 #[async_trait::async_trait]
 impl crate::persona::airc_citizen::AircCitizen for PersonaAircRuntime {
+    fn agent_name(&self) -> &str {
+        &self.agent_name
+    }
+
     fn own_task(&self, handle: JoinHandle<()>) {
         match self.owned_tasks.lock() {
             Ok(mut owned) => owned.push(handle),

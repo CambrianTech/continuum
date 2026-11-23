@@ -275,20 +275,10 @@ impl AircPersonaConversation {
             self.mind = MindFeed::boot(persona);
         }
         let mind = self.mind.as_mut()?;
-        // Her name, by the same lookup `signal_if_directed` uses: the region detects
-        // "addressed to me" through `PersonaIdentity::mentions`, so a region without
-        // her name would be blind to every @-mention. No name, no region.
-        let Some(agent_name) = crate::persona::PersonaAircRuntimeRegistry::try_global()
-            .and_then(|r| r.get(persona))
-            .map(|rt| rt.agent_name().to_string())
-        else {
-            continuum_base::probe!(
-                class = "mind.feed.unbooted",
-                persona = %persona,
-                "her runtime is not registered: no name to detect mentions with; the region waits for the next membership read"
-            );
-            return None;
-        };
+        // Her name, from her own runtime: the region detects "addressed to me" through
+        // `PersonaIdentity::mentions`. Never a process-wide registry lookup (a runtime held in
+        // another registry, a test's, read as nameless and her feed never started).
+        let agent_name = self.runtime.agent_name().to_string();
         if mind.senses.is_none() {
             if let Some(region) = mind.booted.take() {
                 match crate::persona::senses::start(persona, &agent_name, region) {
