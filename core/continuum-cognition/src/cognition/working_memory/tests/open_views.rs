@@ -8,7 +8,7 @@ use crate::cognition::act_observe::{ActStatus, Observation, ToolOutput, ToolVerb
 const PATH: &str = "core/source-hygiene/src/lib.rs";
 
 /// A `code/read` of `start..=end` of a `total`-line file, as the executor renders it
-/// (`spill::result_text` over the command's `ReadResult`). `stored_head` = how many
+/// (`result_store::result_text` over the command's `ReadResult`). `stored_head` = how many
 /// lines of that text she was shown when it was saved whole as `handle`.
 fn read(start: u32, end: u32, total: u32, stored_head: Option<(usize, &str)>) -> Observation {
     let body = (start..=end).map(|n| format!("{n:>6} | line {n}")).collect::<Vec<_>>().join("\n");
@@ -24,7 +24,7 @@ fn read(start: u32, end: u32, total: u32, stored_head: Option<(usize, &str)>) ->
         error: None,
     })
     .expect("test: encode");
-    let full = crate::cognition::tool_executor::spill::result_text(&value);
+    let full = crate::cognition::result_store::result_text(&value);
     let (content, custody) = match stored_head {
         None => (full, ResultCustody::Whole { handle: "small".into() }),
         Some((lines, handle)) => {

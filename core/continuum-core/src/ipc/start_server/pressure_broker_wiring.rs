@@ -242,7 +242,7 @@ pub(super) fn register_pressure_broker(
         // but bounded so a runaway tool can't fill the disk before the broker acts.
         // Path comes from `spill::spill_root()` — single source, no re-typed string.
         const SPILL_POOL_SOFT_CAP_BYTES: u64 = 1024 * 1024 * 1024;
-        match crate::cognition::tool_executor::spill::spill_root() {
+        match crate::cognition::result_store::spill_root() {
             Ok(spill_dir) => {
                 broker.register(Arc::new(
                     crate::paging::FilesystemTierPool::new(
@@ -252,7 +252,7 @@ pub(super) fn register_pressure_broker(
                     )
                     // A handle a live mind still points at is never evicted (card 9197cd01).
                     .removing_with(Arc::new(
-                        crate::cognition::tool_executor::spill::evict_unless_live,
+                        crate::cognition::result_store::evict_unless_live,
                     )),
                 )
                     as Arc<dyn crate::paging::pool::ResourcePool>);

@@ -433,7 +433,7 @@ impl WorkingMemory {
         drop(children);
         // A thought shed to its handle exists only on disk: live while her log names it.
         handles.extend(self.thoughts.lock().handles().map(str::to_owned));
-        crate::cognition::tool_executor::spill::publish_live_handles(self.instance, handles);
+        crate::cognition::result_store::publish_live_handles(self.instance, handles);
     }
 
     /// Record that the persona SETTLED — produced an utterance and closed the current

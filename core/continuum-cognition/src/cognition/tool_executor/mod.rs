@@ -31,9 +31,7 @@
 pub mod answer;
 mod arguments;
 pub mod command_executor;
-pub mod output_id;
 pub mod result_tap;
-pub mod spill;
 pub mod tool_output;
 pub mod types;
 
@@ -88,7 +86,7 @@ pub trait ToolExecutor: Send + Sync {
         &self,
         batch: &CallBatch,
         context: &ToolExecutionContext,
-        _pin: &spill::LivePin,
+        _pin: &crate::cognition::result_store::LivePin,
     ) -> Result<NativeBatchOutcome, ToolError> {
         self.execute_native_batch(batch, context).await
     }

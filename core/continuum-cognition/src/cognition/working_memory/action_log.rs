@@ -51,7 +51,7 @@ pub enum ActOutputRefusal {
     /// She named an output and an act, and they are not the same output: two readings, so the
     /// call is hers to make again with one. `act_output` is the act's own saved output, if any.
     #[error("outputId {output} and act #{act} name different outputs; name one")]
-    Disagree { act: u64, output: crate::cognition::tool_executor::output_id::OutputId, act_output: Option<String> },
+    Disagree { act: u64, output: crate::cognition::result_store::output_id::OutputId, act_output: Option<String> },
     /// The act left RAM for her archive and its span was compacted past her reopen horizon: its
     /// own line and output are gone, and the span's summary is what remains. The answer, typed.
     #[error("act #{act} was compacted into its span, {span}: its own line and output are no longer kept, and this summary is what remains")]

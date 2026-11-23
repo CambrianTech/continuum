@@ -79,7 +79,7 @@ fn a_step_is_scoped_to_its_root_and_every_result_is_perceived_labelled_with_its_
 fn a_mind_s_saved_handles_are_live_until_it_drops() {
     let handle = format!("{:016x}", Uuid::new_v4().as_u128() as u64);
     let file = std::path::PathBuf::from(format!("/spill/p/{handle}.log"));
-    let live = |p: &std::path::Path| crate::cognition::tool_executor::spill::is_live(p);
+    let live = |p: &std::path::Path| crate::cognition::result_store::is_live(p);
     let wm = WorkingMemory::new(8);
     let cap = 2 * BODY;
     wm.record_receipt_typed(&[], &"a".repeat(cap / 2), None, saved(&handle));
@@ -105,7 +105,7 @@ fn a_mind_s_saved_handles_are_live_until_it_drops() {
 #[test]
 fn a_moved_body_s_handle_stays_live_behind_any_number_of_newer_pointers() {
     let handle = || format!("{:016x}", Uuid::new_v4().as_u128() as u64);
-    let live = |h: &str| crate::cognition::tool_executor::spill::is_live(&std::path::PathBuf::from(format!("/spill/p/{h}.log")));
+    let live = |h: &str| crate::cognition::result_store::is_live(&std::path::PathBuf::from(format!("/spill/p/{h}.log")));
     let wm = WorkingMemory::new(8);
     let first = handle();
     wm.record_receipt_typed(&[], &"f".repeat(BODY), None, saved(&first));
@@ -172,7 +172,7 @@ fn a_receipt_s_per_call_results_stay_reachable_as_long_as_the_receipt() {
         status: ActStatus::Executed,
     };
     let live = |h: &str| {
-        crate::cognition::tool_executor::spill::is_live(&std::path::PathBuf::from(format!("/spill/p/{h}.log")))
+        crate::cognition::result_store::is_live(&std::path::PathBuf::from(format!("/spill/p/{h}.log")))
     };
     let (receipt, children) = (id(), [id(), id()]);
     let wm = WorkingMemory::new(2); // two entries: the third receipt rolls the first out
@@ -212,12 +212,12 @@ fn a_receipt_s_per_call_results_stay_reachable_as_long_as_the_receipt() {
     restored.restore(read);
     assert!(children.iter().all(|c| live(c)), "held again by the restored mind");
     for file in &files {
-        let evict = crate::cognition::tool_executor::spill::evict_unless_live(file);
+        let evict = crate::cognition::result_store::evict_unless_live(file);
         assert!(matches!(evict, Removal::Protected) && file.exists(), "pressure cannot evict a restored receipt's child");
     }
     drop(restored);
     for file in &files {
-        let evict = crate::cognition::tool_executor::spill::evict_unless_live(file);
+        let evict = crate::cognition::result_store::evict_unless_live(file);
         assert!(matches!(evict, Removal::Removed) && !file.exists(), "released, it is evictable");
     }
     let _ = std::fs::remove_dir_all(&root);
@@ -257,7 +257,7 @@ fn a_restored_handleless_receipt_keeps_its_children_under_its_new_handle() {
     let wm = WorkingMemory::new(8);
     wm.restore(snapshot);
     assert!(
-        crate::cognition::tool_executor::spill::is_live(&std::path::PathBuf::from(format!("/spill/p/{child}.log"))),
+        crate::cognition::result_store::is_live(&std::path::PathBuf::from(format!("/spill/p/{child}.log"))),
         "and still reachable after the restore's publish"
     );
 }
@@ -291,11 +291,11 @@ fn each_call_s_saved_result_is_live_once_its_receipt_is_recorded() {
     let wm = WorkingMemory::new(8);
     wm.record_receipt_typed(&[act], "read it", None, ResultCustody::Unsaved);
     assert!(
-        crate::cognition::tool_executor::spill::is_live(&file),
+        crate::cognition::result_store::is_live(&file),
         "published by the record itself, before the act seam drops its pin"
     );
     drop(wm);
-    assert!(!crate::cognition::tool_executor::spill::is_live(&file), "released with the mind");
+    assert!(!crate::cognition::result_store::is_live(&file), "released with the mind");
 }
 
 // what this catches (BigMama's live receipt of #4963 on the 5090, card df0035bf; FLOW §2d):
@@ -375,10 +375,10 @@ fn an_unsaved_result_keeps_its_bytes_through_a_shed_and_restore() {
 #[test]
 fn a_restore_prices_a_legacy_evicted_result_from_its_saved_output() {
     // It saves through the production store: the class is the test fixture's, never ~/.continuum.
-    crate::cognition::tool_executor::spill::prepare_store_fixture();
+    crate::cognition::result_store::prepare_store_fixture();
     let wm = WorkingMemory::new(8);
     let persona = Uuid::new_v4();
-    let pin = crate::cognition::tool_executor::spill::LivePin::new();
+    let pin = crate::cognition::result_store::LivePin::new();
     let body = "a line of the saved output\n".repeat(50);
     wm.record_receipt_typed(&[], &body, None, pin.retain(persona, &body));
     wm.record_receipt_typed(&[], "a result whose output is gone", None, pin.retain(persona, "a result whose output is gone"));

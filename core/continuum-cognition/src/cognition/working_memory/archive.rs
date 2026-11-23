@@ -423,7 +423,7 @@ impl Archive {
 /// (so the line names where it is), then every line, in one file. The delta only: no line already
 /// archived is written again. On failure the acts are handed back to be queued again.
 fn write_segment(bound: &Bound, pending: Vec<Pending>) -> Result<(Segment, usize, usize), (std::io::Error, Vec<Pending>)> {
-    let pin = crate::cognition::tool_executor::spill::LivePin::new();
+    let pin = crate::cognition::result_store::LivePin::new();
     let mut acts: Vec<ArchivedAct> = Vec::with_capacity(pending.len());
     for Pending { mut act, unsaved_body } in pending {
         if let Some(text) = unsaved_body {
@@ -500,13 +500,13 @@ fn compact(bound: &Bound, segment: &Segment) -> std::io::Result<()> {
 /// Delete each saved output in `handles` that no live mind and no checkpoint names (the spill
 /// owner's guard decides, under its lock); how many were deleted.
 fn delete_unreferenced(bound: &Bound, handles: &[String]) -> usize {
-    use crate::cognition::tool_executor::spill;
+    use crate::cognition::result_store;
     use crate::paging::filesystem_tier_pool::Removal;
     let mut deleted = 0;
     for handle in handles {
-        let removal = match spill::resolve(bound.persona, handle) {
+        let removal = match result_store::resolve(bound.persona, handle) {
             Ok(path) if !path.exists() => continue,
-            Ok(path) => spill::evict_unless_live(&path),
+            Ok(path) => result_store::evict_unless_live(&path),
             Err(error) => Removal::Failed(error),
         };
         match removal {

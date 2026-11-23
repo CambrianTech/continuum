@@ -25,6 +25,9 @@ pub use continuum_rooms::room_substrates;
 pub use continuum_prompt::framing_echo;
 pub use continuum_prompt::not_speech;
 pub mod act_observe;
+/// Saved tool results: the content-addressed store a persona reopens with tool/output, its live
+/// pins and what a checkpoint protects (moved out of tool_executor, which working memory reached into).
+pub mod result_store;
 /// When an act runs and how long it waits for its turn: the timing every layer stamps (moved out of
 /// the deliberation faculty, which act_observe and workspace reached into for it).
 pub(crate) mod admission_clock;

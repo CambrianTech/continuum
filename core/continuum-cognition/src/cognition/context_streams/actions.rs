@@ -149,7 +149,7 @@ impl Source<ContextMessage> for Actions<'_> {
         let stored = item.stored()?;
         let seq: u64 = item.key().parse().ok()?;
         let label = self.memory.action_whole_label(seq)?;
-        let body = crate::cognition::tool_executor::spill::saved_whole(self.persona, &stored.handle).ok()?;
+        let body = crate::cognition::result_store::saved_whole(self.persona, &stored.handle).ok()?;
         Some(ContextMessage::user(format!("{label}{body}")))
     }
 

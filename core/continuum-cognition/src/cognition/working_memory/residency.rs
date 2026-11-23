@@ -97,13 +97,13 @@ impl WorkingMemory {
     /// can move it: written outside her lock through one [`LivePin`] held until the handles are
     /// published. Only the memory owner calls it, at shed time, never the act that recorded it.
     ///
-    /// [`LivePin`]: crate::cognition::tool_executor::spill::LivePin
+    /// [`LivePin`]: crate::cognition::result_store::LivePin
     pub(crate) fn save_unsaved_thoughts(&self, persona_id: Uuid) {
         let unsaved = self.thoughts.lock().unsaved();
         if unsaved.is_empty() {
             return;
         }
-        let pin = crate::cognition::tool_executor::spill::LivePin::new();
+        let pin = crate::cognition::result_store::LivePin::new();
         let saved: Vec<(u64, String)> =
             unsaved.into_iter().filter_map(|(occurrence, text)| pin.retain(persona_id, &text).handle().map(|handle| (occurrence, handle.to_owned()))).collect();
         {
@@ -142,7 +142,7 @@ impl WorkingMemory {
         if unnamed.is_empty() {
             return;
         }
-        let pin = crate::cognition::tool_executor::spill::LivePin::new();
+        let pin = crate::cognition::result_store::LivePin::new();
         let named: Vec<(u64, String)> = unnamed
             .into_iter()
             .filter_map(|(seq, handle, body)| {
