@@ -11,6 +11,7 @@
 //! output stayed. A pool joins by being registered with the broker with a `root()`; the broker leaves
 //! such pools to this component.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
@@ -102,6 +103,27 @@ impl From<Snapshot<Volumes>> for Frame {
 
 struct DiskRelief {
     said: Publisher<Vec<Relief>>,
+    /// Per volume, what the last pass that could not bring it back left: asked again only on news.
+    spent: HashMap<PathBuf, Spent>,
+}
+
+/// A pass that asked every pool on a volume and could not free what it wanted. Asking the same
+/// pools again changes nothing until the volume loses more room (a pool grew) or the pools change
+/// (the M5, 2026-11-23: a 24 s pass every frame, wanting 112 GB, freeing 0 to 1,791 bytes, because
+/// 160 GB of card worktrees sit in no pool).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Spent {
+    /// The volume's free bytes after that pass.
+    available: u64,
+    /// The pools it asked, by name.
+    pools: Vec<String>,
+}
+
+impl Spent {
+    /// News since this pass: the volume has less room now, or a different set of pools could help.
+    fn moved(&self, drive: &DriveInfo, pools: &[String]) -> bool {
+        drive.available_bytes < self.available || self.pools != pools
+    }
 }
 
 impl Component for DiskRelief {
@@ -114,17 +136,25 @@ impl Component for DiskRelief {
     }
 
     async fn handle(&mut self, Frame(volumes): Frame, ctx: &mut Ctx<Self>) {
-        let drives = volumes.0.clone();
         let pools: Vec<Arc<dyn ResourcePool>> = POOLS.read().clone();
-        let needs = drives.iter().any(|d| {
-            let used = d.total_bytes.saturating_sub(d.available_bytes) as f64;
-            d.total_bytes > 0 && used / d.total_bytes as f64 >= DiskPressureLevel::HIGH_AT
-        });
-        if !needs {
+        let names: Vec<String> = pools.iter().map(|pool| pool.tier_name().to_owned()).collect();
+        // A volume under pressure, unless the last pass on it came up short and nothing moved since.
+        let drives: Vec<DriveInfo> = volumes
+            .0
+            .iter()
+            .filter(|d| {
+                let used = d.total_bytes.saturating_sub(d.available_bytes) as f64;
+                d.total_bytes > 0 && used / d.total_bytes as f64 >= DiskPressureLevel::HIGH_AT
+            })
+            .filter(|d| self.spent.get(&d.mount).is_none_or(|spent| spent.moved(d, &names)))
+            .cloned()
+            .collect();
+        if drives.is_empty() {
             ctx.need(Urgency::Content);
             return;
         }
         ctx.need(Urgency::Urgent);
+        let available: HashMap<PathBuf, u64> = drives.iter().map(|d| (d.mount.clone(), d.available_bytes)).collect();
         let reliefs = match tokio::task::spawn_blocking(move || relieve(&drives, &pools)).await {
             Ok(reliefs) => reliefs,
             Err(join) => {
@@ -143,6 +173,14 @@ impl Component for DiskRelief {
                 "a pressured volume asked the pools on it for room"
             );
         }
+        for relief in &reliefs {
+            if relief.freed < relief.want {
+                let left = available.get(&relief.mount).copied().unwrap_or(0).saturating_add(relief.freed); // JUSTIFIED: every relief names a drive it was handed
+                self.spent.insert(relief.mount.clone(), Spent { available: left, pools: names.clone() });
+            } else {
+                self.spent.remove(&relief.mount);
+            }
+        }
         ctx.publish(&mut self.said, reliefs);
         ctx.need(Urgency::Content);
     }
@@ -153,7 +191,7 @@ impl Component for DiskRelief {
 pub fn start_on(node: &mut Owner) {
     match node.bus().publisher::<Vec<Relief>>(RELIEF, Key::ONE) {
         Ok(said) => {
-            node.start(DiskRelief { said });
+            node.start(DiskRelief { said, spent: HashMap::new() });
         }
         Err(taken) => continuum_base::probe!(class = "disk.relief.not_started", topic = taken.0 .0, "disk relief's topic is claimed elsewhere; it does not run"),
     }
@@ -247,5 +285,19 @@ mod tests {
         assert_eq!(relief.freed, 120);
 
         assert!(relieve(&[drive("/", 1_000, 300)], &pools).is_empty(), "70% used asks nothing");
+    }
+
+    // what this catches: the M5's relief loop (2026-11-23): every frame a 24 s pass asked every pool,
+    // wanted 112 GB and freed nothing, because the room was in no pool. A pass that came up short is
+    // repeated only on news: the volume lost more room, or the pools changed.
+    #[test]
+    fn a_pass_that_came_up_short_waits_for_news() {
+        let drive = |available: u64| DriveInfo { mount: "/".into(), total_bytes: 1_000, available_bytes: available, role: DriveRole::System, kind: DriveKind::Flash };
+        let spent = Spent { available: 80, pools: vec!["worktrees".to_owned()] };
+        let same = vec!["worktrees".to_owned()];
+        assert!(!spent.moved(&drive(80), &same), "nothing changed: no new pass");
+        assert!(!spent.moved(&drive(90), &same), "room came back by itself: still nothing to ask for");
+        assert!(spent.moved(&drive(70), &same), "the volume lost more room: a pool grew, ask again");
+        assert!(spent.moved(&drive(80), &["worktrees".to_owned(), "card-worktrees".to_owned()]), "a new pool can help: ask again");
     }
 }
