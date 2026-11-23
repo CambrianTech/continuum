@@ -1138,6 +1138,20 @@ mostly its own experts, not by a scheduling defect.
    and matmul as one; upstream's `ggml-metal-fusion.cpp` is in the sync tree and not on the canary pin, so
    the sync is measured first), **concurrent dispatch** of independent kernels, then the kernels
    themselves.
+
+   **The upstream sync, measured** (same bench and settings, fork `fable/upstream-sync` 083664562 with
+   the timer, serving paused 00:06:10-00:07:08Z):
+
+   | 4k context | Canary pin | Synced fork | Gain |
+   |---|---|---|---|
+   | Decode, 1 stream | 58.3 t/s | 69.1 t/s | +19% |
+   | Decode, 4 streams aggregate | 115.3 t/s | 147.7 t/s | +28% |
+   | Prefill | about 790 t/s | 1,559-1,701 t/s | about 2x |
+   | GPU per decode step, 1 / 4 streams | 16.65 / 33.4-34.8 ms | 13.9 / 26.8 ms | |
+
+   Graph nodes rose slightly (3,726 to 3,817), so the gain is upstream's kernels, not fewer dispatches;
+   fusion and concurrent dispatch are still ahead. Shipping the sync is the next speed step for every
+   mind; its remaining conflicts are being resolved.
 2. **Expert reads run at about 150 GB/s effective** (8.1 ms for one token's experts, about 1.2 GB,
    inferred). The M5 Pro's peak is to be confirmed. The `mul_mat_id` kernel at small batch is the
    second target.
