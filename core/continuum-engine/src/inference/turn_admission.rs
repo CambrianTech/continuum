@@ -36,7 +36,7 @@ mod page_receipt;
 mod paging_lifetime;
 mod request;
 pub use request::TurnRequest;
-mod transient;
+mod unresolved_page;
 mod learning;
 
 pub use transient::admit_transient;
