@@ -3771,6 +3771,7 @@ dependencies = [
  "continuum-host",
  "continuum-kernel",
  "continuum-mind",
+ "continuum-sage",
  "expert-pager-policy",
  "futures",
  "inventory",

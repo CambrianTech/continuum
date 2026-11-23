@@ -15,8 +15,8 @@ use std::sync::Arc;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-use continuum_sage::component::{Bus, Component, Ctx, Key, Taken, Urgency, Wiring};
-use continuum_sage::dataflow::{Emitter, OwnerId, Provenance, Publisher, RunId, Snapshot, StageId, StageIncarnation, TopicName};
+use continuum_sage::component::{Bus, Component, Ctx, Key, Source, Taken, Urgency, Wiring};
+use continuum_sage::dataflow::{Emitter, Snapshot, TopicName};
 use continuum_sage::Qos;
 
 use super::cleaner::{Seated, Settled, SEATED, SETTLED};
@@ -53,45 +53,34 @@ impl From<Snapshot<Arrivals>> for Wake {
 /// What the trigger says on the trainer's bus, claimed when the trainer is built: arrivals, the
 /// shadows live seats hold, and each page-out.
 pub(crate) struct TrainerOut {
-    arrivals: Publisher<Arrivals>,
-    seated: Publisher<Seated>,
+    arrivals: Source<Arrivals>,
+    seated: Source<Seated>,
     settled: Emitter<Settled>,
     held: BTreeSet<PathBuf>,
-    said: u64,
 }
 
 impl TrainerOut {
-    fn provenance(&mut self) -> Provenance {
-        self.said += 1;
-        let by = RunId { incarnation: StageIncarnation { stage: StageId::named("training-trigger"), owner: OwnerId(uuid::Uuid::nil()), epoch: 0 }, seq: self.said };
-        Provenance { by, from: Vec::new() }
-    }
-
     /// Say that the newest accepted example is `sequence`.
     pub(crate) fn arrived(&mut self, sequence: u64) {
-        let by = self.provenance();
-        self.arrivals.publish(Arrivals(sequence), by);
+        self.arrivals.say(Arrivals(sequence));
     }
 
     /// A seat now holds `shadow`.
     pub(crate) fn seated(&mut self, shadow: PathBuf) {
         self.held.insert(shadow);
-        let (held, by) = (self.held.clone(), self.provenance());
-        self.seated.publish(Seated(held), by);
+        self.seated.say(Seated(self.held.clone()));
     }
 
     /// A seat let `shadow` go outside a page-out (a quarantine): no seat holds it now.
     pub(crate) fn released(&mut self, shadow: PathBuf) {
         self.held.remove(&shadow);
-        let (held, by) = (self.held.clone(), self.provenance());
-        self.seated.publish(Seated(held), by);
+        self.seated.say(Seated(self.held.clone()));
     }
 
     /// A seat let `shadow` go at page-out, having learned `learned` examples and published or not.
     pub(crate) fn settled(&mut self, shadow: PathBuf, learned: u32, published: bool) {
         self.held.remove(&shadow);
-        let (held, by) = (self.held.clone(), self.provenance());
-        self.seated.publish(Seated(held), by);
+        self.seated.say(Seated(self.held.clone()));
         self.settled.emit(Settled { shadow, learned, published });
     }
 }
@@ -107,11 +96,10 @@ impl Trainer {
     /// already waiting at boot. A second trainer on one bus is refused.
     pub fn on(state: Arc<TrainingTriggerState>, bus: &Bus) -> Result<Self, Taken> {
         let out = TrainerOut {
-            arrivals: bus.publisher::<Arrivals>(ARRIVALS, Key::ONE)?,
-            seated: bus.publisher::<Seated>(SEATED, Key::ONE)?,
+            arrivals: Source::on(bus, ARRIVALS, Key::ONE, "training-trigger")?,
+            seated: Source::on(bus, SEATED, Key::ONE, "training-trigger")?,
             settled: bus.emitter::<Settled>(SETTLED)?,
             held: BTreeSet::new(),
-            said: 0,
         };
         state.install_out(out);
         Ok(Self { state })
@@ -149,6 +137,7 @@ impl Component for Trainer {
 mod tests {
     use super::*;
     use continuum_sage::component::{presence_key, Owner, Telemetry, TELEMETRY};
+    use continuum_sage::dataflow::OwnerId;
 
     /// The trainer's handled count once it reaches `at_least`: the first count at or past it, so a
     /// pass nothing asked for shows as a count past the one expected.
@@ -184,9 +173,7 @@ mod tests {
         assert_eq!(answer["success"], true, "test: the arrival is accepted: {answer}");
         assert_eq!(handled(&bus, 2).await, 2, "an accepted example wakes exactly one pass");
 
-        let mut serving = bus.publisher::<ServingSnapshot>(SERVING_TOPIC, Key::ONE).expect("test: the serving topic");
-        let by = RunId { incarnation: StageIncarnation { stage: StageId::named("serving-fixture"), owner: OwnerId(uuid::Uuid::nil()), epoch: 0 }, seq: 0 };
-        serving.publish(ServingSnapshot::empty(), Provenance { by, from: Vec::new() });
+        let _serving = crate::inference::llama_server::ServingState::on(&bus, ServingSnapshot::empty()).expect("test: the serving state on this bus");
         assert_eq!(handled(&bus, 3).await, 3, "a serving change wakes exactly one pass");
 
         drop(owner);

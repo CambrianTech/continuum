@@ -174,6 +174,7 @@ async fn publish_plan_drives_the_watch() {
         test_resource_daemon(),
         test_catalog(),
         test_pin_store(),
+        super::test_serving(),
     );
     daemon.working_set = crate::cognition::working_set::WorkingSetRegistry::new();
     daemon.set_leased_in_sent_source(Arc::new(Vec::new));
@@ -237,6 +238,7 @@ async fn a_plan_below_one_coding_turn_is_not_published_and_the_previous_stands()
         test_resource_daemon(),
         test_catalog(),
         test_pin_store(),
+        super::test_serving(),
     );
     // This test OWNS its demand pool: a private working set and an empty leased-in ring.
     // Both are process globals in production, shared by every test in the binary.
@@ -331,6 +333,7 @@ async fn a_plan_below_one_coding_turn_is_not_published_and_the_previous_stands()
         test_resource_daemon(),
         test_catalog(),
         test_pin_store(),
+        super::test_serving(),
     );
     cold.working_set = crate::cognition::working_set::WorkingSetRegistry::new();
     cold.set_leased_in_sent_source(Arc::new(Vec::new));
@@ -373,6 +376,7 @@ async fn legacy_handle_command_fails_loud() {
         test_resource_daemon(),
         test_catalog(),
         test_pin_store(),
+        super::test_serving(),
     );
     let err = daemon
         .handle_command("serving/plan", serde_json::json!({}))
@@ -397,6 +401,7 @@ async fn contributes_the_full_serving_surface() {
         test_resource_daemon(),
         test_catalog(),
         test_pin_store(),
+        super::test_serving(),
     );
     let mut names: Vec<&str> = daemon.commands().iter().map(|c| c.name()).collect();
     names.sort_unstable();
@@ -598,6 +603,7 @@ async fn register_as_consumer_wires_serving_into_the_authority() {
         test_resource_daemon(),
         test_catalog(),
         test_pin_store(),
+        super::test_serving(),
     );
 
     assert!(
@@ -711,6 +717,7 @@ async fn a_pool_step_publishes_the_grants_without_a_tick() {
         test_resource_daemon(),
         test_catalog(),
         test_pin_store(),
+        super::test_serving(),
     ));
     let mut evaluations = daemon.subscribe_evaluations();
     evaluations.borrow_and_update();
@@ -745,6 +752,7 @@ async fn a_demand_move_publishes_the_grants_without_a_tick() {
         test_resource_daemon(),
         test_catalog(),
         test_pin_store(),
+        super::test_serving(),
     ));
     let mut evaluations = daemon.subscribe_evaluations();
     evaluations.borrow_and_update();

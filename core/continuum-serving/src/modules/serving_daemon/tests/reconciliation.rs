@@ -56,6 +56,7 @@ async fn an_empty_plan_takes_the_live_lane_down_once() {
         server,
         Arc::new(ModelCatalog::from_registry(&empty)),
         test_pin_store(),
+        super::test_serving(),
     );
     let mut live = ServingSnapshot::empty();
     live.active_model = Some("ornith-ai/Ornith-1.5-35B-A3B-GGUF".to_string());
@@ -703,7 +704,7 @@ async fn reconcile_emits_snapshot_on_the_bus() {
 #[test]
 fn an_admitted_lifecycle_transition_condemns_the_engine() {
     let condemned = crate::inference::llama_server::condemnations();
-    let (serving, _) = tokio::sync::watch::channel(ServingSnapshot::empty());
+    let serving = super::test_serving();
     let (verified, _) = tokio::sync::watch::channel(None);
     ServingDaemonModule::publish_lifecycle_admission(&serving, &verified, None, Some("coder-14b"));
     assert!(condemned.has_changed().unwrap(), "an admitted transition condemns the engine"); // unwrap: the sender is a process-lifetime static
