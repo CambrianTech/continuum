@@ -12,7 +12,7 @@ use continuum_context::source::{Item, Source, StoredWhole};
 
 use super::{element, priority, ContextMessage, Producer};
 use crate::cognition::working_memory::{ActRendering, WorkingMemory};
-use crate::cognition::tool_executor::tool_output::Reopen;
+use crate::cognition::result_store::reopen::Reopen;
 
 /// The source's name: her view's fold edge for it is what bounds her resident log
 /// (`WorkingMemory::release_folded`).

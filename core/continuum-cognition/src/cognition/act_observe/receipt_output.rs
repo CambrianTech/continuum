@@ -17,7 +17,7 @@
 use super::observation::Observation;
 use crate::ai::types::ResultCustody;
 use crate::cognition::result_store::LivePin;
-use crate::cognition::tool_executor::tool_output::Reopen;
+use crate::cognition::result_store::reopen::Reopen;
 
 /// What one call of an act left behind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
