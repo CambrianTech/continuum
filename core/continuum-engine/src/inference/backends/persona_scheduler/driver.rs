@@ -428,8 +428,6 @@ fn context<'m>(model: &'m Model, config: &SchedulerConfig) -> Result<llama::Cont
             // with them on decodes the same GGUF and Q4_0 KV at ~20.5 ms at 15k (a990358854 vs
             // fork a58c3b4cf, 2026-11-19 01:44-01:51Z). The fork probes support and falls back
             // where a backend lacks the op (llama-context.cpp:565-566).
-            fused_gdn_ar: true,
-            fused_gdn_ch: true,
             type_k: config.type_k,
             type_v: config.type_v,
             embeddings: false,

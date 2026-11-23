@@ -499,8 +499,6 @@ impl Model {
             FlashAttn::Enabled => sys::llama_flash_attn_type_LLAMA_FLASH_ATTN_TYPE_ENABLED,
             FlashAttn::Disabled => sys::llama_flash_attn_type_LLAMA_FLASH_ATTN_TYPE_DISABLED,
         };
-        ffi.fused_gdn_ar = params.fused_gdn_ar;
-        ffi.fused_gdn_ch = params.fused_gdn_ch;
         ffi.type_k = params.type_k.ggml_type();
         ffi.type_v = params.type_v.ggml_type();
         ffi.embeddings = params.embeddings;
@@ -526,7 +524,7 @@ impl Model {
                 bridge.as_ref() as *const ExpertObserverBridge as *mut std::os::raw::c_void;
         }
 
-        let raw = unsafe { sys::llama_new_context_with_model(self.ptr.as_ptr(), ffi) };
+        let raw = unsafe { sys::llama_init_from_model(self.ptr.as_ptr(), ffi) };
         let ctx = NonNull::new(raw).ok_or(ContextCreationRefused)?;
         Ok(Context {
             ptr: ctx,

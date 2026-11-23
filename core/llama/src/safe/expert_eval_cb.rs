@@ -69,12 +69,6 @@ pub struct ContextParams {
     pub n_seq_max: u32,
     /// Flash attention setting. Default `Auto` — runtime picks per-backend.
     pub flash_attn: FlashAttn,
-    /// Fused Gated Delta Net autoregressive graph. Some new Metal stacks can
-    /// compile the kernels but throw foreign exceptions during graph setup;
-    /// callers can disable the fused graph while keeping the model on GPU.
-    pub fused_gdn_ar: bool,
-    /// Fused Gated Delta Net chunked graph. Same contract as fused_gdn_ar.
-    pub fused_gdn_ch: bool,
     /// KV cache element type for K. Default `F16` (lossless).
     pub type_k: KvCacheType,
     /// KV cache element type for V. Default `F16` (lossless).
@@ -133,8 +127,6 @@ impl Default for ContextParams {
             n_ubatch: 512,
             n_seq_max: 1,
             flash_attn: FlashAttn::Auto,
-            fused_gdn_ar: true,
-            fused_gdn_ch: true,
             type_k: KvCacheType::F16,
             type_v: KvCacheType::F16,
             embeddings: false,

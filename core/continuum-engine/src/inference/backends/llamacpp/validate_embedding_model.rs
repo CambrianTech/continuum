@@ -73,11 +73,6 @@ pub struct LlamaCppConfig {
     pub n_seq_max: u32,
     /// Flash attention. `Auto` lets llama.cpp pick per-backend.
     pub flash_attn: FlashAttn,
-    /// Fused Gated Delta Net graph toggles. Defaults match upstream; callers
-    /// can disable for model/backend combinations whose fused Metal kernels
-    /// throw across FFI while preserving GPU residency.
-    pub fused_gdn_ar: bool,
-    pub fused_gdn_ch: bool,
     /// KV cache K element type. F16 = lossless. Q8_0 halves K memory.
     pub type_k: KvCacheType,
     /// KV cache V element type. V is more sensitive than K — keep F16
@@ -101,8 +96,6 @@ impl Default for LlamaCppConfig {
             // 3 = M5 Pro tier (48GB+). CandleAdapter overrides per-RAM.
             n_seq_max: 3,
             flash_attn: FlashAttn::Auto,
-            fused_gdn_ar: true,
-            fused_gdn_ch: true,
             // F16/F16 measured fastest for single-token decode on M5 Pro.
             // K=Q8_0 was slower (44 vs 47.5 tok/s) due to per-token dequant
             // overhead. Q8_0 only pays off when KV memory pressure is the
