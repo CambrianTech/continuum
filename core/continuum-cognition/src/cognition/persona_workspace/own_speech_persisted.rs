@@ -1,4 +1,5 @@
 use super::*;
+use crate::cognition::tool_executor::spill::checkpoint_handles as handles;
 
 /// Her own-speech rings on disk. Room-keyed since 2026-08-14 — a ring restored
 /// without its room would re-create the cross-room repetition fact the keying
@@ -30,10 +31,7 @@ impl OwnSpeechPersisted {
 /// Her checkpoint's path, under the one continuum home (`paths::continuum_home`: `$CONTINUUM_HOME`,
 /// a test build's home, else `~/.continuum`), never a home built by hand.
 pub(super) fn volatile_path(persona_id: Uuid) -> std::io::Result<std::path::PathBuf> {
-    let home = crate::paths::continuum_home().map_err(|why| {
-        std::io::Error::new(std::io::ErrorKind::NotFound, format!("cannot resolve the continuum home: {why}"))
-    })?;
-    Ok(home.join("personas").join(persona_id.to_string()).join("volatile.json"))
+    crate::cognition::tool_executor::spill::checkpoint_handles::checkpoint_path(persona_id)
 }
 
 /// What one checkpoint did: nothing (her state is where the last one left it), or wrote this many
@@ -130,65 +128,37 @@ pub(super) fn save_volatile(
         return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("{} names no checkpoint file", path.display())));
     };
     let bytes = serde_json::to_vec(&persisted)?; // file on disk: her checkpoint, read back at her next spawn
+    // The list beside it never names fewer handles than the checkpoint on disk: the old one's and
+    // this one's before the replace, this one's alone after (`spill::checkpoint_handles`).
+    let names = named_handles(&persisted);
+    let before = match handles::listed(&path)? {
+        Some(listed) => listed,
+        // No list yet (a checkpoint from before lists): the old checkpoint's own handles.
+        None => read_volatile(&path).ok().flatten().map(|old| named_handles(&old)).unwrap_or_default(), // JUSTIFIED: an unreadable old checkpoint names nothing a restore could reach
+    };
+    handles::write(&path, &before.union(&names).cloned().collect())?;
     // Staged beside it in her held directory, synced, and renamed over it: a reader sees the last
     // checkpoint or this one, never half, and the placement survives power loss.
     let mut staging = continuum_host::durable::Staging::new(&continuum_host::confine::open_root(dir)?)?;
     staging.write_all(&bytes)?;
     staging.replace(std::path::Path::new(name))?;
+    handles::write(&path, &names)?;
     last_marks().lock().insert(persona_id, mark);
     Ok(Checkpointed::Written { bytes: bytes.len(), archive })
+}
+
+/// The saved results a checkpoint names: its results ring AND its collapsed pointers (each pointer
+/// is how she reopens a result that left the ring, so it is a reference exactly as a ring entry is).
+/// The checkpoint's writer keeps this set in the list beside it, which eviction reads, so a saved
+/// result survives the restart a deploy performs, a mind that has not restored yet, and a persona
+/// that is offline (Astra on card 9197cd01).
+pub(super) fn named_handles(persisted: &PersistedVolatile) -> std::collections::HashSet<String> {
+    persisted.wm.reachable_handles()
 }
 
 /// Load the previous life's volatile tier under the same owner lock as saves
 /// and adoption. Only an absent checkpoint permits a fresh resident; inability
 /// to read or decode an existing one must reach the registration caller.
-/// The spill handles a persona's PERSISTED working memory still points at: its checkpoint's
-/// results ring AND its collapsed pointers (each pointer is how she reopens a result that left
-/// the ring, so it is a reference exactly as a ring entry is). Disk-pressure eviction protects these as well as the live minds' handles, so
-/// a saved result survives the restart a deploy performs, a mind that has not restored yet,
-/// and a persona that is offline (Astra on card 9197cd01). Cached per persona by the
-/// checkpoint's modification time, so an eviction pass over many files reads each checkpoint
-/// once and a new checkpoint is always seen. An unreadable checkpoint is an `Err`: the caller
-/// fails closed and evicts nothing of that persona's.
-pub(crate) fn persisted_result_handles(
-    persona_id: Uuid,
-) -> std::io::Result<std::sync::Arc<std::collections::HashSet<String>>> {
-    result_handles_at(&volatile_path(persona_id)?)
-}
-
-/// [`persisted_result_handles`] for the checkpoint at `path` (the filesystem seam).
-pub(super) fn result_handles_at(
-    path: &std::path::Path,
-) -> std::io::Result<std::sync::Arc<std::collections::HashSet<String>>> {
-    // Archive retirement can reach this guard from inside a checkpoint write.
-    // A busy checkpoint protects the body until a later reclamation attempt.
-    let _lock = checkpoint_adoption::lock_checkpoint(path, false)?;
-    type Cached = (std::time::SystemTime, std::sync::Arc<std::collections::HashSet<String>>);
-    static CACHE: std::sync::OnceLock<
-        parking_lot::Mutex<std::collections::HashMap<std::path::PathBuf, Cached>>,
-    > = std::sync::OnceLock::new();
-    let modified = match std::fs::metadata(path) {
-        Ok(meta) => meta.modified()?,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(Default::default());
-        }
-        Err(error) => return Err(error),
-    };
-    let cache = CACHE.get_or_init(Default::default);
-    if let Some((at, handles)) = cache.lock().get(path) {
-        if *at == modified {
-            return Ok(std::sync::Arc::clone(handles));
-        }
-    }
-    let handles: std::sync::Arc<std::collections::HashSet<String>> = std::sync::Arc::new(
-        read_volatile(path)?
-            .map(|persisted| persisted.wm.reachable_handles())
-            .unwrap_or_default(), // unwrap_or_default: no checkpoint on disk names no handle (a read failure returned above)
-    );
-    cache.lock().insert(path.to_path_buf(), (modified, std::sync::Arc::clone(&handles)));
-    Ok(handles)
-}
-
 pub(super) fn load_volatile(persona_id: Uuid) -> std::io::Result<Option<PersistedVolatile>> {
     load_volatile_at(&volatile_path(persona_id)?)
 }
