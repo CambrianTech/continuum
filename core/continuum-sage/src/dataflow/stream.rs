@@ -16,7 +16,7 @@
 
 use std::collections::VecDeque;
 use std::num::NonZeroUsize;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use parking_lot::Mutex;
@@ -41,7 +41,8 @@ impl<T> Clone for Event<T> {
 /// One subscriber's window: the events it has not been handed yet, newest last.
 struct Window<T> {
     events: Mutex<VecDeque<Event<T>>>,
-    holds: NonZeroUsize,
+    /// How many it keeps; resizable live by its consumer ([`Resize`]).
+    holds: AtomicUsize,
     /// Raised on every append; a permit is stored when the delivery is busy, so no wake is lost.
     appended: Notify,
     /// Its worker stopped: the emitter lets it go.
@@ -54,12 +55,29 @@ impl<T> Window<T> {
     /// Append, displacing the oldest when full. Never waits.
     fn append(&self, event: Event<T>) {
         let mut events = self.events.lock();
-        if events.len() == self.holds.get() {
+        while events.len() >= self.holds.load(Ordering::Relaxed) {
             events.pop_front();
         }
         events.push_back(event);
         drop(events);
         self.appended.notify_one();
+    }
+}
+
+/// A subscription's window, resizable live by its consumer (from a measurement: a budget it was
+/// granted, the size its items turned out to be). Shrinking drops the oldest it holds now, the same
+/// rule as an overflow.
+pub trait Resize: Send + Sync {
+    fn resize(&self, holds: NonZeroUsize);
+}
+
+impl<T: Send + Sync> Resize for Window<T> {
+    fn resize(&self, holds: NonZeroUsize) {
+        let mut events = self.events.lock();
+        self.holds.store(holds.get(), Ordering::Relaxed);
+        while events.len() > holds.get() {
+            events.pop_front();
+        }
     }
 }
 
@@ -92,18 +110,19 @@ pub fn stream<T: Send + Sync + 'static>(topic: TopicName) -> (Emitter<T>, Subscr
 impl<T: Send + Sync + 'static> Subscribe<T> {
     /// Hand every event emitted from now on to the worker behind `input`, holding at most `window`
     /// events it has not taken yet (what the consumer itself keeps of this topic).
-    pub fn attach<I>(&self, input: &StageInput<I>, window: NonZeroUsize)
+    pub fn attach<I>(&self, input: &StageInput<I>, window: NonZeroUsize) -> Arc<dyn Resize>
     where
         I: From<Event<T>> + Send + 'static,
     {
         let window = Arc::new(Window {
             events: Mutex::new(VecDeque::new()),
-            holds: window,
+            holds: AtomicUsize::new(window.get()),
             appended: Notify::new(),
             gone: AtomicBool::new(false),
             ended: AtomicBool::new(false),
         });
         self.subscribers.lock().push(Arc::clone(&window));
+        let resize: Arc<dyn Resize> = Arc::clone(&window) as Arc<dyn Resize>;
         let input = input.clone();
         // Its own delivery: the only place this subscription ever waits, for its own worker's room.
         tokio::spawn(async move {
@@ -121,6 +140,7 @@ impl<T: Send + Sync + 'static> Subscribe<T> {
                 }
             }
         });
+        resize
     }
 }
 

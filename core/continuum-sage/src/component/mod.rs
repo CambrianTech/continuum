@@ -101,11 +101,16 @@ type Intake<I> = StageInput<Delivered<I>>;
 /// One declared subscription, attached once the component's intake exists.
 type Attach<I> = Box<dyn FnOnce(&Intake<I>) + Send>;
 
+/// A component's subscription windows by topic, registered as each attaches; its context resizes them.
+pub(super) type Windows = std::sync::Arc<parking_lot::Mutex<std::collections::HashMap<TopicName, std::sync::Arc<dyn crate::dataflow::Resize>>>>;
+
 /// Where a component declares its subscriptions.
 pub struct Wiring<'a, P: Component> {
     bus: &'a Bus,
     /// Each subscription, attached to the component's input once its worker exists.
     attach: Vec<Attach<P::Input>>,
+    /// Its windows, handed to its context so it can resize them live.
+    windows: Windows,
 }
 
 impl<P: Component> Wiring<'_, P> {
@@ -131,7 +136,11 @@ impl<P: Component> Wiring<'_, P> {
         P::Input: From<Event<T>>,
     {
         let subscribe = bus.subscribe::<T>(topic);
-        self.attach.push(Box::new(move |input| subscribe.attach(input, window)));
+        let windows = std::sync::Arc::clone(&self.windows);
+        self.attach.push(Box::new(move |input| {
+            let resize = subscribe.attach(input, window);
+            windows.lock().insert(topic, resize);
+        }));
     }
 
     /// This component is handed the newest value of its owner's `topic` under `key`, then each change;
@@ -332,7 +341,8 @@ fn claim<T: Send + Sync + 'static>(bus: &Bus, topic: TopicName, name: &'static s
 /// Start `component` for `owner` on its owner's `bus`: its subscriptions, its worker, its context. One
 /// input in hand and one waiting (the double buffer); every producer waits for room.
 pub fn start<P: Component>(component: P, bus: &Bus, owner: OwnerId, epoch: u64) -> Running<P> {
-    let mut wiring = Wiring { bus, attach: Vec::new() };
+    let windows = Windows::default();
+    let mut wiring = Wiring { bus, attach: Vec::new(), windows: std::sync::Arc::clone(&windows) };
     component.wire(&mut wiring);
     let incarnation = StageIncarnation { stage: StageId::named(P::NAME), owner, epoch };
     // The context needs the component's own input for its timers, which exists only once the
@@ -340,7 +350,7 @@ pub fn start<P: Component>(component: P, bus: &Bus, owner: OwnerId, epoch: u64) 
     let slot = ctx::InputSlot::default();
     let mut worker = Worker {
         component,
-        ctx: Ctx::new(RunId { incarnation, seq: 0 }, &slot),
+        ctx: Ctx::new(RunId { incarnation, seq: 0 }, &slot, windows),
         presence: claim(bus, PRESENCE, P::NAME),
         need: claim(bus, NEED, P::NAME),
         published_need: None,
