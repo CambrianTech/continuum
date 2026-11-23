@@ -14,7 +14,7 @@
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
-use continuum_sage::component::{node, start, Component, Ctx, Key, Running, Urgency, Wiring};
+use continuum_sage::component::{node, Component, Ctx, Key, Owner, Urgency, Wiring};
 use continuum_sage::dataflow::{OwnerId, Provenance, Publisher, RunId, Snapshot, StageId, StageIncarnation, TopicName};
 use continuum_sage::Qos;
 
@@ -148,33 +148,30 @@ impl Component for DiskRelief {
     }
 }
 
-struct Started {
-    frames: Publisher<Volumes>,
-    _relief: Option<Running<DiskRelief>>,
+/// Start disk relief as one of the node's parts, at boot: it runs until the node's owner drops
+/// (SAGE.md: a component's lifetime is owned by its node, never started by its first caller).
+pub fn start_on(node: &mut Owner<'_>) {
+    match node.bus().publisher::<Vec<Relief>>(RELIEF, Key::ONE) {
+        Ok(said) => {
+            node.start(DiskRelief { said });
+        }
+        Err(taken) => continuum_base::probe!(class = "disk.relief.not_started", topic = taken.0 .0, "disk relief's topic is claimed elsewhere; it does not run"),
+    }
 }
 
-static STARTED: OnceLock<parking_lot::Mutex<Option<Started>>> = OnceLock::new();
+/// Where the disk monitor's polls are said: a publisher, not a task, claimed on first use.
+static FRAMES: OnceLock<Option<parking_lot::Mutex<Publisher<Volumes>>>> = OnceLock::new();
 
-/// The disk monitor's poll, said on the node's bus; relief starts with the first one. Never waits.
+/// The disk monitor's poll, said on the node's bus for relief to watch. Never waits.
 pub fn frame(drives: Vec<DriveInfo>) {
-    let started = STARTED.get_or_init(|| {
-        let bus = node();
-        let started = bus.publisher::<Volumes>(DISK, Key::ONE).ok().map(|frames| {
-            let relief = bus
-                .publisher::<Vec<Relief>>(RELIEF, Key::ONE)
-                .ok()
-                .map(|said| start(DiskRelief { said }, bus, OwnerId(uuid::Uuid::nil()), 0));
-            Started { frames, _relief: relief }
-        });
-        parking_lot::Mutex::new(started)
-    });
-    let mut guard = started.lock();
-    let Some(started) = guard.as_mut() else { return };
+    let Some(frames) = FRAMES.get_or_init(|| node().publisher::<Volumes>(DISK, Key::ONE).ok().map(parking_lot::Mutex::new)) else {
+        return;
+    };
     let by = Provenance {
         by: RunId { incarnation: StageIncarnation { stage: StageId::named("disk-monitor"), owner: OwnerId(uuid::Uuid::nil()), epoch: 0 }, seq: 0 },
         from: Vec::new(),
     };
-    started.frames.publish(Volumes(drives), by);
+    frames.lock().publish(Volumes(drives), by);
 }
 
 #[cfg(test)]
