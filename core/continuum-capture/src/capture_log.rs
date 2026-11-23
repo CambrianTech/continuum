@@ -99,6 +99,17 @@ pub fn generations(writer: &ClassWriter) -> io::Result<Vec<u64>> {
     Ok(found)
 }
 
+/// The generations open logs are appending to, by their frames file: the pool never evicts one.
+fn live() -> &'static std::sync::Mutex<std::collections::HashSet<std::sync::Arc<std::path::Path>>> {
+    static LIVE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<std::sync::Arc<std::path::Path>>>> = std::sync::OnceLock::new();
+    LIVE.get_or_init(Default::default)
+}
+
+/// Whether an open log is appending to the generation whose frames file is `frames`.
+pub fn is_live(frames: &std::path::Path) -> bool {
+    live().lock().is_ok_and(|held| held.contains(frames))
+}
+
 /// One owner's log, open on a fresh generation for appending.
 pub struct CaptureLog {
     writer: ClassWriter,
@@ -108,6 +119,16 @@ pub struct CaptureLog {
     offset: u64,
     entries: u32,
     scratch: Vec<u8>,
+    /// This log's frames file, held in the live set until the log drops.
+    held: std::sync::Arc<std::path::Path>,
+}
+
+impl Drop for CaptureLog {
+    fn drop(&mut self) {
+        if let Ok(mut held) = live().lock() {
+            held.remove(&self.held);
+        }
+    }
 }
 
 impl CaptureLog {
@@ -119,7 +140,9 @@ impl CaptureLog {
         };
         let frames = writer.append(&frames_of(generation))?;
         let index = writer.append(&index_of(generation))?;
-        Ok(Self { writer, generation, frames, index, offset: 0, entries: 0, scratch: Vec::new() })
+        let held: std::sync::Arc<std::path::Path> = writer.path(&frames_of(generation))?.into();
+        live().lock().map_err(|_| io::Error::other("the live capture set was poisoned"))?.insert(std::sync::Arc::clone(&held));
+        Ok(Self { writer, generation, frames, index, offset: 0, entries: 0, scratch: Vec::new(), held })
     }
 
     pub fn generation(&self) -> u64 {

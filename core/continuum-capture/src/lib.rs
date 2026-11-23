@@ -12,4 +12,6 @@ pub mod capture;
 pub mod frame;
 /// The capture's binary log: frames appended per generation through the owner's disk class, a binary index beside them.
 pub mod capture_log;
+/// The captures' retention under disk pressure: closed generations, oldest first, never a live one.
+pub mod capture_pool;
 pub mod prompt_capture;

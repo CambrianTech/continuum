@@ -2950,6 +2950,7 @@ dependencies = [
  "continuum-airc-protocol",
  "continuum-base",
  "continuum-bridge-protocol",
+ "continuum-capture",
  "continuum-cli-lifecycle",
  "continuum-client",
  "continuum-context",
