@@ -250,7 +250,7 @@ use super::*;
         let original = std::fs::read(&destination).unwrap();
         let (source, selected) =
             adoption_source(&dir.path().join("legacy"), persona, "selected work");
-        let plan = inspect(&source, persona).unwrap();
+        let plan = inspect(&source, persona.try_into().unwrap()).unwrap();
         assert!(
             plan.source.summary.next_action_seq
                 < plan
@@ -298,7 +298,7 @@ use super::*;
             let persona = Uuid::new_v4();
             let (source, selected) =
                 adoption_source(&dir.path().join("legacy"), persona, "selected work");
-            let plan = inspect(&source, persona).unwrap();
+            let plan = inspect(&source, persona.try_into().unwrap()).unwrap();
             assert!(plan.prior_destination.is_none());
             let (other, changed) =
                 adoption_source(&dir.path().join("other"), persona, "concurrent work");
@@ -335,7 +335,7 @@ use super::*;
         let _home = crate::paths::NativeHomeOverride::install(&dir.path().join("native"));
         let persona = Uuid::new_v4();
         let (source, _) = adoption_source(&dir.path().join("legacy"), persona, "selected work");
-        let plan = inspect(&source, persona).unwrap();
+        let plan = inspect(&source, persona.try_into().unwrap()).unwrap();
         let mut checks = 0;
         let outcome = adopt(&plan, || {
             checks += 1;
@@ -363,7 +363,7 @@ use super::*;
         let persona = Uuid::new_v4();
         let (source, selected) =
             adoption_source(&dir.path().join("legacy"), persona, "selected work");
-        let plan = inspect(&source, persona).unwrap();
+        let plan = inspect(&source, persona.try_into().unwrap()).unwrap();
         for _ in 0..2 {
             let mut checks = 0;
             assert!(adopt(&plan, || {
@@ -430,12 +430,12 @@ use super::*;
         let persona = Uuid::new_v4();
         let (source, _) = adoption_source(&dir.path().join("legacy"), persona, "selected work");
         assert!(matches!(
-            inspect(&source, Uuid::new_v4()),
+            inspect(&source, Uuid::new_v4().try_into().unwrap()),
             Err(AdoptionError::Invalid(_))
         ));
         std::fs::write(&source, b"{}").unwrap();
         assert!(matches!(
-            inspect(&source, persona),
+            inspect(&source, persona.try_into().unwrap()),
             Err(AdoptionError::Invalid(_))
         ));
         assert!(
@@ -448,7 +448,7 @@ use super::*;
         std::fs::create_dir_all(destination.parent().unwrap()).unwrap();
         std::fs::write(&destination, b"corrupt native checkpoint").unwrap();
         assert!(matches!(
-            inspect(&source, persona),
+            inspect(&source, persona.try_into().unwrap()),
             Err(AdoptionError::Invalid(_))
         ));
         assert_eq!(
@@ -466,7 +466,7 @@ use super::*;
         let _home = crate::paths::NativeHomeOverride::install(&dir.path().join("native"));
         let persona = Uuid::new_v4();
         let (source, _) = adoption_source(&dir.path().join("legacy"), persona, "selected work");
-        let plan = inspect(&source, persona).unwrap();
+        let plan = inspect(&source, persona.try_into().unwrap()).unwrap();
         let owner = lock_checkpoint(&plan.destination_path, true).unwrap();
         assert!(
             matches!(adopt(&plan, || Ok(())), Err(AdoptionError::Io(error)) if error.kind() == fs2::lock_contended_error().kind())

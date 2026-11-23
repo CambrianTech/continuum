@@ -8,7 +8,7 @@ use super::*;
 pub(super) enum CheckpointCommand {
     Inspect {
         source: PathBuf,
-        persona_id: uuid::Uuid,
+        persona_id: continuum_core::cognition::persona_workspace::checkpoint_adoption::DeclaredPersona,
         plan: PathBuf,
     },
     Adopt {
@@ -52,7 +52,7 @@ impl CheckpointCommand {
             "inspect" => Ok(Self::Inspect {
                 source: PathBuf::from(source.ok_or("inspect requires --source <volatile.json>")?),
                 persona_id: persona_id.ok_or("inspect requires --persona-id <uuid>")?
-                    .parse().map_err(|error| format!("invalid persona UUID: {error}"))?,
+                    .parse().map_err(|error: continuum_core::cognition::persona_workspace::checkpoint_adoption::PersonaParse| error.to_string())?,
                 plan,
             }),
             "adopt" if legacy_writers_stopped => Ok(Self::Adopt { plan }),
@@ -66,7 +66,7 @@ pub(super) fn checkpoint(command: CheckpointCommand) -> Result<(), String> {
     use continuum_core::cognition::persona_workspace::checkpoint_adoption::{
         adopt, inspect, AdoptionPlan,
     };
-    use std::io::{Read, Write};
+    use std::io::Read;
 
     match command {
         CheckpointCommand::Inspect {
@@ -78,13 +78,8 @@ pub(super) fn checkpoint(command: CheckpointCommand) -> Result<(), String> {
             let plan =
                 checkpoint_plan_output(&plan, &selection.source.path, &selection.destination_path)?;
             let bytes = serde_json::to_vec_pretty(&selection).map_err(|error| error.to_string())?;
-            let mut file = std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&plan)
-                .map_err(|error| format!("create inspection plan {}: {error}", plan.display()))?;
-            file.write_all(&bytes)
-                .and_then(|()| file.sync_all())
+            // Staged, synced and published without replacing anything already at that name.
+            continuum_host::durable::write_new(&plan, &bytes)
                 .map_err(|error| format!("write inspection plan {}: {error}", plan.display()))?;
             println!("{}", String::from_utf8_lossy(&bytes));
             eprintln!(
@@ -108,7 +103,7 @@ pub(super) fn checkpoint(command: CheckpointCommand) -> Result<(), String> {
                 adopt(&selection, ensure_checkpoint_offline).map_err(|error| error.to_string())?;
             println!(
                 "{}",
-                serde_json::to_string_pretty(&receipt).map_err(|error| error.to_string())?
+                serde_json::to_string_pretty(&receipt).map_err(|error| error.to_string())? // stdout: the receipt the operator reads
             );
         }
     }
@@ -156,7 +151,6 @@ pub(super) fn checkpoint_plan_output(
     {
         return Err("inspection metadata cannot use a reserved checkpoint filename".into());
     }
-    #[cfg(windows)]
     if parent.components().any(|component| {
         matches!(component,
         std::path::Component::Prefix(prefix) if matches!(prefix.kind(),
