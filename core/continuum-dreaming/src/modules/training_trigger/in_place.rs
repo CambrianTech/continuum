@@ -241,8 +241,12 @@ impl InPlace {
             return Ok(published);
         }
         let cost = seated.cost;
+        let shadow = std::path::PathBuf::from(seated.mind.shadow_path());
         let began = std::time::Instant::now();
         let stopped = stop(&mut held, key).await;
+        if releases_shadow(cost.learned, published, stopped) {
+            release_unlearned_shadow(key, &shadow, crate::inference::llama_server::engine_train_dir().as_deref());
+        }
         // the workspace is the engine's: it goes with the last learner, and only then
         let workspace = match (held.minds.is_empty(), held.workspace.take()) {
             (true, Some(workspace)) => match workspace.release().await {
@@ -711,6 +715,50 @@ enum AdmissionPhase {
 fn memory_short(key: &BucketKey, phase: AdmissionPhase, wait: &crate::inference::training_admission::TrainingWait) {
     continuum_base::probe!(class = "training.in_place.memory_short", persona = %key.persona_id, phase = ?phase, wait = %wait,
         "her learning memory was not free; the pass ends holding nothing and the next pass asks again");
+}
+
+/// PURE: whether a page-out leaves her shadow file to be released: her stop confirmed (the engine
+/// unloaded it), and the seat learned nothing and published nothing, so the file holds nothing a
+/// generation was made from. Each seat writes a fresh shadow (`<bucket stem>-<seat id>.gguf`), so a
+/// seat that never learned and was never released is a file left behind every pass (the IntelMac,
+/// 2026-11-23: 6088 of them, 25 GB, growing ~68 MB/min).
+fn releases_shadow(learned: u32, published: bool, stopped: Released) -> bool {
+    learned == 0 && !published && stopped == Released::Confirmed
+}
+
+/// What became of a shadow file at page-out.
+#[derive(Debug)]
+enum ShadowRelease {
+    Removed,
+    /// Kept, and why: it is not this node's to remove, or a generation was published from it.
+    Kept(&'static str),
+    Failed(std::io::Error),
+}
+
+/// Remove the shadow file `shadow` an unlearned seat left, when it lies in this node's train dir and
+/// no generation directory (`<shadow>.checkpoint`) was published from it; said either way.
+fn release_unlearned_shadow(key: &BucketKey, shadow: &std::path::Path, train_dir: Option<&std::path::Path>) -> ShadowRelease {
+    let released = shadow_release(shadow, train_dir);
+    continuum_base::probe!(class = "training.in_place.shadow_released", persona = %key.persona_id, shadow = %shadow.display(), outcome = ?released,
+        "an unlearned seat's shadow file at page-out: removed, kept with why, or a failed removal");
+    released
+}
+
+/// The removal itself, without the probe.
+fn shadow_release(shadow: &std::path::Path, train_dir: Option<&std::path::Path>) -> ShadowRelease {
+    if !train_dir.is_some_and(|dir| shadow.parent() == Some(dir)) {
+        return ShadowRelease::Kept("not in this node's train dir");
+    }
+    let mut generation = shadow.as_os_str().to_owned();
+    generation.push(".checkpoint");
+    if std::path::Path::new(&generation).exists() {
+        return ShadowRelease::Kept("a generation was published from it");
+    }
+    match std::fs::remove_file(shadow) {
+        Ok(()) => ShadowRelease::Removed,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => ShadowRelease::Removed,
+        Err(error) => ShadowRelease::Failed(error),
+    }
 }
 
 /// PURE: whether a page-out is confirmed, so its cost receipt may be taken: her stop confirmed, and

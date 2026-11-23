@@ -399,6 +399,46 @@ fn a_live_lane_that_keeps_no_slots_is_no_learning_engine() {
     assert_eq!(slotted.map(|lane| lane.port).ok(), Some(58058), "a lane that keeps slots is the engine");
 }
 
+// what this catches (the IntelMac 2026-11-23: 6088 shadows, 25 GB, growing ~68 MB/min, one per seat
+// of a pass that learned nothing): an unlearned seat's shadow left behind at page-out. It also catches
+// a release that removes what must survive: a shadow a generation was published from (its
+// `.checkpoint` sibling), a file outside this node's train dir, or one whose stop is unconfirmed.
+#[test]
+fn an_unlearned_seat_releases_its_shadow_and_nothing_else() {
+    use super::{releases_shadow, shadow_release, Released, ShadowRelease};
+    assert!(releases_shadow(0, false, Released::Confirmed), "learned nothing, published nothing, stopped: released");
+    assert!(!releases_shadow(1, false, Released::Confirmed), "a seat that learned keeps its file");
+    assert!(!releases_shadow(0, true, Released::Confirmed), "a seat that published keeps its file");
+    assert!(!releases_shadow(0, false, Released::Unconfirmed), "an unconfirmed stop: the engine may still hold it");
+
+    let dir = tempfile::tempdir().expect("test: train dir");
+    let train = dir.path().join("engine-train");
+    std::fs::create_dir_all(&train).expect("test: train dir");
+    let write = |name: &str| {
+        let path = train.join(name);
+        std::fs::write(&path, b"shadow").expect("test: shadow file");
+        path
+    };
+    let unlearned = write("p-h-seat1.gguf");
+    let neighbour = write("p-h-seat2.gguf");
+    let published = write("p-h-seat3.gguf");
+    std::fs::create_dir_all(train.join("p-h-seat3.gguf.checkpoint")).expect("test: generation dir");
+    let elsewhere_dir = dir.path().join("elsewhere");
+    std::fs::create_dir_all(&elsewhere_dir).expect("test: elsewhere");
+    let elsewhere = elsewhere_dir.join("p-h-seat4.gguf");
+    std::fs::write(&elsewhere, b"shadow").expect("test: foreign file");
+
+    assert!(matches!(shadow_release(&unlearned, Some(&train)), ShadowRelease::Removed));
+    assert!(!unlearned.exists(), "the unlearned seat's own file is gone");
+    assert!(neighbour.exists(), "another seat's shadow survives");
+    assert!(matches!(shadow_release(&published, Some(&train)), ShadowRelease::Kept(_)));
+    assert!(published.exists() && train.join("p-h-seat3.gguf.checkpoint").exists(), "a shadow a generation came from survives, with its generation");
+    assert!(matches!(shadow_release(&elsewhere, Some(&train)), ShadowRelease::Kept(_)));
+    assert!(elsewhere.exists(), "a file outside this node's train dir is never removed");
+    assert!(matches!(shadow_release(&neighbour, None), ShadowRelease::Kept(_)), "no train dir: nothing is removed");
+    assert!(matches!(shadow_release(&unlearned, Some(&train)), ShadowRelease::Removed), "already gone is released, not a failure");
+}
+
 // what this catches (the 5090, 2026-11-22: the trainer's drain exceeded 2 s and its join timed out,
 // with no step named): a shutdown step that reports only after it ends says nothing when it is the one
 // that hung and the runtime drops it. Each step announces its begin first, then its end with its ms.
