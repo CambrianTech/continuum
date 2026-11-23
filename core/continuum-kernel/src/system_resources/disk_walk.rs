@@ -41,14 +41,20 @@ impl Coverage {
 pub struct WalkCursor {
     /// Directories we've fully descended into (their paths are in this set).
     entered: HashSet<PathBuf>,
+    /// How many unique directories we've encountered across all ticks.
+    dirs_seen: u64,
     /// How many inodes we've processed total across all ticks.
     entries_processed: u64,
+    /// Shallow probe of root's direct children on first tick — used as base for tree-size estimate.
+    pub(crate) initial_root_count: u64,
 }
 
 impl WalkCursor {
     pub fn new() -> Self {
         Self {
             entered: HashSet::new(),
+            dirs_seen: 0,
+            initial_root_count: 0,
             entries_processed: 0,
         }
  }
@@ -60,7 +66,38 @@ impl WalkCursor {
 
     /// Mark a directory as fully entered (all its entries have been processed).
     pub fn mark_entered(&mut self, dir: &Path) {
+        let was_new = !self.entered.contains(dir);
         self.entered.insert(dir.to_path_buf());
+        if was_new {
+            self.dirs_seen += 1;
+        }
+    }
+
+    /// Set the initial shallow-probe count (root direct children). Called once on first tick.
+    pub(crate) fn set_initial_root_count(&mut self, count: u64) {
+        if self.initial_root_count == 0 && count > 0 {
+            self.initial_root_count = count;
+        }
+    }
+
+    /// Estimate total tree size for partial coverage reporting.
+    /// Uses a shallow root probe on first tick as the base, then extrapolates
+    /// as more directories are discovered during subsequent ticks.
+    pub fn estimate_total_size(&self) -> Option<u64> {
+        if self.initial_root_count == 0 && self.dirs_seen <= 1 {
+            return None; // haven't gathered enough info yet
+        }
+
+        let base = self.initial_root_count.max(1);
+        if self.dirs_seen > 2 {
+            // We've entered multiple directories — tree extends beyond root level.
+            // Extrapolate: each doubling of dirs_seen adds roughly one more level.
+            let extra_levels = (self.dirs_seen as f64).log2().max(0.5);
+            Some((base as f64 * (1.0 + extra_levels)) as u64)
+        } else {
+            // First tick or just entering root — use shallow probe as lower bound.
+            Some(base)
+        }
     }
 
     /// Advance the entry counter.
@@ -75,6 +112,8 @@ impl WalkCursor {
     /// Reset cursor — start fresh (used after a full walk).
     pub fn reset(&mut self) {
         self.entered.clear();
+        self.dirs_seen = 0;
+        self.initial_root_count = 0;
         self.entries_processed = 0;
     }
 }

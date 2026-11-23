@@ -26,7 +26,8 @@ pub mod power_assertion;
 pub mod fd_pressure;
 pub mod hardware_profile;
 pub mod disk_reporters;
-    pub mod disk_walk;
+pub mod disk_walk;
+pub mod event_watcher;
 
 pub mod drives;
 pub mod hands_lease;

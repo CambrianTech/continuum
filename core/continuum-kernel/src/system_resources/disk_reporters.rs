@@ -603,23 +603,35 @@ impl Daemon for DiskUsageScanner {
                 let mut cursor = (*dir.cursor.read()).clone();
                 let (entries, completed) = budgeted_walk(&path, &mut cursor, &budget);
 
-                // Capture cumulative count before moving cursor back to dir.cursor
-                let cumulative_entries = cursor.entries_processed();
+                // BUG 1 FIX: Capture all needed fields BEFORE moving cursor back to dir.cursor.
+                let initial_root_count = cursor.initial_root_count;
+                let entries_processed_before_write = cursor.entries_processed();
 
-                // BUG 1 FIX: Write back the updated cursor so next tick resumes here
-                *dir.cursor.write() = cursor;
+                // Do a shallow root probe on first tick to establish an initial tree-size estimate,
+                // and compute the coverage fraction from cumulative data.
+                if initial_root_count == 0 && !completed {
+                    if let Ok(mut dir_handle) = std::fs::read_dir(&path) {
+                        let count = dir_handle.count() as u64;
+                        cursor.set_initial_root_count(count);
+                    }
+                }
 
-                // BUG 2+3 FIX: Only call walk_tree when fully complete.
-                // During partial coverage, construct TreeWalk from budgeted_walk data only.
+                // BUG 2+3 FIX: Compute swept + estimated BEFORE writing back the cursor (to avoid
+                // use-after-move). swept_entries is cumulative total; total_estimated uses a shallow
+                // root probe + directory-count extrapolation so fraction meaningfully grows toward 1.0.
                 let new_coverage = if completed {
                     Coverage::Complete { entries }
                 } else {
-                    // BUG 3 FIX: Use cursor's cumulative count as total_estimated
+                    let swept = entries_processed_before_write;
+                    let estimated = cursor.estimate_total_size().unwrap_or(swept.max(1));
                     Coverage::Partial {
-                        swept_entries: entries,
-                        total_estimated: cumulative_entries,
+                        swept_entries: swept,
+                        total_estimated: estimated,
                     }
                 };
+
+                // BUG 1 FIX: Write back the updated cursor so next tick resumes here
+                *dir.cursor.write() = cursor;
 
                 let walk = if completed {
                     walk_tree(&path)
