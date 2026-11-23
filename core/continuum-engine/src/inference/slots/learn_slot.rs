@@ -18,7 +18,7 @@
 use super::{directory, PageKey, Probed, SlotClass};
 use crate::inference::engine_residency::EngineIncarnation;
 use crate::inference::llama_server::LearnOutcome;
-use crate::inference::turn_admission::{admit_turn, TurnAdmission, HER_ACT_FIRST};
+use crate::inference::turn_admission::{admit_turn, TurnAdmission, TurnRequest, HER_ACT_FIRST};
 
 /// Custody of the slot a learning step runs on, for as long as this value lives.
 pub struct LearnSlot {

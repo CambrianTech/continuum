@@ -35,7 +35,7 @@ mod page_quote;
 mod page_receipt;
 mod paging_lifetime;
 mod request;
-mod unresolved_page;
+pub use request::TurnRequest;
 mod transient;
 mod learning;
 
