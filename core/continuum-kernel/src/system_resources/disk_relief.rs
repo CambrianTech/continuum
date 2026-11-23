@@ -76,14 +76,18 @@ pub fn relieve(drives: &[DriveInfo], pools: &[Arc<dyn ResourcePool>]) -> Vec<Rel
             })
             .collect();
         // The most to give first: the fewest pools disturbed for the room.
+        let sizing = std::time::Instant::now();
         here.sort_by_key(|pool| std::cmp::Reverse(pool.usage_bytes()));
+        continuum_base::probe!(class = "disk.relief.sized", mount = %drive.mount.display(), pools = here.len() as u64, took_ms = sizing.elapsed().as_millis() as u64, "relief read the size of every pool on a pressured volume");
         let mut asked = Vec::new();
         let mut freed = 0u64;
         for pool in here {
             if freed >= want {
                 break;
             }
+            let asking = std::time::Instant::now();
             let gave = pool.evict_at_least(want - freed);
+            continuum_base::probe!(class = "disk.relief.asked", pool = pool.tier_name(), gave = gave, took_ms = asking.elapsed().as_millis() as u64, "relief asked one pool for room");
             asked.push((pool.tier_name().to_owned(), gave));
             freed = freed.saturating_add(gave);
         }
@@ -92,12 +96,15 @@ pub fn relieve(drives: &[DriveInfo], pools: &[Arc<dyn ResourcePool>]) -> Vec<Rel
     reliefs
 }
 
-/// The disk frame, as relief is handed it.
-pub struct Frame(Arc<Volumes>);
+/// What wakes relief: a disk frame, or a pass it handed off coming back finished.
+pub enum Frame {
+    Disk(Arc<Volumes>),
+    Relieved { reliefs: Vec<Relief>, available: HashMap<PathBuf, u64>, pools: Vec<String> },
+}
 
 impl From<Snapshot<Volumes>> for Frame {
     fn from(snapshot: Snapshot<Volumes>) -> Self {
-        Frame(snapshot.value)
+        Frame::Disk(snapshot.value)
     }
 }
 
@@ -105,6 +112,8 @@ struct DiskRelief {
     said: Publisher<Vec<Relief>>,
     /// Per volume, what the last pass that could not bring it back left: asked again only on news.
     spent: HashMap<PathBuf, Spent>,
+    /// A pass is running off its worker; frames meanwhile coalesce to the newest.
+    relieving: bool,
 }
 
 /// A pass that asked every pool on a volume and could not free what it wanted. Asking the same
@@ -135,7 +144,21 @@ impl Component for DiskRelief {
         wiring.watch::<Volumes>(DISK, Key::ONE);
     }
 
-    async fn handle(&mut self, Frame(volumes): Frame, ctx: &mut Ctx<Self>) {
+    async fn handle(&mut self, frame: Frame, ctx: &mut Ctx<Self>) {
+        match frame {
+            Frame::Disk(volumes) => self.frame(&volumes, ctx),
+            Frame::Relieved { reliefs, available, pools } => self.relieved(reliefs, &available, pools, ctx),
+        }
+    }
+}
+
+impl DiskRelief {
+    /// A disk frame: hand a pass off when a volume is pressured and there is news on it. The pass
+    /// walks pools on disk, so it never runs on relief's worker (`Ctx::off`).
+    fn frame(&mut self, volumes: &Volumes, ctx: &mut Ctx<Self>) {
+        if self.relieving {
+            return;
+        }
         let pools: Vec<Arc<dyn ResourcePool>> = POOLS.read().clone();
         let names: Vec<String> = pools.iter().map(|pool| pool.tier_name().to_owned()).collect();
         // A volume under pressure, unless the last pass on it came up short and nothing moved since.
@@ -154,14 +177,14 @@ impl Component for DiskRelief {
             return;
         }
         ctx.need(Urgency::Urgent);
+        self.relieving = true;
         let available: HashMap<PathBuf, u64> = drives.iter().map(|d| (d.mount.clone(), d.available_bytes)).collect();
-        let reliefs = match tokio::task::spawn_blocking(move || relieve(&drives, &pools)).await {
-            Ok(reliefs) => reliefs,
-            Err(join) => {
-                continuum_base::probe!(class = "disk.relief.failed", why = %join, "the relief pass did not finish");
-                Vec::new()
-            }
-        };
+        ctx.off(move || relieve(&drives, &pools), move |reliefs| Frame::Relieved { reliefs, available, pools: names });
+    }
+
+    /// A handed-off pass came back: say what it freed, and remember a volume it could not bring back.
+    fn relieved(&mut self, reliefs: Vec<Relief>, available: &HashMap<PathBuf, u64>, pools: Vec<String>, ctx: &mut Ctx<Self>) {
+        self.relieving = false;
         for relief in &reliefs {
             continuum_base::probe!(
                 class = "disk.relief",
@@ -172,11 +195,9 @@ impl Component for DiskRelief {
                 asked = ?relief.asked,
                 "a pressured volume asked the pools on it for room"
             );
-        }
-        for relief in &reliefs {
             if relief.freed < relief.want {
                 let left = available.get(&relief.mount).copied().unwrap_or(0).saturating_add(relief.freed); // JUSTIFIED: every relief names a drive it was handed
-                self.spent.insert(relief.mount.clone(), Spent { available: left, pools: names.clone() });
+                self.spent.insert(relief.mount.clone(), Spent { available: left, pools: pools.clone() });
             } else {
                 self.spent.remove(&relief.mount);
             }
@@ -191,7 +212,7 @@ impl Component for DiskRelief {
 pub fn start_on(node: &mut Owner) {
     match node.bus().publisher::<Vec<Relief>>(RELIEF, Key::ONE) {
         Ok(said) => {
-            node.start(DiskRelief { said, spent: HashMap::new() });
+            node.start(DiskRelief { said, spent: HashMap::new(), relieving: false });
         }
         Err(taken) => continuum_base::probe!(class = "disk.relief.not_started", topic = taken.0 .0, "disk relief's topic is claimed elsewhere; it does not run"),
     }
