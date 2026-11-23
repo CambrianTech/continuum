@@ -184,6 +184,10 @@ impl crate::persona::room_board_source::RoomBoardReader for AircHandleAdapter {
 
 #[async_trait]
 impl AircCitizen for AircHandleAdapter {
+    fn agent_name(&self) -> &str {
+        self.inner.agent_name()
+    }
+
     fn peer_id(&self) -> Uuid {
         self.inner.peer_id().as_uuid()
     }

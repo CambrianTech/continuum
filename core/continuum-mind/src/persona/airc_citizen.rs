@@ -94,6 +94,10 @@ pub trait AircCitizen:
     /// it as part of the persona's tracing span.
     fn peer_id(&self) -> Uuid;
 
+    /// How a line addresses her (`PersonaIdentity::mentions`): her airc agent name, owned by her
+    /// runtime, so her senses never look her up in a process-wide registry.
+    fn agent_name(&self) -> &str;
+
     /// Open a live event stream over EVERY room this citizen is
     /// subscribed to — deliberately NOT narrowed to her default.
     ///
@@ -513,6 +517,10 @@ impl crate::persona::room_board_source::RoomBoardReader for StubAircCitizen {
 
 #[async_trait]
 impl AircCitizen for StubAircCitizen {
+    fn agent_name(&self) -> &str {
+        "stub-citizen"
+    }
+
     fn peer_id(&self) -> Uuid {
         self.peer_id
     }

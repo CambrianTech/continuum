@@ -384,13 +384,12 @@ async fn a_peer_command_in_a_room_never_reaches_a_mind_and_room_speech_still_doe
         .expect("room speech is fed");
     // Bounded: a wake that never comes fails here in seconds, never as a CI job that runs out its
     // hour (2026-11-23: the feed's worker had died with an earlier test's runtime).
-    let called = match tokio::time::timeout(std::time::Duration::from_secs(30), calling.changed()).await {
-        Ok(Ok(snapshot)) => Ok(snapshot.value.wake.clone()),
-        Ok(Err(ended)) => Err(format!("{ended:?}")),
-        Err(_) => Err("no wake within 30 s".to_owned()),
-    };
+    // Typed outcome: elapsed, the topic ended, or her wake.
+    let called = tokio::time::timeout(std::time::Duration::from_secs(30), calling.changed())
+        .await
+        .map(|changed| changed.map(|snapshot| snapshot.value.wake.clone()));
     assert!(
-        matches!(called, Ok(Some(crate::cognition::conversation::Wake::Perceive { activity, .. })) if activity == ROOM),
+        matches!(called, Ok(Ok(Some(crate::cognition::conversation::Wake::Perceive { activity, .. }))) if activity == ROOM),
         "a line addressed to her in her room still wakes her: {called:?}"
     );
     let unread = resident.handle().awareness(0).and_then(|strip| strip.lines.iter().find(|line| line.activity == ROOM).map(|line| line.unread));
