@@ -295,3 +295,28 @@ fn a_checkpoint_waits_for_the_lesson_in_flight() {
         "the generation's positions are the frontier of the weights it saved"
     );
 }
+
+// what this catches (Codex on #6254 L2): a rejected seat command read as an empty refusal, its
+// guards dropped while the seat still holds what it held, or the seat left in the phase it was
+// told into. Kept returns the seat to where it was, every guard held, and the command can be told
+// again.
+#[test]
+fn a_kept_seat_command_leaves_the_seat_where_it_was() {
+    let port = Port::default();
+    let mut run = measured(&port);
+    let id = run.id();
+    run.hear(&port, &Said::Seat { seat: id, state: SeatState::Measured { weights: Vec::new() } });
+    run.load(&port, guard().0).expect("test: measured");
+    run.hear(&port, &Said::Seat { seat: id, state: loaded() });
+    run.seat(&port, guard().0, [guard().0 as Box<dyn Send>, guard().0 as Box<dyn Send>]).expect("test: loaded");
+
+    assert_eq!(
+        run.hear(&port, &Said::Seat { seat: id, state: SeatState::Kept { why: Arc::from("retain refused") } }),
+        Some(Heard::Kept { why: Arc::from("retain refused") })
+    );
+    assert_eq!(run.held(), 3, "kept: every guard still held");
+    assert!(!run.ready(), "not seated");
+    run.seat(&port, guard().0, std::iter::empty()).expect("test: back to loaded, so it seats again");
+    assert_eq!(run.hear(&port, &Said::Seat { seat: id, state: SeatState::Seated { optimizer: OptimizerStart::Cold } }), Some(Heard::Seated { optimizer: OptimizerStart::Cold }));
+    assert!(run.ready());
+}
