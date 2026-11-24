@@ -47,8 +47,11 @@ pub enum Learning {
     Seat(Seat),
     /// Learn one lesson into a seated shadow.
     Learn(Learn),
-    /// Save the seat's shadow as its next generation: its weights and its optimizer state.
-    Checkpoint { seat: SeatId },
+    /// Save the seat's shadow as a generation in the directory `into`: its weights (`adapter.gguf`)
+    /// and its optimizer state (`optimizer.gguf`), the state bound to `binding`, which the trainer
+    /// also records in the generation's manifest, as llama-server's checkpoint did. The trainer owns
+    /// the directory, its manifest and its durable commit.
+    Checkpoint { seat: SeatId, into: PathBuf, binding: Arc<str> },
     /// Let the seat go: its optimizer and its lease are released once native code frees them.
     Release { seat: SeatId },
 }
@@ -175,7 +178,8 @@ pub enum StepOutcome {
 /// What a checkpoint made.
 #[derive(Debug, Clone, PartialEq)]
 pub enum GenerationOutcome {
-    Saved { path: PathBuf, generation: u64 },
+    /// Written to `into`, with the optimizer steps the shadow had committed when it was saved.
+    Saved { into: PathBuf, steps: u64 },
     Refused { why: Arc<str> },
 }
 
