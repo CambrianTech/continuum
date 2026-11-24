@@ -1,49 +1,16 @@
-//! DurableRoomHistory — the mind-side read of the durable room transcript (#249).
+//! The core's own chat store, read as rooms' rows: the scroll-back the chat history command pages.
 //!
-//! A core reboot restarts every persona's embedded airc runtime, whose transcript
-//! log then holds only events since ITS boot — and #242's cursor semantics
-//! deliberately never replay old log entries as fresh perception. Net effect
-//! (glass-boxed 2026-07-30): each mind's visible conversation collapsed to ONE
-//! message post-boot, and the room degenerated into a greeting chorus — every
-//! persona mirroring the only utterance it could see.
-//!
-//! The durable chat store (#140) already holds the room's history. This trait is
-//! the narrow read the wake path uses to TOP UP a shallow live window with that
-//! durable tail — presented as prior conversation context (grounding), never as
-//! fresh wake triggers, so #242's no-replay contract holds. It is the mind-side
-//! sibling of the web's post-cursor hydration and of #265's speech-ring seeding:
-//! one durable transcript, every consumer hydrates from it.
+//! A resident's prompt no longer tops her conversation up from here: her thread of the room is
+//! seeded from the airc room, the one record, and a shallow airc page after a reboot (#249) is
+//! airc's to answer, not a second copy's.
 
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::runtime::command_executor::CommandExecutor;
 use crate::runtime::late_bound::LateBound;
-
-/// One durable transcript line, minimally shaped for hydration: identity for
-/// dedup against live events, sender for role attribution, text for content.
-#[derive(Debug, Clone)]
-pub struct HydratedLine {
-    pub message_id: String,
-    pub sender_id: String,
-    /// When it was said, from the store's own row. A history line without it rendered
-    /// "[occurrence time unknown]" in her prompt: 110 of 126 room lines in Kimi's turn on
-    /// 2026-10-04, though every row in the store carries its time. An event mind cannot
-    /// weigh "silent past when I expected" on events it cannot place in time.
-    pub occurred_at_ms: u64,
-    pub text: String,
-    pub media: Vec<crate::cognition::conversation::channel_items::MediaItemRequest>,
-}
-
-/// Read the latest lines of a room's durable transcript, chronological
-/// (oldest first). Implementations are read-only; hydration must never write.
-#[async_trait]
-pub trait DurableRoomHistory: Send + Sync {
-    async fn room_tail(&self, room: Uuid, limit: usize) -> Result<Vec<HydratedLine>, String>;
-}
 
 /// Substrate-wide executor slot for the production reader — same late-bound
 /// pattern as `training_producer::EXECUTOR`, installed from the ipc bootstrap
@@ -103,10 +70,13 @@ pub async fn room_rows(room: Uuid, page: RoomPage, limit: usize) -> Result<Vec<R
         )
         .await
         .map_err(|e| format!("durable_history: chat/poll failed: {e}"))?;
-    let messages = result
-        .get("messages")
-        .and_then(Value::as_array)
-        .ok_or_else(|| "durable_history: chat/poll result missing `messages`".to_string())?;
+    /// What `chat/poll` answers: its rows, decoded once at this boundary.
+    #[derive(serde::Deserialize)]
+    struct Polled {
+        messages: Vec<Value>,
+    }
+    let Polled { messages } = serde_json::from_value(result).map_err(|e| format!("durable_history: chat/poll result: {e}"))?; // boundary: chat/poll's JSON answer, typed here once
+    let messages = &messages;
     // Corrupt media is a read error, not permission to silently omit a whole
     // message or invent a text-only version of an image-bearing turn.
     for message in messages {
@@ -134,23 +104,10 @@ pub async fn room_rows(room: Uuid, page: RoomPage, limit: usize) -> Result<Vec<R
         .collect())
 }
 
-/// Production reader over the durable chat store, via the SAME `chat/poll`
-/// command every other consumer uses — one read path, no parallel query stack.
-pub struct ChatStoreHistory;
-
-#[async_trait]
-impl DurableRoomHistory for ChatStoreHistory {
-    async fn room_tail(&self, room: Uuid, limit: usize) -> Result<Vec<HydratedLine>, String> {
-        Ok(room_rows(room, RoomPage::Newest, limit).await?.into_iter().map(|row| HydratedLine {
-            message_id: row.id.to_string(), sender_id: row.sender.to_string(),
-            occurred_at_ms: row.occurred_at_ms, text: row.text, media: row.media,
-        }).collect())
-    }
-}
-
-/// A durable chat row as the transcript event the inbound seam admits: kind
-/// Message, a text body, wall time, the row id as the event id. Lamport is 0 —
-/// the loop head judges staleness by event id, never by this clock.
+/// A chat row as a transcript event: kind Message, a text body (media as the airc
+/// media headers), wall time, the row id as the event id, lamport 0. The inbound
+/// seam's tests build their room events with it; no production path re-admits rows.
+#[cfg(test)]
 pub(crate) fn event_from_row(room: Uuid, row: crate::persona::durable_history::RoomRow) -> airc_lib::TranscriptEvent {
     use airc_core::{
         Body, ClientId, EventId, Headers, MentionTarget, PeerId, RoomId, TranscriptKind,

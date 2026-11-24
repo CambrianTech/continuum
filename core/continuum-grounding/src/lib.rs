@@ -8,3 +8,4 @@
 pub mod rag_budget;
 pub mod cached_source;
 pub mod grounding_invalidation;
+pub mod room_thread;

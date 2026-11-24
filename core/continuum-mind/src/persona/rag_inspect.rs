@@ -128,7 +128,7 @@ impl RagInspectionRequest {
 }
 
 /// The honest-look result. Carries the per-source delivery details with the mechanic-grade rationale
-/// (score, lamport, peer-id-prefix, age, content preview).
+/// (lamport, peer-id-prefix, age, content preview).
 ///
 /// Specifically does NOT collapse layers — the future is multiple
 /// sources (engram, airc, reference, working-memory). Each gets its
@@ -195,16 +195,19 @@ pub struct SourceDeliveryInspection {
 }
 
 /// One item from a source's delivery, with the fields a mechanic
-/// needs to answer "why this item?" — score, age, who, when.
+/// needs to answer "why this item?" — age, who, when. (Its `score` was the unread mark, 1.0 unread
+/// or 0.5 read, shown as relevance; her conversation has no unread split now, so it is gone.)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InspectedItem {
     pub index: usize,
     pub tokens: u32,
-    pub score: f64,
     pub content: String,
-    pub peer_id_shown: String,
-    pub lamport: u64,
-    pub age_s: u64,
+    /// Who said it, when the source names a peer; `None` is unknown, never a placeholder.
+    pub peer_id_shown: Option<String>,
+    /// Its room order, when the source names one.
+    pub lamport: Option<u64>,
+    /// How long ago it was said as of the inspection, when the source names when.
+    pub age_s: Option<u64>,
     /// The item has a coarser summary level her view can fall back to.
     pub has_summary: bool,
     /// The item has a pointer level (what it is and how to reopen it).
@@ -248,8 +251,8 @@ pub async fn inspect_persona_rag(
 ///   prompt and compare.
 /// - "Which layer is broken?" — per-source deliveries and each item's
 ///   levels (whole, summary, pointer).
-/// - "Is this contextually relevant?" — per-item score + age +
-///   peer_id_shown in the deliveries (unchanged).
+/// - "Is this contextually relevant?" — per-item age +
+///   peer_id_shown in the deliveries.
 ///
 /// Per [[inference-is-an-adapter-always-in-the-loop]], the inference
 /// goes through an `AIProviderAdapter` — the same trait the
@@ -260,8 +263,27 @@ pub async fn inspect_persona_rag_with_inference(
     airc_reader: Arc<dyn AircTranscriptReader>,
     inference_probe: Option<Arc<dyn crate::ai::adapter::AIProviderAdapter>>,
 ) -> Result<RagInspection, String> {
-    let airc_source = AircRagSource::new(request.persona_id, airc_reader)
-        .with_fetch_limit(request.airc_fetch_limit);
+    // An inspection is not a resident: it has no thread of her own to read, so it pins one built
+    // from one airc page of her current room, exactly as her thread is seeded.
+    // A page that does not read is an inspection of nothing said, never a failed inspection.
+    let page = match airc_reader.page_recent(request.airc_fetch_limit).await {
+        Ok(page) => page,
+        Err(error) => {
+            tracing::warn!(%error, persona_id = %request.persona_id, "rag inspect: her room's airc page did not read; the inspection shows nothing said");
+            Vec::new()
+        }
+    };
+    let thread = page.last().map(|newest| {
+        use continuum_grounding::room_thread::RoomThread;
+        let room = newest.room_id.as_uuid();
+        let lines = page.iter().filter(|event| event.room_id.as_uuid() == room).filter_map(crate::cognition::room::thread::line);
+        // A page with no line said in it is the room's thread before anything was heard.
+        Arc::new(match RoomThread::new(room).with(lines, request.airc_fetch_limit) {
+            Some(read) => read,
+            None => RoomThread::new(room),
+        })
+    });
+    let airc_source = AircRagSource::new(request.persona_id, airc_reader);
 
     let sink: Arc<dyn RagCaptureSink> = match &request.trace_path {
         Some(path) => {
@@ -280,7 +302,7 @@ pub async fn inspect_persona_rag_with_inference(
 
     let recorded = RecordingRagSource::new(airc_source, sink.clone());
 
-    let ctx_base = RagContext::for_persona(request.persona_id, request.now_ms);
+    let ctx_base = RagContext::for_persona(request.persona_id, request.now_ms).pinning(thread);
     let turn_id = Uuid::new_v4();
     let mut ctx = ctx_base.clone();
     ctx.substrate.turn_id = Some(turn_id);
@@ -305,37 +327,18 @@ pub async fn inspect_persona_rag_with_inference(
         .iter()
         .enumerate()
         .map(|(idx, item)| {
-            let score = item
-                .metadata
-                .get("score")
-                .and_then(|v| v.as_f64())
-                .unwrap_or(0.0);
-            let lamport = item
-                .metadata
-                .get("lamport")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
+            let lamport = item.metadata.get("lamport").and_then(|v| v.as_u64());
             let peer_id_shown = item
                 .metadata
                 .get("peer_id")
                 .and_then(|v| v.as_str())
-                .map(|s| uuid::Uuid::parse_str(s).map_or_else(|_| s.to_owned(), airc_core::shown_id::shown_form)) // map_or_else: a peer id that is not a uuid is shown whole
-                .unwrap_or_else(|| "????".to_string());
-            let occurred_at_ms = item
-                .metadata
-                .get("occurred_at_ms")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
-            let age_s = if occurred_at_ms > 0 && request.now_ms > occurred_at_ms {
-                (request.now_ms - occurred_at_ms) / 1_000
-            } else {
-                0
-            };
+                .map(|s| uuid::Uuid::parse_str(s).map_or_else(|_| s.to_owned(), airc_core::shown_id::shown_form)); // map_or_else: a peer id that is not a uuid is shown whole
+            // A line said after the inspection's `now` is zero seconds old, not negative.
+            let age_s = item.metadata.get("occurred_at_ms").and_then(|v| v.as_u64()).map(|at| request.now_ms.saturating_sub(at) / 1_000);
             let content = item.content.clone();
             InspectedItem {
                 index: idx,
                 tokens: item.tokens,
-                score,
                 content,
                 peer_id_shown,
                 lamport,

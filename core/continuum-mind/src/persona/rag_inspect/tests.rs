@@ -85,9 +85,9 @@ async fn empty_transcript_yields_empty_delivery() {
     assert!(!d.has_continuation);
 }
 
-// what this catches: the glass box loses the per-item fields (score, age, peer, levels) a mechanic reads.
+// what this catches: the glass box loses the per-item fields (age, peer, levels) a mechanic reads.
 #[tokio::test]
-async fn inspected_items_carry_score_age_and_peer_prefix() {
+async fn inspected_items_carry_age_and_peer_prefix() {
     let now_ms = 2_000_000u64;
     let event_ms = 1_995_000u64; // 5 seconds ago
     let reader = Arc::new(StubReader::new(vec![make_event(
@@ -101,14 +101,9 @@ async fn inspected_items_carry_score_age_and_peer_prefix() {
     let it = &items[0];
     assert_eq!(it.index, 0);
     assert_eq!(it.content, "hello world");
-    assert!(
-        (it.score - 1.0).abs() < 1e-9,
-        "first item scores 1.0, got {}",
-        it.score
-    );
-    assert_eq!(it.lamport, 42);
-    assert_eq!(it.age_s, 5);
-    assert_eq!(it.peer_id_shown.len(), 8);
+    assert_eq!(it.lamport, Some(42));
+    assert_eq!(it.age_s, Some(5));
+    assert_eq!(it.peer_id_shown.as_deref().map(str::len), Some(8));
     assert!(it.metadata.get("event_id").is_some());
     // levels are reported, whatever the source set
     let _ = (it.has_summary, it.has_pointer);

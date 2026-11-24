@@ -133,7 +133,7 @@ pub struct RagInspectParams {
 }
 
 /// One item the source delivered, with the mechanic-grade rationale
-/// flattened for the wire (content, score, age_s, etc).
+/// flattened for the wire (content, age_s, etc).
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(
     export,
@@ -145,14 +145,14 @@ pub struct RagInspectItem {
     pub index: u32,
     #[ts(type = "number")]
     pub tokens: u32,
-    #[ts(type = "number")]
-    pub score: f64,
     pub content: String,
-    pub peer_id_shown: String,
-    #[ts(type = "number")]
-    pub lamport: u64,
-    #[ts(type = "number")]
-    pub age_s: u64,
+    /// Who said it; absent when the source names no peer (never a placeholder).
+    #[ts(optional)]
+    pub peer_id_shown: Option<String>,
+    #[ts(optional, type = "number")]
+    pub lamport: Option<u64>,
+    #[ts(optional, type = "number")]
+    pub age_s: Option<u64>,
     /// The item has a coarser summary level her view can fall back to.
     pub has_summary: bool,
     /// The item has a pointer level (what it is and how to reopen it).
@@ -182,8 +182,8 @@ pub struct RagInspectDelivery {
 ///   the actual model response is captured in `modelResponse`.
 /// - "Which layer is broken?" — per-source deliveries and each item's
 ///   levels (`hasSummary`, `hasPointer`).
-/// - "Is this contextually relevant?" — per-item score + age +
-///   peer in the deliveries.
+/// - "Is this contextually relevant?" — per-item age + peer in the
+///   deliveries.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(
     export,
@@ -254,7 +254,6 @@ impl RagInspectResult {
                     .map(|i| RagInspectItem {
                         index: i.index as u32,
                         tokens: i.tokens,
-                        score: i.score,
                         content: i.content,
                         peer_id_shown: i.peer_id_shown,
                         lamport: i.lamport,
@@ -366,7 +365,11 @@ pub(crate) async fn inspect_persona(
         )
     })?;
 
-    let now_ms = params.now_ms.unwrap_or_else(|| continuum_base::time::EpochMs::now().millis());
+    // No `now_ms` asks for an inspection as of now.
+    let now_ms = match params.now_ms {
+        Some(at) => at,
+        None => continuum_base::time::EpochMs::now().millis(),
+    };
     // The window she is served now, or the caller's explicit one: never an assumed size.
     let window = match params.context_window {
         Some(window) => window,
@@ -385,10 +388,9 @@ pub(crate) async fn inspect_persona(
 
     // Chain through inference when the caller asks AND the resolver supplied an
     // adapter. Either being false → RAG-only.
-    let inference_probe = if params.chain_inference.unwrap_or(false) {
-        resolution.inference_adapter.clone()
-    } else {
-        None
+    let inference_probe = match params.chain_inference {
+        Some(true) => resolution.inference_adapter.clone(),
+        Some(false) | None => None,
     };
     let inspection =
         inspect_persona_rag_with_inference(&request, resolution.airc_reader, inference_probe)
@@ -607,10 +609,9 @@ mod tests {
         assert_eq!(result.deliveries[0].items.len(), 2);
         let first = &result.deliveries[0].items[0];
         assert_eq!(first.content, "hello world");
-        assert!((first.score - 1.0).abs() < 1e-9);
-        assert_eq!(first.age_s, 100);
+        assert_eq!(first.age_s, Some(100));
         // peer_id_shown is 8 hex chars from the UUID.
-        assert_eq!(first.peer_id_shown.len(), 8);
+        assert_eq!(first.peer_id_shown.as_deref().map(str::len), Some(8));
     }
 
     #[tokio::test]

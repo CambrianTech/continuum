@@ -12,7 +12,7 @@
 
 use std::sync::Arc;
 
-use super::thread::{Item, RoomThread};
+use continuum_grounding::room_thread::{Item, RoomThread};
 
 /// One room's lines and hers among them, at one revision of her thread.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -53,15 +53,14 @@ impl Said {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cognition::room::thread::Line;
 
     // what this catches: her lines missing from the room's side (the echo counters skip exactly
     // one copy of hers), or a peer's line counted as hers.
     #[test]
     fn the_room_holds_every_line_and_hers_are_named_among_them() {
-        let (me, peer) = (uuid::Uuid::from_u128(1), uuid::Uuid::from_u128(2));
-        let said_by = |n: u128, from: uuid::Uuid, text: &str| Line { event: uuid::Uuid::from_u128(10 + n), lamport: n as u64, sender: from, text: text.to_string() };
-        let thread = RoomThread::new(uuid::Uuid::from_u128(9)).with(
+        let (me, peer, room) = (uuid::Uuid::from_u128(1), uuid::Uuid::from_u128(2), uuid::Uuid::from_u128(9));
+        let said_by = |n: u128, from: uuid::Uuid, text: &str| continuum_grounding::room_thread::said(room, 10 + n, n as u64, from, text);
+        let thread = RoomThread::new(room).with(
             [said_by(1, peer, "are the wordstats tests green yet"), said_by(2, me, "the wordstats tests are green"), said_by(3, peer, "thanks, merging")],
             32,
         );

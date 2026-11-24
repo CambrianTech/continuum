@@ -124,6 +124,7 @@ pub(super) async fn admit_trigger(
 pub(super) async fn compose_turn(
     ctx: &HostedPersona,
     turn_room: Uuid,
+    thread: Option<std::sync::Arc<continuum_grounding::room_thread::RoomThread>>,
     now_ms: u64,
     phase_timings: &mut PhaseTimings,
     roster_names: &mut std::collections::HashMap<Uuid, String>,
@@ -139,7 +140,7 @@ pub(super) async fn compose_turn(
         // Without it every room-scoped source abstains and she perceives no
         // board, no roster, no doctrine, no wall (#331 / #127).
         cognition
-            .compose_for_turn(now_ms, Some(turn_room))
+            .compose_for_turn(now_ms, Some(turn_room), thread)
             .await
     };
     phase_timings.compose_ms = compose_started.elapsed().as_millis() as u64;
@@ -245,15 +246,23 @@ pub(super) fn build_turn_burst(
     .for_turn(composed.turn_id)
 }
 
-/// What was said in `room` as this turn reads it: the revision of her thread of the room as it is
-/// now, pinned for the whole turn (read without waiting: her thread took in every event before her
-/// senses heard it). Empty, and named, where she has no thread of the room here: a window she
-/// cannot see is an empty one, never an invented one.
-pub(super) fn heard_in(peer: crate::identity::PeerId, room: Uuid) -> std::sync::Arc<crate::cognition::room::said::Said> {
-    use crate::cognition::room::said::Said;
-    let Some(thread) = crate::persona::senses::of(peer.as_uuid()).and_then(|senses| senses.thread(room)) else {
-        continuum_base::probe!(class = "persona.said.unthreaded", peer = %peer, room = %room, "she has no thread of this room here: her repetition window is empty this turn");
-        return std::sync::Arc::default();
-    };
-    std::sync::Arc::new(Said::of(thread, peer.as_uuid()))
+/// Her thread of `room` as this turn reads it: the revision as it is now, pinned for the whole turn
+/// (read without waiting: her thread took in every event before her senses heard it). It is read
+/// once, before the turn composes, and handed down as data: her sources render it, her facts and
+/// anchor read it, her capture names it. `None`, and named, where she has no thread of the room
+/// here: a window she cannot see is an empty one, never an invented one.
+pub(super) fn pinned(peer: crate::identity::PeerId, room: Uuid) -> Option<std::sync::Arc<continuum_grounding::room_thread::RoomThread>> {
+    let thread = crate::persona::senses::of(peer.as_uuid()).and_then(|senses| senses.thread(room));
+    if thread.is_none() {
+        continuum_base::probe!(class = "persona.said.unthreaded", peer = %peer, room = %room, "she has no thread of this room here: what was said is empty this turn");
+    }
+    thread
+}
+
+/// What was said in the pinned revision, and which lines are hers.
+pub(super) fn said_in(peer: crate::identity::PeerId, thread: Option<&std::sync::Arc<continuum_grounding::room_thread::RoomThread>>) -> std::sync::Arc<crate::cognition::room::said::Said> {
+    std::sync::Arc::new(match thread {
+        Some(thread) => crate::cognition::room::said::Said::of(std::sync::Arc::clone(thread), peer.as_uuid()),
+        None => crate::cognition::room::said::Said::default(),
+    })
 }

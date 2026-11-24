@@ -212,6 +212,7 @@ impl PersonaCognition {
         &self,
         now_ms: u64,
         room: Option<uuid::Uuid>,
+        thread: Option<std::sync::Arc<continuum_grounding::room_thread::RoomThread>>,
     ) -> ComposedTurn {
         let persona_id = self.engine.persona_id();
         // The turn's id rides the context every source receives, so each capture names its turn:
@@ -221,7 +222,8 @@ impl PersonaCognition {
         let mut rag_ctx = match room {
             Some(r) => RagContext::for_persona_in_room(persona_id, now_ms, r),
             None => RagContext::for_persona(persona_id, now_ms),
-        };
+        }
+        .pinning(thread);
         rag_ctx.substrate.turn_id = Some(turn_id);
 
         let sources = self.airc_source.iter().chain(self.roster_source.iter());
@@ -336,11 +338,11 @@ mod tests {
     #[tokio::test]
     async fn compose_for_turn_delivers_every_item_of_her_bound_sources() {
         let mut pc = PersonaCognition::new(Uuid::new_v4(), "TestBot".into());
-        assert!(pc.compose_for_turn(1_000_000, None).await.deliveries.is_empty(), "nothing bound, nothing delivered");
+        assert!(pc.compose_for_turn(1_000_000, None, None).await.deliveries.is_empty(), "nothing bound, nothing delivered");
         pc.set_airc_source(Arc::new(CannedSource { id: "airc", items: 300 }));
         let (cached, _) = crate::cognition::cached_source::CachedRagSource::new(Arc::new(CannedSource { id: "roster", items: 40 }));
         pc.set_roster_source(cached);
-        let composed = pc.compose_for_turn(1_000_000, None).await;
+        let composed = pc.compose_for_turn(1_000_000, None, None).await;
         let shape: Vec<(&str, usize)> = composed.deliveries.iter().map(|d| (d.source_id.as_str(), d.items.len())).collect();
         assert_eq!(shape, [("airc", 300), ("roster", 40)]);
     }
@@ -357,9 +359,9 @@ mod tests {
             PersonaCognition::with_capture_sink(id, "Kimi".into(), sink_dyn);
         pc.set_airc_source(Arc::new(CannedSource { id: "airc", items: 2 }));
         let mind = crate::cognition::mind_room::mind_room_id(id);
-        let _ = pc.compose_for_turn(1_000_000, Some(mind)).await;
+        let _ = pc.compose_for_turn(1_000_000, Some(mind), None).await;
         assert!(sink.is_empty(), "her mind room: no capture events, got {}", sink.len());
-        let _ = pc.compose_for_turn(1_000_000, Some(Uuid::new_v4())).await;
+        let _ = pc.compose_for_turn(1_000_000, Some(Uuid::new_v4()), None).await;
         assert!(!sink.is_empty(), "an ordinary room still records its turn");
     }
 
@@ -371,7 +373,7 @@ mod tests {
         let sink_dyn: Arc<dyn RagCaptureSink> = sink.clone();
         let mut pc = PersonaCognition::with_capture_sink(Uuid::new_v4(), "TestBot".into(), sink_dyn);
         pc.set_airc_source(Arc::new(CannedSource { id: "airc", items: 2 }));
-        let _ = pc.compose_for_turn(1_000_000, None).await;
+        let _ = pc.compose_for_turn(1_000_000, None, None).await;
         let kinds: Vec<&str> = sink
             .events()
             .iter()
@@ -408,8 +410,8 @@ mod tests {
         let pc = Arc::new(pc);
         let (a, b) = (Arc::clone(&pc), Arc::clone(&pc));
         let _ = tokio::join!(
-            tokio::spawn(async move { a.compose_for_turn(1_000_000, None).await }),
-            tokio::spawn(async move { b.compose_for_turn(1_000_001, None).await }),
+            tokio::spawn(async move { a.compose_for_turn(1_000_000, None, None).await }),
+            tokio::spawn(async move { b.compose_for_turn(1_000_001, None, None).await }),
         );
         let events = sink.events();
         let started: Vec<Uuid> = events

@@ -323,6 +323,9 @@ pub(super) async fn run_self_cycle(
         }
         return;
     }
+    // Her thread of the tick's room, pinned once: the context renders it and the anchor reads it.
+    let thread = super::turn_context::pinned(ctx.identity.peer_id, work_room.as_uuid());
+    let said = super::turn_context::said_in(ctx.identity.peer_id, thread.as_ref());
     let composed = {
         let cognition = &ctx.cognition;
         // Passing None here is what made idle ticks blind to the board (#331 / #127).
@@ -330,6 +333,7 @@ pub(super) async fn run_self_cycle(
             .compose_for_turn(
                 now_ms,
                 Some(work_room.as_uuid()),
+                thread,
             )
             .await
     };
@@ -372,7 +376,6 @@ pub(super) async fn run_self_cycle(
     // focus room while the anchor/burst/drive/say all used default — she reasoned
     // about her claim's room and then acted in a different one.
     let tick_room = work_room.as_uuid(); // the cycle's one room, resolved and refused-if-nil above
-    let said = super::turn_context::heard_in(ctx.identity.peer_id, tick_room);
     append_ring_anchor_if_starved(&mut selftick_turns, &deliveries, &said);
     let burst = crate::cognition::workspace::Burst::from_turns_at(
         work_room,

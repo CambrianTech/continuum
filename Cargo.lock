@@ -3506,6 +3506,7 @@ dependencies = [
  "continuum-engine",
  "continuum-experience",
  "continuum-genome",
+ "continuum-grounding",
  "continuum-hands",
  "continuum-host",
  "continuum-kernel",
