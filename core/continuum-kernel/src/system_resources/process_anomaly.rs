@@ -6,7 +6,7 @@
 //! named nothing — every root-owned process reported 0. `ps` sees them all. This module
 //! is the fallback: one bounded `ps` per anomaly window, parsed by a pure function.
 
-use std::process::Command;
+use continuum_host::subprocess;
 use std::time::Duration;
 
 /// A process holding memory, as `ps -axo rss=,pid=,comm=` reports it.
@@ -66,10 +66,7 @@ impl std::fmt::Display for PsReadFailed {
 pub fn residents_above(floor_bytes: u64, timeout: Duration) -> Result<Vec<ResidentProcess>, PsReadFailed> {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let out = Command::new("ps")
-            .args(["-axo", "rss=,pid=,comm="])
-            .stderr(std::process::Stdio::null())
-            .output();
+        let out = subprocess::RunConfig::default().run_sync("ps", &["-axo", "rss=,pid=,comm="]);
         let _ = tx.send(out);
     });
     let text = match rx.recv_timeout(timeout) {
