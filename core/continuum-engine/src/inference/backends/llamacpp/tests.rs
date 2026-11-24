@@ -115,7 +115,8 @@
     // turns each, every prompt her view then a trailer that changes (as a live act's does). With three
     // seats nobody moves; with two seats in a smaller pool the third mind evicts the coldest, and the
     // second round both pages minds back in and runs the pool out of cells mid-turn. Each mind's second
-    // turn must reuse exactly what it reuses when she never moved: her state, and her checkpoint at her
+    // turn must reuse exactly what it reuses when she never moved, with two seats and with one (every
+    // switch then pages the active mind out): her state, and her checkpoint at her
     // view's end, came back whole.
     //     cargo test -p continuum-engine --features metal --lib minds_beyond_the_seats -- --ignored --nocapture
     #[tokio::test(flavor = "multi_thread")]
@@ -132,7 +133,8 @@
             view: &'a str,
             ask: &'a str,
         }
-        async fn turn(backend: &LlamaCppBackend, allocation: GenerationAllocation, Ask { her, view, ask }: Ask<'_>) -> Answer {
+        async fn turn(backend: &LlamaCppBackend, allocation: GenerationAllocation, turn: Ask<'_>) -> Answer {
+            let Ask { her, view, ask } = turn;
             let sampler = backend.turn_sampler(None, &crate::inference::backends::SamplingConfig::chat(), None).expect("test: a sampler");
             let text = format!("{view}<|im_start|>user\n{ask}<|im_end|>\n<|im_start|>assistant\n");
             let prompt = TurnPrompt { text: &text, stable_prefix: Some(view), urgency: continuum_sage::component::Urgency::Want, request: None };
@@ -162,6 +164,9 @@
         assert!(in_place.iter().all(|&reused| reused > 0), "her view's checkpoint serves her next turn: {in_place:?}");
         let paged = second_turn_reuse(&path, 1024, 2).await;
         assert_eq!(paged, in_place, "paged out and back, each mind reuses what she reuses when she never moved");
+        // one seat (Codex on #6258): every switch pages the active mind out for the next, A -> B -> C -> A
+        let one_seat = second_turn_reuse(&path, 1024, 1).await;
+        assert_eq!(one_seat, in_place, "with one seat each mind still comes back holding what she held");
     }
 
     /// L2's validator (IN-PROCESS-LEARNING.md): a resident learns between her turns through the
@@ -313,5 +318,78 @@
             if let Err(kept) = std::fs::remove_dir_all(generation()) {
                 eprintln!("the validator's generation stays at {}: {kept}", generation().display());
             }
+        }
+
+        // what this catches (Cormac on #6258): a mind with a seated shadow paged out between her learn
+        // steps losing what she learns from. Her shadow is not KV and stays retained; her KV comes back
+        // with her. With one seat another mind's turn evicts her before every learn step, and each step
+        // brings her back: she learns as she does when she never moves (two seats), never Refused, Kept or
+        // Quarantined, and her next turn reuses what it reuses in place.
+        //     cargo test -p continuum-engine --features metal --lib a_seated_learner_paged -- --ignored --nocapture
+        #[tokio::test(flavor = "multi_thread")]
+        #[ignore = "requires qwen2.5-0.5b-instruct under ~/.continuum/genome/models; run explicitly"]
+        async fn a_seated_learner_paged_out_between_steps_learns_as_she_does_in_place() {
+            let path = dirs::home_dir().expect("test: a home").join(".continuum/genome/models/qwen2.5-0.5b-instruct/qwen2.5-0.5b-instruct-q4_k_m.gguf");
+            if !path.exists() {
+                eprintln!("SKIPPED: {} not present", path.display());
+                return;
+            }
+            let (in_place_losses, in_place_reuse) = learn_beside_another_mind(&path, 2).await;
+            let (paged_losses, paged_reuse) = learn_beside_another_mind(&path, 1).await;
+            eprintln!("in place: losses {in_place_losses:?}, next turn reused {in_place_reuse}; paged: losses {paged_losses:?}, next turn reused {paged_reuse}");
+            assert!(paged_losses[paged_losses.len() - 1] < paged_losses[0], "she trains across page-outs: {paged_losses:?}");
+            for (paged, in_place) in paged_losses.iter().zip(&in_place_losses) {
+                assert!((paged - in_place).abs() <= 1e-2 * in_place.abs().max(1.0), "each step learns as in place: {paged_losses:?} vs {in_place_losses:?}");
+            }
+            assert_eq!(paged_reuse, in_place_reuse, "her next turn reuses what it reuses when she never moved");
+        }
+
+        /// Her shadow seated, three learn steps each after another mind's turn, then her next turn: the
+        /// losses and what that turn reused, on an engine of `seats` seats.
+        async fn learn_beside_another_mind(path: &std::path::Path, seats: u32) -> (Vec<f64>, usize) {
+            let backend = LlamaCppBackend::load(LlamaCppConfig { model_path: path.to_path_buf(), ..Default::default() }).expect("test: the 0.5B loads");
+            let nonzero = |n| std::num::NonZeroU32::new(n).expect("test: nonzero");
+            let allocation = GenerationAllocation::seated(nonzero(2048), nonzero(seats));
+            let mut state = backend.start_scheduler(allocation).expect("test: the scheduler starts");
+            state.wait_for(|state| state.ready().is_some()).await.expect("test: the engine becomes ready");
+            let (tx, mut heard) = tokio::sync::mpsc::unbounded_channel();
+            let (input, _worker) = continuum_sage::spawn_stage(Heard(tx), continuum_sage::Capacity::granted(std::num::NonZeroUsize::new(64).expect("test: nonzero")));
+            let _subscribed = continuum_sage::component::node().subscribe::<Said>(LEARNING_SAID).attach(&input, std::num::NonZeroUsize::new(64).expect("test: nonzero"));
+
+            let (her, other) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+            let turn = |who: uuid::Uuid, view: &'static str, ask: &'static str| {
+                let text = format!("{view}<|im_start|>user\n{ask}<|im_end|>\n<|im_start|>assistant\n");
+                let sampler = backend.turn_sampler(None, &crate::inference::backends::SamplingConfig::chat(), None).expect("test: a sampler");
+                backend.submit_for_persona(allocation, Some(who), TurnPrompt { text: &text, stable_prefix: Some(view), urgency: continuum_sage::component::Urgency::Want, request: None }, 8, sampler, &[], &[])
+            };
+            let (view, river) = ("<|im_start|>user\nWhat is the capital of Kansas?<|im_end|>\n", "<|im_start|>user\nName a river.<|im_end|>\n");
+            turn(her, view, "Answer in one word.").expect("test: her turn submits").collect().await.expect("test: her first turn answers");
+
+            let seat = SeatId(uuid::Uuid::new_v4());
+            let fresh = crate::inference::llama_server::FreshShadow { name: "paged".into(), rank: 8, alpha: 16.0, targets: vec!["attn_q".into(), "attn_v".into()], top_layers: 0, seed: 42 };
+            let optimizer = llama::Optimizer::AdamW { learning_rate: 5e-3, beta1: 0.9, beta2: 0.999, eps: 1e-8, weight_decay: 0.0 };
+            let port: &dyn LearnPort = &backend;
+            assert!(port.tell(Learning::Measure(Measure { seat, mind: continuum_persona_engine::persona::PersonaId(her), shadow: ShadowSource::Fresh(fresh), optimizer, sized_for: lesson() })).is_ok());
+            assert!(matches!(next(&mut heard).await, Said::Seat { state: SeatState::Measured { .. }, .. }));
+            assert!(port.tell(Learning::Load { seat }).is_ok());
+            assert!(matches!(next(&mut heard).await, Said::Seat { state: SeatState::Loaded { .. }, .. }));
+            assert!(port.tell(Learning::Seat(Seat { seat, lease: Box::new(Counted::default()) })).is_ok());
+            assert!(matches!(next(&mut heard).await, Said::Seat { state: SeatState::Seated { .. }, .. }), "seated");
+
+            let mut losses = Vec::new();
+            for _ in 0..3 {
+                // with one seat, the other mind's turn pages her out, her shadow still seated
+                turn(other, river, "One word.").expect("test: the other turn submits").collect().await.expect("test: the other mind answers");
+                let step = StepId(uuid::Uuid::new_v4());
+                assert!(port.tell(Learning::Learn(crate::inference::learning::Learn { seat, step, lesson: lesson(), admission: Box::new(Open) })).is_ok());
+                match next(&mut heard).await {
+                    Said::Step { step: said, outcome: StepOutcome::Learned { loss, .. }, .. } if said == step => losses.push(loss.expect("test: a learned step reports its loss")),
+                    other => panic!("expected Learned with {seats} seat(s), heard {other:?}"),
+                }
+            }
+            let answer = turn(her, view, "And of Kentucky?").expect("test: her next turn submits").collect().await.expect("test: her next turn answers");
+            assert!(port.tell(Learning::Release { seat }).is_ok());
+            assert!(matches!(next(&mut heard).await, Said::Seat { state: SeatState::Released, .. }), "released");
+            (losses, answer.facts.reused_tokens)
         }
     }

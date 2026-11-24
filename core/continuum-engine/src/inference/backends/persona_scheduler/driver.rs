@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use continuum_persona_engine::engine::{DecodeError, PersonaEngine, RetireError, StageError, SwitchError};
+use continuum_persona_engine::seats::{Seats, SeatsError};
 use continuum_persona_engine::persona::{Epoch, Footprint, Held, MindId, PersonaId, PersonaParts, PersonaUnit};
 use continuum_persona_engine::residency::TierRefusal;
 use continuum_persona_llama::{Blocks, Genes, Step, UnifiedTier};
@@ -33,6 +34,8 @@ pub(super) enum TurnError {
     Stage(#[from] StageError),
     #[error(transparent)]
     Switch(#[from] SwitchError),
+    #[error(transparent)]
+    Seats(#[from] SeatsError),
     #[error(transparent)]
     Decode(#[from] DecodeError),
     #[error(transparent)]
@@ -125,18 +128,20 @@ fn resident(her: &Mind) -> bool {
     her.parts().decode == Tenure::Resident
 }
 
+/// The persona engine over the Core's one context.
+type Engine<'c, 'm> = PersonaEngine<Mind, UnifiedTier<'c, 'm>>;
+
 /// The driver's state: the model, the one engine over the one context, and every mind not active.
 struct Driver<'c, 'm> {
     model: &'m Model,
     batch: NonZeroUsize,
     /// The most one mind's stream holds (the applied `n_ctx_seq`): a prompt it cannot fit is refused at the door.
     capacity: admission::Capacity,
-    engine: PersonaEngine<Mind, UnifiedTier<'c, 'm>>,
-    parked: HashMap<PersonaId, Mind>,
+    engine: Engine<'c, 'm>,
+    /// Who is parked in RAM and who stepped when: the pool evicts the coldest seated mind when it needs room.
+    seats: Seats<Mind>,
     /// Admitted anonymous turns that still own their native blocks, across all transfer states.
     live_one_offs: HashSet<PersonaId>,
-    /// When each seated mind last stepped: the pool evicts the coldest when it needs room.
-    recency: seats::Recency,
     /// Where decoded tokens and answer ends go (4.16); the engine thread never does text work.
     emit: Outbox<emit::Out>,
     /// Where each GPU step's span and each finished turn's row go; measured and written off this
@@ -265,9 +270,8 @@ pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
         batch,
         capacity,
         engine: PersonaEngine::new(tier),
-        parked,
+        seats: Seats::new(parked),
         live_one_offs: HashSet::new(),
-        recency: seats::Recency::default(),
         emit: Outbox::new(emit),
         record: Outbox::new(record),
         log_failures: continuum_base::probe_writes::Reading::now(),
@@ -512,7 +516,7 @@ impl Driver<'_, '_> {
         for turn in std::mem::take(turns) {
             self.end(turn, Ending::Stopping);
         }
-        let minds: Vec<_> = self.parked.values().chain(self.engine.units())
+        let minds: Vec<_> = self.seats.parked().values().chain(self.engine.units())
             .filter(|mind| resident(mind)).map(|mind| mind.id()).collect();
         let blocked = |cause: Uuid, why: String| {
             let retained = if minds.is_empty() {
@@ -568,7 +572,7 @@ impl Driver<'_, '_> {
         if self.engine.retire_active()?.is_some() {
             self.retire_previous()?;
         }
-        let her = self.parked.get(&id).ok_or(PreserveError::NotReturned)?;
+        let her = self.seats.parked().get(&id).ok_or(PreserveError::NotReturned)?;
         let parts = her.parts();
         let file = generation.file(id.0);
         parts.blocks.write_file(&store.path(&file))?;
@@ -629,7 +633,7 @@ impl Driver<'_, '_> {
                 let turn = &turns[index];
                 let (started, remaining) = match &turn.phase {
                     Phase::Waiting(estimate) => (false, *estimate.get_or_init(|| {
-                        let her = self.engine.units().find(|her| her.id() == turn.id).or_else(|| self.parked.get(&turn.id));
+                        let her = self.engine.units().find(|her| her.id() == turn.id).or_else(|| self.seats.parked().get(&turn.id));
                         let reused = if let Some(her) = her { reuse_for(her, &turn.prompt, &turn.basis).action.reused() } else { 0 }; // a mind never seen reuses nothing
                         turn.prompt.len().saturating_sub(reused)
                     })),
@@ -892,9 +896,9 @@ impl Driver<'_, '_> {
 
     fn finish_one_off(&mut self, turn: &Turn) {
         if turn.one_off {
-            self.parked.remove(&turn.id);
+            self.seats.unpark(turn.id);
             // seated, she is the first to leave when the pool needs room, and is dropped as she leaves
-            self.recency.forget(turn.id);
+            self.seats.cooled(turn.id);
             self.live_one_offs.remove(&turn.id);
         }
     }
