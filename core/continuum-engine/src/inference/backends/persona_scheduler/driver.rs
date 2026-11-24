@@ -19,7 +19,7 @@ use uuid::Uuid;
 use super::geometry::StopsOnExit;
 use continuum_sage::{Outbox, StageInput};
 
-use super::{admission, emit, frame, preserve, record, reuse, transition, EngineGeometry, EngineState, GenerationRequest, Incarnation, SchedulerConfig, Submission, Suspended, TokenEvent};
+use super::{admission, emit, preserve, record, reuse, transition, EngineGeometry, EngineState, GenerationRequest, Incarnation, SchedulerConfig, Submission, Suspended, TokenEvent};
 use crate::inference::footprint_registry::{self, FootprintKey, ResourceType};
 use crate::inference::kv_quant::Residency;
 use crate::runtime;
@@ -100,6 +100,8 @@ enum Tenure {
 mod ending;
 mod history;
 mod learning;
+mod lanes;
+use lanes::need_of;
 mod seats;
 pub(crate) use learning::{Job as LearningJob, Lesson as LearningLesson, Measuring as LearningMeasuring};
 
@@ -140,6 +142,8 @@ struct Driver<'c, 'm> {
     engine: Engine<'c, 'm>,
     /// Who is parked in RAM and who stepped when: the pool evicts the coldest seated mind when it needs room.
     seats: Seats<Mind>,
+    /// Who steps next: the SAGE lane, at every step boundary.
+    lanes: lanes::Lanes,
     /// Admitted anonymous turns that still own their native blocks, across all transfer states.
     live_one_offs: HashSet<PersonaId>,
     /// Where decoded tokens and answer ends go (4.16); the engine thread never does text work.
@@ -271,6 +275,7 @@ pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
         capacity,
         engine: PersonaEngine::new(tier),
         seats: Seats::new(parked),
+        lanes: lanes::Lanes::new(incarnation),
         live_one_offs: HashSet::new(),
         emit: Outbox::new(emit),
         record: Outbox::new(record),
@@ -282,8 +287,9 @@ pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
         learning: learning::Learning::default(),
     };
     // The frame loop (CONTINUUM-ENGINE 4.15): submissions are drained without blocking, and each
-    // frame advances ONE turn by ONE step (a prefill chunk or a token), chosen by `frame::pick`: a turn
-    // in progress keeps the Core until it ends, so new submissions wait for its end. What
+    // frame advances ONE turn by ONE step (a prefill chunk or a token), of the mind the lane picks at
+    // that step boundary (driver/lanes.rs): no turn holds the Core, and no ready mind waits past the
+    // lane's bound. What
     // it decodes goes to Emit (4.16) and the loop goes on. It blocks only when no turn is left, on
     // the queue itself: a wake, never a poll.
     let mut turns: Vec<Turn> = Vec::new();
@@ -347,14 +353,22 @@ pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
                 driver.acknowledge(stop, &stages_on);
             }
         }
-        let Some(index) = driver.pick(&turns) else { continue };
-        match driver.step(&mut turns[index]) {
-            Ok(Advanced::Continues) => {}
-            Ok(Advanced::Done { tokens_generated, end }) => driver.end(turns.remove(index), Ending::Answered { tokens_generated, end }),
+        let Some(index) = driver.next_turn(&turns) else {
+            driver.lane_disagrees(&turns);
+            continue;
+        };
+        let mind = turns[index].id;
+        let ended = match driver.step(&mut turns[index]) {
+            Ok(Advanced::Continues) => None,
+            Ok(Advanced::Done { tokens_generated, end }) => Some(Ending::Answered { tokens_generated, end }),
             Err(refused) => {
                 log.warn(&format!("turn refused: {refused}"));
-                driver.end(turns.remove(index), Ending::Refused(refused));
+                Some(Ending::Refused(refused))
             }
+        };
+        if let Some(ending) = ended {
+            driver.end(turns.remove(index), ending);
+            driver.turn_ended(mind, &turns);
         }
     }
 }
@@ -385,9 +399,8 @@ struct Turn {
 
 /// Where a turn stands.
 enum Phase {
-    /// Not bound yet: what her prefill starts from is decided against her blocks when she is.
-    /// Estimate once when first eligible, after any earlier turn for this mind. Native resume checks the actual blocks again.
-    Waiting(std::cell::OnceCell<usize>),
+    /// Not stepped yet: what her prefill starts from is decided against her blocks when she is bound.
+    Waiting,
     /// Her prompt from `pos` is still to prefill.
     Prefilling { pos: usize },
     /// `token` is sampled and not yet emitted; it is decoded at `pos` if she goes on.
@@ -610,41 +623,27 @@ impl Driver<'_, '_> {
             one_off,
             at: transition::At::Admitted { queue_depth: turns.len() + 1, urgency: req.urgency, prompt_tokens: prompt.len(), since_submit_ms: record::whole_ms(req.submitted.elapsed()) },
         };
-        turns.push(Turn { req, id, one_off, prompt, basis, genes, phase: Phase::Waiting(Default::default()), submitted, ready_since: submitted, spent: Spent::default(), boundaries: Boundaries { view: boundary, learned: None }, answer, cancel });
+        turns.push(Turn { req, id, one_off, prompt, basis, genes, phase: Phase::Waiting, submitted, ready_since: submitted, spent: Spent::default(), boundaries: Boundaries { view: boundary, learned: None }, answer, cancel });
         self.record.send(record::Fact::Transition(admitted));
+        self.lanes.ready(id, need_of(id, turns));
     }
 
-    /// The turn the next frame advances: a mind is one serial queue, so only her oldest turn is a
-    /// candidate; among candidates, `frame::pick` decides. A waiting turn's prefill is what she
-    /// cannot reuse, never her whole prompt: a 1.2k tail on a 29k prompt she holds is a 1.2k turn
-    /// (the M5, 2026-11-19, a6da599330: sized as 29k, her rewind waited 161 s behind cold prompts).
-    fn pick(&mut self, turns: &[Turn]) -> Option<usize> {
-        // A lone turn needs no ranking or cache estimate. Its bind still
-        // validates reuse against the actual prompt before advancing.
-        if turns.len() == 1 {
-            return Some(0);
+    /// The turn the next step advances: the lane picks the mind, and a mind is one serial queue, so it
+    /// is her oldest turn. A cold prompt is prefilled a chunk per step like any other step, so no mind
+    /// waits behind it past the lane's bound (the M5, 2026-11-19: a tail waited 161 s behind cold
+    /// prompts under whole-turn ordering).
+    fn next_turn(&mut self, turns: &[Turn]) -> Option<usize> {
+        let mind = self.lanes.next()?;
+        turns.iter().position(|turn| turn.id == mind)
+    }
+
+    /// Her turn ended: the lane hears her next turn's need, or that she has nothing to decode.
+    fn turn_ended(&mut self, mind: PersonaId, turns: &[Turn]) {
+        if turns.iter().any(|turn| turn.id == mind) {
+            self.lanes.ready(mind, need_of(mind, turns));
+        } else {
+            self.lanes.rested(mind);
         }
-        let mut seen = std::collections::HashSet::new();
-        let eligible: Vec<usize> = (0..turns.len()).filter(|&index| seen.insert(turns[index].id)).collect();
-        let active = self.engine.active();
-        let candidates: Vec<frame::Candidate> = eligible
-            .iter()
-            .map(|&index| {
-                let turn = &turns[index];
-                let (started, remaining) = match &turn.phase {
-                    Phase::Waiting(estimate) => (false, *estimate.get_or_init(|| {
-                        let her = self.engine.units().find(|her| her.id() == turn.id).or_else(|| self.seats.parked().get(&turn.id));
-                        let reused = if let Some(her) = her { reuse_for(her, &turn.prompt, &turn.basis).action.reused() } else { 0 }; // a mind never seen reuses nothing
-                        turn.prompt.len().saturating_sub(reused)
-                    })),
-                    Phase::Prefilling { pos } => (true, turn.prompt.len().saturating_sub(*pos)),
-                    Phase::Decoding { .. } => (true, 0),
-                };
-                let waited_ms = record::whole_ms(turn.ready_since.elapsed());
-                frame::Candidate { urgency: turn.req.urgency, active: active == Some(turn.id), started, remaining, waited_ms }
-            })
-            .collect();
-        frame::pick(&candidates).map(|chosen| eligible[chosen])
     }
 
     /// One frame for `turn`: bind her if another mind is bound, then one step (a prefill chunk, or
@@ -658,13 +657,16 @@ impl Driver<'_, '_> {
         if turn.spent.first_step.is_none() {
             turn.spent.first_step = Some(turn.submitted.elapsed());
         }
+        let mut switched = None;
         if self.engine.active() != Some(turn.id) {
             let switching = Instant::now();
             self.switch_to(turn.id, turn.one_off)?;
-            turn.spent.switch += switching.elapsed();
+            let took = switching.elapsed();
+            turn.spent.switch += took;
             turn.spent.switches += 1;
+            switched = Some(took);
         }
-        if matches!(turn.phase, Phase::Waiting(_)) {
+        if matches!(turn.phase, Phase::Waiting) {
             let from = self.resume(turn)?;
             if from >= turn.prompt.len() {
                 return Err(TurnError::NothingDecoded);
@@ -677,8 +679,8 @@ impl Driver<'_, '_> {
             }
         }
         let stepping = Instant::now();
-        let (advanced, decoding) = match std::mem::replace(&mut turn.phase, Phase::Waiting(Default::default())) {
-            Phase::Waiting(_) => (Err(TurnError::NothingDecoded), false),
+        let (advanced, decoding) = match std::mem::replace(&mut turn.phase, Phase::Waiting) {
+            Phase::Waiting => (Err(TurnError::NothingDecoded), false),
             Phase::Prefilling { pos } => (self.prefill_chunk(turn, pos).map(|()| Advanced::Continues), false),
             Phase::Decoding { token, pos, generated } => (self.decode_token(turn, token, pos, generated), true),
         };
@@ -691,6 +693,7 @@ impl Driver<'_, '_> {
             turn.spent.prefill += took;
         }
         self.record.send(record::Fact::Busy { started: stepping, ended: stepped });
+        self.lanes.stepped(turn.id, took, switched);
         if turn.spent.milestones.step(advanced.is_ok()) {
             let progress = transition::At::FirstProgress { since_admit_ms: record::whole_ms(turn.submitted.elapsed()), step_ms: record::whole_ms(took), prefill: !decoding };
             self.transition(turn, progress);

@@ -169,6 +169,42 @@
         assert_eq!(one_seat, in_place, "with one seat each mind still comes back holding what she held");
     }
 
+    // what this catches: a mind holding the engine for a whole turn while another waits for all of it
+    // (the M5, 2026-11-24: minds waited 20-31 s for a first step, Aris 86 s mid-turn, under the
+    // whole-turn picker). With the lane, a short turn asked while a long one runs is stepped beside it
+    // at the next boundaries and ends long before the long one does.
+    //     cargo test -p continuum-engine --features metal --lib a_short_turn -- --ignored --nocapture
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "requires qwen2.5-0.5b-instruct under ~/.continuum/genome/models; run explicitly"]
+    async fn a_short_turn_never_waits_for_a_long_one() {
+        let path = dirs::home_dir().expect("test: a home").join(".continuum/genome/models/qwen2.5-0.5b-instruct/qwen2.5-0.5b-instruct-q4_k_m.gguf");
+        if !path.exists() {
+            eprintln!("SKIPPED: {} not present", path.display());
+            return;
+        }
+        let backend = LlamaCppBackend::load(LlamaCppConfig { model_path: path, ..Default::default() }).expect("test: the 0.5B loads");
+        let nonzero = |n| std::num::NonZeroU32::new(n).expect("test: nonzero");
+        let allocation = GenerationAllocation::seated(nonzero(4096), nonzero(2));
+        let mut state = backend.start_scheduler(allocation).expect("test: the scheduler starts");
+        state.wait_for(|state| state.ready().is_some()).await.expect("test: the engine becomes ready");
+        let notes = format!("<|im_start|>user\n{}Name a river.<|im_end|>\n<|im_start|>assistant\n", "The mill keeps its own ledger of the river. ".repeat(20));
+        let turn = |who: uuid::Uuid, text: &str, tokens: usize| {
+            let sampler = backend.turn_sampler(None, &crate::inference::backends::SamplingConfig::chat(), None).expect("test: a sampler");
+            let prompt = TurnPrompt { text, stable_prefix: None, urgency: continuum_sage::component::Urgency::Want, request: None };
+            backend.submit_for_persona(allocation, Some(who), prompt, tokens, sampler, &[], &[]).expect("test: the turn submits")
+        };
+        let asked = std::time::Instant::now();
+        let long = turn(uuid::Uuid::new_v4(), "<|im_start|>user\nWrite a long, detailed story about a river and the mill beside it, at least six hundred words.<|im_end|>\n<|im_start|>assistant\n", 400);
+        // asked together, the long turn holding the shorter prompt: a whole-turn picker starts it first
+        // (least prefill) and keeps the Core through it, so the short turn would wait all of it out
+        let short = turn(uuid::Uuid::new_v4(), &notes, 8);
+        let (long, short) = tokio::join!(async { long.collect().await.expect("test: the long turn answers") }, async { short.collect().await.expect("test: the short turn answers") });
+        let total = asked.elapsed();
+        eprintln!("long: {} tokens in {:?}; short: {} tokens in {:?}; both done after {total:?}", long.facts.generated, long.facts.elapsed, short.facts.generated, short.facts.elapsed);
+        assert!(long.facts.generated > 100, "the long turn ran long enough to matter: {} tokens", long.facts.generated);
+        assert!(short.facts.elapsed < long.facts.elapsed / 2, "the short turn ({:?}) was stepped beside the long one ({:?}), never behind it", short.facts.elapsed, long.facts.elapsed);
+    }
+
     /// L2's validator (IN-PROCESS-LEARNING.md): a resident learns between her turns through the
     /// node's LearnPort, on the real engine, and every outcome is heard on learning/said.
     mod learn_port {

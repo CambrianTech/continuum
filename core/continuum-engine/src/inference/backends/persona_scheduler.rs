@@ -21,7 +21,6 @@ mod driver;
 mod emit;
 mod preserve;
 mod record;
-mod frame;
 mod reuse;
 mod geometry;
 mod admission;
@@ -196,7 +195,7 @@ pub struct GenerationRequest {
     pub active_loras: Vec<(String, Arc<LoraAdapter>, f32)>,
     /// Tokens stream back through this.
     pub response_tx: tokio::sync::mpsc::UnboundedSender<TokenEvent>,
-    /// How much her mind needs this turn: waiting turns are ranked by it (`frame::pick`).
+    /// How much her mind needs this turn: the lane gives her its next steps by it (driver/lanes.rs).
     pub urgency: continuum_sage::component::Urgency,
     /// The persona whose mind this turn continues. `None` is a one-off (a probe, a test rig): it
     /// runs as a mind of its own and its blocks are released when the turn ends.
