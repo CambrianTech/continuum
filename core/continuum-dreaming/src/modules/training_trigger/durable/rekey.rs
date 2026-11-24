@@ -281,7 +281,7 @@ impl TrainingTriggerState {
         let (first, second) = if from < to { (from.clone(), to.clone()) } else { (to.clone(), from.clone()) };
         let first_lease = self.submit_gates.acquire(&first).await;
         let second_lease = self.submit_gates.acquire(&second).await;
-        self.run_leased(first_lease, first, move |state, _| async move {
+        self.run_leased(first_lease, first, super::super::OwnedKind::Rekey, move |state, _| async move {
             let _second = second_lease;
             state.rekey_holding_gates(from, to).await
         })
@@ -382,7 +382,7 @@ mod tests {
     async fn seed(state: &Arc<TrainingTriggerState>, persona: Uuid, base: &str, batch: PendingBatch) -> Uuid {
         let id = Uuid::new_v4();
         state
-            .run_owned(key(persona, base), move |state, key| async move { state.accept(&key, Some(id), batch).await })
+            .run_owned(key(persona, base), crate::modules::training_trigger::OwnedKind::Test, move |state, key| async move { state.accept(&key, Some(id), batch).await })
             .await
             .expect("test: admitted")
             .expect("test: accepted");

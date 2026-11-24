@@ -53,12 +53,24 @@
         use std::sync::atomic::Ordering::Relaxed;
         let lock_held = [DeclinedEviction::BuildHoldsRootLock, DeclinedEviction::BuildHoldsDebugLock, DeclinedEviction::BuildHoldsReleaseLock]
             .map(|d| d.discriminant());
+        past_a_spawn_window(
+            |out| freed(out) == 0 && lock_held.contains(&pool.last_decline.load(Relaxed)),
+            || {
+                pool.last_decline.store(u8::MAX, Relaxed);
+                op()
+            },
+        )
+    }
+
+    /// `op` again while `held` says a lock is still held, past any other test's forked child: a
+    /// fork duplicates every open descriptor, a lock's included, until its exec closes them. Linux
+    /// CI (2026-11-23) caught the final reacquisition below inside such a window as HeldByAnother.
+    fn past_a_spawn_window<T>(held: impl Fn(&T) -> bool, mut op: impl FnMut() -> T) -> T {
         // derived-or-floor: a liveness bound on a child's clone→exec window (microseconds
         // to a few ms), never the assertion: 200 × 5 ms = 1 s before the real outcome stands.
         for _ in 0..200 {
-            pool.last_decline.store(u8::MAX, Relaxed);
             let out = op();
-            if freed(&out) > 0 || !lock_held.contains(&pool.last_decline.load(Relaxed)) {
+            if !held(&out) {
                 return out;
             }
             std::thread::sleep(std::time::Duration::from_millis(5));
@@ -491,7 +503,7 @@
         assert_eq!(pool.last_decline.load(std::sync::atomic::Ordering::Relaxed), DeclinedEviction::ReleaseInputsRetained { bytes: 1 }.discriminant());
         #[cfg(unix)]
         { use std::os::unix::fs::MetadataExt; assert_eq!(std::fs::metadata(&lock_path).unwrap().ino(), inode); }
-        let reacquired = try_exclusive_flock_detailed(&lock_path);
+        let reacquired = past_a_spawn_window(|attempt| matches!(attempt, LockAttempt::HeldByAnother), || try_exclusive_flock_detailed(&lock_path));
         assert!(matches!(reacquired, LockAttempt::Acquired(_)),
             "custody is released with the original lock path intact: path={}, result={reacquired:?}",
             lock_path.display());

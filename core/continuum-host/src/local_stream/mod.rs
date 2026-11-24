@@ -78,23 +78,50 @@ mod tests {
     async fn concurrent_binders_of_a_stale_endpoint_leave_exactly_one_owner() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("endpoint.sock");
-        let (gone, _gone_owned) = Listener::bind(&path).await.expect("bind");
-        drop(gone); // stale: the file stays, nobody serves it
+        // Stale: the file stays and nobody serves it. It is bound in a process of its own and left
+        // when that process exits, so its socket was never open here: a concurrent test's forked
+        // child cannot hold a copy of it through its clone->exec window and answer the binders'
+        // liveness probe (Linux CI, 2026-11-23: all eight read a live owner, none bound).
+        let left = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args(["--exact", "local_stream::tests::a_stale_endpoint_left_by_its_process", "--ignored", "--nocapture"])
+            .env(STALE_ENDPOINT, &path)
+            .status()
+            .expect("the endpoint's process ran");
+        assert!(left.success() && path.exists(), "its process bound the endpoint and exited");
         let binders: Vec<_> = (0..8)
             .map(|_| {
                 let path = path.clone();
                 tokio::spawn(async move { Listener::bind(&path).await })
             })
             .collect();
-        let mut winners = Vec::new();
+        let (mut winners, mut refused) = (Vec::new(), Vec::new());
         for binder in binders {
             match binder.await.expect("binder task") {
                 Ok(bound) => winners.push(bound),
-                Err(e) => assert_eq!(e.kind(), io::ErrorKind::AddrInUse, "{e}"),
+                Err(e) => {
+                    assert_eq!(e.kind(), io::ErrorKind::AddrInUse, "{e}");
+                    refused.push(e.to_string());
+                }
             }
         }
-        assert_eq!(winners.len(), 1, "exactly one binder owns the endpoint");
+        assert_eq!(winners.len(), 1, "exactly one binder owns the endpoint; the others said: {refused:?}");
         assert!(connect(&path).await.is_ok(), "the winner still serves");
+    }
+
+    /// Where [`a_stale_endpoint_left_by_its_process`] binds.
+    #[cfg(unix)]
+    const STALE_ENDPOINT: &str = "CONTINUUM_TEST_STALE_ENDPOINT";
+
+    /// Not a check on its own: the process the binders' test runs to leave a stale endpoint behind.
+    #[cfg(unix)]
+    #[tokio::test]
+    #[ignore = "run by concurrent_binders_of_a_stale_endpoint_leave_exactly_one_owner in its own process"]
+    async fn a_stale_endpoint_left_by_its_process() {
+        // only the binders' test names an endpoint; run any other way (`-- --ignored`) it has nothing to do
+        let Some(path) = std::env::var_os(STALE_ENDPOINT).map(std::path::PathBuf::from) else { return };
+        let (_listener, _owned) = Listener::bind(&path).await.expect("bind");
+        // exits without removing it: the endpoint stays, served by no one
+        std::process::exit(0);
     }
 
     // what this catches (Codex on #5533): reclaiming an endpoint on an answer that does not
