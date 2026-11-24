@@ -183,6 +183,28 @@ mod tests {
         drop(live);
     }
 
+    // what this catches (Codex on #6236): a playback that has already read an owner's calls and,
+    // after eviction emptied or removed their generations under pressure, keeps listing them (its
+    // index kept the read count and places of history that is gone).
+    #[test]
+    fn a_warmed_playback_sees_eviction_on_its_next_page() {
+        use crate::prompt_capture::{FramePromptCaptureSink, PromptCall, PromptCaptureSink};
+        let dir = tempfile::tempdir().expect("test: dir");
+        let persona = uuid::Uuid::new_v4();
+        let sink = FramePromptCaptureSink::at(dir.path(), persona);
+        let call = PromptCall { request_id: "r".into(), persona_id: persona, room_id: uuid::Uuid::new_v4(), cycle_id: Some(1), context_window: Some(8192), cause: "synthetic", cause_root: None, replay_of: None };
+        let request = continuum_engine::ai::types::TextGenerationRequest::default();
+        let token = sink.submitted(&call, &request).expect("test: submitted");
+        sink.terminal(token, crate::call_frames::CallStatus::Completed, None, None, 1);
+
+        let playback = crate::call_playback::Playback::at(dir.path(), persona);
+        let ten = std::num::NonZeroUsize::new(10).expect("ten");
+        assert_eq!(playback.page(None, false, ten).expect("test: page").entries.len(), 1, "warmed: it has read the call");
+        assert!(CapturesPool::new(&crate::capture::fixture_class(dir.path())).evict_at_least(u64::MAX) > 0, "pressure took it");
+        let after = playback.page(None, false, ten).expect("test: the next page reads");
+        assert!(after.entries.is_empty() && after.issues.is_empty(), "the next page lists nothing gone: {after:?}");
+    }
+
     // what this catches (Codex on #6236): a long-running node that can never reclaim its own capture
     // history, because the writer holds every owner's generation open for its whole life and the pool
     // skips every open generation; and a writer that cannot record again after a roll.

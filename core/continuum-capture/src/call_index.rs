@@ -91,7 +91,16 @@ impl CallIndex {
         }
         self.calls.retain(|_, places| !places.is_empty());
         for generation in generations {
-            let from = self.read.get(&generation).copied().unwrap_or(0); // unwrap_or: a generation not read yet is read from its first entry
+            let mut from = self.read.get(&generation).copied().unwrap_or(0); // unwrap_or: a generation not read yet is read from its first entry
+            if capture_log::entry_count(&self.writer, generation)? < from {
+                // emptied in place under pressure since the last refresh: what was read of it is gone
+                // (Codex on #6236), so its places go and it is read again from its first entry
+                for places in self.calls.values_mut() {
+                    places.without(generation);
+                }
+                self.calls.retain(|_, places| !places.is_empty());
+                from = 0;
+            }
             let entries = capture_log::entries_from(&self.writer, generation, from)?;
             for (i, entry) in entries.iter().enumerate() {
                 let cursor = Cursor { generation, entry: from + i as u32 };

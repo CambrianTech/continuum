@@ -213,6 +213,12 @@ impl CaptureLog {
     }
 }
 
+/// How many whole index entries `generation` holds now, read from its index's length alone.
+pub fn entry_count(writer: &ClassWriter, generation: u64) -> io::Result<u32> {
+    let bytes = std::fs::metadata(writer.path(&index_of(generation))?)?.len();
+    u32::try_from(bytes / ENTRY as u64).map_err(|_| io::Error::other(format!("generation {generation} holds more index entries than a cursor can name")))
+}
+
 /// A generation's index entries, in order; a trailing partial entry (a crash mid-write) is not one.
 pub fn entries(writer: &ClassWriter, generation: u64) -> io::Result<Vec<Entry>> {
     let mut raw = Vec::new();

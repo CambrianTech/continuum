@@ -224,7 +224,8 @@ pub fn migrate_persona(
                 // a torn last line is a crash mid-write, never a call: only an UNTERMINATED one. A
                 // complete line that does not parse is a record this build cannot read, kept with its file
                 // (the move would otherwise delete the only copy; Codex on #6236).
-                Err(_) if lines.peek().is_none() && torn_tail_possible => {}
+                // and only a line cut short mid-JSON: a complete row of an unknown schema is kept (Codex).
+                Err(RowError::Json(error)) if lines.peek().is_none() && torn_tail_possible && error.is_eof() => {}
                 Err(error) => return Err(MigrationError::Row { file: file.clone(), line: at + 1, error }),
             }
         }
@@ -352,6 +353,17 @@ mod tests {
         let files = legacy_files(&class).expect("test: list").remove(&terminated).expect("test: files");
         assert!(matches!(migrate_persona(&class, terminated, &files, &mut write), Err(MigrationError::Row { line: 2, .. })), "a complete unreadable last row is no torn tail");
         assert!(class.path(&legacy_name(terminated, false)).expect("test: path").exists(), "and its file is kept");
+
+        // what this catches (Codex on #6236): a complete, valid JSON last row of a schema this build
+        // does not know, taken for a torn tail because the file ends without a newline. Only JSON cut
+        // short mid-row (a parse error at its end) is torn.
+        let unknown = Uuid::new_v4();
+        let legacy = serde_json::json!({ "schema_version": 3, "captured_at_ms": 5, "persona_id": unknown, "room_id": Uuid::new_v4(), "cause": "stimulus", "iteration": 0,
+            "system": "s", "messages": [], "offered_tools": [], "response": response("old", "an old answer") });
+        class.replace(&legacy_name(unknown, false), format!("{legacy}\n{{\"schema_version\":99}}").as_bytes()).expect("test: current");
+        let files = legacy_files(&class).expect("test: list").remove(&unknown).expect("test: files");
+        assert!(matches!(migrate_persona(&class, unknown, &files, &mut write), Err(MigrationError::Row { line: 2, .. })), "an unknown complete row is no torn tail, newline or not");
+        assert!(class.path(&legacy_name(unknown, false)).expect("test: path").exists(), "and its file is kept");
 
         // what this catches: JSONL removed on the strength of writes that never landed (a writer
         // that reported success and wrote nothing): only frames that read back authorize removal.
