@@ -35,9 +35,15 @@ pub struct SeatId(pub uuid::Uuid);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct StepId(pub uuid::Uuid);
 
-/// What the trainer tells the engine.
+/// What the trainer tells the engine, in this order for a seat: Measure, then Seat once the trainer
+/// leased what was measured, then Learn and Checkpoint as it chooses, then Release.
 pub enum Learning {
-    /// Seat `shadow` for `mind`.
+    /// Measure what seating `shadow` for `mind` and learning lessons up to `reply_rows` tokens long
+    /// would hold, allocating nothing. Native measurement needs the serving context, which only the
+    /// engine thread holds; leasing takes the resource authority's lock, which the engine thread
+    /// must never wait on (Codex on #6254). So the engine measures and the trainer leases.
+    Measure(Measure),
+    /// Seat the measured shadow under the leases the trainer took for it.
     Seat(Seat),
     /// Learn one lesson into a seated shadow.
     Learn(Learn),
@@ -47,14 +53,44 @@ pub enum Learning {
     Release { seat: SeatId },
 }
 
-/// A shadow to seat, with the lease that pays for its optimizer.
-pub struct Seat {
+/// A seat to measure: whose, which shadow, how it learns, and the longest lesson it is sized for.
+pub struct Measure {
     pub seat: SeatId,
     pub mind: PersonaId,
     pub shadow: ShadowSource,
     pub optimizer: Optimizer,
+    pub reply_rows: std::num::NonZeroU32,
+}
+
+/// A measured seat, under its leases.
+pub struct Seat {
+    pub seat: SeatId,
     /// Admits and releases the optimizer's bytes as native code allocates and frees them.
     pub lease: Box<dyn OptimizerLease>,
+    /// The lease on the shadow's measured weight bytes, held for as long as the seat is.
+    pub weights: Box<dyn Send>,
+}
+
+/// One row of memory a native measurement reported: where it lives, what it is for, and its size.
+/// The scope the memory owner checks admissions against (device, buffer type, role, host).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MeasuredRow {
+    pub device: Arc<str>,
+    pub buffer_type: Arc<str>,
+    /// What native code holds it for (an optimizer role, the shared workspace, the shadow's weights).
+    pub role: Arc<str>,
+    pub bytes: u64,
+    pub host: bool,
+}
+
+/// What a measured seat would hold.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Need {
+    pub weights: Vec<MeasuredRow>,
+    pub optimizer: Vec<MeasuredRow>,
+    /// The shared workspace for a lesson of up to `reply_rows` tokens: a longer lesson is refused.
+    pub workspace: Vec<MeasuredRow>,
+    pub reply_rows: std::num::NonZeroU32,
 }
 
 /// Where a seat's shadow comes from (Cormac on #6254). Either way the engine makes it on her resident
@@ -87,7 +123,7 @@ pub struct Lesson {
 }
 
 /// What the engine says on [`LEARNING_SAID`], in the order it happened to each seat. The stream is
-/// bounded by what the trainer told: the engine says one state per Seat and per Release, one outcome
+/// bounded by what the trainer told: the engine says one state per Measure, Seat and Release, one outcome
 /// per Learn and one per Checkpoint, and nothing on its own, so the trainer that tells at its own
 /// cadence also sets how much can wait in it. A Generation answers the Checkpoints of its seat in
 /// the order they were told.
@@ -101,6 +137,8 @@ pub enum Said {
 /// Where a seat stands.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SeatState {
+    /// Measured: lease `need`, then tell Seat. Nothing is allocated yet.
+    Measured { need: Need },
     /// Loaded and retained: lessons may be learned into it. `bytes` is the shadow's weights.
     Seated { bytes: u64, optimizer: OptimizerStart },
     /// Not seated; nothing is held.
