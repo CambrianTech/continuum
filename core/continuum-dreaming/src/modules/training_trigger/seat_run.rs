@@ -173,8 +173,10 @@ impl SeatRun {
     /// the engine writes the adapter and its optimizer state there, bound to `binding`). `false` when
     /// there is nothing to save.
     pub(crate) fn checkpoint(&mut self, port: &dyn LearnPort, into: PathBuf, binding: Arc<str>) -> Result<bool, NotTold> {
-        if self.phase != Phase::Seated {
-            return Err(NotTold::OutOfOrder("a checkpoint while not seated"));
+        // with a lesson in flight the engine would save weights holding it while the positions
+        // snapshot misses it, and a recovery would learn it twice (Codex on c22b747e5)
+        if !self.ready() {
+            return Err(NotTold::OutOfOrder("a checkpoint while not seated or with a lesson in flight"));
         }
         if self.progress.is_empty() {
             return Ok(false);
@@ -270,9 +272,11 @@ impl SeatRun {
     fn uncertain(&mut self, port: &dyn LearnPort) -> Heard {
         self.progress.clear();
         self.checkpoints.clear();
-        // no engine to take the Release is no engine holding the shadow: it is gone either way
+        // An undelivered Release proves nothing about the engine that holds the shadow (no routing
+        // port is not a dropped seat): its guards stay in custody, quarantined, until a Release is
+        // told and answered (Codex on c22b747e5).
         if self.release(port).is_err() {
-            self.gone();
+            self.phase = Phase::Quarantined;
         }
         Heard::Uncertain
     }
