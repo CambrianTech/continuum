@@ -151,6 +151,36 @@ pub struct Cluster {
 
 /// Detect clusters using connected components algorithm.
 /// Two items are connected if their similarity >= min_similarity.
+/// PURE: one pass over the `k` members' pairs, summing `sim(i, j)` into the total (a cluster's
+/// strength) and into both members' sums (the representative's average). In f64: an f32 total stops
+/// gaining past 2^24 (Codex on #6229, the 5090: 12,000 identical vectors scored 0.466, not 1). Per-thread
+/// sums are merged, so the floats agree with a sequential sum to rounding, not bit for bit; memory O(k).
+fn pair_sums(k: usize, sim: impl Fn(usize, usize) -> f32 + Sync) -> (f64, Vec<f64>) {
+    (0..k)
+        .into_par_iter()
+        .fold(
+            || (0.0f64, vec![0.0f64; k]),
+            |(mut total, mut sums), i| {
+                for j in i + 1..k {
+                    let s = f64::from(sim(i, j));
+                    total += s;
+                    sums[i] += s;
+                    sums[j] += s;
+                }
+                (total, sums)
+            },
+        )
+        .reduce(
+            || (0.0f64, vec![0.0f64; k]),
+            |(ta, mut sa), (tb, sb)| {
+                for (x, y) in sa.iter_mut().zip(sb) {
+                    *x += y;
+                }
+                (ta + tb, sa)
+            },
+        )
+}
+
 /// Returns clusters sorted by strength (descending).
 pub fn detect_clusters(
     embeddings: &[Vec<f32>],
@@ -196,35 +226,11 @@ pub fn detect_clusters(
 
         // Only keep clusters meeting minimum size
         if component.len() >= min_cluster_size {
-            // One pass over the component's pairs: each similarity adds to both members' sums (the
-            // representative's average) and to the total (the strength); per-thread sums are merged, so
-            // the floats agree with a sequential sum to rounding, not bit for bit.
+            // the total is the strength, each member's sum its average (pair_sums, in f64)
             let k = component.len();
-            let (total_sim, sums) = (0..k)
-                .into_par_iter()
-                .fold(
-                    || (0.0f32, vec![0.0f32; k]),
-                    |(mut total, mut sums), i| {
-                        for j in i + 1..k {
-                            let s = sim(component[i], component[j]);
-                            total += s;
-                            sums[i] += s;
-                            sums[j] += s;
-                        }
-                        (total, sums)
-                    },
-                )
-                .reduce(
-                    || (0.0f32, vec![0.0f32; k]),
-                    |(ta, mut sa), (tb, sb)| {
-                        for (x, y) in sa.iter_mut().zip(sb) {
-                            *x += y;
-                        }
-                        (ta + tb, sa)
-                    },
-                );
+            let (total_sim, sums) = pair_sums(k, |i, j| sim(component[i], component[j]));
             let pairs = k * (k - 1) / 2;
-            let strength = if pairs > 0 { total_sim / pairs as f32 } else { 1.0 };
+            let strength = if pairs > 0 { (total_sim / pairs as f64) as f32 } else { 1.0 };
             // the highest average; a tie goes to the smallest index (the matrix version took whichever
             // its traversal met last, an order this one no longer reproduces)
             let representative = sums
@@ -252,6 +258,21 @@ mod tests {
     //! Pure vector-math tests. No model, no pool — just the relevance math the
     //! adapter-produced vectors are scored with.
     use super::*;
+
+    // what this catches (Codex on #6229, the 5090: 12,000 identical vectors scored 0.466, not 1): a
+    // cluster's pair total accumulated in f32, which stops gaining past 2^24, so a large cluster's
+    // strength (and its representative's average) comes out wrong and themes mis-rank. 6,000 members
+    // give ~18M pairs, past 2^24, with every similarity 1: the total must be exactly the pair count.
+    #[test]
+    fn a_large_clusters_pair_sums_stay_exact_past_f32s_range() {
+        let k = 6_000usize;
+        let (total, sums) = pair_sums(k, |_, _| 1.0);
+        let pairs = (k * (k - 1) / 2) as f64;
+        assert!(pairs > f64::from(1u32 << 24), "test: the cluster is past f32's exact range");
+        assert_eq!(total, pairs, "every pair counted exactly");
+        assert_eq!((total / pairs) as f32, 1.0, "so identical members score a strength of exactly 1");
+        assert!(sums.iter().all(|&s| s == (k - 1) as f64), "and each member's sum is its k-1 pairs");
+    }
 
     #[test]
     fn cosine_identical_is_one() {
