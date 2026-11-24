@@ -64,6 +64,11 @@ pub(crate) enum Heard {
     Learned { position: Position, steps: u64, loss: Option<f64> },
     /// `position`'s lesson committed nothing: it may be told again.
     Again { position: Position },
+    /// `position`'s lesson is longer than the seat was measured for (it needs `need` tokens). The
+    /// trainer checkpoints what the seat learned and commits it on [`Heard::Saved`], then releases
+    /// the seat and measures a new one sized for that lesson, so nothing learned is replayed and the
+    /// long lesson stays pending (Codex on #6255).
+    TooLong { position: Position, need: std::num::NonZeroU32 },
     /// A lesson was refused (the shadow is as it was): the bucket defers.
     StepRefused { position: Position, why: Arc<str> },
     /// The shadow's effects are uncertain: Release was told and its volatile progress is dropped.
@@ -273,6 +278,7 @@ impl SeatRun {
                 Heard::Learned { position, steps: steps.get(), loss: *loss }
             }
             StepOutcome::Unchanged => Heard::Again { position },
+            StepOutcome::TooLong { need } => Heard::TooLong { position, need: *need },
             StepOutcome::Uncertain { .. } => self.uncertain(port),
             StepOutcome::Refused { why } => Heard::StepRefused { position, why: Arc::clone(why) },
         })

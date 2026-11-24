@@ -71,7 +71,7 @@ fn guard() -> (Box<Guard>, Arc<AtomicBool>) {
 fn measured(port: &Port) -> SeatRun {
     let shadow = ShadowSource::Fresh(FreshShadow { name: "s.gguf".into(), rank: 8, alpha: 16.0, targets: vec!["attn_q".into()], top_layers: 4, seed: 7 });
     let optimizer = Optimizer::AdamW { learning_rate: 1e-4, beta1: 0.9, beta2: 0.999, eps: 1e-8, weight_decay: 0.0 };
-    let measure = Measure { seat: SeatId(Uuid::new_v4()), mind: PersonaId(Uuid::new_v4()), shadow, optimizer, reply_rows: NonZeroU32::MIN };
+    let measure = Measure { seat: SeatId(Uuid::new_v4()), mind: PersonaId(Uuid::new_v4()), shadow, optimizer, sized_for: lesson() };
     SeatRun::measure(port, measure).expect("test: the port is open")
 }
 
@@ -319,4 +319,39 @@ fn a_kept_seat_command_leaves_the_seat_where_it_was() {
     run.seat(&port, guard().0, std::iter::empty()).expect("test: back to loaded, so it seats again");
     assert_eq!(run.hear(&port, &Said::Seat { seat: id, state: SeatState::Seated { optimizer: OptimizerStart::Cold } }), Some(Heard::Seated { optimizer: OptimizerStart::Cold }));
     assert!(run.ready());
+}
+
+// what this catches (Codex on #6255): a lesson too long for its seat that loses or replays what the
+// seat learned before it. Short A learns, oversize B answers TooLong; the trainer checkpoints, the
+// Saved commits A exactly once, the seat releases, and a new seat sized for B starts with B still
+// pending and nothing of A left volatile to learn twice.
+#[test]
+fn a_lesson_too_long_commits_what_was_learned_before_the_seat_is_measured_again() {
+    let port = Port::default();
+    let mut run = seated(&port);
+    let id = run.id();
+    let submission = Uuid::new_v4();
+    let a = run.learn(&port, Position { submission, learned: 0 }, lesson(), guard().0).expect("test: seated");
+    run.hear(&port, &Said::Step { seat: id, step: a, outcome: learned(1, 0.5) });
+    let b = run.learn(&port, Position { submission, learned: 1 }, lesson(), guard().0).expect("test: seated");
+    let need = NonZeroU32::new(4_096).expect("test: nonzero");
+    assert_eq!(
+        run.hear(&port, &Said::Step { seat: id, step: b, outcome: StepOutcome::TooLong { need } }),
+        Some(Heard::TooLong { position: Position { submission, learned: 1 }, need })
+    );
+    assert_eq!(run.progress().get(&submission), Some(&1), "A is learned and still volatile; B is not");
+
+    assert!(run.checkpoint(&port, PathBuf::from("/gen/1"), Arc::from("b")).expect("test: B is answered, the seat is ready"));
+    assert_eq!(
+        run.hear(&port, &Said::Generation { seat: id, outcome: GenerationOutcome::Saved { into: PathBuf::from("/gen/1"), steps: 1 } }),
+        Some(Heard::Saved { into: PathBuf::from("/gen/1"), steps: 1, positions: vec![Position { submission, learned: 1 }] }),
+        "A is committed exactly once"
+    );
+    assert!(run.progress().is_empty(), "nothing volatile is left to replay");
+    run.release(&port).expect("test: open");
+    assert_eq!(run.hear(&port, &Said::Seat { seat: id, state: SeatState::Released }), Some(Heard::Released));
+
+    let resized = seated(&port);
+    assert!(resized.progress().is_empty(), "the new seat starts cold, with B (position 1) still pending");
+    assert_ne!(resized.id(), id);
 }
