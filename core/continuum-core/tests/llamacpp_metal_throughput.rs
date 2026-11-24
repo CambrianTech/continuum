@@ -111,8 +111,6 @@ async fn qwen35_4b_metal_throughput_via_bundled_llamacpp() {
         n_seq_max: 1,
         n_ubatch: 128,
         flash_attn: FlashAttn::Disabled,
-        fused_gdn_ar: false,
-        fused_gdn_ch: false,
         ..Default::default()
     };
     let backend = LlamaCppBackend::load(config).expect("failed to load llama.cpp backend");

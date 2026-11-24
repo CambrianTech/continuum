@@ -184,6 +184,8 @@ impl MtmdContext {
                 media_bytes.as_ptr(),
                 media_bytes.len(),
                 false,
+                // Upstream's defaults: the options carry only video decoding, unused for images/audio.
+                sys::mtmd_helper_init_opt_default(),
             )
         };
         let bitmap = NonNull::new(wrapper.bitmap).ok_or_else(|| {

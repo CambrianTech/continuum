@@ -120,12 +120,10 @@ extern "C" int continuum_chat_render_new(const continuum_chat *chat, const char 
 
         auto render = std::make_unique<continuum_chat_render>();
         render->params = common_chat_templates_apply(chat->templates.get(), inputs);
+        // As upstream's common_chat_session sets it up: the format and generation prompt, then the
+        // template's own PEG parser (reasoning and tool calls are the template's, set in `inputs`).
         render->parser = common_chat_parser_params(render->params);
-        render->parser.reasoning_format = inputs.reasoning_format;
-        render->parser.parse_tool_calls = true;
-        if (!render->params.parser.empty()) {
-            render->parser.parser.load(render->params.parser);
-        }
+        render->parser.parser = render->params.parser;
         reply->out = render.release();
     }, reply);
 }
@@ -141,7 +139,7 @@ extern "C" int continuum_chat_render_describe(const continuum_chat_render *rende
     return guarded([&] {
         const auto &params = render->params;
         const common_json description = {
-            {"prompt", params.prompt},
+            {"prompt", params.prompt.str()},
             {"generation_prompt", params.generation_prompt},
             {"additional_stops", params.additional_stops},
         };
@@ -154,18 +152,18 @@ extern "C" int continuum_chat_render_describe(const continuum_chat_render *rende
 extern "C" int continuum_chat_render_parse(const continuum_chat_render *render, const continuum_chat_utterance *said,
         continuum_chat_reply *reply) noexcept {
     return guarded([&] {
-        const auto message = common_chat_parse(std::string(said->text, said->length), said->partial != 0, render->parser);
+        const auto message = common_chat_parse(common_chat_input(std::string(said->text, said->length)), said->partial != 0, render->parser);
         reply->out = owned(message.to_json_oaicompat().dump());
     }, reply);
 }
 
-// A content-only render without a model, for tests of the boundary itself.
-extern "C" int continuum_chat_render_content_only(int reasoning, continuum_chat_reply *reply) noexcept {
+// A content-only render without a model, for tests of the boundary itself (upstream's content-only
+// parser is pure content: reasoning is a template's, so it takes no reasoning format).
+extern "C" int continuum_chat_render_content_only(continuum_chat_reply *reply) noexcept {
     return guarded([&] {
         auto render = std::make_unique<continuum_chat_render>();
         render->params.format = COMMON_CHAT_FORMAT_CONTENT_ONLY;
         render->parser = common_chat_parser_params(render->params);
-        render->parser.reasoning_format = reasoning_format(reasoning);
         reply->out = render.release();
     }, reply);
 }

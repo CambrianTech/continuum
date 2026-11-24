@@ -377,8 +377,6 @@ impl LlamaCppAdapter {
             // The one-off (multimodal) context only; the persona scheduler's context owns its own
             // attention kernel (driver.rs), since its copy-out requires it.
             flash_attn: FlashAttn::Disabled,
-            fused_gdn_ar: false,
-            fused_gdn_ch: false,
             type_k: active_kv.k,
             type_v: active_kv.v,
             ..Default::default()
