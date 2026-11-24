@@ -35,19 +35,21 @@ impl TrainingTriggerState {
         Fut: std::future::Future<Output = T> + Send + 'static,
     {
         self.require_ready()?; // a bucket's operation needs recovered state; shutdown is rechecked under the lock
-        let (state, persona) = (self.clone(), Some(key.persona_id));
-        self.run_operation(kind, persona, async move {
-            let _lease = lease;
-            operation(state, key).await
-        })
-        .await
+        let state = self.clone();
+        let persona = Some(key.persona_id);
+        Ok(self
+            .run_operation(kind, persona, async move {
+                let _lease = lease;
+                operation(state, key).await
+            })
+            .await?)
     }
 
     /// Run `operation` as an owned operation: admitted only while the trigger is ready, held in
     /// `operations` so shutdown's join waits for it, named for its kind. What every owned operation
     /// runs through, a bucket's or the trainer's recovery pass, which holds no bucket (Codex on #6240:
     /// a pass outside `operations` let shutdown return while its storage read went on).
-    pub(crate) async fn run_operation<T, Fut>(self: &Arc<Self>, kind: super::super::OwnedKind, persona: Option<Uuid>, operation: Fut) -> Result<T, String>
+    pub(crate) async fn run_operation<T, Fut>(self: &Arc<Self>, kind: super::super::OwnedKind, persona: Option<Uuid>, operation: Fut) -> Result<T, OperationRefused>
     where
         T: Send + 'static,
         Fut: std::future::Future<Output = T> + Send + 'static,
@@ -58,7 +60,7 @@ impl TrainingTriggerState {
             // under the lock shutdown drains: admitted before it, or refused. Readiness is the caller's:
             // the recovery pass runs before it to retry an interrupted schema setup.
             if self.stopping.load(Ordering::Acquire) {
-                return Err("training-trigger is shutting down".into());
+                return Err(OperationRefused::ShuttingDown);
             }
             while let Some(joined) = operations.try_join_next() {
                 if let Err(error) = joined {
@@ -70,7 +72,7 @@ impl TrainingTriggerState {
                 let _ = send.send(result); // a disconnected caller does not cancel ownership
             }));
         }
-        receive.await.map_err(|_| "training owner operation ended without a result; inspect durable status before retry".into())
+        receive.await.map_err(|_| OperationRefused::Lost)
     }
 
     /// Admit no new owned operation, and count the ones still running.
@@ -363,3 +365,19 @@ impl TrainingTriggerState {
 }
 
 
+
+/// Why an owned operation did not run to its result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub(crate) enum OperationRefused {
+    #[error("training-trigger is shutting down")]
+    ShuttingDown,
+    #[error("training owner operation ended without a result; inspect durable status before retry")]
+    Lost,
+}
+
+/// The bucket operations' existing text contract, at its one boundary.
+impl From<OperationRefused> for String {
+    fn from(refused: OperationRefused) -> Self {
+        refused.to_string()
+    }
+}

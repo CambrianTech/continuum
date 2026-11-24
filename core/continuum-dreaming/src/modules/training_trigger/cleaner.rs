@@ -202,7 +202,8 @@ impl Component for Cleaner {
                     // its seat is gone and it keeps what it learned: a sweep may take it, a release may not
                     Arc::make_mut(&mut self.settled).insert(name);
                 } else {
-                    let (dir, held) = (self.train_dir.clone(), Arc::clone(&self.held));
+                    let dir = self.train_dir.clone();
+                    let held = Arc::clone(&self.held);
                     ctx.need(Urgency::Want);
                     ctx.off(move || release(&name, &dir, &held), |released| match released {
                         Released::Removed(freed) => Wake::Done { what: "settled", freed },
@@ -220,7 +221,10 @@ impl Component for Cleaner {
                     return;
                 }
                 let want = used.saturating_sub((drive.total_bytes as f64 * DiskPressureLevel::WARNING_AT) as u64);
-                let (dir, held, settled, booted) = (self.train_dir.clone(), Arc::clone(&self.held), Arc::clone(&self.settled), self.booted);
+                let dir = self.train_dir.clone();
+                let held = Arc::clone(&self.held);
+                let settled = Arc::clone(&self.settled);
+                let booted = self.booted;
                 self.sweeping = true;
                 ctx.need(Urgency::Want);
                 ctx.off(move || sweep(&dir, &held, &Sweepable { booted, settled: &settled }, want), |freed| Wake::Done { what: "swept", freed });

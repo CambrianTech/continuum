@@ -60,6 +60,11 @@ pub(crate) struct TrainerOut {
 }
 
 impl TrainerOut {
+    /// Say the shadows live seats hold now: the one place the held set is said.
+    fn say_held(&mut self) {
+        self.seated.say(Seated(self.held.clone()));
+    }
+
     /// Say that the newest accepted example is `sequence`.
     pub(crate) fn arrived(&mut self, sequence: u64) {
         self.arrivals.say(Arrivals(sequence));
@@ -68,19 +73,19 @@ impl TrainerOut {
     /// A seat now holds `shadow`.
     pub(crate) fn seated(&mut self, shadow: PathBuf) {
         self.held.insert(shadow);
-        self.seated.say(Seated(self.held.clone()));
+        self.say_held();
     }
 
     /// A seat let `shadow` go outside a page-out (a quarantine): no seat holds it now.
     pub(crate) fn released(&mut self, shadow: PathBuf) {
         self.held.remove(&shadow);
-        self.seated.say(Seated(self.held.clone()));
+        self.say_held();
     }
 
     /// A seat let `shadow` go at page-out, having learned `learned` examples and published or not.
     pub(crate) fn settled(&mut self, shadow: PathBuf, learned: u32, published: bool) {
         self.held.remove(&shadow);
-        self.seated.say(Seated(self.held.clone()));
+        self.say_held();
         self.settled.emit(Settled { shadow, learned, published });
     }
 }
@@ -125,9 +130,12 @@ impl Component for Trainer {
         let state = Arc::clone(&self.state);
         // an owned operation, so shutdown's join waits for a pass in flight and refuses one after it
         let pass = self.state.run_operation(OwnedKind::Recover, None, async move { state.recover_pass().await }).await;
-        if let Err(error) = pass.and_then(|ran| ran) {
-            continuum_base::probe!(class = "training.pass.failed", woke_by, error = %error,
-                "a recovery pass failed; durable work stays owned and the next wake tries again");
+        match pass {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => continuum_base::probe!(class = "training.pass.failed", woke_by, error = %error,
+                "a recovery pass failed; durable work stays owned and the next wake tries again"),
+            Err(refused) => continuum_base::probe!(class = "training.pass.refused", woke_by, refused = %refused,
+                "a recovery pass was not admitted or lost its result; the next wake tries again"),
         }
         ctx.need(Urgency::Content);
     }

@@ -28,16 +28,16 @@ impl ServingState {
     /// serving topic is already claimed is refused: one writer.
     pub fn on(bus: &Bus, initial: ServingSnapshot) -> Result<Self, Taken> {
         let mut said = Source::on(bus, SERVING_TOPIC, Key::ONE, "serving-state")?;
-        said.say(initial.clone());
         let (value, _) = watch::channel(initial);
+        say_now(&mut said, &value);
         Ok(Self { inner: Arc::new(Inner { said: parking_lot::Mutex::new(said), value }) })
     }
 
     /// Replace the state; returns the one it replaced.
     pub fn send_replace(&self, next: ServingSnapshot) -> ServingSnapshot {
         let mut said = self.inner.said.lock();
-        let prior = self.inner.value.send_replace(next.clone());
-        said.say(next);
+        let prior = self.inner.value.send_replace(next);
+        say_now(&mut said, &self.inner.value);
         prior
     }
 
@@ -45,7 +45,7 @@ impl ServingState {
     pub fn send_modify(&self, change: impl FnOnce(&mut ServingSnapshot)) {
         let mut said = self.inner.said.lock();
         self.inner.value.send_modify(change);
-        said.say(self.inner.value.borrow().clone());
+        say_now(&mut said, &self.inner.value);
     }
 
     /// Change the state in place when `change` says it changed it; said only then.
@@ -53,7 +53,7 @@ impl ServingState {
         let mut said = self.inner.said.lock();
         let changed = self.inner.value.send_if_modified(change);
         if changed {
-            said.say(self.inner.value.borrow().clone());
+            say_now(&mut said, &self.inner.value);
         }
         changed
     }
@@ -67,6 +67,12 @@ impl ServingState {
     pub fn subscribe(&self) -> watch::Receiver<ServingSnapshot> {
         self.inner.value.subscribe()
     }
+}
+
+/// Say on the bus what `value` holds now: the one place the serving state is said (called under the
+/// writer's lock, so the bus's order is the order of the changes).
+fn say_now(said: &mut Source<ServingSnapshot>, value: &watch::Sender<ServingSnapshot>) {
+    said.say(value.borrow().clone());
 }
 
 #[cfg(test)]
