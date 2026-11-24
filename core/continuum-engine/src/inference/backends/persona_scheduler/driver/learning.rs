@@ -19,15 +19,26 @@ use llama::{Finished, FreshGeometry, Label, Optimizer, ReplyAdmission, Shadow, W
 use super::Driver;
 use crate::inference::backends::persona_scheduler::lesson::Rendered;
 use crate::inference::learning::{
-    say, GenerationOutcome, Learning as Told, Measure, OptimizerStart, Said, Seat, SeatId, SeatState, ShadowSource, StepId, StepOutcome,
+    say, GenerationOutcome, Learning as Told, OptimizerStart, Said, Seat, SeatId, SeatState, ShadowSource, StepId, StepOutcome,
 };
 
 /// What reaches the driver: every verb as told, except a lesson, which arrives rendered.
 pub(crate) enum Job {
-    /// Measure, Load, Seat, Checkpoint or Release, as the trainer told it.
+    /// Load, Seat, Checkpoint or Release, as the trainer told it.
     Told(Told),
     /// A lesson rendered with her template on the submitter's thread.
     Learn(Lesson),
+    /// A Measure, its lesson rendered on the submitter's thread into the rows it is sized for.
+    Measure(Measuring),
+}
+
+/// A seat to measure, its lesson rendered into the rows its workspace is sized for.
+pub(crate) struct Measuring {
+    pub(crate) seat: SeatId,
+    pub(crate) mind: PersonaId,
+    pub(crate) shadow: ShadowSource,
+    pub(crate) optimizer: Optimizer,
+    pub(crate) reply_rows: NonZeroU32,
 }
 
 /// One lesson for a seat, rendered, with its workspace admission view.
@@ -44,6 +55,7 @@ impl Job {
         let why: Arc<str> = Arc::from(why);
         match self {
             Job::Learn(Lesson { seat, step, .. }) => say(Said::Step { seat, step, outcome: StepOutcome::Refused { why } }),
+            Job::Measure(Measuring { seat, .. }) => say(Said::Seat { seat, state: SeatState::Refused { why } }),
             Job::Told(Told::Learn(learn)) => say(Said::Step { seat: learn.seat, step: learn.step, outcome: StepOutcome::Refused { why } }),
             Job::Told(Told::Measure(measure)) => say(Said::Seat { seat: measure.seat, state: SeatState::Refused { why } }),
             // A seat told to load, seat or release already holds what it holds: kept, never ended.
@@ -105,7 +117,8 @@ impl Driver<'_, '_> {
     pub(super) fn learn_next(&mut self, go_on: &mut dyn FnMut() -> bool) {
         let Some(job) = self.learning.waiting.pop_front() else { return };
         match job {
-            Job::Told(Told::Measure(measure)) => self.measure(measure),
+            Job::Measure(sized) => self.measure(sized),
+            told @ Job::Told(Told::Measure(_)) => told.refuse("the measure reached the engine unrendered"),
             Job::Told(Told::Load { seat }) => self.load(seat),
             Job::Told(Told::Seat(seated)) => self.seat(seated),
             Job::Told(Told::Checkpoint { seat, into, binding }) => self.checkpoint(seat, &into, &binding),
@@ -133,8 +146,8 @@ impl Driver<'_, '_> {
         say(Said::Seat { seat, state: SeatState::Kept { why: why.into() } });
     }
 
-    fn measure(&mut self, measure: Measure) {
-        let Measure { seat, mind, shadow, optimizer, reply_rows } = measure;
+    fn measure(&mut self, sized: Measuring) {
+        let Measuring { seat, mind, shadow, optimizer, reply_rows } = sized;
         if self.learning.seats.contains_key(&seat) {
             return say(Said::Seat { seat, state: SeatState::Kept { why: "the seat is already measured".into() } });
         }
@@ -312,6 +325,9 @@ impl Driver<'_, '_> {
             return refused("the lesson has no reply past what she holds".into());
         };
         if reply.tokens.len() > seated.reply_rows.get() as usize {
+            if let Some(need) = u32::try_from(reply.tokens.len()).ok().and_then(NonZeroU32::new) {
+                return (StepOutcome::TooLong { need }, None);
+            }
             return refused(format!("{} reply tokens past the {} the seat was measured for", reply.tokens.len(), seated.reply_rows));
         }
         let learned = match self.engine.attach_shadow(mind, seated.shadow) {

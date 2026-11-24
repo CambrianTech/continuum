@@ -3,8 +3,8 @@
 //! trainer's thread, so the engine thread never renders or tokenizes.
 
 use crate::inference::backends::persona_scheduler::lesson::{self, LessonRefusal};
-use crate::inference::backends::persona_scheduler::{LearningJob, LearningLesson};
-use crate::inference::learning::{say, speaks, LearnPort, Learning, Said, StepOutcome, Unavailable};
+use crate::inference::backends::persona_scheduler::{LearningJob, LearningLesson, LearningMeasuring};
+use crate::inference::learning::{say, speaks, LearnPort, Learning, Said, SeatState, StepOutcome, Unavailable};
 
 use super::LlamaCppBackend;
 
@@ -35,6 +35,22 @@ impl LearnPort for LlamaCppBackend {
                     Ok(rendered) => LearningJob::Learn(LearningLesson { seat: learn.seat, step: learn.step, rendered, admission: learn.admission }),
                     Err(refused) => {
                         say(Said::Step { seat: learn.seat, step: learn.step, outcome: StepOutcome::Refused { why: refused.to_string().into() } });
+                        return Ok(());
+                    }
+                }
+            }
+            Learning::Measure(measure) => {
+                // Sized at the whole rendered lesson: the most a reply on it can be (from no prefix).
+                let rows = lesson::render(&measure.sized_for, |request| self.rendered_prompt(request), |text| self.model.tokenize(text, true, true).map_err(LessonRefusal::Template))
+                    .map(|rendered| u32::try_from(rendered.tokens.len()).ok().and_then(std::num::NonZeroU32::new));
+                match rows {
+                    Ok(Some(reply_rows)) => LearningJob::Measure(LearningMeasuring { seat: measure.seat, mind: measure.mind, shadow: measure.shadow, optimizer: measure.optimizer, reply_rows }),
+                    Ok(None) => {
+                        say(Said::Seat { seat: measure.seat, state: SeatState::Refused { why: "the lesson it is sized for renders to no rows a seat can hold".into() } });
+                        return Ok(());
+                    }
+                    Err(refused) => {
+                        say(Said::Seat { seat: measure.seat, state: SeatState::Refused { why: refused.to_string().into() } });
                         return Ok(());
                     }
                 }

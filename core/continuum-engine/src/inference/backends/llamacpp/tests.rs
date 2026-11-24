@@ -196,9 +196,8 @@
             let seat = SeatId(uuid::Uuid::new_v4());
             let fresh = crate::inference::llama_server::FreshShadow { name: "validator".into(), rank: 8, alpha: 16.0, targets: vec!["attn_q".into(), "attn_v".into()], top_layers: 0, seed: 42 };
             let optimizer = llama::Optimizer::AdamW { learning_rate: 5e-3, beta1: 0.9, beta2: 0.999, eps: 1e-8, weight_decay: 0.0 };
-            let reply_rows = std::num::NonZeroU32::new(64).expect("test: nonzero");
             let port: &dyn LearnPort = &backend;
-            assert!(port.tell(Learning::Measure(Measure { seat, mind: continuum_persona_engine::persona::PersonaId(her), shadow: ShadowSource::Fresh(fresh), optimizer, reply_rows })).is_ok());
+            assert!(port.tell(Learning::Measure(Measure { seat, mind: continuum_persona_engine::persona::PersonaId(her), shadow: ShadowSource::Fresh(fresh), optimizer, sized_for: lesson() })).is_ok());
             match next(&mut heard).await {
                 Said::Seat { state: SeatState::Measured { weights }, .. } => assert!(weights.iter().map(|row| row.bytes).sum::<u64>() > 0, "the weights are measured"),
                 other => panic!("expected Measured, heard {other:?}"),
@@ -244,7 +243,7 @@
             // A shadow loaded but never seated is released whole, and a seat never told is released too.
             let loaded = SeatId(uuid::Uuid::new_v4());
             let fresh = crate::inference::llama_server::FreshShadow { name: "loaded".into(), rank: 4, alpha: 8.0, targets: vec!["attn_q".into()], top_layers: 0, seed: 7 };
-            assert!(port.tell(Learning::Measure(Measure { seat: loaded, mind: continuum_persona_engine::persona::PersonaId(her), shadow: ShadowSource::Fresh(fresh), optimizer, reply_rows })).is_ok());
+            assert!(port.tell(Learning::Measure(Measure { seat: loaded, mind: continuum_persona_engine::persona::PersonaId(her), shadow: ShadowSource::Fresh(fresh), optimizer, sized_for: lesson() })).is_ok());
             assert!(matches!(next(&mut heard).await, Said::Seat { state: SeatState::Measured { .. }, .. }));
             assert!(port.tell(Learning::Load { seat: loaded }).is_ok());
             assert!(matches!(next(&mut heard).await, Said::Seat { state: SeatState::Loaded { .. }, .. }));
