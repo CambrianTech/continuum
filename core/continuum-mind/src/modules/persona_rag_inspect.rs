@@ -148,10 +148,13 @@ pub struct RagInspectItem {
     pub content: String,
     /// Who said it; absent when the source names no peer (never a placeholder).
     #[ts(optional)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub peer_id_shown: Option<String>,
     #[ts(optional, type = "number")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub lamport: Option<u64>,
     #[ts(optional, type = "number")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub age_s: Option<u64>,
     /// The item has a coarser summary level her view can fall back to.
     pub has_summary: bool,
@@ -526,6 +529,17 @@ mod tests {
             ),
         });
         PersonaRagInspectModule::new(resolver)
+    }
+
+    // what this catches: Codex on #6246 f701c5be: the generated RagInspectItem.ts marks peer, lamport
+    // and age optional (absent, never null), so an item without them must leave the keys out.
+    #[test]
+    fn an_item_without_peer_lamport_or_age_omits_the_keys() {
+        let item = RagInspectItem { index: 0, tokens: 1, content: "x".into(), peer_id_shown: None, lamport: None, age_s: None, has_summary: false, has_pointer: false };
+        let wire = serde_json::to_value(&item).unwrap();
+        for key in ["peerIdShown", "lamport", "ageS"] {
+            assert!(wire.get(key).is_none(), "{key} is absent, not null: {wire}");
+        }
     }
 
     // ── command surface ───────────────────────────────────────────
