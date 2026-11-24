@@ -387,18 +387,18 @@ mod tests {
         assert!(!second.exists(), "released after the seated update dropped it too");
 
         // what this catches too (Codex on #6240): a settlement whose release fails (a transient error),
-        // its name then forgotten, so nothing ever retries it. Here the release fails on a read-only
-        // dir; once writable again, the next sweep under pressure takes it.
-        #[cfg(unix)]
+        // its name then forgotten, so nothing ever retries it. The release fails on a directory at the
+        // shadow's name (a removal no platform or privilege completes); once a regular file stands
+        // there, the next sweep under pressure takes it.
         {
             use continuum_kernel::system_resources::drives::{DriveInfo, DriveKind, DriveRole};
-            use std::os::unix::fs::PermissionsExt;
-            let third = write(3);
-            std::fs::set_permissions(&train, std::fs::Permissions::from_mode(0o555)).expect("test: read-only");
+            let third = train.join(shadow_file(3));
+            std::fs::create_dir(&third).expect("test: a directory at the shadow's name");
             settled.emit(Settled { shadow: third.clone(), learned: 0, published: false });
             handled(10).await; // the settlement, and its release that failed
-            std::fs::set_permissions(&train, std::fs::Permissions::from_mode(0o755)).expect("test: writable");
-            assert!(third.exists(), "the failed release kept it");
+            assert!(third.is_dir(), "the failed release kept it");
+            std::fs::remove_dir(&third).expect("test: the directory goes");
+            std::fs::write(&third, b"shadow").expect("test: a regular shadow in its place");
             let mut disk = bus.publisher::<Volumes>(DISK, Key::ONE).expect("test: the disk topic");
             let full = DriveInfo { mount: dir.path().to_path_buf(), total_bytes: 100, available_bytes: 1, role: DriveRole::System, kind: DriveKind::Flash };
             disk.publish(Volumes(vec![full]), by());
