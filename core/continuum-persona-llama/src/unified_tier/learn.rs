@@ -31,17 +31,33 @@ fn reported(mind: MindId, reason: &'static str, refusal: impl std::fmt::Display)
 }
 
 impl UnifiedTier<'_, '_> {
-    /// Attach her genes and `shadow` together (the shadow at full scale), until the next decode
-    /// applies her own genes again.
+    /// Attach her genes and `shadow` together (the shadow at full scale) for one measure or reply.
+    /// [`Self::detach`] puts her own genes back before the shadow can be dropped.
     fn attach(&mut self, mind: MindId, shadow: &Shadow) -> Result<(), TierRefusal> {
-        // Taken, not borrowed: whatever happens next, the next decode applies her genes again.
-        let applied = self.applied_genes.take();
-        let mut genes: Vec<(&LoraAdapter, f32)> = match &applied {
-            Some(applied) => applied.iter().map(|(adapter, scale)| (adapter.as_ref(), *scale)).collect(),
-            None => Vec::new(),
-        };
+        let applied = self.applied_genes.clone();
+        let mut genes = genes(applied.as_deref());
         genes.push((shadow.adapter.as_ref(), 1.0));
         self.ctx.set_loras(&genes).map_err(|message| reported(mind, "the engine refused her genes with the shadow", message))
+    }
+
+    /// Her own genes back on the context, so no released shadow stays attached to it. A refusal
+    /// clears what the context believes applied, so the next decode applies her genes again.
+    fn detach(&mut self, mind: MindId) -> Result<(), TierRefusal> {
+        let applied = self.applied_genes.clone();
+        let genes = genes(applied.as_deref());
+        let back = if genes.is_empty() { self.ctx.clear_loras() } else { self.ctx.set_loras(&genes) };
+        back.map_err(|message| {
+            self.applied_genes = None;
+            reported(mind, "the engine could not put her genes back after the shadow", message)
+        })
+    }
+}
+
+/// The genes applied for her decode, as the context takes them.
+fn genes(applied: Option<&[(std::sync::Arc<LoraAdapter>, f32)]>) -> Vec<(&LoraAdapter, f32)> {
+    match applied {
+        Some(applied) => applied.iter().map(|(adapter, scale)| (adapter.as_ref(), *scale)).collect(),
+        None => Vec::new(),
     }
 }
 
@@ -57,9 +73,15 @@ impl Learns for UnifiedTier<'_, '_> {
         self.settle()?;
         self.attach(mind, shadow)?;
         let mut learner = Learner::new(self.ctx);
-        let optimizer = learner.measure_optimizer(shadow).map_err(|refusal| reported(mind, "the engine could not measure the optimizer", refusal))?;
-        let workspace = learner.measure_workspace(shadow, reply_rows).map_err(|refusal| reported(mind, "the engine could not measure the workspace", refusal))?;
-        Ok((optimizer, workspace))
+        let measured = learner
+            .measure_optimizer(shadow)
+            .map_err(|refusal| reported(mind, "the engine could not measure the optimizer", refusal))
+            .and_then(|optimizer| {
+                let workspace = learner.measure_workspace(shadow, reply_rows).map_err(|refusal| reported(mind, "the engine could not measure the workspace", refusal))?;
+                Ok((optimizer, workspace))
+            });
+        self.detach(mind)?;
+        measured
     }
 
     fn save(&mut self, mind: MindId, shadow: &Shadow, into: &Path, binding: &str) -> Result<u64, TierRefusal> {
@@ -94,17 +116,27 @@ impl Learns for UnifiedTier<'_, '_> {
         }
         let native = Reply { seq: stream.seq(), n_cached: reply.n_cached, tokens: &reply.tokens, labels: &reply.labels, restore: &reply.restore };
         let mut learner = Learner::new(self.ctx);
-        let mut run = learner.begin(shadow, admission, &native).map_err(|refused| (reported(mind, "the reply did not begin", refused.refusal), refused.admission))?;
-        loop {
-            if !go_on() {
-                run.drain();
+        let learned = match learner.begin(shadow, admission, &native) {
+            Ok(mut run) => {
+                loop {
+                    if !go_on() {
+                        run.drain();
+                    }
+                    match run.step() {
+                        Ok(Progress::More) => {}
+                        // Done, or a refusal: finish says which, and quarantines an unconfirmed restoration.
+                        Ok(Progress::Done) | Err(_) => break,
+                    }
+                }
+                Ok(run.finish())
             }
-            match run.step() {
-                Ok(Progress::More) => {}
-                // Done, or a refusal: finish says which, and quarantines an unconfirmed restoration.
-                Ok(Progress::Done) | Err(_) => break,
-            }
+            Err(refused) => Err((reported(mind, "the reply did not begin", refused.refusal), refused.admission)),
+        };
+        // Her genes back whatever the reply did: a shadow is never left attached for a release to
+        // free under the context. A refusal here already marked her genes for the next decode.
+        if let Err(still) = self.detach(mind) {
+            continuum_base::probe!(class = "persona.learn.detach_refused", refusal = %still, "the shadow stays attached until her next decode applies her genes");
         }
-        Ok(run.finish())
+        learned
     }
 }
