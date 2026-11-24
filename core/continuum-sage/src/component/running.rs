@@ -41,11 +41,12 @@ impl<P: Component> Running<P> {
         Self { teller: Teller { input }, worker, windows }
     }
 
-    /// Its window on `topic`, for the one owner that reserves room in it before producers send:
-    /// a producer that must not lose a record grows the window first, synchronously. None when it
-    /// hears no such topic.
-    pub fn window(&self, topic: crate::dataflow::TopicName) -> Option<std::sync::Arc<dyn crate::dataflow::Resize>> {
-        self.windows.lock().get(&topic).cloned()
+    /// Its window on `topic`, taken by the one owner that reserves room in it before producers send:
+    /// a producer that must not lose a record grows the window first, synchronously. Taken once: the
+    /// taker becomes the window's only sizer (the component's own `Ctx::resize` no longer reaches it),
+    /// and a second take finds nothing. None when it hears no such topic, or it was taken.
+    pub fn take_window(&self, topic: crate::dataflow::TopicName) -> Option<std::sync::Arc<dyn crate::dataflow::Resize>> {
+        self.windows.lock().remove(&topic)
     }
 
     /// Hand the part an act; false once it has stopped.

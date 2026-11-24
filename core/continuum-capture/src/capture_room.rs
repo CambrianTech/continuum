@@ -16,6 +16,8 @@ use continuum_sage::dataflow::Resize;
 /// The node writer's window and what is reserved in it.
 struct Room {
     window: Arc<dyn Resize>,
+    /// The writer behind the window, while it runs.
+    writer: std::sync::Weak<()>,
     /// The records the writer's own measurement says one append can see arrive.
     base: NonZeroUsize,
     /// Slots reserved and not yet freed.
@@ -31,8 +33,8 @@ impl Room {
 static ROOM: OnceLock<parking_lot::Mutex<Room>> = OnceLock::new();
 
 /// Hand the room the node writer's window, sized at `base`; once, by the writer's start.
-pub(crate) fn install(window: Arc<dyn Resize>, base: NonZeroUsize) -> bool {
-    ROOM.set(parking_lot::Mutex::new(Room { window, base, reserved: 0 })).is_ok()
+pub(crate) fn install(window: Arc<dyn Resize>, base: NonZeroUsize, writer: std::sync::Weak<()>) -> bool {
+    ROOM.set(parking_lot::Mutex::new(Room { window, writer, base, reserved: 0 })).is_ok()
 }
 
 /// Why a call got no room.
@@ -40,6 +42,8 @@ pub(crate) fn install(window: Arc<dyn Resize>, base: NonZeroUsize) -> bool {
 pub enum Unreserved {
     #[error("this process runs no node capture writer: nothing would write the call's records")]
     NoWriter,
+    #[error("the node capture writer's worker ended (it panicked, or its runtime shut down): its window would fill with records nothing writes")]
+    WriterGone,
 }
 
 /// One record's place in the node writer's window.
@@ -81,6 +85,9 @@ impl Drop for Slot {
 pub fn reserve<const N: usize>() -> Result<[Slot; N], Unreserved> {
     let room = ROOM.get().ok_or(Unreserved::NoWriter)?;
     let mut room = room.lock();
+    if room.writer.strong_count() == 0 {
+        return Err(Unreserved::WriterGone);
+    }
     room.reserved += N;
     room.fit();
     Ok(std::array::from_fn(|_| Slot { held: Held::Node }))

@@ -81,11 +81,15 @@ struct CaptureWriter {
     last: u64,
     /// The bytes the window may hold, claimed from the node's resource authority (none on a node without one).
     _claim: Option<continuum_kernel::resources::ResidencyGuard<1>>,
+    /// Held for as long as this writer runs: the room sees it through a weak handle, so a writer
+    /// whose worker ended (it panicked, or the runtime it ran on shut down) is seen gone at the next
+    /// reservation, never filled silently.
+    _alive: Arc<()>,
 }
 
 impl CaptureWriter {
     /// The writer for `class`, sized from what it wrote before, its window's bytes claimed as RAM.
-    fn new(class: ClassWriter, bus: &'static Bus) -> Self {
+    fn new(class: ClassWriter, bus: &'static Bus, alive: Arc<()>) -> Self {
         let sizing = sizing(&newest_entries(&class));
         // nothing written yet: no measurement, so no claim until a later start has one
         let bytes = sizing.mean_frame.map(|mean| (mean * sizing.window.get() as f64) as u64);
@@ -103,7 +107,7 @@ impl CaptureWriter {
         // workers, while the writer serves (card 699578cb, slice 5).
         let (moving, into) = (class.clone(), Arc::clone(&logs));
         tokio::task::spawn_blocking(move || crate::jsonl_migration::migrate(&moving, &into));
-        Self { class, bus, logs, sizing, last: 0, _claim }
+        Self { class, bus, logs, sizing, last: 0, _claim, _alive: alive }
     }
 
 }
@@ -197,13 +201,15 @@ pub fn start_node(class: ClassWriter) {
     NODE.get_or_init(|| {
         started = true;
         let bus = continuum_sage::component::node();
-        let writer = CaptureWriter::new(class, bus);
+        let alive = Arc::new(());
+        let gone_when = Arc::downgrade(&alive);
+        let writer = CaptureWriter::new(class, bus, alive);
         let base = writer.sizing.window;
         let running = continuum_sage::component::start(writer, bus, continuum_sage::dataflow::OwnerId(Uuid::nil()), 0);
         // Calls reserve their records in this window before delivering any (capture_room).
-        match running.window(CAPTURE) {
+        match running.take_window(CAPTURE) {
             Some(window) => {
-                crate::capture_room::install(window, base);
+                crate::capture_room::install(window, base, gone_when);
             }
             None => continuum_base::probe!(class = "capture.writer.no_window",
                 "the capture writer hears no capture topic: no call can reserve room, so none is recorded"),
@@ -298,8 +304,11 @@ mod tests {
     // the production path, a sink delivering to the node, losing a reserved record; a reservation
     // that never frees (the window only ever grows); an unspent slot that never frees; or N calls'
     // pairs delivered at once, before the writer runs, losing any of them.
-    #[tokio::test]
-    async fn every_reserved_record_reaches_the_node_writer_and_its_place_is_freed() {
+    #[test]
+    fn every_reserved_record_reaches_the_node_writer_and_its_place_is_freed() {
+        // the writer runs on a runtime of its own, ended below: a reservation after it is refused
+        let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().expect("test: runtime");
+        runtime.block_on(async {
         use continuum_kernel::system_resources::disk_reporters::TrackedDir;
         use continuum_sage::component::{presence_key, Telemetry, TELEMETRY};
 
@@ -331,5 +340,10 @@ mod tests {
             assert_eq!(kinds, vec![FrameKind::Submitted, FrameKind::Terminal], "both of the call's records, in order");
         }
         assert_eq!(crate::capture_room::reserved(), Some(0), "every written record freed its place: the window is back to its base");
+        });
+        drop(runtime);
+        // what this catches too (Fable on #6236): a writer whose runtime ended, its worker gone, still
+        // granting room, so every later record fills a window nothing writes.
+        assert!(matches!(Delivery::Node.reserve::<2>(), Err(crate::capture_room::Unreserved::WriterGone)), "a gone writer grants no room");
     }
 }
