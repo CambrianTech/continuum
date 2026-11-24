@@ -22,6 +22,7 @@ thiserror.workspace = true
 tracing.workspace = true
 ts-rs.workspace = true
 uuid.workspace = true
+airc-core.workspace = true  # ThreadRef names a served request's room events by airc's own typed ids
 
 [features]
 test-fixtures = ["continuum-kernel/test-fixtures"]

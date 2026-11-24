@@ -81,6 +81,20 @@ pub struct SubmittedHead {
     pub cause: String,
     pub cause_root: Option<Uuid>,
     pub model: Option<String>,
+    /// The room thread this request's history was rendered from: its revision and the airc events it
+    /// used, so replay and a dataset can read them back from the room. Absent where the request had
+    /// no thread (and in a frame written before this field existed: none was recorded).
+    #[serde(default)]
+    pub thread: Option<ThreadRef>,
+}
+
+/// Which room thread a request was rendered from (Fable's thread-history slice sets it).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThreadRef {
+    pub room: airc_core::RoomId,
+    pub revision: u64,
+    /// The room events its history rendered, oldest first.
+    pub events: Vec<airc_core::EventId>,
 }
 
 /// A call's end: its typed fields.
@@ -194,6 +208,36 @@ mod tests {
         read(&frame).expect("test: read")
     }
 
+    // what this catches: a captured request that loses the room thread it was rendered from (replay
+    // and a dataset could not name the airc events its history used), or a frame written before the
+    // field existed that no longer reads at all.
+    #[test]
+    fn a_submission_names_its_thread_and_an_older_frame_reads_as_having_none() {
+        let thread = ThreadRef { room: airc_core::RoomId::new(), revision: 7, events: vec![airc_core::EventId::new(), airc_core::EventId::new()] };
+        let head = SubmittedHead {
+            key: CallKey { session_id: Uuid::new_v4(), request_id: "r-t".into() },
+            build_sha: "abc".into(),
+            room_id: Uuid::new_v4(),
+            cycle_id: Some(1),
+            context_window: Some(8192),
+            cause: "chat".into(),
+            cause_root: None,
+            model: None,
+            thread: Some(thread.clone()),
+        };
+        let request = TextGenerationRequest::default();
+        let record = Submission { head: head.clone(), request: &request, replay: None }.record(Uuid::nil(), 1).expect("test: record");
+        let CallFrame::Submitted { head: read, .. } = decoded(record) else { panic!("test: a submission") };
+        assert_eq!(read.thread, Some(thread), "the thread revision and every event it rendered, in order");
+
+        // a header encoded before the field existed (positions, so the array is one element shorter)
+        #[derive(Serialize)]
+        struct Before { key: CallKey, build_sha: String, room_id: Uuid, cycle_id: Option<u64>, context_window: Option<u32>, cause: String, cause_root: Option<Uuid>, model: Option<String> }
+        let before = Before { key: head.key.clone(), build_sha: head.build_sha.clone(), room_id: head.room_id, cycle_id: head.cycle_id, context_window: head.context_window, cause: head.cause.clone(), cause_root: None, model: None };
+        let older: SubmittedHead = rmp_serde::from_slice(&rmp_serde::to_vec(&before).expect("test: encode")).expect("test: an older frame still reads");
+        assert_eq!((older.thread, older.key), (None, head.key), "it recorded no thread, and reads as having none");
+    }
+
     // what this catches: a request that does not come back as it was served (an absent field
     // shifting a positional encoding, a message dropped or reordered, multimodal parts flattened),
     // a response or raw stream lost from its end, or an absent part read as present.
@@ -221,6 +265,7 @@ mod tests {
             cause: "chat".into(),
             cause_root: None,
             model: Some("qwen".into()),
+            thread: None,
         };
         let record = Submission { head: head.clone(), request: &request, replay: None }.record(Uuid::nil(), 7).expect("test: record");
         assert_eq!(record.runs.len(), 2 + 3, "the rest, the replay, one run per message");

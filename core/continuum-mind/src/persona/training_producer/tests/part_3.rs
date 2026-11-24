@@ -51,6 +51,7 @@ use super::*;
             cause: "synthetic",
             cause_root: None,
             replay_of: None,
+            thread: None,
         };
         let mut lease = CaptureLease::start(Arc::new(sink), &call, &request);
         let submitted = lease.cursor().expect("durable submission").to_owned();

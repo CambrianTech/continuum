@@ -125,6 +125,7 @@ fn records(owner: Uuid, line: &str, previous_at: u64) -> Result<(Vec<CaptureReco
                 cause: row.cause,
                 cause_root: row.cause_root,
                 model: row.request.model.clone(),
+                thread: None, // a JSONL row predates threads: none was recorded
             };
             let record = Submission { head, request: &row.request, replay: row.replay_of.as_ref() }.record(owner, row.captured_at_ms)?;
             Ok((vec![record], key, row.captured_at_ms))
@@ -155,6 +156,7 @@ fn records(owner: Uuid, line: &str, previous_at: u64) -> Result<(Vec<CaptureReco
                 cause: row.cause,
                 cause_root: None,
                 model: Some(row.response.model.clone()),
+                thread: None, // a JSONL row predates threads: none was recorded
             };
             let submitted = Submission { head, request: &request, replay: None }.record(owner, row.captured_at_ms)?;
             let ended = TerminalHead { key: key.clone(), status: CallStatus::Legacy, elapsed_ms: 0, error: None };

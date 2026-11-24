@@ -74,6 +74,7 @@ pub(crate) fn record(session: Uuid, request_id: &str, wire: &'static str, reques
         cause: wire,
         cause_root: None,
         replay_of: None,
+        thread: None,
     };
     let lease = CaptureLease::start(sink, &call, request);
     match lease.cursor() {

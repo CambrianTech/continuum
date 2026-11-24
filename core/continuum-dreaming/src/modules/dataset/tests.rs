@@ -133,7 +133,7 @@
         let persona = uuid::Uuid::new_v4();
         let sink: std::sync::Arc<dyn crate::cognition::prompt_capture::PromptCaptureSink> = std::sync::Arc::new(FramePromptCaptureSink::at(&captures_dir, persona));
         let lived = |room: uuid::Uuid, id: &str, user: &str, reply: &str| {
-            let call = PromptCall { request_id: id.into(), persona_id: persona, room_id: room, cycle_id: Some(1), context_window: None, cause: "stimulus", cause_root: None, replay_of: None };
+            let call = PromptCall { request_id: id.into(), persona_id: persona, room_id: room, cycle_id: Some(1), context_window: None, cause: "stimulus", cause_root: None, replay_of: None, thread: None };
             let request = TextGenerationRequest { system_prompt: Some("You are Asha.".into()), messages: vec![ChatMessage::text("user", user)], ..Default::default() };
             CaptureLease::start(std::sync::Arc::clone(&sink), &call, &request).finish(Some(&capture_reply(reply)), None);
         };
