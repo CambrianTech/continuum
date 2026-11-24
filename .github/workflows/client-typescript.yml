@@ -1,0 +1,49 @@
+# Card 2518cd71 — client typecheck gate.
+#
+# The npm scripts `typecheck:clients` and `check:clients` were documented as the
+# quality gate for client-side TypeScript, but no CI workflow ran them. This meant
+# type breakage could land on canary unnoticed (TS6059 rootDir errors, TS2339
+# property errors).
+#
+# This workflow adds the missing gate: every PR into canary/main that touches
+# sdk/, packages/, or apps/ runs `npm run check:clients` — which includes typecheck,
+# lint, and test for all five client workspaces.
+
+name: Client TypeScript
+
+on:
+  pull_request:
+    branches: [canary, main]
+    paths:
+      - 'sdk/typescript/**'
+      - 'packages/*/package.json'
+      - 'apps/*/package.json'
+      - '.github/workflows/client-typescript.yml'
+  push:
+    branches: [canary, main]
+    paths:
+      - 'sdk/typescript/**'
+      - 'packages/*/package.json'
+      - 'apps/*/package.json'
+      - '.github/workflows/client-typescript.yml'
+
+jobs:
+  check-clients:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache node_modules
+        uses: actions/cache@v4
+        with:
+          path: '**/node_modules'
+          key: client-typescript-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            client-typescript-
+
+      - name: Install dependencies
+        run: npm ci --prefer-offline
+
+      - name: Run typecheck:clients (all five client workspaces)
+        run: npm run typecheck:clients
