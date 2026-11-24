@@ -312,6 +312,12 @@ fn opens_with_tool_envelope(t: &str) -> bool {
     // (`ns/verb(` with a JSON or kwargs object) AND a `Result:` line after it. Either alone
     // stays speech — a citizen writing "code/shell(cmd=…) is how you'd list it" has no Result
     // line, and prose that mentions a "Result:" does not open with a call.
+    // THE SIXTH DIALECT — observation block posted as raw reply (not fenced, not bracketed).
+    // A namespaced verb CALLED at the lead AND a `Result:` line after it. Either alone
+    // stays speech; both together is her own tool transcript echoed as prose.
+    if opens_with_bare_call(t) && t.contains("\nResult:") {
+        return true;
+    }
     // The canonical envelope, with or without leading whitespace inside the object.
     if t.trim().starts_with("{\"tool_call\"") {
         return true;
@@ -319,15 +325,30 @@ fn opens_with_tool_envelope(t: &str) -> bool {
     is_name_arguments_envelope(t)
 }
 
-/// A namespaced call serialized inside a markdown fence.
+/// A namespaced call serialized inside a markdown fence, or raw JSON with `name`/`arguments`
+/// keys (the citizen's own tool output posted as prose). The shape is `{"name": …, "arguments"
+/// : …}` — the same envelope the adapter produces when it serialises a dispatch.
 fn is_name_arguments_envelope(t: &str) -> bool {
     let body = match t.strip_prefix("```") {
         Some(b) => b,
+        None => {
+            // Non-fenced form: must start with `{` and contain both keys.
+            if !t.starts_with('{') {
+                return false;
+            }
+            t
+        }
+    };
+    // Skip an optional language tag after the fence, then look for the name/arguments JSON.
+    let trimmed = body.trim_start();
+    let json_start = match trimmed.find('{') {
+        Some(i) => &trimmed[i..],
         None => return false,
     };
-    // Check if trimmed body starts with the name/arguments JSON prefix — no truncation cap.
-    let trimmed = body.trim_start();
-    trimmed.starts_with("{\"name") && t.contains("\"arguments\"")
+    // The opening brace must be followed by "name" as the first key (with optional whitespace).
+    let after_brace = json_start.strip_prefix('{').unwrap();
+    let after_ws = after_brace.trim_start();
+    after_ws.starts_with("\"name") && t.contains("\"arguments\"")
 }
 
 /// A namespaced command CALLED at the very start of `t`: `ns/verb(` or a deeper path
@@ -454,7 +475,7 @@ fn opens_with_wrapped_peer_id(t: &str) -> bool {
 /// How many stacked substrate wrappers to peel before giving up. This ceiling keeps the
 /// loop bounded on adversarial input; it is not a limit on what legitimate traffic looks
 /// like — every real stack observed so far fits within double digits.
-const MAX_WRAPPER_DEPTH: usize = 10;
+const MAX_WRAPPER_DEPTH: usize = 10; // bounded linear scan on adversarial input; max observed stack depth ~7 (card b8e2cb23)
 
 /// A delivery header naming a peer, as this substrate renders it: `peer <uuid>`.
 /// Requiring the literal keyword — not merely "a uuid appears in the brackets" —
