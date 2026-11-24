@@ -165,6 +165,7 @@ impl LlmDeliberationFaculty {
                     cause: ws.cause.as_str(),
                     cause_root: ws.cause.root(),
                     replay_of: None,
+                    thread: None,
                 },
                 &request,
             )

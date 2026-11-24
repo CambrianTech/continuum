@@ -165,6 +165,7 @@ mod tests {
             cause: "chat".into(),
             cause_root: None,
             model: None,
+            thread: None,
         };
         Submission { head, request, replay: None }.record(Uuid::nil(), at).expect("test: record")
     }

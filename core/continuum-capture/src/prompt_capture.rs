@@ -29,6 +29,9 @@ pub struct PromptCall {
     /// Present only for an isolated replay; the original record remains untouched.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub replay_of: Option<ReplaySource>,
+    /// The room thread this request's history was rendered from; None where it had none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thread: Option<crate::call_frames::ThreadRef>,
 }
 
 /// A submitted call's identity, held by its lease until the call ends, with the place reserved for
@@ -195,6 +198,7 @@ impl PromptCaptureSink for FramePromptCaptureSink {
             cause: call.cause.to_owned(),
             cause_root: call.cause_root,
             model: request.model.clone(),
+            thread: call.thread.clone(),
         };
         // Both records' places first: neither the submission nor its end can be displaced.
         let [submission, terminal] = match self.delivery.reserve::<2>() {
@@ -246,7 +250,7 @@ mod tests {
     use std::num::NonZeroUsize;
 
     fn call(persona: Uuid, room: Uuid, id: &str) -> PromptCall {
-        PromptCall { request_id: id.into(), persona_id: persona, room_id: room, cycle_id: Some(1), context_window: Some(8192), cause: "synthetic", cause_root: None, replay_of: None }
+        PromptCall { request_id: id.into(), persona_id: persona, room_id: room, cycle_id: Some(1), context_window: Some(8192), cause: "synthetic", cause_root: None, replay_of: None, thread: None }
     }
 
     /// Every byte under `dir`, by path (`fs::metadata`, never a listing's size: on Windows a listing

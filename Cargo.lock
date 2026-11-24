@@ -2766,6 +2766,7 @@ dependencies = [
 name = "continuum-capture"
 version = "0.1.0"
 dependencies = [
+ "airc-core",
  "continuum-base",
  "continuum-engine",
  "continuum-kernel",

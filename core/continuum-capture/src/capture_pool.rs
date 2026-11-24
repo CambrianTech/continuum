@@ -218,7 +218,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("test: dir");
         let persona = uuid::Uuid::new_v4();
         let sink = FramePromptCaptureSink::at(dir.path(), persona);
-        let call = PromptCall { request_id: "r".into(), persona_id: persona, room_id: uuid::Uuid::new_v4(), cycle_id: Some(1), context_window: Some(8192), cause: "synthetic", cause_root: None, replay_of: None };
+        let call = PromptCall { request_id: "r".into(), persona_id: persona, room_id: uuid::Uuid::new_v4(), cycle_id: Some(1), context_window: Some(8192), cause: "synthetic", cause_root: None, replay_of: None, thread: None };
         let request = continuum_engine::ai::types::TextGenerationRequest::default();
         let token = sink.submitted(&call, &request).expect("test: submitted");
         sink.terminal(token, crate::call_frames::CallStatus::Completed, None, None, 1);

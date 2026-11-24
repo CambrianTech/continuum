@@ -200,6 +200,7 @@ pub(super) async fn captured(
         cause: "fixture",
         cause_root: None,
         replay_of: None,
+        thread: None,
     };
     let mut lease = CaptureLease::start(sink, &prompt, &call.request);
     let cursor = lease.finish(Some(&call.response), None).expect("a completed capture entry"); // JUSTIFIED: test fixture

@@ -325,6 +325,7 @@ fn prepare(
             cause: "captured-request-replay",
             cause_root: None,
             replay_of: Some(provenance.source()),
+            thread: None,
         },
         original,
         original_max_tokens,
@@ -474,6 +475,7 @@ mod tests {
             cause: "synthetic",
             cause_root: None,
             replay_of: None,
+            thread: None,
         };
         let sink = FramePromptCaptureSink::at(dir.path(), persona);
         let mut capture = CaptureLease::start(Arc::new(sink), &call, &request);
