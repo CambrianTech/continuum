@@ -886,6 +886,7 @@ impl Driver<'_, '_> {
     /// refused copy-out keeps the occupant's stream bound: the next mind waits, and the copy-out is
     /// retried at the start of the next turn.
     fn switch_to(&mut self, id: PersonaId, one_off: bool) -> Result<(), TurnError> {
+        let began = Instant::now();
         self.retire_previous()?;
         if self.engine.active() == Some(id) {
             return Ok(());
@@ -897,6 +898,7 @@ impl Driver<'_, '_> {
             }
             self.retire_previous()?;
         }
+        let copied_out = Instant::now();
         let mind = match self.parked.remove(&id) {
             Some(parked) => parked,
             None => {
@@ -910,12 +912,17 @@ impl Driver<'_, '_> {
             self.parked.insert(refused.returned.id(), refused.returned);
             return Err(refused.reason.into());
         }
+        let staged = Instant::now();
         self.engine.settle()?;
+        let settled = Instant::now();
         match self.engine.handoff() {
             Ok(_) | Err(HandoffError::CopyOut { .. }) => {}
             Err(refused) => return Err(refused.into()),
         }
-        self.retire_previous()
+        let retired = self.retire_previous();
+        // What a switch is made of, so its cost is attributed (the M5 logged 63-259 ms per switch).
+        continuum_base::probe!(class = "persona.engine.switch", persona = %id.0, copy_out_ms = record::whole_ms(copied_out - began), stage_ms = record::whole_ms(staged - copied_out), settle_ms = record::whole_ms(settled - staged), handoff_ms = record::whole_ms(settled.elapsed()), "a switch, by phase");
+        retired
     }
 
     /// Report that `turn` reached `at`; its record stage writes it.
