@@ -446,7 +446,7 @@ pub fn render_plist(spec: &PlistSpec<'_>) -> String {
 pub mod live {
     //! The parts that touch launchd, the slot and the socket.
     use super::*;
-    use std::process::Command;
+    use continuum_host::subprocess;
     use std::time::{Duration, Instant};
 
     /// A registered launchd job for the core, with the slot its plist execs.
@@ -462,10 +462,7 @@ pub mod live {
     }
 
     fn launchctl_print(domain: &Domain) -> Option<String> {
-        let out = Command::new("launchctl")
-            .args(["print", &domain.target()])
-            .output()
-            .ok()?;
+        let out = subprocess::RunConfig::default().run_sync("launchctl", &[&"print", &*domain.target()]).ok()?;
         out.status
             .success()
             .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
@@ -511,13 +508,7 @@ pub mod live {
         // Anchored: on a node still on the script path the core's argv also appears
         // inside `caffeinate -s -i …continuum-core-server …sock`, a lower pid that an
         // unanchored match returned first (Fable, #4228 review).
-        let out = Command::new("pgrep")
-            .args([
-                "-f",
-                &format!("^([^ ]*/)?continuum-core-server {}$", regex_escape(socket)),
-            ])
-            .output()
-            .ok()?;
+        let out = subprocess::RunConfig::default().run_sync("pgrep", &[&"-f", &format!("^([^ ]*/)?continuum-core-server {}$", regex_escape(socket))]).ok()?;
         String::from_utf8_lossy(&out.stdout)
             .lines()
             .filter_map(|l| l.trim().parse::<u32>().ok())
@@ -546,21 +537,12 @@ pub mod live {
     /// over-reports health — so the caller prints the window it read.
     pub fn domain_on_demand_only_recently(window: Duration) -> bool {
         let last = format!("{}s", window.as_secs().max(60));
-        let out = Command::new("log")
-            .args([
-                "show",
-                "--last",
-                &last,
-                "--style",
-                "compact",
-                "--predicate",
-                &format!("process == \"launchd\" AND eventMessage CONTAINS \"{LABEL}\""),
-            ])
-            .output();
+        let out = subprocess::RunConfig::default().run_sync(
+            "log",
+            &[&"show", &last, "--style", "compact", "--predicate", &format!("process == \"launchd\" AND eventMessage CONTAINS \"{LABEL}\"")],
+        );
         match out {
-            Ok(o) if o.status.success() => {
-                domain_is_on_demand_only(&String::from_utf8_lossy(&o.stdout))
-            }
+            Ok(o) if o.status.success() => domain_is_on_demand_only(&String::from_utf8_lossy(&o.stdout)),
             _ => false,
         }
     }
@@ -607,10 +589,7 @@ pub mod live {
     /// domain in on-demand-only mode, which is why a deploy through it succeeds where
     /// KeepAlive does not.
     pub fn kickstart(domain: &Domain) -> Result<(), String> {
-        let out = Command::new("launchctl")
-            .args(["kickstart", "-k", &domain.target()])
-            .output()
-            .map_err(|e| format!("launchctl kickstart: {e}"))?;
+        let out = subprocess::RunConfig::default().run_sync("launchctl", &[&"kickstart", &"-k", &*domain.target()]).map_err(|e| format!("launchctl kickstart: {e}"))?;
         if !out.status.success() {
             return Err(format!(
                 "launchctl kickstart -k {} failed: {}",
@@ -627,10 +606,7 @@ pub mod live {
     /// kickstart of a system job is permitted to its owning user where `-k` is not (M5
     /// 2026-10-03: `kickstart -k` refused with `1: Operation not permitted`).
     pub fn kickstart_if_stopped(domain: &Domain) -> Result<(), String> {
-        let out = Command::new("launchctl")
-            .args(["kickstart", &domain.target()])
-            .output()
-            .map_err(|e| format!("launchctl kickstart: {e}"))?;
+        let out = subprocess::RunConfig::default().run_sync("launchctl", &[&"kickstart", &*domain.target()]).map_err(|e| format!("launchctl kickstart: {e}"))?;
         if !out.status.success() {
             return Err(format!(
                 "launchctl kickstart {} failed: {}",
@@ -729,8 +705,8 @@ pub mod live {
         }
     }
 
-    fn run(cmd: &mut Command, what: &str) -> Result<String, String> {
-        let out = cmd.output().map_err(|e| format!("{what}: {e}"))?;
+    fn run(program: &str, args: &[&str], what: &str) -> Result<String, String> {
+        let out = subprocess::RunConfig::default().run_sync(program, args).map_err(|e| format!("{what}: {e}"))?;
         if !out.status.success() {
             return Err(format!(
                 "{what} failed ({}): {}",
@@ -781,7 +757,8 @@ pub mod live {
         std::fs::write(&draft, plist)
             .map_err(|e| format!("cannot write {}: {e}", draft.display()))?;
         run(
-            Command::new("plutil").args(["-lint", &draft.display().to_string()]),
+            "plutil",
+            &[&"-lint", &*draft.display().to_string()],
             "plutil -lint",
         )?;
         let target = job.domain.target();
@@ -796,17 +773,11 @@ pub mod live {
                     .map_err(|e| format!("cannot re-read {}: {e}", draft.display()))?;
                 let digest = sha256_hex(&bytes);
                 let exe = std::env::current_exe().map_err(|e| format!("own path: {e}"))?;
-                let receipt = run(
-                    Command::new("sudo").arg(&exe).args([
-                        "install",
-                        "--elevated",
-                        "--plan",
-                        &draft.display().to_string(),
-                        "--plan-sha",
-                        &digest,
-                    ]),
-                    "sudo continuum install --elevated",
-                )?;
+        let receipt = run(
+            "sudo",
+            &[&*exe.to_string_lossy(), "install", "--elevated", "--plan", &draft.display().to_string(), "--plan-sha", &digest],
+            "sudo continuum install --elevated",
+        )?;
                 for line in receipt.lines().filter(|l| !l.trim().is_empty()) {
                     println!("  {line}");
                 }
@@ -816,20 +787,15 @@ pub mod live {
                     std::fs::create_dir_all(dir)
                         .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
                 }
-                let _ = Command::new("launchctl")
-                    .args(["bootout", &target])
-                    .output();
+                let _ = subprocess::RunConfig::default().run_sync("launchctl", &[&"bootout", &target]).ok();
                 std::fs::copy(&draft, &plist_path)
                     .map_err(|e| format!("cannot write {}: {e}", plist_path.display()))?;
                 run(
-                    Command::new("launchctl").args([
-                        "bootstrap",
-                        &format!("gui/{uid}"),
-                        &plist_path.display().to_string(),
-                    ]),
+                    "launchctl",
+                    &[&"bootstrap", &format!("gui/{uid}"), &plist_path.display().to_string()],
                     "launchctl bootstrap",
                 )?;
-                let _ = Command::new("launchctl").args(["enable", &target]).output();
+                let _ = subprocess::RunConfig::default().run_sync("launchctl", &[&"enable", &target]).ok();
             }
         }
         let _ = std::fs::remove_file(&draft);
@@ -868,13 +834,9 @@ pub mod live {
             .ok()
             .and_then(|u| u.parse::<u32>().ok())
         {
-            let _ = Command::new("launchctl")
-                .args(["bootout", &Domain::Gui(uid).target()])
-                .output();
+            let _ = subprocess::RunConfig::default().run_sync("launchctl", &[&"bootout", &Domain::Gui(uid).target()]).ok();
         }
-        let _ = Command::new("launchctl")
-            .args(["bootout", &target])
-            .output();
+        let _ = subprocess::RunConfig::default().run_sync("launchctl", &[&"bootout", &target]).ok();
         std::fs::write(&plist_path, &bytes)
             .map_err(|e| format!("cannot write {}: {e}", plist_path.display()))?;
         std::os::unix::fs::chown(&plist_path, Some(0), Some(0))
@@ -885,14 +847,11 @@ pub mod live {
         )
         .map_err(|e| format!("cannot chmod {}: {e}", plist_path.display()))?;
         run(
-            Command::new("launchctl").args([
-                "bootstrap",
-                "system",
-                &plist_path.display().to_string(),
-            ]),
+            "launchctl",
+            &[&"bootstrap", "system", &plist_path.display().to_string()],
             "launchctl bootstrap system",
         )?;
-        let _ = Command::new("launchctl").args(["enable", &target]).output();
+        let _ = subprocess::RunConfig::default().run_sync("launchctl", &[&"enable", &target]).ok();
         Ok(vec![
             format!(
                 "registered {target} from a plan whose sha256 matched the consent ({})",
@@ -919,18 +878,15 @@ pub mod live {
             let plist = domain.plist_path(&home).display().to_string();
             match domain {
                 Domain::System => {
-                    let _ = Command::new("sudo")
-                        .args(["launchctl", "bootout", &domain.target()])
-                        .output();
+                    let _ = subprocess::RunConfig::default().run_sync("sudo", &[&"launchctl", "bootout", &*domain.target()]).ok();
                     run(
-                        Command::new("sudo").args(["rm", "-f", &plist]),
+                        "sudo",
+                        &[&"rm", "-f", &plist],
                         "sudo rm (plist)",
                     )?;
                 }
                 Domain::Gui(_) => {
-                    let _ = Command::new("launchctl")
-                        .args(["bootout", &domain.target()])
-                        .output();
+                    let _ = subprocess::RunConfig::default().run_sync("launchctl", &[&"bootout", &*domain.target()]).ok();
                     let _ = std::fs::remove_file(&plist);
                 }
             }
