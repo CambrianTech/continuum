@@ -27,6 +27,7 @@ mod geometry;
 mod admission;
 pub(crate) use admission::Capacity;
 mod transition;
+pub(crate) mod lesson;
 
 pub use geometry::{EngineGeometry, EngineState, Incarnation, Requested};
 

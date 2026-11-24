@@ -22,6 +22,18 @@ pub trait Learns: Execute {
     /// How a reply ended.
     type Learned;
 
+    /// One row of memory the backend measured.
+    type Row;
+
+    /// What `shadow`'s optimizer, and a lesson of up to `reply_rows` tokens, would hold, allocating
+    /// nothing: `(optimizer, workspace)`. The backend may attach the shadow to measure it; the next
+    /// decode applies her own genes again.
+    fn measure(&mut self, mind: MindId, shadow: &Self::Shadow, reply_rows: std::num::NonZeroU32) -> Result<(Vec<Self::Row>, Vec<Self::Row>), TierRefusal>;
+
+    /// Save `shadow` as a generation in `into` (its weights and its optimizer state, bound to
+    /// `binding`): the optimizer steps it holds.
+    fn save(&mut self, mind: MindId, shadow: &Self::Shadow, into: &std::path::Path, binding: &str) -> Result<u64, TierRefusal>;
+
     /// Retain `shadow` with the lease that pays for its optimizer. One already retained hands the
     /// new lease back.
     fn retain(&mut self, shadow: &Self::Shadow, lease: Self::Lease) -> Result<(), Self::Lease>;

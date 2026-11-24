@@ -1,10 +1,17 @@
 //! The tier's learning in place (IN-PROCESS-LEARNING.md, L2): the bound mind learns a reply into a
 //! shadow on her own stream, through the llama crate's [`Learner`]. Between chunks it asks the caller
 //! whether to go on; a no drains the reply, which restores her served tail and keeps what committed.
+//!
+//! Native code trains (and measures) only a shadow attached at a non-zero scale (`opt_untrainable`),
+//! so measuring and learning attach her genes and the shadow together; the next decode applies her
+//! own genes again.
+
+use std::num::NonZeroU32;
+use std::path::Path;
 
 use continuum_persona_engine::persona::MindId;
 use continuum_persona_engine::residency::{Execute, Learns, Native, TierRefusal};
-use llama::{Finished, Label, Learner, OptimizerLease, Progress, Reply, ReplyAdmission, Shadow};
+use llama::{Finished, Label, Learner, LoraAdapter, MemoryRow, OptimizerLease, Progress, Reply, ReplyAdmission, Shadow};
 
 use super::{refused, UnifiedTier, TIER};
 
@@ -19,21 +26,53 @@ pub struct LearnReply {
     pub restore: Vec<i32>,
 }
 
+fn reported(mind: MindId, reason: &'static str, refusal: impl std::fmt::Display) -> TierRefusal {
+    TierRefusal { tier: TIER, mind, reason, native: Native::Reported(refusal.to_string()) }
+}
+
+impl UnifiedTier<'_, '_> {
+    /// Attach her genes and `shadow` together (the shadow at full scale), until the next decode
+    /// applies her own genes again.
+    fn attach(&mut self, mind: MindId, shadow: &Shadow) -> Result<(), TierRefusal> {
+        // Taken, not borrowed: whatever happens next, the next decode applies her genes again.
+        let applied = self.applied_genes.take();
+        let mut genes: Vec<(&LoraAdapter, f32)> = match &applied {
+            Some(applied) => applied.iter().map(|(adapter, scale)| (adapter.as_ref(), *scale)).collect(),
+            None => Vec::new(),
+        };
+        genes.push((shadow.adapter.as_ref(), 1.0));
+        self.ctx.set_loras(&genes).map_err(|message| reported(mind, "the engine refused her genes with the shadow", message))
+    }
+}
+
 impl Learns for UnifiedTier<'_, '_> {
     type Shadow = Shadow;
     type Lease = Box<dyn OptimizerLease>;
     type Reply = LearnReply;
     type Admission = Box<dyn ReplyAdmission>;
     type Learned = Finished;
+    type Row = MemoryRow;
+
+    fn measure(&mut self, mind: MindId, shadow: &Shadow, reply_rows: NonZeroU32) -> Result<(Vec<MemoryRow>, Vec<MemoryRow>), TierRefusal> {
+        self.settle()?;
+        self.attach(mind, shadow)?;
+        let mut learner = Learner::new(self.ctx);
+        let optimizer = learner.measure_optimizer(shadow).map_err(|refusal| reported(mind, "the engine could not measure the optimizer", refusal))?;
+        let workspace = learner.measure_workspace(shadow, reply_rows).map_err(|refusal| reported(mind, "the engine could not measure the workspace", refusal))?;
+        Ok((optimizer, workspace))
+    }
+
+    fn save(&mut self, mind: MindId, shadow: &Shadow, into: &Path, binding: &str) -> Result<u64, TierRefusal> {
+        self.settle()?;
+        Learner::new(self.ctx).save_generation(&shadow.adapter, into, binding).map_err(|refusal| reported(mind, "the engine could not save the generation", refusal))
+    }
 
     fn retain(&mut self, shadow: &Shadow, lease: Box<dyn OptimizerLease>) -> Result<(), Box<dyn OptimizerLease>> {
         Learner::new(self.ctx).retain_shadow(std::sync::Arc::clone(&shadow.adapter), lease)
     }
 
     fn release(&mut self, mind: MindId, shadow: &Shadow) -> Result<Box<dyn OptimizerLease>, TierRefusal> {
-        Learner::new(self.ctx)
-            .release_shadow(&shadow.adapter)
-            .map_err(|refusal| TierRefusal { tier: TIER, mind, reason: "the engine kept her shadow's optimizer", native: Native::Reported(refusal.to_string()) })
+        Learner::new(self.ctx).release_shadow(&shadow.adapter).map_err(|refusal| reported(mind, "the engine kept her shadow's optimizer", refusal))
     }
 
     fn learn(
@@ -50,13 +89,12 @@ impl Learns for UnifiedTier<'_, '_> {
         if let Err(unsettled) = self.settle() {
             return Err((unsettled, admission));
         }
-        // The optimizer selects her shadow on the context: the next decode applies her genes again.
-        self.applied_genes = None;
+        if let Err(unattached) = self.attach(mind, shadow) {
+            return Err((unattached, admission));
+        }
         let native = Reply { seq: stream.seq(), n_cached: reply.n_cached, tokens: &reply.tokens, labels: &reply.labels, restore: &reply.restore };
         let mut learner = Learner::new(self.ctx);
-        let mut run = learner.begin(shadow, admission, &native).map_err(|refused| {
-            (TierRefusal { tier: TIER, mind, reason: "the reply did not begin", native: Native::Reported(refused.refusal.to_string()) }, refused.admission)
-        })?;
+        let mut run = learner.begin(shadow, admission, &native).map_err(|refused| (reported(mind, "the reply did not begin", refused.refusal), refused.admission))?;
         loop {
             if !go_on() {
                 run.drain();

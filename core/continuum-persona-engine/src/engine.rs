@@ -278,6 +278,19 @@ where
     U: Identified + Carries<T::Blocks>,
     T: Learns,
 {
+    /// What `shadow`'s optimizer and a lesson of up to `reply_rows` tokens would hold, for `mind`:
+    /// `(optimizer, workspace)`. Waits for a submitted step to land first.
+    pub fn measure_shadow(&mut self, mind: MindId, shadow: &T::Shadow, reply_rows: std::num::NonZeroU32) -> Result<(Vec<T::Row>, Vec<T::Row>), TierRefusal> {
+        self.decoding = None;
+        self.tier.measure(mind, shadow, reply_rows)
+    }
+
+    /// Save `shadow` as a generation in `into`, bound to `binding`: the optimizer steps it holds.
+    pub fn save_shadow(&mut self, mind: MindId, shadow: &T::Shadow, into: &std::path::Path, binding: &str) -> Result<u64, TierRefusal> {
+        self.decoding = None;
+        self.tier.save(mind, shadow, into, binding)
+    }
+
     /// Retain a shadow on the tier with the lease that pays for its optimizer.
     pub fn retain_shadow(&mut self, shadow: &T::Shadow, lease: T::Lease) -> Result<(), T::Lease> {
         self.tier.retain(shadow, lease)
