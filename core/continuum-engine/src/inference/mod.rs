@@ -60,6 +60,7 @@ pub(crate) mod node_state;
 pub mod lane_registry;
 pub mod weights_stamp;
 pub mod engine_residency;
+pub mod learning;
 pub mod llama_server;
 pub mod llamacpp_adapter;
 pub mod in_process_engine;
