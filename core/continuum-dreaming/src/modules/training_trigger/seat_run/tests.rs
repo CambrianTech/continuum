@@ -250,3 +250,48 @@ fn guards_go_only_when_nothing_of_the_seat_remains() {
     assert_eq!(run.held(), 0, "refused: the engine holds nothing, so neither does the trainer");
     assert!(weights_dropped.load(Ordering::Relaxed));
 }
+
+// what this catches (Codex on c22b747e5): an uncertain step whose Release reached no engine treated
+// as a dropped seat, its leases freed while the engine that ran the step may still hold the shadow.
+// The guards stay in custody, quarantined, and the release told again later drops them only on its
+// Released.
+#[test]
+fn an_undelivered_release_keeps_the_seats_guards() {
+    let port = Port::default();
+    let mut run = seated(&port);
+    let id = run.id();
+    let step = run.learn(&port, Position { submission: Uuid::new_v4(), learned: 0 }, lesson(), guard().0).expect("test: seated");
+    port.closed.store(true, Ordering::Relaxed);
+    assert_eq!(run.hear(&port, &Said::Step { seat: id, step, outcome: StepOutcome::Uncertain { steps: 1 } }), Some(Heard::Uncertain));
+    assert_eq!(run.held(), 3, "no engine took the Release: nothing proves the shadow gone");
+    assert!(!run.ready());
+
+    port.closed.store(false, Ordering::Relaxed);
+    run.release(&port).expect("test: the engine is back");
+    assert!(matches!(port.told.lock().last(), Some(Told::Release(seat)) if *seat == id));
+    assert_eq!(run.held(), 3, "told, not yet answered");
+    assert_eq!(run.hear(&port, &Said::Seat { seat: id, state: SeatState::Released }), Some(Heard::Released));
+    assert_eq!(run.held(), 0);
+}
+
+// what this catches (Codex on c22b747e5): a checkpoint told while a lesson is in flight. The
+// engine's queue saves weights holding that lesson while the positions snapshot misses it, so a
+// recovery learns it twice. The checkpoint waits for the step's answer.
+#[test]
+fn a_checkpoint_waits_for_the_lesson_in_flight() {
+    let port = Port::default();
+    let mut run = seated(&port);
+    let id = run.id();
+    let submission = Uuid::new_v4();
+    let step = run.learn(&port, Position { submission, learned: 0 }, lesson(), guard().0).expect("test: seated");
+    run.hear(&port, &Said::Step { seat: id, step, outcome: learned(1, 0.5) });
+    let step = run.learn(&port, Position { submission, learned: 1 }, lesson(), guard().0).expect("test: seated");
+    assert!(matches!(run.checkpoint(&port, PathBuf::from("/gen/1"), Arc::from("b")), Err(NotTold::OutOfOrder(_))), "a lesson is in flight");
+    run.hear(&port, &Said::Step { seat: id, step, outcome: learned(1, 0.4) });
+    assert!(run.checkpoint(&port, PathBuf::from("/gen/1"), Arc::from("b")).expect("test: answered"));
+    assert_eq!(
+        run.hear(&port, &Said::Generation { seat: id, outcome: GenerationOutcome::Saved { into: PathBuf::from("/gen/1"), steps: 2 } }),
+        Some(Heard::Saved { into: PathBuf::from("/gen/1"), steps: 2, positions: vec![Position { submission, learned: 2 }] }),
+        "the generation's positions are the frontier of the weights it saved"
+    );
+}
