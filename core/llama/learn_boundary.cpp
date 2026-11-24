@@ -81,12 +81,9 @@ extern "C" bool continuum_adapter_measure(llama_model *model, const char *path, 
     return llama_adapter_lora_measure(model, path, adapter_row, const_cast<continuum_rows_sink *>(sink));
 }
 
-// What an attached shadow's optimizer would hold on `ctx`, allocating nothing.
-extern "C" bool continuum_opt_measure_shadow(llama_context *ctx, llama_opt_params params, const continuum_rows_sink *sink) noexcept {
-    return llama_opt_measure_shadow(ctx, params, optimizer_row, const_cast<continuum_rows_sink *>(sink));
-}
-
-// What a reply of up to `reply_rows` tokens would hold in the shared workspace, allocating nothing.
+// What an attached shadow learning a reply of up to `reply_rows` tokens would hold: its optimizer and the shared
+// workspace that reply needs, allocating nothing. Always sized by the reply: a measure at the context's whole window
+// reported 5,513,766,976 bytes of compute on the 0.5B at 2,048 tokens where its lesson needs 451,808,352 (2026-11-24).
 extern "C" bool continuum_opt_measure_shadow_graph(llama_context *ctx, llama_opt_params params, uint32_t reply_rows,
         const continuum_rows_sink *sink) noexcept {
     return llama_opt_measure_shadow_graph(ctx, params, reply_rows, optimizer_row, const_cast<continuum_rows_sink *>(sink));
