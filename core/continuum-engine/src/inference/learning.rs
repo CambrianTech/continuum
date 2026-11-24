@@ -73,7 +73,11 @@ pub struct Lesson {
     pub tools: Option<serde_json::Value>,
 }
 
-/// What the engine says on a seat's stream.
+/// What the engine says on a seat's stream, in the order it happened to that seat. The stream is
+/// bounded by what the trainer told: the engine says one state per Seat and per Release, one outcome
+/// per Learn and one per Checkpoint, and nothing on its own, so the trainer that tells at its own
+/// cadence also sets how much can wait in it. A Generation answers the Checkpoints of its seat in
+/// the order they were told.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Said {
     Seat { seat: SeatId, state: SeatState },
