@@ -36,7 +36,7 @@ pub struct Wire {
     pub open_at_end: bool,
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct Watch {
     attempts: Vec<Vec<String>>,
     /// Attempts streaming now.
@@ -49,6 +49,7 @@ pub struct Watch {
 /// Owned tap state for wire_tap — replaces the process-global LazyLock static.
 /// Create once at InferenceCoordinator::new(); pass Arc<TapState> to callers that need
 /// to arm/take taps. Tests construct their own TapState for isolation.
+#[derive(Debug)]
 pub struct TapState {
     map: Mutex<HashMap<String, Watch>>,
 }

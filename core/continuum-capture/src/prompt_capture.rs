@@ -126,8 +126,10 @@ impl CaptureLease {
             None
         } else {
             let mut t = sink.submitted(call, request);
-            t.tap_state = tap_state.clone();
-            Some(t)
+            if let Some(ref mut tok) = t {
+                tok.tap_state = tap_state.clone();
+            }
+            t
         };
         // A recorded call keeps its raw stream too, so the terminal entry can show the tokens
         // the parse turned into this response (card fb6d7912).
@@ -374,7 +376,7 @@ impl PromptCaptureSink for JsonlPromptCaptureSink {
             request,
         };
         let header = self.append(&record, header, false)?;
-        Some(CaptureToken { header })
+        Some(CaptureToken { header, tap_state: None })
     }
     fn terminal(
         &self,
