@@ -107,7 +107,7 @@ else
   case "$OS" in
     MINGW*|MSYS*|CYGWIN*)
       EXE=".exe"
-      if command -v nvcc >/dev/null 2>&1 || [ -x "$PAYLOAD_ROOT/cuda-toolkit/bin/nvcc.exe" ]; then
+      if command -v nvcc >/dev/null 2>&1 || [ -x "$PAYLOAD_ROOT/cuda-toolkit/bin/nvcc.exe" ] || [ -x "$PAYLOAD_ROOT/cuda-toolkit/Library/bin/nvcc.exe" ]; then
         BACKEND="cuda"; WIN_CUDA=1
         # arch=native → build for THIS machine's GPU (portable; NOT a hardcoded sm_120).
         BACKEND_DEFS=(-DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=native)
@@ -117,7 +117,7 @@ else
   esac
 fi
 if [[ "$BACKEND" == cuda ]]; then
-  if ! command -v nvcc >/dev/null 2>&1 && [[ -x "$PAYLOAD_ROOT/cuda-toolkit/bin/nvcc.exe" ]]; then
+  if ! command -v nvcc >/dev/null 2>&1 && [[ -x "$PAYLOAD_ROOT/cuda-toolkit/bin/nvcc.exe" || -x "$PAYLOAD_ROOT/cuda-toolkit/Library/bin/nvcc.exe" ]]; then
     export CUDA_PATH="$PAYLOAD_ROOT/cuda-toolkit"
   fi
   source "$SCRIPT_DIR/lib/cuda-targets.sh"
@@ -364,7 +364,9 @@ if [ "$WIN_CUDA" -eq 1 ]; then
   # has these under ~/.continuum but may not export them on PATH).
   ninja_exe="$(command -v ninja 2>/dev/null || echo "$PAYLOAD_ROOT/tools/ninja/ninja.exe")"
   [ -x "$ninja_exe" ] || { echo "✗ FATAL: ninja not found (install-manifest toolchain)." >&2; exit 1; }
-  nvcc_exe="$(command -v nvcc 2>/dev/null || echo "$PAYLOAD_ROOT/cuda-toolkit/bin/nvcc.exe")"
+  nvcc_exe="$(command -v nvcc 2>/dev/null || true)"
+  [ -x "$nvcc_exe" ] || nvcc_exe="$PAYLOAD_ROOT/cuda-toolkit/bin/nvcc.exe"
+  [ -x "$nvcc_exe" ] || nvcc_exe="$PAYLOAD_ROOT/cuda-toolkit/Library/bin/nvcc.exe"
   [ -x "$nvcc_exe" ] || { echo "✗ FATAL: nvcc not found (install-manifest 'cuda' module)." >&2; exit 1; }
   cmake_exe="$(command -v cmake)"
   # Windows-native paths for the cmd context.
