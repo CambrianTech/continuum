@@ -65,6 +65,7 @@ pub mod trainer;
 pub mod cleaner;
 pub(crate) mod competence;
 mod in_place;
+mod seat_run;
 mod owned;
 pub(crate) use owned::OwnedKind;
 pub(crate) use durable::{CheckpointedSides, Membership, RekeyCandidate, RekeyCounts, RekeyFilter, RekeyRefused, Rekeyed, RetireReport, RetireSelection};
