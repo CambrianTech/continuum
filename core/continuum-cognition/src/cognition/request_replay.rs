@@ -630,6 +630,8 @@ mod tests {
         let replay_cursor = replay.cursor().expect("replay capture").to_string();
         drop(replay); // cancellation is a terminal event, never a successful replay
         let detail =
+            prompt_capture::detail(dir.path(), replay_id, &replay_cursor)
+                .expect("replay detail");
         let submitted = detail.submitted.expect("replay submitted");
         assert_eq!(submitted["replay_of"]["persona_id"], persona.to_string());
         assert_eq!(submitted["replay_of"]["cursor"], cursor);
