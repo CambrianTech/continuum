@@ -20,6 +20,9 @@ use continuum_persona_engine::persona::MindId;
 use continuum_persona_engine::residency::{Completion, Direction, Execute, Fence, FenceTag, Native, Tier, TierRefusal};
 use llama::{Batch, BindRefusal, ChatRefusal, Context, LoraAdapter, PersonaBlocks, PersonaCheckpoint, PersonaOwner, PersonaRefusal, Pos, TurnSampler};
 
+mod learn;
+pub use learn::LearnReply;
+
 /// Execution streams the Core's context holds: the occupant's, which is the whole context. Not a
 /// tuning number: the fork's move needs a stream per bound mind, and the Core binds only its occupant.
 pub const STREAMS: usize = 1;

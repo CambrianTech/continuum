@@ -39,7 +39,7 @@ mod tests;
 
 use crate::persona::{MindId, PersonaId};
 use crate::pipeline::{HandoffRefusal, Identified, Refused, RetireRefusal, Roles, StageRefusal};
-use crate::residency::{Completion, Direction, Execute, Native, TierRefusal};
+use crate::residency::{Completion, Direction, Execute, Learns, Native, TierRefusal};
 use crate::persona::Carries;
 
 /// Why a mind was not staged. Either way she is handed back.
@@ -268,6 +268,44 @@ where
         }
         self.retry_retire()?;
         Ok(Some(self.release_retired()?))
+    }
+}
+
+/// Learning in place: the active mind learns a reply between her turns (IN-PROCESS-LEARNING.md, L2).
+/// Like a decode, it runs only on the mind bound now, after her submitted step landed.
+impl<U, T> PersonaEngine<U, T>
+where
+    U: Identified + Carries<T::Blocks>,
+    T: Learns,
+{
+    /// Retain a shadow on the tier with the lease that pays for its optimizer.
+    pub fn retain_shadow(&mut self, shadow: &T::Shadow, lease: T::Lease) -> Result<(), T::Lease> {
+        self.tier.retain(shadow, lease)
+    }
+
+    /// Release a shadow once native code frees its optimizer; `mind` names whose it was.
+    pub fn release_shadow(&mut self, mind: MindId, shadow: &T::Shadow) -> Result<T::Lease, TierRefusal> {
+        self.tier.release(mind, shadow)
+    }
+
+    /// The active mind learns `reply` into `shadow`, asking `go_on` between chunks. Waits for her
+    /// submitted step to land first, so the reply begins from what she decoded.
+    pub fn learn_active(
+        &mut self,
+        shadow: &T::Shadow,
+        reply: &T::Reply,
+        admission: T::Admission,
+        go_on: &mut dyn FnMut() -> bool,
+    ) -> Result<T::Learned, (DecodeError, T::Admission)> {
+        let mind = match self.active_mind() {
+            Ok(mind) => mind,
+            Err(none) => return Err((none, admission)),
+        };
+        if let Err(refused) = self.tier.settle() {
+            return Err((refused.into(), admission));
+        }
+        self.decoding = None;
+        self.tier.learn(mind, shadow, reply, admission, go_on).map_err(|(refused, admission)| (refused.into(), admission))
     }
 }
 

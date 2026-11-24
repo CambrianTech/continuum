@@ -27,6 +27,8 @@ use super::optimizer_slots::{OptimizerLease, Role, Slot, Slots};
 
 mod memory;
 pub use memory::{MemoryRole, MemoryRow};
+mod shadow;
+pub use shadow::FreshGeometry;
 
 use super::*;
 
