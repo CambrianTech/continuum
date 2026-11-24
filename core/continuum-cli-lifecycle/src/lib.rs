@@ -45,5 +45,8 @@ pub mod prebuilt_artifact;
 #[cfg(windows)]
 pub mod unelevated_service;
 
+
+
+pub mod core_features;
 pub mod prebuilt_validation;
 pub mod cargo_cache_custody;

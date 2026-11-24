@@ -245,7 +245,7 @@ pub(super) async fn launch_core(wait_for_death: &[i32], policy: LaunchSource<'_>
             if env_from_source || policy == LaunchSource::FromSource {
                 eprintln!(
                     "▶ building from source, then starting via {} (log: {logfile}) — \
-                     this compiles and can take minutes",
+                      this compiles and can take minutes",
                     script.display()
                 );
             } else {
@@ -256,8 +256,51 @@ pub(super) async fn launch_core(wait_for_death: &[i32], policy: LaunchSource<'_>
                     script.display()
                 );
             }
+
+            // Feature detection replaces core-features.sh + cargo-features.sh sourcing.
+            // Detects GPU hardware, resolves node profile from config.env, validates
+            // against platform-specific valid features, and passes CONTINUUM_FEATURES
+            // to the shell script for CUDA target setup. Errors fall back gracefully
+            // to auto-detected features rather than failing hard (migration safety).
+            let config_path = std::env::var("CONTINUUM_HOME")
+                .ok()
+                .map(|h| PathBuf::from(h).join("config.env"))
+                .or_else(|| {
+                    std::env::var("HOME")
+                        .ok()
+                        .map(|h| PathBuf::from(h).join(".continuum").join("config.env"))
+                })
+                .unwrap_or_default();
+
+            let auto_features = continuum_cli_lifecycle::core_features::detect_gpu_features();
+            let features_result = continuum_cli_lifecycle::core_features::select_core_features(
+                auto_features,
+                &config_path,
+            );
+
+            let features: Option<&continuum_cli_lifecycle::core_features::CoreFeatures> = match &features_result {
+                Ok(f) => Some(f),
+                Err(e) => {
+                    eprintln!("warning: feature selection failed ({}) — falling back to auto-detection", e);
+                    auto_features.as_ref()
+                }
+            };
+
+            if let Some(ref f) = features {
+                continuum_cli_lifecycle::core_features::report_features(f);
+            } else {
+                eprintln!("warning: no GPU features detected on this platform");
+            }
+
             let mut c = std::process::Command::new(locate_bash()?);
             c.arg(&script);
+
+            // Pass the selected feature flags so start-server.sh can configure CUDA targets.
+            if let Some(ref f) = features {
+                if !f.cargo_features.is_empty() {
+                    c.env("CONTINUUM_FEATURES", &f.cargo_features);
+                }
+            }
             c
         }
         LaunchPlan::Installed | LaunchPlan::InstalledWithoutRebuild => {
