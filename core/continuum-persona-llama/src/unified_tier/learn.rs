@@ -57,9 +57,8 @@ impl Learns for UnifiedTier<'_, '_> {
     fn measure(&mut self, mind: MindId, shadow: &Shadow, reply_rows: NonZeroU32) -> Result<(Vec<MemoryRow>, Vec<MemoryRow>), TierRefusal> {
         self.settle()?;
         let mut learner = Learner::new(self.ctx);
-        let optimizer = learner.measure_optimizer(shadow).map_err(|refusal| reported(mind, "the engine could not measure the optimizer", refusal))?;
-        let workspace = learner.measure_workspace(shadow, reply_rows).map_err(|refusal| reported(mind, "the engine could not measure the workspace", refusal))?;
-        Ok((optimizer, workspace))
+        let measured = learner.measure(shadow, reply_rows).map_err(|refusal| reported(mind, "the engine could not measure her shadow learning", refusal))?;
+        Ok((measured.optimizer, measured.workspace))
     }
 
     fn save(&mut self, mind: MindId, shadow: &Shadow, into: &Path, binding: &str) -> Result<u64, TierRefusal> {
