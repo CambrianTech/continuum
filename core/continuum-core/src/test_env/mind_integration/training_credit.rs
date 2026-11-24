@@ -211,7 +211,7 @@ pub(super) fn captured(
         cause_root: None,
         replay_of: None,
     };
-    let mut lease = CaptureLease::start(sink, &prompt, &call.request);
+    let mut lease = CaptureLease::start(sink, &prompt, &call.request, None);
     let cursor = lease.finish(Some(&call.response), None).expect("a completed capture entry"); // JUSTIFIED: test fixture
     crate::ai::provenance::GenerationReceipt { capture: Some(cursor), ..receipt }
 }

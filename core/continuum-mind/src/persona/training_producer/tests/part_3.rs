@@ -50,7 +50,7 @@ use super::*;
             cause_root: None,
             replay_of: None,
         };
-        let mut lease = CaptureLease::start(Arc::new(sink), &call, &request);
+        let mut lease = CaptureLease::start(Arc::new(sink), &call, &request, None);
         let submitted = lease.cursor().expect("durable submission").to_owned();
         // the receipt carries the COMPLETED entry's cursor: the submission holds no response
         let cursor = lease.finish(Some(&response), None).expect("completed entry");

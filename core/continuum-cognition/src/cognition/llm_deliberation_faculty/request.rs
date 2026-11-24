@@ -167,6 +167,7 @@ impl LlmDeliberationFaculty {
                     replay_of: None,
                 },
                 &request,
+                None,
             )
         });
         // #169 STREAMING: when THIS turn carries a token sink (a live Speak the caller

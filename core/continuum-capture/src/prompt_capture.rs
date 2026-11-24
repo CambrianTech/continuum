@@ -62,6 +62,7 @@ pub struct ReplaySource {
 #[derive(Debug, Clone)]
 pub struct CaptureToken {
     header: CallHeader,
+    pub(crate) tap_state: Option<Arc<continuum_engine::inference::wire_tap::TapState>>,
 }
 
 /// Legacy sinks need only implement record. Lifecycle-aware sinks override the
@@ -115,6 +116,7 @@ impl CaptureLease {
         sink: Arc<dyn PromptCaptureSink>,
         call: &PromptCall,
         request: &TextGenerationRequest,
+        tap_state: Option<Arc<continuum_engine::inference::wire_tap::TapState>>,
     ) -> Self {
         // A turn in her mind room is hers (PRIVACY-OF-THOUGHT.md §4, sink 2): the lease is
         // inert, so neither `finish` nor `Drop` writes, and every dataset built from
@@ -123,12 +125,14 @@ impl CaptureLease {
             continuum_rooms::mind_room::note_withheld(call.persona_id, "prompt_capture");
             None
         } else {
-            sink.submitted(call, request)
+            let mut t = sink.submitted(call, request);
+            t.tap_state = tap_state.clone();
+            Some(t)
         };
         // A recorded call keeps its raw stream too, so the terminal entry can show the tokens
         // the parse turned into this response (card fb6d7912).
         if token.is_some() {
-            continuum_engine::inference::wire_tap::arm(None, &call.request_id);
+            continuum_engine::inference::wire_tap::arm(tap_state.as_ref(), &call.request_id);
         }
         Self {
             sink,
@@ -178,7 +182,7 @@ impl CaptureLease {
             error,
             self.started.elapsed().as_millis() as u64,
         );
-        continuum_engine::inference::wire_tap::take(None, &token.header.request_id);
+        continuum_engine::inference::wire_tap::take(token.tap_state.as_ref(), &token.header.request_id);
         cursor
     }
 }
@@ -393,7 +397,7 @@ impl PromptCaptureSink for JsonlPromptCaptureSink {
             elapsed_ms,
             response,
             error,
-            wire: continuum_engine::inference::wire_tap::take(None, &header.request_id),
+            wire: continuum_engine::inference::wire_tap::take(token.tap_state.as_ref(), &header.request_id),
             wire_omitted: None,
         };
         let record = within_row_limit(record, store::MAX_PAYLOAD_BYTES);
@@ -728,11 +732,11 @@ mod tests {
         // Opening the store may write its own index; the turn must add nothing beyond it.
         let opened = bytes(dir.path());
         let mind = continuum_rooms::mind_room::mind_room_id(persona);
-        let mut finished = CaptureLease::start(Arc::clone(&sink), &call(mind), &request);
+        let mut finished = CaptureLease::start(Arc::clone(&sink), &call(mind), &request, None);
         assert_eq!(finished.finish(None, Some("done")), None, "an inert lease names no entry");
-        drop(CaptureLease::start(Arc::clone(&sink), &call(mind), &request));
+        drop(CaptureLease::start(Arc::clone(&sink), &call(mind), &request, None));
         assert_eq!(bytes(dir.path()), opened, "her mind room: nothing captured, even by Drop");
-        drop(CaptureLease::start(Arc::clone(&sink), &call(Uuid::new_v4()), &request));
+        drop(CaptureLease::start(Arc::clone(&sink), &call(Uuid::new_v4()), &request, None));
         assert!(bytes(dir.path()) > opened, "an ordinary room still captures");
     }
     // what this catches: a recorded call whose wrong tool call cannot be traced to the model
@@ -760,7 +764,7 @@ mod tests {
             messages: vec![ChatMessage::text("user", "close the stray cards")],
             ..Default::default()
         };
-        let mut lease = CaptureLease::start(Arc::clone(&sink), &call(Uuid::new_v4(), &request_id), &request);
+        let mut lease = CaptureLease::start(Arc::clone(&sink), &call(Uuid::new_v4(), &request_id), &request, None);
         let mut stream = continuum_engine::inference::wire_tap::WireTap::open(Some(&request_id), None);
         stream.push(r#"{"choices":[{"delta":{"reasoning_content":"close the stray cards"}}]}"#);
         stream.push(r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"work/create","arguments":"{\"title\":\"x\"}"}}]}}]}"#);
@@ -807,7 +811,7 @@ mod tests {
 
         let private_id = format!("wire-{}", Uuid::new_v4());
         let mind = continuum_rooms::mind_room::mind_room_id(persona);
-        drop(CaptureLease::start(Arc::clone(&sink), &call(mind, &private_id), &request));
+        drop(CaptureLease::start(Arc::clone(&sink), &call(mind, &private_id), &request, None));
         let mut thought = continuum_engine::inference::wire_tap::WireTap::open(Some(&private_id), None);
         thought.push("a private token");
         drop(thought);

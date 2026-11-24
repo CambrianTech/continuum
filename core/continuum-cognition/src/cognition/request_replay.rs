@@ -394,7 +394,7 @@ async fn execute(
     } = prepared;
     call.context_window = adapter.live_served_window();
     let replay_persona = call.persona_id;
-    let mut capture = CaptureLease::start(Arc::new(sink), &call, &request);
+    let mut capture = CaptureLease::start(Arc::new(sink), &call, &request, None);
     let selected = capture
         .cursor()
         .ok_or_else(|| {
@@ -484,7 +484,7 @@ mod tests {
             replay_of: None,
         };
         let sink = JsonlPromptCaptureSink::open(dir.path(), persona).expect("capture sink");
-        let mut capture = CaptureLease::start(Arc::new(sink), &call, &request);
+        let mut capture = CaptureLease::start(Arc::new(sink), &call, &request, None);
         let cursor = capture.cursor().expect("durable submission").to_string();
         capture.finish(None, Some("original interrupted"));
         let p = ReplayRequestParams {
@@ -626,11 +626,10 @@ mod tests {
         // The provenance rides the existing capture format, not an unrelated log.
         let replay_id = prepared.call.persona_id;
         let replay_sink = JsonlPromptCaptureSink::open(dir.path(), replay_id).expect("replay sink");
-        let replay = CaptureLease::start(Arc::new(replay_sink), &prepared.call, &prepared.request);
+        let replay = CaptureLease::start(Arc::new(replay_sink), &prepared.call, &prepared.request, None);
         let replay_cursor = replay.cursor().expect("replay capture").to_string();
         drop(replay); // cancellation is a terminal event, never a successful replay
         let detail =
-            prompt_capture::detail(dir.path(), replay_id, &replay_cursor).expect("replay detail");
         let submitted = detail.submitted.expect("replay submitted");
         assert_eq!(submitted["replay_of"]["persona_id"], persona.to_string());
         assert_eq!(submitted["replay_of"]["cursor"], cursor);
@@ -694,6 +693,7 @@ mod tests {
             Arc::new(implicit_sink),
             &implicit_replay.call,
             &implicit_replay.request,
+            None,
         );
         let implicit_cursor = implicit_capture
             .cursor()

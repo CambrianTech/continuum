@@ -67,7 +67,7 @@ pub(crate) fn record(
         cause_root: None,
         replay_of: None,
     };
-    Ok(CaptureLease::start(sink, &call, request))
+    Ok(CaptureLease::start(sink, &call, request, None))
 }
 
 /// End a recorded call with the generation's outcome. A call that never reaches this (the
