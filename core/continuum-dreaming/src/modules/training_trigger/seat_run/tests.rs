@@ -63,12 +63,19 @@ impl ReplyAdmission for Guard {
     }
 }
 
+/// The guard type the tests hold: any lease, type-erased.
+type G = Box<dyn Send>;
+
+fn g(guard: Box<Guard>) -> G {
+    guard
+}
+
 fn guard() -> (Box<Guard>, Arc<AtomicBool>) {
     let dropped = Arc::new(AtomicBool::new(false));
     (Box::new(Guard(Arc::clone(&dropped))), dropped)
 }
 
-fn measured(port: &Port) -> SeatRun {
+fn measured(port: &Port) -> SeatRun<G> {
     let shadow = ShadowSource::Fresh(FreshShadow { name: "s.gguf".into(), rank: 8, alpha: 16.0, targets: vec!["attn_q".into()], top_layers: 4, seed: 7 });
     let optimizer = Optimizer::AdamW { learning_rate: 1e-4, beta1: 0.9, beta2: 0.999, eps: 1e-8, weight_decay: 0.0 };
     let measure = Measure { seat: SeatId(Uuid::new_v4()), mind: PersonaId(Uuid::new_v4()), shadow, optimizer, sized_for: lesson() };
@@ -84,13 +91,13 @@ fn lesson() -> Lesson {
 }
 
 /// A seat measured, loaded and seated, holding its three guards.
-fn seated(port: &Port) -> SeatRun {
+fn seated(port: &Port) -> SeatRun<G> {
     let mut run = measured(port);
     let id = run.id();
     assert_eq!(run.hear(port, &Said::Seat { seat: id, state: SeatState::Measured { weights: Vec::new() } }), Some(Heard::LeaseWeights(Vec::new())));
-    run.load(port, guard().0).expect("test: measured, so it loads");
+    run.load(port, g(guard().0)).expect("test: measured, so it loads");
     assert!(matches!(run.hear(port, &Said::Seat { seat: id, state: loaded() }), Some(Heard::LeaseSeat { .. })));
-    run.seat(port, guard().0, [guard().0 as Box<dyn Send>, guard().0 as Box<dyn Send>]).expect("test: loaded, so it seats");
+    run.seat(port, guard().0, g(guard().0), g(guard().0)).expect("test: loaded, so it seats");
     assert_eq!(
         run.hear(port, &Said::Seat { seat: id, state: SeatState::Seated { optimizer: OptimizerStart::Cold } }),
         Some(Heard::Seated { optimizer: OptimizerStart::Cold })
@@ -208,7 +215,7 @@ fn a_quarantined_seat_keeps_its_leases_until_it_is_released() {
     let mut run = seated(&port);
     let id = run.id();
     let (weights, weights_dropped) = guard();
-    run.guards.push(weights);
+    run.guards.push(g(weights));
     assert_eq!(
         run.hear(&port, &Said::Seat { seat: id, state: SeatState::Quarantined { why: Arc::from("restore unconfirmed") } }),
         Some(Heard::Quarantined { why: Arc::from("restore unconfirmed") })
@@ -229,19 +236,19 @@ fn guards_go_only_when_nothing_of_the_seat_remains() {
     let port = Port::default();
     let mut run = measured(&port);
     let (early, early_dropped) = guard();
-    assert!(matches!(run.load(&port, early), Err(NotTold::OutOfOrder(_))), "loaded before its weights were measured");
+    assert!(matches!(run.load(&port, g(early)), Err(NotTold::OutOfOrder(_))), "loaded before its weights were measured");
     assert!(early_dropped.load(Ordering::Relaxed), "the refused lease is dropped");
 
     let id = run.id();
     run.hear(&port, &Said::Seat { seat: id, state: SeatState::Measured { weights: Vec::new() } });
     port.closed.store(true, Ordering::Relaxed);
     let (weights, weights_dropped) = guard();
-    assert!(matches!(run.load(&port, weights), Err(NotTold::NoEngine)));
+    assert!(matches!(run.load(&port, g(weights)), Err(NotTold::NoEngine)));
     assert!(weights_dropped.load(Ordering::Relaxed), "no engine: the weights lease is dropped, nothing was allocated");
 
     port.closed.store(false, Ordering::Relaxed);
     let (weights, weights_dropped) = guard();
-    run.load(&port, weights).expect("test: measured, open");
+    run.load(&port, g(weights)).expect("test: measured, open");
     assert_eq!(run.held(), 1);
     assert_eq!(
         run.hear(&port, &Said::Seat { seat: id, state: SeatState::Refused { why: Arc::from("geometry") } }),
@@ -306,9 +313,9 @@ fn a_kept_seat_command_leaves_the_seat_where_it_was() {
     let mut run = measured(&port);
     let id = run.id();
     run.hear(&port, &Said::Seat { seat: id, state: SeatState::Measured { weights: Vec::new() } });
-    run.load(&port, guard().0).expect("test: measured");
+    run.load(&port, g(guard().0)).expect("test: measured");
     run.hear(&port, &Said::Seat { seat: id, state: loaded() });
-    run.seat(&port, guard().0, [guard().0 as Box<dyn Send>, guard().0 as Box<dyn Send>]).expect("test: loaded");
+    run.seat(&port, guard().0, g(guard().0), g(guard().0)).expect("test: loaded");
 
     assert_eq!(
         run.hear(&port, &Said::Seat { seat: id, state: SeatState::Kept { why: Arc::from("retain refused") } }),
@@ -316,7 +323,7 @@ fn a_kept_seat_command_leaves_the_seat_where_it_was() {
     );
     assert_eq!(run.held(), 3, "kept: every guard still held");
     assert!(!run.ready(), "not seated");
-    run.seat(&port, guard().0, std::iter::empty()).expect("test: back to loaded, so it seats again");
+    run.seat(&port, guard().0, g(guard().0), g(guard().0)).expect("test: back to loaded, so it seats again");
     assert_eq!(run.hear(&port, &Said::Seat { seat: id, state: SeatState::Seated { optimizer: OptimizerStart::Cold } }), Some(Heard::Seated { optimizer: OptimizerStart::Cold }));
     assert!(run.ready());
 }
