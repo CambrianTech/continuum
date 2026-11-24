@@ -89,6 +89,11 @@ pub struct RunConfig {
 }
 
 impl RunConfig {
+    /// Set the working directory for spawned commands. Returns self for chaining.
+    pub fn cwd(mut self, path: impl Into<PathBuf>) -> Self {
+        self.cwd = Some(path.into());
+        self
+    }
     /// Apply config to a `tokio::process::Command` builder, returning it ready for `.spawn()` or
     /// `.output()`. Does NOT set the command name or arguments — those are caller-specific.
     pub fn apply_to(&self, cmd: &mut tokio::process::Command) {
