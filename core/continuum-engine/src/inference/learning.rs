@@ -192,3 +192,17 @@ pub trait LearnPort: Send + Sync {
     /// Queue `learning` beside her turns. Its outcome arrives on the seat's stream.
     fn tell(&self, learning: Learning) -> Result<(), Unavailable>;
 }
+
+/// Say `said` on [`LEARNING_SAID`]. The node bus's one emitter for the topic is claimed here, once
+/// per process (a scheduler may be spawned again; the stream's producer is this owner), and an
+/// emit never waits.
+pub(crate) fn say(said: Said) {
+    static SAID: std::sync::OnceLock<Option<parking_lot::Mutex<continuum_sage::dataflow::Emitter<Said>>>> = std::sync::OnceLock::new();
+    let emitter = SAID.get_or_init(|| continuum_sage::component::node().emitter::<Said>(LEARNING_SAID).ok().map(parking_lot::Mutex::new));
+    match emitter {
+        Some(emitter) => {
+            emitter.lock().emit(said);
+        }
+        None => continuum_base::probe!(class = "learning.said.unclaimed", said = ?said, "another producer holds learning/said: what the engine learned is not said"),
+    }
+}

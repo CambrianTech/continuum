@@ -64,6 +64,9 @@ pub struct InProcessEngine {
     loaded: tokio::sync::Mutex<Option<Loaded>>,
     /// The adapter residents bind to, readable without awaiting the load lock.
     published: parking_lot::RwLock<Option<Arc<dyn AIProviderAdapter>>>,
+    /// The trainer's port into the engine serving now (IN-PROCESS-LEARNING.md, L2), published with
+    /// the adapter.
+    learning: parking_lot::RwLock<Option<Arc<dyn crate::inference::learning::LearnPort>>>,
 }
 
 static NODE_ENGINE: OnceLock<Arc<InProcessEngine>> = OnceLock::new();
@@ -198,6 +201,7 @@ impl LlamaServerControl for InProcessEngine {
             return Err(InProcessRefusal::NotReady { model: loaded.model_id, state }.into());
         }
         *self.published.write() = Some(loaded.adapter.clone() as Arc<dyn AIProviderAdapter>);
+        *self.learning.write() = Some(loaded.adapter.clone() as Arc<dyn crate::inference::learning::LearnPort>);
         *guard = Some(loaded);
         Ok(())
     }
@@ -245,5 +249,17 @@ impl LlamaServerControl for InProcessEngine {
     /// This process owns the engine outright: there is no orphan to probe before adopting.
     fn owns_child(&self) -> bool {
         true
+    }
+}
+
+/// The trainer reaches the node's engine here: no engine serving is [`Unavailable`], never another
+/// path.
+impl crate::inference::learning::LearnPort for InProcessEngine {
+    fn tell(&self, learning: crate::inference::learning::Learning) -> Result<(), crate::inference::learning::Unavailable> {
+        let port = self.learning.read().clone();
+        match port {
+            Some(port) => port.tell(learning),
+            None => Err(crate::inference::learning::Unavailable { returned: learning }),
+        }
     }
 }

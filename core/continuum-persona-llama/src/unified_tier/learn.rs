@@ -3,7 +3,7 @@
 //! whether to go on; a no drains the reply, which restores her served tail and keeps what committed.
 //!
 //! Native code trains (and measures) only a shadow attached at a non-zero scale (`opt_untrainable`),
-//! so measuring and learning attach her genes and the shadow together; the next decode applies her
+//! so measuring and learning attach the shadow alone and take it off after; the next decode applies her
 //! own genes again.
 
 use std::num::NonZeroU32;
@@ -11,7 +11,7 @@ use std::path::Path;
 
 use continuum_persona_engine::persona::MindId;
 use continuum_persona_engine::residency::{Execute, Learns, Native, TierRefusal};
-use llama::{Finished, Label, Learner, LoraAdapter, MemoryRow, OptimizerLease, Progress, Reply, ReplyAdmission, Shadow};
+use llama::{Finished, Label, Learner, MemoryRow, OptimizerLease, Progress, Reply, ReplyAdmission, Shadow};
 
 use super::{refused, UnifiedTier, TIER};
 
@@ -31,33 +31,20 @@ fn reported(mind: MindId, reason: &'static str, refusal: impl std::fmt::Display)
 }
 
 impl UnifiedTier<'_, '_> {
-    /// Attach her genes and `shadow` together (the shadow at full scale) for one measure or reply.
-    /// [`Self::detach`] puts her own genes back before the shadow can be dropped.
+    /// Attach `shadow` alone, at full scale, for one measure or reply: it learns against the base
+    /// weights. The genes applied last may be another mind's, so none are attached with it; learning
+    /// under her own gene set needs her genes in the command (named follow-up). [`Self::detach`]
+    /// takes it off before it can be dropped.
     fn attach(&mut self, mind: MindId, shadow: &Shadow) -> Result<(), TierRefusal> {
-        let applied = self.applied_genes.clone();
-        let mut genes = genes(applied.as_deref());
-        genes.push((shadow.adapter.as_ref(), 1.0));
-        self.ctx.set_loras(&genes).map_err(|message| reported(mind, "the engine refused her genes with the shadow", message))
+        self.applied_genes = None;
+        self.ctx.set_loras(&[(shadow.adapter.as_ref(), 1.0)]).map_err(|message| reported(mind, "the engine refused the shadow", message))
     }
 
-    /// Her own genes back on the context, so no released shadow stays attached to it. A refusal
-    /// clears what the context believes applied, so the next decode applies her genes again.
+    /// No adapter left on the context, so no released shadow stays attached to it; her next decode
+    /// applies her own genes (nothing is marked applied).
     fn detach(&mut self, mind: MindId) -> Result<(), TierRefusal> {
-        let applied = self.applied_genes.clone();
-        let genes = genes(applied.as_deref());
-        let back = if genes.is_empty() { self.ctx.clear_loras() } else { self.ctx.set_loras(&genes) };
-        back.map_err(|message| {
-            self.applied_genes = None;
-            reported(mind, "the engine could not put her genes back after the shadow", message)
-        })
-    }
-}
-
-/// The genes applied for her decode, as the context takes them.
-fn genes(applied: Option<&[(std::sync::Arc<LoraAdapter>, f32)]>) -> Vec<(&LoraAdapter, f32)> {
-    match applied {
-        Some(applied) => applied.iter().map(|(adapter, scale)| (adapter.as_ref(), *scale)).collect(),
-        None => Vec::new(),
+        self.applied_genes = None;
+        self.ctx.clear_loras().map_err(|message| reported(mind, "the engine could not take the shadow off", message))
     }
 }
 

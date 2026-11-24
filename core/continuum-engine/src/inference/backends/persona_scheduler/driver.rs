@@ -96,6 +96,8 @@ enum Tenure {
 
 mod ending;
 mod history;
+mod learning;
+pub(crate) use learning::Job as LearningJob;
 
 use ending::{Ending, Stop, Suspension};
 pub(super) use ending::finish;
@@ -146,6 +148,8 @@ struct Driver<'c, 'm> {
     store: Option<preserve::Preserved>,
     /// The model this engine serves: preserved minds resume only on it.
     model_id: String,
+    /// What the trainer told, worked between her turns.
+    learning: learning::Learning,
     /// The stop has suspended every mind: no new turn is taken.
     stopping: bool,
 }
@@ -218,6 +222,7 @@ pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
                 Submission::Turn(req) => {
                     tell(&req.response_tx, TokenEvent::Error(why.clone()));
                 }
+                Submission::Learning(job) => job.refuse(&why),
                 Submission::Suspend(reply) => {
                     report(reply, Suspended::default());
                 }
@@ -266,6 +271,7 @@ pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
         store: store.ok(),
         model_id: config.model.clone(),
         stopping: false,
+        learning: learning::Learning::default(),
     };
     // The frame loop (CONTINUUM-ENGINE 4.15): submissions are drained without blocking, and each
     // frame advances ONE turn by ONE step (a prefill chunk or a token), chosen by `frame::pick`: a turn
@@ -280,6 +286,12 @@ pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
         // while deferred, the thread waits for EITHER a submission (a turn, or the stop's suspend) or
         // the stage's space: a wake on both, never a poll, and a stalled caller never blocks a stop.
         let holding = driver.holding();
+        // Learning only between her turns: with no turn and nothing held for a stage, the oldest
+        // learning job runs, asking between chunks whether a submission waits (one drains it).
+        if turns.is_empty() && !holding && driver.learning.waiting() {
+            driver.learn_next(&mut || requests.is_empty());
+            continue;
+        }
         if holding || turns.is_empty() {
             let parked_at = Instant::now();
             let emit_pending = driver.emit.waiting();
@@ -296,6 +308,7 @@ pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
                 let wake = match &woke {
                     Some(Some(Submission::Turn(_))) => "turn",
                     Some(Some(Submission::Suspend(_))) => "suspend",
+                    Some(Some(Submission::Learning(_))) => "learning",
                     Some(None) => "closed",
                     None => "stage_space",
                 };
@@ -471,7 +484,18 @@ impl Driver<'_, '_> {
                 self.admit(req, turns);
                 None
             }
-            Submission::Suspend(reply) => Some(Stop { reply, suspension: self.suspend(turns) }),
+            Submission::Learning(job) if self.stopping => {
+                job.refuse("the engine is stopping");
+                None
+            }
+            Submission::Learning(job) => {
+                self.learning.queue(job);
+                None
+            }
+            Submission::Suspend(reply) => {
+                self.learning.refuse_waiting("the engine is stopping");
+                Some(Stop { reply, suspension: self.suspend(turns) })
+            }
         }
     }
 
