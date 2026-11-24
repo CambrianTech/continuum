@@ -172,8 +172,10 @@ pub struct Cleaner {
 }
 
 impl Cleaner {
-    pub fn of(train_dir: PathBuf) -> Self {
-        Self { train_dir, held: Arc::default(), settled: Arc::default(), booted: std::time::SystemTime::now(), sweeping: false }
+    /// The cleaner of `train_dir`. `booted` is when this process began, before anything in it could
+    /// seat a learner: a shadow written before then belongs to no live seat.
+    pub fn of(train_dir: PathBuf, booted: std::time::SystemTime) -> Self {
+        Self { train_dir, held: Arc::default(), settled: Arc::default(), booted, sweeping: false }
     }
 }
 
@@ -193,6 +195,9 @@ impl Component for Cleaner {
             Wake::Seated(seated) => self.held = Arc::new(seated.0.iter().filter_map(|shadow| shadow_name(shadow)).collect()),
             Wake::Settled(settled) => {
                 let Some(name) = shadow_name(&settled.shadow) else { return };
+                // the settlement IS the seat letting go: it no longer holds the name, whichever arrives first,
+                // this or the seated update that drops it (Codex on #6240)
+                Arc::make_mut(&mut self.held).remove(&name);
                 if settled.learned > 0 || settled.published {
                     // its seat is gone and it keeps what it learned: a sweep may take it, a release may not
                     Arc::make_mut(&mut self.settled).insert(name);
@@ -300,6 +305,64 @@ mod tests {
         assert!(!train.join(&settled_name).exists());
         assert!(train.join(&unsettled).exists(), "a shadow written since boot that never settled may be a live seat's");
         assert!(train.join(&before_boot).exists(), "a held shadow survives whatever path spelled it");
+    }
+
+    // what this catches (Codex on #6240): a settlement that arrives before the seated update that
+    // drops its shadow, so the cleaner still reads it held, keeps it, and never takes it; the
+    // cleaner must release a settled shadow whichever of the two arrives first.
+    #[tokio::test]
+    async fn a_settled_shadow_goes_whichever_of_settlement_and_seated_arrives_first() {
+        use continuum_sage::component::{presence_key, Bus, Owner, Telemetry, TELEMETRY};
+        use continuum_sage::dataflow::{OwnerId, Provenance, RunId, StageId, StageIncarnation};
+
+        let dir = tempfile::tempdir().expect("test: dir");
+        let train = dir.path().join("engine-train");
+        std::fs::create_dir_all(&train).expect("test: train dir");
+        let bus = Arc::new(Bus::new());
+        let mut owner = Owner::with_bus(Arc::clone(&bus), OwnerId(uuid::Uuid::new_v4()), 0);
+        let _cleaner = owner.start(Cleaner::of(train.clone(), std::time::SystemTime::now()));
+        let mut seated = bus.publisher::<Seated>(SEATED, Key::ONE).expect("test: the seated topic");
+        let mut settled = bus.emitter::<Settled>(SETTLED).expect("test: the settled topic");
+        let mut said = 0u64;
+        let mut by = || {
+            said += 1;
+            Provenance { by: RunId { incarnation: StageIncarnation { stage: StageId::named("trainer-fixture"), owner: OwnerId(uuid::Uuid::nil()), epoch: 0 }, seq: said }, from: Vec::new() }
+        };
+        let telemetry = bus.reader::<Telemetry>(TELEMETRY, presence_key(Cleaner::NAME));
+        let handled = |at_least: u64| {
+            let mut telemetry = telemetry.clone();
+            async move {
+                while telemetry.latest().is_none_or(|t| t.value.handled < at_least) {
+                    telemetry.changed().await.expect("test: the bus outlives the cleaner");
+                }
+            }
+        };
+        let write = |seat: u8| {
+            let path = train.join(shadow_file(seat));
+            std::fs::write(&path, b"shadow").expect("test: file");
+            path
+        };
+
+        // settlement first: the cleaner still reads the shadow held when it is told the seat let go
+        let first = write(1);
+        seated.publish(Seated([first.clone()].into()), by());
+        handled(1).await;
+        settled.emit(Settled { shadow: first.clone(), learned: 0, published: false });
+        handled(3).await; // the settlement and the release it handed off
+        assert!(!first.exists(), "released though the seated update had not yet dropped it");
+        seated.publish(Seated(BTreeSet::new()), by());
+        handled(4).await;
+
+        // the seated update first, then the settlement
+        let second = write(2);
+        seated.publish(Seated([second.clone()].into()), by());
+        handled(5).await;
+        seated.publish(Seated(BTreeSet::new()), by());
+        handled(6).await;
+        settled.emit(Settled { shadow: second.clone(), learned: 0, published: false });
+        handled(8).await;
+        assert!(!second.exists(), "released after the seated update dropped it too");
+        drop(owner);
     }
 
     #[test]

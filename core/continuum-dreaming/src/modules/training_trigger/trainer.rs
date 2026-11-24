@@ -80,6 +80,13 @@ impl TrainerOut {
         self.seated.publish(Seated(held), by);
     }
 
+    /// A seat let `shadow` go outside a page-out (a quarantine): no seat holds it now.
+    pub(crate) fn released(&mut self, shadow: PathBuf) {
+        self.held.remove(&shadow);
+        let (held, by) = (self.held.clone(), self.provenance());
+        self.seated.publish(Seated(held), by);
+    }
+
     /// A seat let `shadow` go at page-out, having learned `learned` examples and published or not.
     pub(crate) fn settled(&mut self, shadow: PathBuf, learned: u32, published: bool) {
         self.held.remove(&shadow);
@@ -128,8 +135,9 @@ impl Component for Trainer {
             Wake::Arrived(_) => "arrival",
         };
         let state = Arc::clone(&self.state);
-        let pass = self.state.running.named(OwnedKind::Recover, None, async move { state.recover_pass().await });
-        if let Err(error) = pass.await {
+        // an owned operation, so shutdown's join waits for a pass in flight and refuses one after it
+        let pass = self.state.run_operation(OwnedKind::Recover, None, async move { state.recover_pass().await }).await;
+        if let Err(error) = pass.and_then(|ran| ran) {
             continuum_base::probe!(class = "training.pass.failed", woke_by, error = %error,
                 "a recovery pass failed; durable work stays owned and the next wake tries again");
         }

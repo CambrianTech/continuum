@@ -202,6 +202,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 async fn async_main(home: std::path::PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     let boot_entry = std::time::Instant::now();
+    // before anything this process does can seat a learner: the cleaner's line between dead and live shadows
+    let learners_from = std::time::SystemTime::now();
     continuum_core::runtime::boot_clock::mark();
     // Raise our own fd ceiling BEFORE opening any socket or file sink. The core is the
     // grid's hub — it opens many airc unix sockets and sqlite handles by design — and a
@@ -628,14 +630,16 @@ async fn async_main(home: std::path::PathBuf) -> Result<(), Box<dyn std::error::
 
     // The node's learning parts: the trainer (handed over by start_server) and the engine-train
     // cleaner, each a component on the node's owner, each on its own worker.
+    // The cleaner first, its line drawn at this process's start: no shadow a seat of this process wrote
+    // reads as from before boot (Codex on #6240).
+    if let Some(train_dir) = continuum_core::inference::llama_server::engine_train_dir() {
+        node_parts.start(continuum_core::modules::training_trigger::cleaner::Cleaner::of(train_dir, learners_from));
+    }
     match trainer_rx.await {
         Ok(trainer) => {
             node_parts.start(trainer);
         }
         Err(_) => continuum_base::probe!(class = "boot.trainer_absent", "no trainer was built this boot: nothing learns in place"),
-    }
-    if let Some(train_dir) = continuum_core::inference::llama_server::engine_train_dir() {
-        node_parts.start(continuum_core::modules::training_trigger::cleaner::Cleaner::of(train_dir));
     }
 
     // Delayed reporter registration: subscribe to the Bevy renderer's

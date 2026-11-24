@@ -150,12 +150,15 @@ impl EnginesHeld {
 }
 
 /// What one bucket's pass did.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct BucketPass {
     pub(crate) learned: u32,
     pub(crate) deferred: bool,
     pub(crate) quarantined: bool,
     pub(crate) checkpointed: bool,
+    /// Shadows whose learners this pass stopped, confirmed, outside a settle (a quarantine): the
+    /// trainer says each released so the cleaner no longer holds it (Codex on #6240).
+    pub(crate) released: Vec<std::path::PathBuf>,
 }
 
 impl InPlace {
@@ -209,6 +212,9 @@ impl InPlace {
     async fn step(&self, state: &Arc<TrainingTriggerState>, mut held: engine_lock::EngineGuard, key: &BucketKey, rows: &[Arrival], engine: EngineIncarnation, slot: LearnSlot, renewed: &mut bool, pass: &mut BucketPass) -> Result<Next, String> {
         // Bound first: the step's borrow of `held` ends here, before the arm below moves `held` into the fence.
         let stepped = step_on(&self.authority, &mut held, key, rows, slot, renewed, pass).await?;
+        for shadow in std::mem::take(&mut pass.released) {
+            state.say(|out| out.released(shadow));
+        }
         match stepped {
             Stepped::Next(next) => Ok(next),
             Stepped::Lost { mind, slot } => {
@@ -241,11 +247,10 @@ impl InPlace {
             return Ok(published);
         }
         let cost = seated.cost;
-        let shadow = std::path::PathBuf::from(seated.mind.shadow_path());
         let began = std::time::Instant::now();
-        let stopped = stop(&mut held, key).await;
+        let (stopped, released) = stop(&mut held, key).await;
         // the engine let her shadow go: the cleaner decides what becomes of the file, on its own worker
-        if stopped == Released::Confirmed {
+        if let Some(shadow) = released {
             state.say(|out| out.settled(shadow, cost.learned, published));
         }
         // the workspace is the engine's: it goes with the last learner, and only then
@@ -404,7 +409,9 @@ async fn step_on(
             }
             Ok((Verdict::Quarantined, _, _)) => {
                 drop(slot);
-                stop(held, key).await;
+                if let (_, Some(shadow)) = stop(held, key).await {
+                    pass.released.push(shadow);
+                }
                 pass.quarantined = true;
                 Ok(Stepped::Next(Next::Stop))
             }
@@ -726,17 +733,21 @@ fn paged_out(stopped: Released, workspace: Released) -> bool {
     matches!((stopped, workspace), (Released::Confirmed, Released::Confirmed | Released::NotHers))
 }
 
-/// Stop `key`'s learner; whatever it still holds stays in custody until the engine confirms it.
-async fn stop(held: &mut EngineLearning, key: &BucketKey) -> Released {
+/// Stop `key`'s learner; whatever it still holds stays in custody until the engine confirms it. A
+/// confirmed stop returns the shadow the engine let go; an unconfirmed one returns none, since the
+/// engine may still hold the file (it stays held until the engine confirms, or the node restarts and
+/// the cleaner's before-boot rule takes it).
+async fn stop(held: &mut EngineLearning, key: &BucketKey) -> (Released, Option<std::path::PathBuf>) {
     let Some(seated) = held.minds.remove(key) else {
-        return Released::NotHers;
+        return (Released::NotHers, None);
     };
+    let shadow = std::path::PathBuf::from(seated.mind.shadow_path());
     match seated.mind.stop().await {
-        Ok(()) => Released::Confirmed,
+        Ok(()) => (Released::Confirmed, Some(shadow)),
         Err((_orphaned, why)) => {
             continuum_base::probe!(class = "training.in_place.stop_unconfirmed", persona = %key.persona_id, reason = %why,
                 "a learner's stop is unconfirmed; custody holds what it held until the engine releases it");
-            Released::Unconfirmed
+            (Released::Unconfirmed, None)
         }
     }
 }

@@ -34,20 +34,39 @@ impl TrainingTriggerState {
         F: FnOnce(Arc<Self>, BucketKey) -> Fut + Send + 'static,
         Fut: std::future::Future<Output = T> + Send + 'static,
     {
+        self.require_ready()?; // a bucket's operation needs recovered state; shutdown is rechecked under the lock
+        let (state, persona) = (self.clone(), Some(key.persona_id));
+        self.run_operation(kind, persona, async move {
+            let _lease = lease;
+            operation(state, key).await
+        })
+        .await
+    }
+
+    /// Run `operation` as an owned operation: admitted only while the trigger is ready, held in
+    /// `operations` so shutdown's join waits for it, named for its kind. What every owned operation
+    /// runs through, a bucket's or the trainer's recovery pass, which holds no bucket (Codex on #6240:
+    /// a pass outside `operations` let shutdown return while its storage read went on).
+    pub(crate) async fn run_operation<T, Fut>(self: &Arc<Self>, kind: super::super::OwnedKind, persona: Option<Uuid>, operation: Fut) -> Result<T, String>
+    where
+        T: Send + 'static,
+        Fut: std::future::Future<Output = T> + Send + 'static,
+    {
         let (send, receive) = tokio::sync::oneshot::channel();
         {
             let mut operations = self.operations.lock();
-            self.require_ready()?;
+            // under the lock shutdown drains: admitted before it, or refused. Readiness is the caller's:
+            // the recovery pass runs before it to retry an interrupted schema setup.
+            if self.stopping.load(Ordering::Acquire) {
+                return Err("training-trigger is shutting down".into());
+            }
             while let Some(joined) = operations.try_join_next() {
                 if let Err(error) = joined {
                     tracing::error!(%error, "training owner operation failed; durable recovery retains its work");
                 }
             }
-            let state = self.clone();
-            let persona = Some(key.persona_id);
             operations.spawn(self.running.named(kind, persona, async move {
-                let _lease = lease;
-                let result = operation(state, key).await;
+                let result = operation.await;
                 let _ = send.send(result); // a disconnected caller does not cancel ownership
             }));
         }
