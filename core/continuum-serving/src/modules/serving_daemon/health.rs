@@ -501,7 +501,7 @@ impl ServingDaemonModule {
     /// alive by every liveness measure, and making no progress by the only one that mattered.
     pub(super) fn declare_lane_wedged(
         force_relaunch: &Arc<AtomicBool>,
-        serving_tx: &watch::Sender<ServingSnapshot>,
+        serving_tx: &crate::inference::llama_server::ServingState,
         bus: Option<&Arc<MessageBus>>,
         reason: &str,
     ) {

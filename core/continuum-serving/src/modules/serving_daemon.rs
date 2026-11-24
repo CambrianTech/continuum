@@ -168,7 +168,7 @@ pub struct ServingDaemonModule {
     /// `/v1` url. Adapters read THIS instead of probing the process; a grid
     /// allocator reads it to contract `(model, genome)` leases. Node down →
     /// empties; node up → republished. The grid seam.
-    serving_tx: watch::Sender<ServingSnapshot>,
+    serving_tx: crate::inference::llama_server::ServingState,
     /// The serving lifecycle gate: at most one operation (a reconcile, which may spawn and wait
     /// for a model load; a teacher batch; a training admission) in flight. A tick that finds
     /// one running skips, so relaunches never stack. The operation stamps its start and step;
@@ -421,6 +421,7 @@ impl ServingDaemonModule {
         resource_daemon: Arc<ResourceDaemon>,
         catalog: Arc<ModelCatalog>,
         pin_store: crate::modules::serving_pin_store::ServingPinStore,
+        serving: crate::inference::llama_server::ServingState,
     ) -> Self {
         Self::with_control(
             gpu,
@@ -429,6 +430,7 @@ impl ServingDaemonModule {
             Arc::new(LlamaServerProcess::new()),
             catalog,
             pin_store,
+            serving,
         )
     }
 
@@ -444,13 +446,13 @@ impl ServingDaemonModule {
         server: Arc<dyn LlamaServerControl>,
         catalog: Arc<ModelCatalog>,
         pin_store: crate::modules::serving_pin_store::ServingPinStore,
+        serving: crate::inference::llama_server::ServingState,
     ) -> Self {
         let (plan_tx, _rx) = watch::channel(ServingPlanSnapshot {
             intent_revision: 0,
             plan: None,
         });
         let (plan_view_tx, _) = watch::channel(None);
-        let (serving_tx, _srx) = watch::channel(ServingSnapshot::empty());
         let (verified_target, _) = watch::channel(None);
         // The operator's pin is durable intent: seed the channel from the store so the
         // FIRST plan is computed under it (cards 3160b3d0 / 9552a01e — every reboot
@@ -521,7 +523,7 @@ impl ServingDaemonModule {
             plan_tx,
             plan_view_tx,
             server,
-            serving_tx,
+            serving_tx: serving,
             lifecycle: LifecycleGate::new(plan_published.clone()),
             reconcile_busy_said_ms: Arc::new(AtomicU64::new(0)),
             plan_published,

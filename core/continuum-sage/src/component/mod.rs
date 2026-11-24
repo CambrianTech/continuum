@@ -30,6 +30,7 @@ mod observe;
 mod owner;
 mod profile;
 mod running;
+mod source;
 mod wiring;
 mod worker;
 
@@ -42,6 +43,7 @@ pub use observe::{Observe, Telemetry, OBSERVE, TELEMETRY};
 pub use owner::Owner;
 pub use profile::{node_profile, Profiler};
 pub use running::{Running, Teller};
+pub use source::Source;
 pub use wiring::Wiring;
 pub use worker::start;
 

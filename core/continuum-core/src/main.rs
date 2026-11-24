@@ -202,6 +202,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 async fn async_main(home: std::path::PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     let boot_entry = std::time::Instant::now();
+    // before anything this process does can seat a learner: the cleaner's line between dead and live shadows
+    let learners_from = std::time::SystemTime::now();
     continuum_core::runtime::boot_clock::mark();
     // Raise our own fd ceiling BEFORE opening any socket or file sink. The core is the
     // grid's hub — it opens many airc unix sockets and sqlite handles by design — and a
@@ -536,6 +538,9 @@ async fn async_main(home: std::path::PathBuf) -> Result<(), Box<dyn std::error::
         ms = boot_entry.elapsed().as_millis() as u64,
         "everything main did before starting the IPC thread"
     );
+    // The trainer is built inside start_server, where its inputs exist, and started below on the
+    // node's owner once the socket is bound (card 54731a51).
+    let (trainer_tx, trainer_rx) = tokio::sync::oneshot::channel();
     let ipc_handle = std::thread::spawn(move || {
         // Pre-bind boot steps are marked one by one (card d97d3681): Windows hung here for 300 s
         // with nothing after `main_to_ipc_thread` and no stack sampler on that host, so each step
@@ -549,6 +554,7 @@ async fn async_main(home: std::path::PathBuf) -> Result<(), Box<dyn std::error::
             ipc_pressure_monitor,
             ipc_disk_pressure_monitor,
             boot_mode,
+            trainer_tx,
         ) {
             tracing::error!("❌ IPC server error: {}", e);
             // A.2: a `start_server` Err means the substrate refused
@@ -620,6 +626,20 @@ async fn async_main(home: std::path::PathBuf) -> Result<(), Box<dyn std::error::
         tracing::error!("{m}");
         eprintln!("{m}");
         unsafe { libc::_exit(1) };
+    }
+
+    // The node's learning parts: the trainer (handed over by start_server) and the engine-train
+    // cleaner, each a component on the node's owner, each on its own worker.
+    // The cleaner first, its line drawn at this process's start: no shadow a seat of this process wrote
+    // reads as from before boot (Codex on #6240).
+    if let Some(train_dir) = continuum_core::inference::llama_server::engine_train_dir() {
+        node_parts.start(continuum_core::modules::training_trigger::cleaner::Cleaner::of(train_dir, learners_from));
+    }
+    match trainer_rx.await {
+        Ok(trainer) => {
+            node_parts.start(trainer);
+        }
+        Err(_) => continuum_base::probe!(class = "boot.trainer_absent", "no trainer was built this boot: nothing learns in place"),
     }
 
     // Delayed reporter registration: subscribe to the Bevy renderer's

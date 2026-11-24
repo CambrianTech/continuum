@@ -7,8 +7,8 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
-use continuum_sage::component::{node, start, Component, Ctx, Key, Known, LastSeen, Novelty, Running, Urgency, Wiring};
-use continuum_sage::dataflow::{OwnerId, Provenance, Publisher, RunId, Snapshot, StageId, StageIncarnation, TopicName};
+use continuum_sage::component::{node, start, Component, Ctx, Key, Known, LastSeen, Novelty, Running, Source, Urgency, Wiring};
+use continuum_sage::dataflow::{OwnerId, Publisher, Snapshot, TopicName};
 use continuum_sage::Qos;
 
 use super::Promotion;
@@ -66,7 +66,7 @@ impl Component for HotTier {
 }
 
 struct Launcher {
-    served: Publisher<ServedModel>,
+    served: Source<ServedModel>,
     _tier: Option<Running<HotTier>>,
 }
 
@@ -77,7 +77,7 @@ static LAUNCHER: OnceLock<parking_lot::Mutex<Option<Launcher>>> = OnceLock::new(
 pub fn serve(stored: &Path) {
     let launcher = LAUNCHER.get_or_init(|| {
         let bus = node();
-        let launcher = bus.publisher::<ServedModel>(SERVING, Key::ONE).ok().map(|served| {
+        let launcher = Source::on(bus, SERVING, Key::ONE, "serving-launch").ok().map(|served| {
             let tier = bus.publisher::<Promotion>(PLACEMENT, Key::ONE).ok().map(|placed| {
                 start(HotTier { placed, seen: LastSeen::default() }, bus, OwnerId(uuid::Uuid::nil()), 0)
             });
@@ -90,9 +90,5 @@ pub fn serve(stored: &Path) {
         continuum_base::probe!(class = "models.hot.unclaimed", stored = %stored.display(), "the serving topic was claimed elsewhere; the hot tier is not placing this model");
         return;
     };
-    let by = Provenance {
-        by: RunId { incarnation: StageIncarnation { stage: StageId::named("serving-launch"), owner: OwnerId(uuid::Uuid::nil()), epoch: 0 }, seq: 0 },
-        from: Vec::new(),
-    };
-    launcher.served.publish(ServedModel(stored.to_path_buf()), by); // the topic keeps its own copy
+    launcher.served.say(ServedModel(stored.to_path_buf())); // the topic keeps its own copy
 }

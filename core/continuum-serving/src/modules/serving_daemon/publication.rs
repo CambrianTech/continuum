@@ -226,7 +226,7 @@ impl ServingDaemonModule {
     /// Keeping the incumbent/loading identities preserves resource attribution;
     /// cancellation can no longer leave an old ready snapshot blocking recovery.
     pub(super) fn publish_lifecycle_admission(
-        serving: &watch::Sender<ServingSnapshot>,
+        serving: &crate::inference::llama_server::ServingState,
         verified: &watch::Sender<Option<VerifiedServingCapture>>,
         bus: Option<&Arc<MessageBus>>,
         loading: Option<&str>,

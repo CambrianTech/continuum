@@ -38,6 +38,13 @@ pub(super) fn register_serving_daemon(
     if crate::inference::in_process_engine::install(Arc::clone(&engine)).is_err() {
         return Err(std::io::Error::other("the node's in-process engine was installed twice"));
     }
+    // The serving state's one writer, on the node's bus: the trainer and every other reader hear
+    // each change there (serving/snapshot). A second writer on the node is a wiring defect.
+    let serving = crate::inference::llama_server::ServingState::on(
+        continuum_sage::component::node(),
+        crate::inference::llama_server::ServingSnapshot::empty(),
+    )
+    .map_err(|taken| std::io::Error::other(format!("the node's serving state was claimed twice ({})", taken.0 .0)))?;
     let serving_daemon = Arc::new(crate::modules::serving_daemon::ServingDaemonModule::with_control(
         gpu_manager.clone(),
         system_monitor.clone(),
@@ -45,6 +52,7 @@ pub(super) fn register_serving_daemon(
         engine,
         model_catalog.clone(),
         pin_store,
+        serving,
     ));
     // Training admission reads governed memory under this gate (aae8af55).
     crate::inference::serving_lifecycle::LifecycleGate::set_global(serving_daemon.lifecycle_gate());

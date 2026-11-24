@@ -1,5 +1,9 @@
 //! Snapshot responsibility of the llama-server process owner.
 use super::*;
+/// The serving state on the node's bus, as state: the serving daemon says it each time it changes, so
+/// anything that must react to an engine coming or going hears it instead of following the watch.
+pub const SERVING_TOPIC: continuum_sage::dataflow::TopicName = continuum_sage::dataflow::TopicName("serving/snapshot");
+
 /// Published serving state. One model, is it ready, on what `/v1` url. The
 /// daemon owns the `watch::Sender<ServingSnapshot>`; everything downstream
 /// (adapters, operators, a future grid allocator) reads it instead of probing

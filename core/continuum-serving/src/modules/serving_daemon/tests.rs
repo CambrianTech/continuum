@@ -229,6 +229,13 @@ pub(super) fn test_catalog() -> Arc<ModelCatalog> {
     Arc::new(ModelCatalog::from_registry(&reg))
 }
 
+/// The daemon's serving state on a bus of its own: the real owner, isolated from the node's bus
+/// and from every other test's daemon.
+pub(super) fn test_serving() -> crate::inference::llama_server::ServingState {
+    crate::inference::llama_server::ServingState::on(&continuum_sage::component::Bus::new(), ServingSnapshot::empty())
+        .expect("test: a fresh bus has no serving writer")
+}
+
 pub(super) fn test_resource_daemon() -> Arc<ResourceDaemon> {
     use crate::resources::{DaemonConfig, MockCapacitySource};
     ResourceDaemon::start(
@@ -464,6 +471,7 @@ pub(super) fn daemon_on_authority(
         server,
         test_catalog(),
         test_pin_store(),
+        test_serving(),
     );
     // Every harness daemon OWNS its demand pool: a private working set and an empty
     // leased-in ring. Both are process globals in production and shared by every test

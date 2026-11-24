@@ -34,24 +34,45 @@ impl TrainingTriggerState {
         F: FnOnce(Arc<Self>, BucketKey) -> Fut + Send + 'static,
         Fut: std::future::Future<Output = T> + Send + 'static,
     {
+        self.require_ready()?; // a bucket's operation needs recovered state; shutdown is rechecked under the lock
+        let state = self.clone();
+        let persona = Some(key.persona_id);
+        Ok(self
+            .run_operation(kind, persona, async move {
+                let _lease = lease;
+                operation(state, key).await
+            })
+            .await?)
+    }
+
+    /// Run `operation` as an owned operation: admitted only while the trigger is ready, held in
+    /// `operations` so shutdown's join waits for it, named for its kind. What every owned operation
+    /// runs through, a bucket's or the trainer's recovery pass, which holds no bucket (Codex on #6240:
+    /// a pass outside `operations` let shutdown return while its storage read went on).
+    pub(crate) async fn run_operation<T, Fut>(self: &Arc<Self>, kind: super::super::OwnedKind, persona: Option<Uuid>, operation: Fut) -> Result<T, OperationRefused>
+    where
+        T: Send + 'static,
+        Fut: std::future::Future<Output = T> + Send + 'static,
+    {
         let (send, receive) = tokio::sync::oneshot::channel();
         {
             let mut operations = self.operations.lock();
-            self.require_ready()?;
+            // under the lock shutdown drains: admitted before it, or refused. Readiness is the caller's:
+            // the recovery pass runs before it to retry an interrupted schema setup.
+            if self.stopping.load(Ordering::Acquire) {
+                return Err(OperationRefused::ShuttingDown);
+            }
             while let Some(joined) = operations.try_join_next() {
                 if let Err(error) = joined {
                     tracing::error!(%error, "training owner operation failed; durable recovery retains its work");
                 }
             }
-            let state = self.clone();
-            let persona = Some(key.persona_id);
             operations.spawn(self.running.named(kind, persona, async move {
-                let _lease = lease;
-                let result = operation(state, key).await;
+                let result = operation.await;
                 let _ = send.send(result); // a disconnected caller does not cancel ownership
             }));
         }
-        receive.await.map_err(|_| "training owner operation ended without a result; inspect durable status before retry".into())
+        receive.await.map_err(|_| OperationRefused::Lost)
     }
 
     /// Admit no new owned operation, and count the ones still running.
@@ -262,6 +283,7 @@ impl TrainingTriggerState {
         if let Err(error) = store.submissions.save(id, &row).await {
             return Err(("PersistenceFailed", error.to_string()));
         }
+        self.note_arrival(sequence);
         #[cfg(test)]
         self.pause_operation(OperationPoint::AcceptanceCommitted)
             .await;
@@ -269,6 +291,26 @@ impl TrainingTriggerState {
             submission_id: id,
             replayed: false,
         })
+    }
+
+    /// Take the trainer's arrivals output and say the current sequence at once: the trainer's first
+    /// wake recovers whatever was already waiting.
+    pub(crate) fn install_out(&self, mut out: super::super::trainer::TrainerOut) {
+        out.arrived(self.next_sequence.load(Ordering::Relaxed));
+        *self.out.lock() = Some(out);
+    }
+
+    /// Say something on the trainer's bus; nothing is said before a trainer is installed.
+    pub(crate) fn say(&self, what: impl FnOnce(&mut super::super::trainer::TrainerOut)) {
+        if let Some(out) = self.out.lock().as_mut() {
+            what(out);
+        }
+    }
+
+    /// Say that example `sequence` was accepted, waking the trainer; nothing is said before a
+    /// trainer is installed.
+    pub(crate) fn note_arrival(&self, sequence: u64) {
+        self.say(|out| out.arrived(sequence));
     }
 
     /// How many examples bucket `key` holds pending and not yet learned.
@@ -323,3 +365,19 @@ impl TrainingTriggerState {
 }
 
 
+
+/// Why an owned operation did not run to its result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub(crate) enum OperationRefused {
+    #[error("training-trigger is shutting down")]
+    ShuttingDown,
+    #[error("training owner operation ended without a result; inspect durable status before retry")]
+    Lost,
+}
+
+/// The bucket operations' existing text contract, at its one boundary.
+impl From<OperationRefused> for String {
+    fn from(refused: OperationRefused) -> Self {
+        refused.to_string()
+    }
+}

@@ -150,12 +150,15 @@ impl EnginesHeld {
 }
 
 /// What one bucket's pass did.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct BucketPass {
     pub(crate) learned: u32,
     pub(crate) deferred: bool,
     pub(crate) quarantined: bool,
     pub(crate) checkpointed: bool,
+    /// Shadows whose learners this pass stopped, confirmed, outside a settle (a quarantine): the
+    /// trainer says each released so the cleaner no longer holds it (Codex on #6240).
+    pub(crate) released: Vec<std::path::PathBuf>,
 }
 
 impl InPlace {
@@ -209,14 +212,24 @@ impl InPlace {
     async fn step(&self, state: &Arc<TrainingTriggerState>, mut held: engine_lock::EngineGuard, key: &BucketKey, rows: &[Arrival], engine: EngineIncarnation, slot: LearnSlot, renewed: &mut bool, pass: &mut BucketPass) -> Result<Next, String> {
         // Bound first: the step's borrow of `held` ends here, before the arm below moves `held` into the fence.
         let stepped = step_on(&self.authority, &mut held, key, rows, slot, renewed, pass).await?;
+        // a quarantined shadow holds parameters nothing trusts: it settled with nothing learned or
+        // published, so the cleaner may take it now (Codex on #6240)
+        for shadow in std::mem::take(&mut pass.released) {
+            state.say(|out| out.settled(shadow, 0, false));
+        }
         match stepped {
             Stepped::Next(next) => Ok(next),
             Stepped::Lost { mind, slot } => {
                 held.now(engine_lock::Phase::Fence);
+                let said = Arc::clone(state);
                 state.spawn_owned(OwnedKind::Fence, Some(key.persona_id), async move {
-                    fence(mind, engine).await;
+                    let let_go = fence(mind, engine).await;
                     drop(slot);
                     drop(held);
+                    // confirmed stopped, or its engine is gone: nothing holds the shadow now
+                    if let Some(shadow) = let_go {
+                        said.say(|out| out.settled(shadow, 0, false));
+                    }
                 });
                 Ok(Next::Fenced)
             }
@@ -242,7 +255,11 @@ impl InPlace {
         }
         let cost = seated.cost;
         let began = std::time::Instant::now();
-        let stopped = stop(&mut held, key).await;
+        let (stopped, released) = stop(&mut held, key).await;
+        // the engine let her shadow go: the cleaner decides what becomes of the file, on its own worker
+        if let Some(shadow) = released {
+            state.say(|out| out.settled(shadow, cost.learned, published));
+        }
         // the workspace is the engine's: it goes with the last learner, and only then
         let workspace = match (held.minds.is_empty(), held.workspace.take()) {
             (true, Some(workspace)) => match workspace.release().await {
@@ -399,7 +416,9 @@ async fn step_on(
             }
             Ok((Verdict::Quarantined, _, _)) => {
                 drop(slot);
-                stop(held, key).await;
+                if let (_, Some(shadow)) = stop(held, key).await {
+                    pass.released.push(shadow);
+                }
                 pass.quarantined = true;
                 Ok(Stepped::Next(Next::Stop))
             }
@@ -550,6 +569,7 @@ async fn seat(authority: &Authority, state: &TrainingTriggerState, held: &mut En
     let consumer = format!("learning:{}:{}", key.persona_id, key.trait_kind);
     match MindLearner::start(authority, learning, &consumer, shadow, expiry).await {
         Ok(mind) => {
+            let shadow_file = std::path::PathBuf::from(mind.shadow_path());
             let binding = format!("{}:{}:{}", key.persona_id, key.trait_kind, key.base_model);
             let checkpointed = generation.iter().flat_map(|g| g.positions.iter()).map(|p| (p.submission, p.learned)).collect();
             held.minds.insert(
@@ -568,6 +588,7 @@ async fn seat(authority: &Authority, state: &TrainingTriggerState, held: &mut En
                     cost: SeatCost { seat: began.elapsed(), ..SeatCost::default() },
                 },
             );
+            state.say(|out| out.seated(shadow_file));
             Ok(Seating::Seated)
         }
         Err(StartFailure::NotSeated(crate::genome::learner::seat::SeatRefusal::AwaitingMemory(wait))) => Ok(Seating::AwaitMemory(wait)),
@@ -719,33 +740,38 @@ fn paged_out(stopped: Released, workspace: Released) -> bool {
     matches!((stopped, workspace), (Released::Confirmed, Released::Confirmed | Released::NotHers))
 }
 
-/// Stop `key`'s learner; whatever it still holds stays in custody until the engine confirms it.
-async fn stop(held: &mut EngineLearning, key: &BucketKey) -> Released {
+/// Stop `key`'s learner; whatever it still holds stays in custody until the engine confirms it. A
+/// confirmed stop returns the shadow the engine let go; an unconfirmed one returns none, since the
+/// engine may still hold the file (it stays held until the engine confirms, or the node restarts and
+/// the cleaner's before-boot rule takes it).
+async fn stop(held: &mut EngineLearning, key: &BucketKey) -> (Released, Option<std::path::PathBuf>) {
     let Some(seated) = held.minds.remove(key) else {
-        return Released::NotHers;
+        return (Released::NotHers, None);
     };
+    let shadow = std::path::PathBuf::from(seated.mind.shadow_path());
     match seated.mind.stop().await {
-        Ok(()) => Released::Confirmed,
+        Ok(()) => (Released::Confirmed, Some(shadow)),
         Err((_orphaned, why)) => {
             continuum_base::probe!(class = "training.in_place.stop_unconfirmed", persona = %key.persona_id, reason = %why,
                 "a learner's stop is unconfirmed; custody holds what it held until the engine releases it");
-            Released::Unconfirmed
+            (Released::Unconfirmed, None)
         }
     }
 }
 
 /// Stop `mind` until the engine confirms it (its shadow unloaded and released, bound to the
 /// incarnation), or until that engine's process is verifiably dead.
-async fn fence(mind: MindLearner, engine: EngineIncarnation) {
+async fn fence(mind: MindLearner, engine: EngineIncarnation) -> Option<std::path::PathBuf> {
+    let shadow = std::path::PathBuf::from(mind.shadow_path());
     let mut every = tokio::time::interval(std::time::Duration::from_secs(1));
     let mut mind = mind;
     loop {
         match mind.stop().await {
-            Ok(()) => return,
+            Ok(()) => return Some(shadow),
             Err((unconfirmed, _why)) => mind = unconfirmed,
         }
         if engine.liveness() == Liveness::Dead {
-            return; // the engine that held it is gone; custody keeps what the mind leased
+            return Some(shadow); // the engine that held it is gone; custody keeps what the mind leased
         }
         every.tick().await;
     }

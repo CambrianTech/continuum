@@ -16,7 +16,7 @@ use super::*;
 fn declaring_a_wedge_publishes_the_reason_not_a_bare_empty_snapshot() {
     use super::*;
 
-    let (tx, _rx) = watch::channel(ServingSnapshot::empty());
+    let tx = super::test_serving();
     let force = Arc::new(AtomicBool::new(false));
 
     ServingDaemonModule::declare_lane_wedged(
