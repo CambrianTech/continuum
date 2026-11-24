@@ -21,6 +21,8 @@ pub use optimizer_slots::{OptimizerLease, Role, Slot};
 pub use learn::{BufferType, Finished, FreshGeometry, Label, LearnRefusal, LearnRun, Learner, MemoryRole, MemoryRow, Optimizer, Progress, Recovered, Refused, Reply, ReplyAdmission, Shadow, Walk};
 mod persona;
 pub use persona::{BindRefusal, PersonaBlocks, PersonaCheckpoint, PersonaOwner, PersonaRefusal};
+mod decode_refusal;
+pub use decode_refusal::DecodeRefusal;
 mod position;
 pub use position::{Pos, PosOutOfRange};
 

@@ -54,8 +54,11 @@ pub struct EngineKv {
 pub struct EngineLaunch {
     pub model_id: String,
     pub gguf_path: std::path::PathBuf,
-    /// The Core's whole context: the mind swapped in has all of it (one stream, `STREAMS`).
+    /// The Core's pool: every seated mind grows into all of it (CONTINUUM-ENGINE 4.3).
     pub context: NonZeroU32,
+    /// Minds seated in the pool at once, each in place: the serving plan's sequences, whose fixed
+    /// per-sequence cost it budgeted (`ServingTarget::lanes`).
+    pub seats: NonZeroU32,
     /// Tokens per decode call. A whole number of ubatches (the learner's chunk walk needs it).
     pub n_batch: NonZeroU32,
     /// The physical micro-batch a prefill runs in.
@@ -90,8 +93,8 @@ impl EngineLaunch {
             n_batch: self.n_batch.get(),
             n_ubatch: self.n_ubatch.get(),
             n_gpu_layers: self.offload.n_gpu_layers(),
-            // The one-off (non-scheduler) context only: one sequence. The scheduler's context holds
-            // `STREAMS` and does not read this.
+            // The one-off (non-scheduler) context only: one sequence. The scheduler's context seats
+            // `seats` and does not read this.
             n_seq_max: 1,
             // The one-off context only; the scheduler's context sets its own (driver.rs).
             flash_attn: FlashAttn::Disabled,
@@ -110,7 +113,7 @@ impl LlamaCppAdapter {
             model_path: launch.gguf_path.clone(),
             last_throughput_tok_s: Arc::new(RwLock::new(0.0)),
             default_model: launch.model_id.clone(),
-            generation: GenerationSupport::Enabled { context: launch.context.get() },
+            generation: GenerationSupport::Enabled { context: launch.context.get(), seats: launch.seats },
             kv_quant_policy: crate::inference::kv_quant::KvQuantPolicy::default().with_active(launch.kv.k, launch.kv.v),
             n_seq_max_override: None,
             n_ubatch_override: None,
@@ -124,8 +127,9 @@ impl LlamaCppAdapter {
     pub(super) fn allocation(&self) -> Result<GenerationAllocation, String> {
         match self.generation {
             GenerationSupport::EmbeddingOnly => Err("embedding-only adapter does not support text generation".into()),
-            GenerationSupport::Enabled { context } => Ok(GenerationAllocation::new(
+            GenerationSupport::Enabled { context, seats } => Ok(GenerationAllocation::seated(
                 std::num::NonZeroU32::new(context).ok_or("invalid zero generation allocation")?,
+                seats,
             )),
         }
     }

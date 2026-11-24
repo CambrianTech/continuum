@@ -40,16 +40,16 @@ pub struct EngineGeometry {
     pub incarnation: Incarnation,
     /// The window the context holds, across every sequence.
     pub n_ctx: u32,
-    /// The window ONE mind may use: what serving publishes as her usable context.
+    /// The window ONE mind may use: the whole pool (what serving publishes as her usable context).
     pub n_ctx_seq: u32,
-    /// Sequences the context holds: the decoding mind's and the staged ones.
+    /// Sequences the context holds: one seat for each mind held in place in its pool.
     pub n_seq_max: u32,
     pub n_batch: u32,
     pub n_ubatch: u32,
     /// Minds that decode at once: always one (one mind decodes at a time).
     pub decoding: u32,
-    /// Sequences held beside the decoding one for the next mind, staged as data, never decoding.
-    pub staging: u32,
+    /// Minds held in place beside the decoding one: a switch to any of them moves nothing.
+    pub seated_beside: u32,
     pub requested: Requested,
 }
 
@@ -65,7 +65,7 @@ impl EngineGeometry {
             n_batch: ctx.n_batch(),
             n_ubatch: ctx.n_ubatch(),
             decoding: 1,
-            staging: n_seq_max.saturating_sub(1),
+            seated_beside: n_seq_max.saturating_sub(1),
             requested: Requested { type_k: config.type_k, type_v: config.type_v },
         }
     }

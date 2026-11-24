@@ -8,11 +8,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
-use continuum_persona_engine::engine::{DecodeError, HandoffError, PersonaEngine, RetireError, StageError};
+use continuum_persona_engine::engine::{DecodeError, PersonaEngine, RetireError, StageError, SwitchError};
 use continuum_persona_engine::persona::{Epoch, Footprint, Held, MindId, PersonaId, PersonaParts, PersonaUnit};
 use continuum_persona_engine::residency::TierRefusal;
-use continuum_persona_llama::{Blocks, Genes, Step, UnifiedTier, STREAMS};
-use llama::{ContextParams, FlashAttn, LoraAdapter, Model, Pos};
+use continuum_persona_llama::{Blocks, Genes, Step, UnifiedTier};
+use llama::{ContextParams, FlashAttn, KvLayout, LoraAdapter, Model, Pos};
 use uuid::Uuid;
 
 use super::geometry::StopsOnExit;
@@ -32,7 +32,7 @@ pub(super) enum TurnError {
     #[error(transparent)]
     Stage(#[from] StageError),
     #[error(transparent)]
-    Handoff(#[from] HandoffError),
+    Switch(#[from] SwitchError),
     #[error(transparent)]
     Decode(#[from] DecodeError),
     #[error(transparent)]
@@ -56,7 +56,7 @@ enum PreserveError {
     #[error(transparent)]
     Turn(#[from] TurnError),
     #[error(transparent)]
-    Retire(#[from] HandoffError),
+    Retire(#[from] SwitchError),
     #[error("she did not come back from her retirement")]
     NotReturned,
     #[error("the fork refused to write her blocks: {0}")]
@@ -97,6 +97,7 @@ enum Tenure {
 mod ending;
 mod history;
 mod learning;
+mod seats;
 pub(crate) use learning::{Job as LearningJob, Lesson as LearningLesson, Measuring as LearningMeasuring};
 
 use ending::{Ending, Stop, Suspension};
@@ -134,6 +135,8 @@ struct Driver<'c, 'm> {
     parked: HashMap<PersonaId, Mind>,
     /// Admitted anonymous turns that still own their native blocks, across all transfer states.
     live_one_offs: HashSet<PersonaId>,
+    /// When each seated mind last stepped: the pool evicts the coldest when it needs room.
+    recency: seats::Recency,
     /// Where decoded tokens and answer ends go (4.16); the engine thread never does text work.
     emit: Outbox<emit::Out>,
     /// Where each GPU step's span and each finished turn's row go; measured and written off this
@@ -264,6 +267,7 @@ pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
         engine: PersonaEngine::new(tier),
         parked,
         live_one_offs: HashSet::new(),
+        recency: seats::Recency::default(),
         emit: Outbox::new(emit),
         record: Outbox::new(record),
         log_failures: continuum_base::probe_writes::Reading::now(),
@@ -420,19 +424,20 @@ enum Advanced {
     Done { tokens_generated: usize, end: super::TurnEnd },
 }
 
-/// The Core's one context: `STREAMS` sequences, the occupant's, whole to whoever is in it.
+/// The Core's one context (CONTINUUM-ENGINE 4.3): one KV pool of `n_ctx` cells that every seated mind
+/// grows into, and a sequence for each of the planner's seats. No mind's window is a share of it.
 fn context<'m>(model: &'m Model, config: &SchedulerConfig) -> Result<llama::Context<'m>, StartError> {
-    let streams = u32::try_from(STREAMS).map_err(|_| StartError::Context("stream count exceeds a sequence count".into()))?;
     model
         .new_context(ContextParams {
             n_ctx: config.n_ctx,
             n_batch: config.n_batch,
             n_ubatch: config.n_ubatch,
-            n_seq_max: streams,
-            // Required by the copy-out every switch runs: the fork refuses to move a mind out of a
-            // transposed V cache (live on the M5: "backend status 3: transposed_v", 191 refused
-            // deliberations, build 4aefe5131a, 2026-11-18 22:26Z). Flash attention keeps V
-            // untransposed; a backend without it refuses this context by name (`Refused`).
+            n_seq_max: config.seats.get(),
+            kv_layout: KvLayout::Pool,
+            // Required by a page-out: the fork refuses to move a mind out of a transposed V cache (live
+            // on the M5: "backend status 3: transposed_v", 191 refused deliberations, build 4aefe5131a,
+            // 2026-11-18 22:26Z). Flash attention keeps V untransposed; a backend without it refuses
+            // this context by name (`Refused`).
             flash_attn: FlashAttn::Enabled,
             // The fused Gated Delta Net graphs, the fork's defaults (llama-context.cpp:3601-3602)
             // and what llama-bench measures: Qwen3.6 is mostly GDN layers. The launch had turned
@@ -624,7 +629,7 @@ impl Driver<'_, '_> {
                 let turn = &turns[index];
                 let (started, remaining) = match &turn.phase {
                     Phase::Waiting(estimate) => (false, *estimate.get_or_init(|| {
-                        let her = if active == Some(turn.id) { self.engine.active_mut().map(|her| &*her) } else { self.parked.get(&turn.id) };
+                        let her = self.engine.units().find(|her| her.id() == turn.id).or_else(|| self.parked.get(&turn.id));
                         let reused = if let Some(her) = her { reuse_for(her, &turn.prompt, &turn.basis).action.reused() } else { 0 }; // a mind never seen reuses nothing
                         turn.prompt.len().saturating_sub(reused)
                     })),
@@ -775,7 +780,7 @@ impl Driver<'_, '_> {
         let last = end == turn.prompt.len();
         let from = Pos::try_from(pos).map_err(|_| TurnError::TooLong)?;
         let len = chunk.len();
-        self.engine.submit(Step { tokens: chunk.to_vec(), from, logits_at_end: last, genes: Arc::clone(&turn.genes) })?;
+        self.submit(Step { tokens: chunk.to_vec(), from, logits_at_end: last, genes: Arc::clone(&turn.genes) })?;
         if !last {
             self.engine.settle()?;
             self.record(|her| her.tokens.held.extend_from_slice(chunk))?;
@@ -818,7 +823,7 @@ impl Driver<'_, '_> {
         }
         let forward = Instant::now();
         let reused_before = self.engine.tier().graphs_reused();
-        self.engine.submit(Step { tokens: vec![token], from: pos, logits_at_end: true, genes: Arc::clone(&turn.genes) })?;
+        self.submit(Step { tokens: vec![token], from: pos, logits_at_end: true, genes: Arc::clone(&turn.genes) })?;
         turn.spent.forward += forward.elapsed();
         turn.spent.graphs_reused += self.engine.tier().graphs_reused().saturating_sub(reused_before);
         self.record(|her| her.tokens.held.push(token))?;
@@ -880,48 +885,6 @@ impl Driver<'_, '_> {
         }
     }
 
-    /// Make `id` the active mind: the occupant moves out to the RAM tier first and is parked (or
-    /// forgotten if she was a one-off), then her parked state comes back (or a new mind starts) into
-    /// the stream the occupant emptied. The Core's context is one stream, whole to whoever is in it
-    /// (`continuum_persona_llama::STREAMS`), so nobody moves in until the occupant is out.
-    ///
-    /// A retirement a refused copy-out left behind is finished first, so it is retried rather than
-    /// skipped and the retiring mind is never staged while still in custody (Codex on #6140). A
-    /// refused copy-out keeps the occupant's stream bound: the next mind waits, and the copy-out is
-    /// retried at the start of the next turn.
-    fn switch_to(&mut self, id: PersonaId, one_off: bool) -> Result<(), TurnError> {
-        self.retire_previous()?;
-        if self.engine.active() == Some(id) {
-            return Ok(());
-        }
-        if self.engine.active().is_some() {
-            match self.engine.retire_active() {
-                Ok(_) | Err(HandoffError::CopyOut { .. }) => {}
-                Err(refused) => return Err(refused.into()),
-            }
-            self.retire_previous()?;
-        }
-        let mind = match self.parked.remove(&id) {
-            Some(parked) => parked,
-            None => {
-                let first = MindId { persona: id, epoch: Epoch(1) };
-                let blocks = self.engine.blocks_for(first)?;
-                let tenure = if one_off { Tenure::OneOff } else { Tenure::Resident };
-                Mind::new(id, first.epoch, Parts { blocks, tokens: History::default(), genome: Basis::default(), learning: (), decode: tenure })
-            }
-        };
-        if let Err(refused) = self.engine.stage(mind) {
-            self.parked.insert(refused.returned.id(), refused.returned);
-            return Err(refused.reason.into());
-        }
-        self.engine.settle()?;
-        match self.engine.handoff() {
-            Ok(_) | Err(HandoffError::CopyOut { .. }) => {}
-            Err(refused) => return Err(refused.into()),
-        }
-        self.retire_previous()
-    }
-
     /// Report that `turn` reached `at`; its record stage writes it.
     fn transition(&mut self, turn: &Turn, at: transition::At) {
         self.record.send(record::Fact::Transition(transition::Transition { request: turn.req.request.clone(), persona: turn.id.0, one_off: turn.one_off, at }));
@@ -930,17 +893,10 @@ impl Driver<'_, '_> {
     fn finish_one_off(&mut self, turn: &Turn) {
         if turn.one_off {
             self.parked.remove(&turn.id);
+            // seated, she is the first to leave when the pool needs room, and is dropped as she leaves
+            self.recency.forget(turn.id);
             self.live_one_offs.remove(&turn.id);
         }
-    }
-
-    /// A paused one-off keeps her blocks until she finishes, just like a paused resident.
-    fn retire_previous(&mut self) -> Result<(), TurnError> {
-        let Some(previous) = self.engine.finish_retirement()? else { return Ok(()) };
-        if resident(&previous) || self.live_one_offs.contains(&previous.id()) {
-            self.parked.insert(previous.id(), previous);
-        }
-        Ok(())
     }
 
     /// Update the active mind's own record (what her blocks now hold).

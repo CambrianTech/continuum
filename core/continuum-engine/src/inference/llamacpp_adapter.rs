@@ -93,7 +93,8 @@ use payload::{decode_audio_bytes, decode_image_bytes, sampling_config_from_reque
 #[derive(Clone, Copy)]
 enum GenerationSupport {
     EmbeddingOnly,
-    Enabled { context: u32 },
+    /// `context`: the pool; `seats`: the minds seated in it at once.
+    Enabled { context: u32, seats: std::num::NonZeroU32 },
 }
 
 /// Typed failure for [`LlamaCppAdapter::try_new`] when the model

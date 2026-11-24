@@ -110,6 +110,60 @@
         assert_eq!(backend.effective_context_length(GenerationAllocation::new(tokens)), Ok(512));
     }
 
+    // what this catches: every switch copying a mind's whole state out and the next one in (63-259 ms
+    // per switch on the M5, 2026-11-24), and a page-out that loses what she held. Three minds take two
+    // turns each, every prompt her view then a trailer that changes (as a live act's does). With three
+    // seats nobody moves; with two seats in a smaller pool the third mind evicts the coldest, and the
+    // second round both pages minds back in and runs the pool out of cells mid-turn. Each mind's second
+    // turn must reuse exactly what it reuses when she never moved: her state, and her checkpoint at her
+    // view's end, came back whole.
+    //     cargo test -p continuum-engine --features metal --lib minds_beyond_the_seats -- --ignored --nocapture
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "requires qwen2.5-0.5b-instruct under ~/.continuum/genome/models; run explicitly"]
+    async fn minds_beyond_the_seats_page_out_and_come_back_holding_what_they_held() {
+        let path = dirs::home_dir().expect("test: a home").join(".continuum/genome/models/qwen2.5-0.5b-instruct/qwen2.5-0.5b-instruct-q4_k_m.gguf");
+        if !path.exists() {
+            eprintln!("SKIPPED: {} not present", path.display());
+            return;
+        }
+        /// One turn of `her`: her view, then the ask that changes every act.
+        struct Ask<'a> {
+            her: uuid::Uuid,
+            view: &'a str,
+            ask: &'a str,
+        }
+        async fn turn(backend: &LlamaCppBackend, allocation: GenerationAllocation, Ask { her, view, ask }: Ask<'_>) -> Answer {
+            let sampler = backend.turn_sampler(None, &crate::inference::backends::SamplingConfig::chat(), None).expect("test: a sampler");
+            let text = format!("{view}<|im_start|>user\n{ask}<|im_end|>\n<|im_start|>assistant\n");
+            let prompt = TurnPrompt { text: &text, stable_prefix: Some(view), urgency: continuum_sage::component::Urgency::Want, request: None };
+            backend.submit_for_persona(allocation, Some(her), prompt, 8, sampler, &[], &[]).expect("test: her turn submits").collect().await.expect("test: her turn answers")
+        }
+        // Each mind's second-turn reuse on an engine of `seats` seats over a pool of `pool` tokens.
+        async fn second_turn_reuse(path: &std::path::Path, pool: u32, seats: u32) -> Vec<usize> {
+            let nonzero = |n| std::num::NonZeroU32::new(n).expect("test: nonzero");
+            let backend = LlamaCppBackend::load(LlamaCppConfig { model_path: path.to_path_buf(), ..Default::default() }).expect("test: the 0.5B loads");
+            let allocation = GenerationAllocation::seated(nonzero(pool), nonzero(seats));
+            let mut state = backend.start_scheduler(allocation).expect("test: the scheduler starts");
+            state.wait_for(|state| state.ready().is_some()).await.expect("test: the engine becomes ready");
+            let minds: Vec<uuid::Uuid> = (0..3).map(|_| uuid::Uuid::new_v4()).collect();
+            let view = |i: usize| format!("<|im_start|>user\n{}<|im_end|>\n", format!("Mind {i} keeps her own notes about the river, the mill and the orchard. ").repeat(24));
+            for (i, her) in minds.iter().enumerate() {
+                turn(&backend, allocation, Ask { her: *her, view: &view(i), ask: "What do you keep?" }).await;
+            }
+            let mut reused = Vec::new();
+            for (i, her) in minds.iter().enumerate() {
+                let answer = turn(&backend, allocation, Ask { her: *her, view: &view(i), ask: "And the orchard, what grows there now?" }).await;
+                eprintln!("seats={seats} pool={pool}: mind {i} second turn reused {} of {}", answer.facts.reused_tokens, answer.facts.prompt_tokens);
+                reused.push(answer.facts.reused_tokens);
+            }
+            reused
+        }
+        let in_place = second_turn_reuse(&path, 4096, 3).await;
+        assert!(in_place.iter().all(|&reused| reused > 0), "her view's checkpoint serves her next turn: {in_place:?}");
+        let paged = second_turn_reuse(&path, 1024, 2).await;
+        assert_eq!(paged, in_place, "paged out and back, each mind reuses what she reuses when she never moved");
+    }
+
     /// L2's validator (IN-PROCESS-LEARNING.md): a resident learns between her turns through the
     /// node's LearnPort, on the real engine, and every outcome is heard on learning/said.
     mod learn_port {

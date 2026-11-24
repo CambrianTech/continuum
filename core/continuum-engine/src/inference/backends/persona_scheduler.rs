@@ -208,16 +208,20 @@ pub struct GenerationRequest {
     pub submitted: std::time::Instant,
 }
 
-/// The context the scheduler creates: the Core's whole context, one stream ([`continuum_persona_llama::STREAMS`]),
-/// whole to the mind swapped in; no sequence count is configurable, and no
-/// attention kernel either: the scheduler moves minds through per-sequence copy-out, which needs an
-/// untransposed V, so its context is always flash attention ([`driver`] owns that, not its caller).
+/// The context the scheduler creates (CONTINUUM-ENGINE 4.3): one KV pool of `n_ctx` cells that every
+/// seated mind grows into, and `seats` sequences, so that many minds stay in place at once. No attention
+/// kernel is configurable: a page-out moves a mind's rows, which needs an untransposed V, so the context
+/// is always flash attention ([`driver`] owns that, not its caller).
 #[derive(Debug, Clone)]
 pub struct SchedulerConfig {
     /// The model this engine serves, as its owner names it: preserved minds resume only on the
     /// model they ran on (CONTINUUM-ENGINE 4.16).
     pub model: String,
+    /// The pool: every seated mind may grow to all of it.
     pub n_ctx: u32,
+    /// Minds seated at once, each in place: the serving plan's sequences (`ServingTarget::lanes`),
+    /// whose fixed per-sequence cost it budgeted.
+    pub seats: std::num::NonZeroU32,
     pub n_batch: u32,
     pub n_ubatch: u32,
     pub type_k: KvCacheType,
