@@ -17,8 +17,7 @@ use std::time::Duration;
 
 use super::bounded_command::{capture, Captured};
 use super::dev_worktree_pool::git;
-use super::disk_reporters::TrackedDir;
-use super::drives::{detect_drives, drive_holding};
+use super::disk_reporters::{dir_size_bytes, TrackedDir};
 use crate::paging::pool::{ResourcePool, ResourcePoolEntry};
 
 // event-exempt: airc's drain reads each card's PR from GitHub, which may never answer; the drain's
@@ -39,26 +38,28 @@ impl AircWorktreePool {
     }
 }
 
-/// The airc home of every main checkout the worktrees under `root` were cut from: `<checkout>/.airc`,
-/// the scope that subscribes to the rooms their cards live in.
-fn scopes(root: &Path) -> BTreeSet<PathBuf> {
-    std::fs::read_dir(root)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter(|entry| entry.path().is_dir())
-        .filter_map(|entry| {
-            let worktree = entry.path();
-            let common = PathBuf::from(git(&worktree, &["rev-parse", "--path-format=absolute", "--git-common-dir"])?);
+/// The checkouts under `root`.
+fn checkouts(root: &Path) -> Vec<PathBuf> {
+    std::fs::read_dir(root).into_iter().flatten().flatten().map(|entry| entry.path()).filter(|path| path.is_dir()).collect()
+}
+
+/// The airc home of every main checkout `worktrees` were cut from: `<checkout>/.airc`, the scope
+/// that subscribes to the rooms their cards live in.
+fn scopes(worktrees: &[PathBuf]) -> BTreeSet<PathBuf> {
+    worktrees
+        .iter()
+        .filter_map(|worktree| {
+            let common = PathBuf::from(git(worktree, &["rev-parse", "--path-format=absolute", "--git-common-dir"])?);
             Some(common.parent()?.join(".airc"))
         })
         .filter(|home| home.is_dir())
         .collect()
 }
 
-/// The free bytes of the volume holding `path`, read once.
-fn available(path: &Path) -> Option<u64> {
-    drive_holding(&detect_drives(), path).map(|drive| drive.available_bytes)
+/// This pool's receipt: the bytes of the checkouts measured before the drain that are gone after it.
+/// Never the volume's gain, which another pool's removals move too (Codex on 186ee967).
+fn removed(sized: &[(PathBuf, u64)]) -> u64 {
+    sized.iter().filter(|(checkout, _)| !checkout.exists()).map(|(_, bytes)| bytes).sum()
 }
 
 impl ResourcePool for AircWorktreePool {
@@ -79,26 +80,34 @@ impl ResourcePool for AircWorktreePool {
         self.tracked.bytes()
     }
 
-    /// One drain per scope; what it freed is what the volume gained across the drains (a removed
-    /// checkout is not sized first: sizing every candidate was most of a 20 s pass on the M5).
+    /// One drain per scope. Each checkout is sized before the drains (a walk per relief pass with a
+    /// scope to drain; relief asks again only on news), and the receipt is the ones that went.
     fn evict_at_least(&self, _want_bytes: u64) -> u64 {
-        let root = self.tracked.path().to_path_buf();
-        let Some(before) = available(&root) else {
-            continuum_base::probe!(class = "disk.airc_worktrees.no_volume", root = %root.display(), "no volume holds airc's worktrees; nothing is drained");
+        let checkouts = checkouts(self.tracked.path());
+        let homes = scopes(&checkouts);
+        if homes.is_empty() {
             return 0;
-        };
-        for home in scopes(&root) {
+        }
+        let sized: Vec<(PathBuf, u64)> = checkouts.into_iter().map(|checkout| {
+            let bytes = dir_size_bytes(&checkout);
+            (checkout, bytes)
+        }).collect();
+        let mut drained = false;
+        for home in homes {
             let Some(home_arg) = home.to_str() else { continue }; // a non-UTF-8 home is never handed to airc
-            let drained = capture("airc", &["work", "cleanup", "--force", "--home", home_arg], DRAIN_BOUND);
-            let outcome = match &drained {
+            let outcome = match capture("airc", &["work", "cleanup", "--force", "--home", home_arg], DRAIN_BOUND) {
                 Captured::Exited { code: Some(0), .. } => "ok",
                 Captured::Exited { .. } => "failed",
                 Captured::TimedOut => "timed_out",
                 Captured::Unstartable { .. } => "unstartable",
             };
+            drained |= outcome == "ok";
             continuum_base::probe!(class = "disk.airc_worktrees.drained", home = %home.display(), outcome, "airc drained the checkouts of its finished cards");
         }
-        let freed = available(&root).map_or(0, |after| after.saturating_sub(before));
+        if !drained {
+            return 0;
+        }
+        let freed = removed(&sized);
         if freed > 0 {
             self.tracked.record_freed(freed);
         }
@@ -145,6 +154,29 @@ mod tests {
         let airc = cut("airc", true);
         cut("unscoped", false);
         std::fs::create_dir_all(root.join("not-a-worktree")).expect("dir");
-        assert_eq!(scopes(&root), BTreeSet::from([continuum, airc]), "one scope per project, each once");
+        assert_eq!(scopes(&checkouts(&root)), BTreeSet::from([continuum, airc]), "one scope per project, each once");
+    }
+
+    // what this catches (Codex on 186ee967): the pool credited itself with the volume's whole gain,
+    // so another pool's removals during its pass read as worktrees relieved while every checkout
+    // stayed. The receipt is the measured bytes of exactly the checkouts that went.
+    #[test]
+    fn the_receipt_is_the_checkouts_that_went_not_the_volumes_gain() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let checkout = |name: &str, bytes: usize| {
+            let at = tmp.path().join(name);
+            std::fs::create_dir_all(&at).expect("dir");
+            std::fs::write(at.join("f"), vec![0u8; bytes]).expect("write");
+            (at.clone(), dir_size_bytes(&at))
+        };
+        let sized = vec![checkout("finished", 3000), checkout("in-review", 5000)];
+        let elsewhere = tmp.path().join("another-pools-cache");
+        std::fs::write(&elsewhere, vec![0u8; 9000]).expect("write");
+        assert_eq!(removed(&sized), 0, "nothing went: no receipt");
+
+        std::fs::remove_dir_all(&sized[0].0).expect("airc removes the finished checkout");
+        std::fs::remove_file(&elsewhere).expect("another pool frees room on the same volume");
+        assert_eq!(removed(&sized), sized[0].1, "only the finished checkout's bytes");
+        assert!(sized[0].1 >= 3000);
     }
 }
