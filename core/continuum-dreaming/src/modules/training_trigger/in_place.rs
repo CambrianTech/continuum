@@ -212,17 +212,24 @@ impl InPlace {
     async fn step(&self, state: &Arc<TrainingTriggerState>, mut held: engine_lock::EngineGuard, key: &BucketKey, rows: &[Arrival], engine: EngineIncarnation, slot: LearnSlot, renewed: &mut bool, pass: &mut BucketPass) -> Result<Next, String> {
         // Bound first: the step's borrow of `held` ends here, before the arm below moves `held` into the fence.
         let stepped = step_on(&self.authority, &mut held, key, rows, slot, renewed, pass).await?;
+        // a quarantined shadow holds parameters nothing trusts: it settled with nothing learned or
+        // published, so the cleaner may take it now (Codex on #6240)
         for shadow in std::mem::take(&mut pass.released) {
-            state.say(|out| out.released(shadow));
+            state.say(|out| out.settled(shadow, 0, false));
         }
         match stepped {
             Stepped::Next(next) => Ok(next),
             Stepped::Lost { mind, slot } => {
                 held.now(engine_lock::Phase::Fence);
+                let said = Arc::clone(state);
                 state.spawn_owned(OwnedKind::Fence, Some(key.persona_id), async move {
-                    fence(mind, engine).await;
+                    let let_go = fence(mind, engine).await;
                     drop(slot);
                     drop(held);
+                    // confirmed stopped, or its engine is gone: nothing holds the shadow now
+                    if let Some(shadow) = let_go {
+                        said.say(|out| out.settled(shadow, 0, false));
+                    }
                 });
                 Ok(Next::Fenced)
             }
@@ -754,16 +761,17 @@ async fn stop(held: &mut EngineLearning, key: &BucketKey) -> (Released, Option<s
 
 /// Stop `mind` until the engine confirms it (its shadow unloaded and released, bound to the
 /// incarnation), or until that engine's process is verifiably dead.
-async fn fence(mind: MindLearner, engine: EngineIncarnation) {
+async fn fence(mind: MindLearner, engine: EngineIncarnation) -> Option<std::path::PathBuf> {
+    let shadow = std::path::PathBuf::from(mind.shadow_path());
     let mut every = tokio::time::interval(std::time::Duration::from_secs(1));
     let mut mind = mind;
     loop {
         match mind.stop().await {
-            Ok(()) => return,
+            Ok(()) => return Some(shadow),
             Err((unconfirmed, _why)) => mind = unconfirmed,
         }
         if engine.liveness() == Liveness::Dead {
-            return; // the engine that held it is gone; custody keeps what the mind leased
+            return Some(shadow); // the engine that held it is gone; custody keeps what the mind leased
         }
         every.tick().await;
     }

@@ -198,10 +198,10 @@ impl Component for Cleaner {
                 // the settlement IS the seat letting go: it no longer holds the name, whichever arrives first,
                 // this or the seated update that drops it (Codex on #6240)
                 Arc::make_mut(&mut self.held).remove(&name);
-                if settled.learned > 0 || settled.published {
-                    // its seat is gone and it keeps what it learned: a sweep may take it, a release may not
-                    Arc::make_mut(&mut self.settled).insert(name);
-                } else {
+                // eligible for a sweep from now on, whatever comes of a release below: a release that fails
+                // (a transient error) leaves it for the next sweep to retry, never forgotten (Codex on #6240)
+                Arc::make_mut(&mut self.settled).insert(name.clone());
+                if settled.learned == 0 && !settled.published {
                     let dir = self.train_dir.clone();
                     let held = Arc::clone(&self.held);
                     ctx.need(Urgency::Want);
@@ -366,6 +366,26 @@ mod tests {
         settled.emit(Settled { shadow: second.clone(), learned: 0, published: false });
         handled(8).await;
         assert!(!second.exists(), "released after the seated update dropped it too");
+
+        // what this catches too (Codex on #6240): a settlement whose release fails (a transient error),
+        // its name then forgotten, so nothing ever retries it. Here the release fails on a read-only
+        // dir; once writable again, the next sweep under pressure takes it.
+        #[cfg(unix)]
+        {
+            use continuum_kernel::system_resources::drives::{DriveInfo, DriveKind, DriveRole};
+            use std::os::unix::fs::PermissionsExt;
+            let third = write(3);
+            std::fs::set_permissions(&train, std::fs::Permissions::from_mode(0o555)).expect("test: read-only");
+            settled.emit(Settled { shadow: third.clone(), learned: 0, published: false });
+            handled(10).await; // the settlement, and its release that failed
+            std::fs::set_permissions(&train, std::fs::Permissions::from_mode(0o755)).expect("test: writable");
+            assert!(third.exists(), "the failed release kept it");
+            let mut disk = bus.publisher::<Volumes>(DISK, Key::ONE).expect("test: the disk topic");
+            let full = DriveInfo { mount: dir.path().to_path_buf(), total_bytes: 100, available_bytes: 1, role: DriveRole::System, kind: DriveKind::Flash };
+            disk.publish(Volumes(vec![full]), by());
+            handled(12).await; // the frame, and the sweep it handed off
+            assert!(!third.exists(), "the next sweep retried the settled shadow and took it");
+        }
         drop(owner);
     }
 

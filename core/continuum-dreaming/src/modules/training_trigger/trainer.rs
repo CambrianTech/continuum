@@ -76,12 +76,6 @@ impl TrainerOut {
         self.say_held();
     }
 
-    /// A seat let `shadow` go outside a page-out (a quarantine): no seat holds it now.
-    pub(crate) fn released(&mut self, shadow: PathBuf) {
-        self.held.remove(&shadow);
-        self.say_held();
-    }
-
     /// A seat let `shadow` go at page-out, having learned `learned` examples and published or not.
     pub(crate) fn settled(&mut self, shadow: PathBuf, learned: u32, published: bool) {
         self.held.remove(&shadow);
