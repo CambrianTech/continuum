@@ -59,51 +59,72 @@ pub fn is_shadow(name: &str) -> bool {
     matches!(parts.as_slice(), [persona, signature, seat] if [(persona, 32), (signature, 64), (seat, 32)].iter().all(|(p, len)| p.len() == *len && p.bytes().all(|b| b.is_ascii_hexdigit())))
 }
 
-/// Remove `shadow` when it lies directly in `train_dir`, is a shadow, is not held, and no generation
-/// was published from it.
-pub fn release(shadow: &Path, train_dir: &Path, held: &BTreeSet<PathBuf>) -> Released {
-    if shadow.parent() != Some(train_dir) {
-        return Released::Kept("not in this node's train dir");
-    }
-    if !shadow.file_name().and_then(|n| n.to_str()).is_some_and(is_shadow) {
+/// A shadow's key: its file name, unique by its seat id. A seat's shadow is held and released by
+/// name, never by the path the engine reported, which may spell the train dir differently (relative,
+/// through a symlink, a `\\?\` prefix on Windows; Fable on #6240).
+pub fn shadow_name(shadow: &Path) -> Option<std::ffi::OsString> {
+    shadow.file_name().map(std::ffi::OsStr::to_os_string)
+}
+
+/// Remove the shadow named `name` from `train_dir` when it is a seat's shadow, no seat holds it,
+/// and no generation was published from it.
+pub fn release(name: &std::ffi::OsStr, train_dir: &Path, held: &BTreeSet<std::ffi::OsString>) -> Released {
+    if !name.to_str().is_some_and(is_shadow) {
         return Released::Kept("not a seat's shadow");
     }
-    if held.contains(shadow) {
+    if held.contains(name) {
         return Released::Kept("a live seat holds it");
     }
+    let shadow = train_dir.join(name);
     let mut generation = shadow.as_os_str().to_owned();
     generation.push(".checkpoint");
     if Path::new(&generation).exists() {
         return Released::Kept("a generation was published from it");
     }
-    let bytes = match std::fs::metadata(shadow) {
+    let bytes = match std::fs::metadata(&shadow) {
         Ok(meta) => meta.len(),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Released::Removed(0),
         Err(error) => return Released::Failed(error),
     };
-    match std::fs::remove_file(shadow) {
+    match std::fs::remove_file(&shadow) {
         Ok(()) => Released::Removed(bytes),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Released::Removed(0),
         Err(error) => Released::Failed(error),
     }
 }
 
-/// Every shadow in `train_dir` no seat holds, oldest first, released until `want` bytes are freed.
-/// Returns the bytes freed.
-pub fn sweep(train_dir: &Path, held: &BTreeSet<PathBuf>, want: u64) -> u64 {
+/// What a sweep may take: only a shadow it has evidence is dead. A shadow written before this boot
+/// belongs to no live seat; a shadow written since is taken only once its seat was heard to settle.
+/// A seat that starts during a sweep, or between the engine writing its shadow and the trainer saying
+/// it is held, is in neither, so a sweep never unlinks a shadow a live seat trains on.
+pub struct Sweepable<'a> {
+    pub booted: std::time::SystemTime,
+    pub settled: &'a BTreeSet<std::ffi::OsString>,
+}
+
+impl Sweepable<'_> {
+    fn admits(&self, name: &std::ffi::OsStr, written: std::time::SystemTime) -> bool {
+        written < self.booted || self.settled.contains(name)
+    }
+}
+
+/// Every sweepable shadow in `train_dir` no seat holds, oldest first, released until `want` bytes
+/// are freed. Returns the bytes freed.
+pub fn sweep(train_dir: &Path, held: &BTreeSet<std::ffi::OsString>, sweepable: &Sweepable<'_>, want: u64) -> u64 {
     let Ok(entries) = std::fs::read_dir(train_dir) else { return 0 };
-    let mut shadows: Vec<(std::time::SystemTime, PathBuf)> = entries
+    let mut shadows: Vec<(std::time::SystemTime, std::ffi::OsString)> = entries
         .flatten()
         .filter(|e| e.file_name().to_str().is_some_and(is_shadow))
-        .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
+        .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.file_name())))
+        .filter(|(written, name)| sweepable.admits(name, *written))
         .collect();
     shadows.sort();
     let mut freed = 0u64;
-    for (_, shadow) in shadows {
+    for (_, name) in shadows {
         if freed >= want {
             break;
         }
-        if let Released::Removed(bytes) = release(&shadow, train_dir, held) {
+        if let Released::Removed(bytes) = release(&name, train_dir, held) {
             freed = freed.saturating_add(bytes);
         }
     }
@@ -140,14 +161,19 @@ impl From<Snapshot<Volumes>> for Wake {
 /// The cleaner of one train dir.
 pub struct Cleaner {
     train_dir: PathBuf,
-    held: Arc<BTreeSet<PathBuf>>,
+    /// The shadows live seats hold, by name.
+    held: Arc<BTreeSet<std::ffi::OsString>>,
+    /// Shadows whose seats settled and kept them (they learned or published): a sweep may take them.
+    settled: Arc<BTreeSet<std::ffi::OsString>>,
+    /// When this cleaner started: a shadow written before it belongs to no live seat.
+    booted: std::time::SystemTime,
     /// A sweep is running off the worker; disk frames meanwhile wait for the next.
     sweeping: bool,
 }
 
 impl Cleaner {
     pub fn of(train_dir: PathBuf) -> Self {
-        Self { train_dir, held: Arc::default(), sweeping: false }
+        Self { train_dir, held: Arc::default(), settled: Arc::default(), booted: std::time::SystemTime::now(), sweeping: false }
     }
 }
 
@@ -164,12 +190,16 @@ impl Component for Cleaner {
 
     async fn handle(&mut self, wake: Wake, ctx: &mut Ctx<Self>) {
         match wake {
-            Wake::Seated(seated) => self.held = Arc::new(seated.0.clone()),
+            Wake::Seated(seated) => self.held = Arc::new(seated.0.iter().filter_map(|shadow| shadow_name(shadow)).collect()),
             Wake::Settled(settled) => {
-                if settled.learned == 0 && !settled.published {
-                    let (shadow, dir, held) = (settled.shadow.clone(), self.train_dir.clone(), Arc::clone(&self.held));
+                let Some(name) = shadow_name(&settled.shadow) else { return };
+                if settled.learned > 0 || settled.published {
+                    // its seat is gone and it keeps what it learned: a sweep may take it, a release may not
+                    Arc::make_mut(&mut self.settled).insert(name);
+                } else {
+                    let (dir, held) = (self.train_dir.clone(), Arc::clone(&self.held));
                     ctx.need(Urgency::Want);
-                    ctx.off(move || release(&shadow, &dir, &held), |released| match released {
+                    ctx.off(move || release(&name, &dir, &held), |released| match released {
                         Released::Removed(freed) => Wake::Done { what: "settled", freed },
                         Released::Kept(_) | Released::Failed(_) => Wake::Done { what: "settled-kept", freed: 0 },
                     });
@@ -185,10 +215,10 @@ impl Component for Cleaner {
                     return;
                 }
                 let want = used.saturating_sub((drive.total_bytes as f64 * DiskPressureLevel::WARNING_AT) as u64);
-                let (dir, held) = (self.train_dir.clone(), Arc::clone(&self.held));
+                let (dir, held, settled, booted) = (self.train_dir.clone(), Arc::clone(&self.held), Arc::clone(&self.settled), self.booted);
                 self.sweeping = true;
                 ctx.need(Urgency::Want);
-                ctx.off(move || sweep(&dir, &held, want), |freed| Wake::Done { what: "swept", freed });
+                ctx.off(move || sweep(&dir, &held, &Sweepable { booted, settled: &settled }, want), |freed| Wake::Done { what: "swept", freed });
             }
             Wake::Done { what, freed } => {
                 if what == "swept" {
@@ -205,51 +235,78 @@ impl Component for Cleaner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsString;
 
-    fn shadow_name(seat: u8) -> String {
+    fn shadow_file(seat: u8) -> String {
         format!("{}-{}-{:032x}.gguf", "a".repeat(32), "b".repeat(64), seat)
     }
 
     // what this catches (the IntelMac 2026-11-23: 11,130 leftover shadows, 46 GB): a cleaner that
-    // removes what must survive (a held shadow, a shadow a generation came from, a staged gene, a
-    // checkpoint dir, a file outside the train dir) or that keeps what nothing holds.
+    // removes what must survive (a held shadow, a shadow a generation came from, a staged gene) or
+    // keeps what nothing holds.
     #[test]
     fn only_shadows_nothing_holds_are_released() {
         let dir = tempfile::tempdir().expect("test: dir");
         let train = dir.path().join("engine-train");
         std::fs::create_dir_all(&train).expect("test: train dir");
         let write = |name: &str| {
-            let path = train.join(name);
-            std::fs::write(&path, b"shadow").expect("test: file");
-            path
+            std::fs::write(train.join(name), b"shadow").expect("test: file");
+            OsString::from(name)
         };
-        let free = write(&shadow_name(1));
-        let held_shadow = write(&shadow_name(2));
-        let published = write(&shadow_name(3));
-        std::fs::create_dir_all(train.join(format!("{}.checkpoint", shadow_name(3)))).expect("test: generation");
+        let free = write(&shadow_file(1));
+        let held_shadow = write(&shadow_file(2));
+        let published = write(&shadow_file(3));
+        std::fs::create_dir_all(train.join(format!("{}.checkpoint", shadow_file(3)))).expect("test: generation");
         let gene = write("gene-0123456789abcdef.gguf");
-        let held: BTreeSet<PathBuf> = [held_shadow.clone()].into();
+        let held: BTreeSet<OsString> = [held_shadow.clone()].into();
 
         assert!(matches!(release(&free, &train, &held), Released::Removed(6)));
-        assert!(matches!(release(&held_shadow, &train, &held), Released::Kept(_)) && held_shadow.exists(), "a live seat's shadow survives");
-        assert!(matches!(release(&published, &train, &held), Released::Kept(_)) && published.exists(), "a shadow a generation came from survives");
-        assert!(matches!(release(&gene, &train, &held), Released::Kept(_)) && gene.exists(), "a staged gene is never a shadow");
-        let outside = dir.path().join(shadow_name(4));
-        std::fs::write(&outside, b"shadow").expect("test: outside");
-        assert!(matches!(release(&outside, &train, &held), Released::Kept(_)) && outside.exists(), "outside the train dir is never touched");
+        assert!(matches!(release(&held_shadow, &train, &held), Released::Kept(_)) && train.join(&held_shadow).exists(), "a live seat's shadow survives");
+        assert!(matches!(release(&published, &train, &held), Released::Kept(_)) && train.join(&published).exists(), "a shadow a generation came from survives");
+        assert!(matches!(release(&gene, &train, &held), Released::Kept(_)) && train.join(&gene).exists(), "a staged gene is never a shadow");
+    }
 
-        let leftover = write(&shadow_name(5));
-        assert_eq!(sweep(&train, &held, u64::MAX), 6, "a sweep frees the one leftover nothing holds");
-        assert!(!leftover.exists());
-        assert!(held_shadow.exists() && published.exists() && gene.exists(), "and nothing that must survive");
-        assert!(train.join(format!("{}.checkpoint", shadow_name(3))).exists(), "the generation stays");
+    // what this catches (Fable on #6240): a sweep that unlinks a shadow a live seat trains on because
+    // the seat started during the sweep, or between the engine writing its shadow and the trainer
+    // saying it is held; and a held shadow missed because the engine spelled the train dir
+    // differently than the cleaner.
+    #[test]
+    fn a_sweep_takes_only_shadows_it_has_evidence_are_dead() {
+        let dir = tempfile::tempdir().expect("test: dir");
+        let train = dir.path().join("engine-train");
+        std::fs::create_dir_all(&train).expect("test: train dir");
+        let write = |seat: u8| {
+            let name = shadow_file(seat);
+            std::fs::write(train.join(&name), b"shadow").expect("test: file");
+            OsString::from(name)
+        };
+        let before_boot = write(1);
+        let booted = std::fs::metadata(train.join(&before_boot)).and_then(|m| m.modified()).expect("test: written time");
+        let booted = booted + std::time::Duration::from_secs(1);
+        // written "after boot": its time is set past the boot instant
+        let unsettled = write(2);
+        let settled_name = write(3);
+        let later = booted + std::time::Duration::from_secs(1);
+        for name in [&unsettled, &settled_name] {
+            std::fs::File::options().write(true).open(train.join(name)).and_then(|f| f.set_modified(later)).expect("test: set time");
+        }
+        let settled: BTreeSet<OsString> = [settled_name.clone()].into();
+        // the engine reported the held shadow through a differently spelled path; the cleaner keys by name
+        let reported = dir.path().join("engine-train/../engine-train").join(&before_boot);
+        let held: BTreeSet<OsString> = [shadow_name(&reported).expect("test: a name")].into();
+
+        let freed = sweep(&train, &held, &Sweepable { booted, settled: &settled }, u64::MAX);
+        assert_eq!(freed, 6, "only the settled shadow written since boot goes");
+        assert!(!train.join(&settled_name).exists());
+        assert!(train.join(&unsettled).exists(), "a shadow written since boot that never settled may be a live seat's");
+        assert!(train.join(&before_boot).exists(), "a held shadow survives whatever path spelled it");
     }
 
     #[test]
     fn a_shadow_name_is_exact() {
-        assert!(is_shadow(&shadow_name(1)));
+        assert!(is_shadow(&shadow_file(1)));
         assert!(!is_shadow("gene-0123456789abcdef.gguf"));
-        assert!(!is_shadow(&format!("{}.checkpoint", shadow_name(1))));
-        assert!(!is_shadow(&shadow_name(1).replace(".gguf", ".bin")));
+        assert!(!is_shadow(&format!("{}.checkpoint", shadow_file(1))));
+        assert!(!is_shadow(&shadow_file(1).replace(".gguf", ".bin")));
     }
 }
