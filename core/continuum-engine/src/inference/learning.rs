@@ -18,6 +18,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use continuum_persona_engine::persona::PersonaId;
+use crate::inference::llama_server::FreshShadow;
 use llama::{Optimizer, OptimizerLease, ReplyAdmission};
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -35,7 +36,7 @@ pub enum Learning {
     Seat(Seat),
     /// Learn one lesson into a seated shadow.
     Learn(Learn),
-    /// Save the seat's shadow as its next generation.
+    /// Save the seat's shadow as its next generation: its weights and its optimizer state.
     Checkpoint { seat: SeatId },
     /// Let the seat go: its optimizer and its lease are released once native code frees them.
     Release { seat: SeatId },
@@ -45,13 +46,22 @@ pub enum Learning {
 pub struct Seat {
     pub seat: SeatId,
     pub mind: PersonaId,
-    /// The shadow adapter's file: loaded on the engine's resident weights.
-    pub shadow: PathBuf,
+    pub shadow: ShadowSource,
     pub optimizer: Optimizer,
     /// Admits and releases the optimizer's bytes as native code allocates and frees them.
     pub lease: Box<dyn OptimizerLease>,
     /// This seat's stream: every [`Said`] about it, in order.
     pub said: UnboundedSender<Said>,
+}
+
+/// Where a seat's shadow comes from (Cormac on #6254). Either way the engine makes it on her resident
+/// weights.
+pub enum ShadowSource {
+    /// A new shadow the engine creates from its geometry.
+    Fresh(FreshShadow),
+    /// A generation a checkpoint saved: its weights, and its optimizer state when the generation
+    /// carries one. The seat's [`SeatState::Seated`] says which came back.
+    Generation(PathBuf),
 }
 
 /// One lesson for a seated shadow, admitted by its workspace admission.
@@ -89,7 +99,7 @@ pub enum Said {
 #[derive(Debug, Clone, PartialEq)]
 pub enum SeatState {
     /// Loaded and retained: lessons may be learned into it. `bytes` is the shadow's weights.
-    Seated { bytes: u64 },
+    Seated { bytes: u64, optimizer: OptimizerStart },
     /// Not seated; nothing is held.
     Refused { why: Arc<str> },
     /// Released: native code freed its optimizer and the lease dropped.
@@ -97,6 +107,15 @@ pub enum SeatState {
     /// A step's restoration was not confirmed: the engine holds the seat until it proves the
     /// optimizer and workspace released.
     Quarantined { why: Arc<str> },
+}
+
+/// How a seated shadow's optimizer starts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OptimizerStart {
+    /// Its moments came back from the generation it was seated from.
+    Restored,
+    /// It starts cold: a fresh shadow, or a generation saved without optimizer state.
+    Cold,
 }
 
 /// What one step did to the seat's shadow.
