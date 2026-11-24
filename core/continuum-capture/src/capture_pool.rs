@@ -12,6 +12,12 @@ use continuum_kernel::system_resources::disk_reporters::ClassWriter;
 
 use crate::capture_log;
 
+#[cfg(test)]
+thread_local! {
+    /// Have another pool's roll land between this thread's next eviction's first look and its own roll.
+    static ANOTHER_ROLL_FIRST: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 /// The captures held in one disk class, freed oldest first under pressure.
 pub struct CapturesPool {
     class: ClassWriter,
@@ -106,12 +112,15 @@ impl ResourcePool for CapturesPool {
         }
         // not enough closed history: close what the running writer holds open, so its own
         // generations become evictable too, and take those (Codex on #6236)
+        #[cfg(test)]
+        if ANOTHER_ROLL_FIRST.with(|first| first.replace(false)) {
+            capture_log::roll_open(); // a concurrent pool's roll, landing between this pool's two looks
+        }
         let rolled = capture_log::roll_open();
         continuum_base::probe!(class = "capture.generation.rolled", rolled = rolled as u64, freed, want_bytes,
             "closed capture history did not cover the pressure: the open logs rolled to their next generations");
-        if rolled == 0 {
-            return freed;
-        }
+        // swept again whatever this roll closed: a concurrent pool's roll may already have closed this
+        // class's logs, leaving them reclaimable though this call rolled none (Codex on #6236)
         self.evict_closed(want_bytes, freed)
     }
 
@@ -181,6 +190,23 @@ mod tests {
         let left = capture_log::generations(&class.owned_by(owner)).expect("test: generations");
         assert_eq!(left, vec![2], "however much is asked, the live generation stays");
         drop(live);
+    }
+
+    // what this catches (Codex on #6236): two pools on two roots under pressure at once: the first's
+    // roll closes every registered log, the second's own roll then closes none, and the second frees
+    // nothing though its root's history just became reclaimable.
+    #[test]
+    fn a_pool_reclaims_history_another_pools_roll_closed() {
+        let dir = tempfile::tempdir().expect("test: dir");
+        let class = TrackedDir::new("captures-pool-concurrent-test", dir.path().to_path_buf()).writer();
+        let owner = uuid::Uuid::new_v4();
+        let logs = crate::capture_log::OpenLogs::shared();
+        let record = crate::capture_log::CaptureRecord { owner, kind: FrameKind::Submitted, header: vec![0x90], runs: vec![std::sync::Arc::from(&[7u8; 1024][..])], captured_at_ms: 1 };
+        logs.append(&class, &record).expect("test: a record");
+
+        let pool = CapturesPool::new(&TrackedDir::new("captures-pool-concurrent-test", dir.path().to_path_buf()).writer());
+        ANOTHER_ROLL_FIRST.with(|first| first.set(true)); // its first look finds the log open; the other roll lands next
+        assert!(pool.evict_at_least(u64::MAX) > 1024, "this root's history, closed by the other roll, is still reclaimed");
     }
 
     // what this catches (Codex on #6236): a playback that has already read an owner's calls and,
