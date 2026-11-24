@@ -3,7 +3,7 @@
 //!
 //! The `embedding/*` commands (similarity, similarity-matrix, top-k, cluster) are typed
 //! stateless `ActionCommand`s under `commands/embedding/*`; the vector math they call (the
-//! SIMD kernels, the pairwise matrix, top-k, `detect_clusters`) lives with the embedding
+//! SIMD kernels, top-k, `detect_clusters`) lives with the embedding
 //! owner in `ai::embedding::vector_math`. This module's `handle_command` exists only
 //! to fail loud if a typed registration is ever missing.
 //!
