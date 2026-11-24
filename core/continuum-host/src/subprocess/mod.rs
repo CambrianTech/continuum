@@ -161,6 +161,31 @@ impl RunConfig {
             .map(Output::from_std)
             .map_err(SpawnError::Io)
     }
+
+    /// Build a std::process::Command pre-configured for spawning (quiet: stdin closed,
+    /// CREATE_NO_WINDOW on Windows). Callers add args/envs before calling .spawn().
+    pub fn spawn_std(&self, program: &str) -> std::process::Command {
+        let mut cmd = self.build_std(program, &[]);
+        #[cfg(windows)]
+        use std::os::windows::process::CommandExt;
+        #[cfg(windows)]
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        cmd.stdin(std::process::Stdio::null());
+        cmd
+    }
+
+    /// Build a std::process::Command for spawning with an arbitrary OsStr program,
+    /// pre-configured with quiet flags. Callers add args/envs before calling .spawn().
+    pub fn spawn_std_os(&self, program: &std::ffi::OsStr) -> std::process::Command {
+        let mut cmd = std::process::Command::new(program);
+        #[cfg(windows)]
+        use std::os::windows::process::CommandExt;
+        #[cfg(windows)]
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        cmd.stdin(std::process::Stdio::null());
+        self.apply_to_std(&mut cmd);
+        cmd
+    }
 }
 
 /// Check whether `binary` is reachable on PATH. This is the OS-differentiated seam: Unix checks

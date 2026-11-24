@@ -87,6 +87,7 @@ use continuum_base::time::EpochMs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use continuum_host::subprocess;
 use crate::paging::pool::ResourcePool;
 use crate::system_resources::disk_reporters::TrackedDir;
 
@@ -558,12 +559,8 @@ fn repos_in(workspace: &Path) -> Vec<PathBuf> {
 /// `-z` and `--untracked-files=all` matter: filenames with spaces are real, and a
 /// directory summary would hide the files inside it.
 fn uncommitted_paths(repo: &Path) -> Result<Vec<String>, PreserveFailed> {
-    let out = std::process::Command::new("git")
-        .arg("-C")
-        .arg(repo)
-        .args(["status", "--porcelain=v1", "-z", "--untracked-files=all"])
-        .output()
-        .map_err(|e| PreserveFailed::Git(format!("status on {}: {e}", repo.display())))?;
+    let out = subprocess::RunConfig::default().cwd(&repo).run_sync("git", &["status", "--porcelain=v1", "-z", "--untracked-files=all"])
+                .map_err(|e| PreserveFailed::Git(format!("status on {}: {e}", repo.display())))?;
     if !out.status.success() {
         return Err(PreserveFailed::Git(format!(
             "status on {} exited {}",
@@ -652,11 +649,7 @@ fn preserve_workspace(workspace: &Path, dropped_dir: &Path) -> Result<usize, Pre
         if total > PRESERVE_CAP_BYTES {
             return Err(PreserveFailed::TooLarge { bytes: total, cap: PRESERVE_CAP_BYTES });
         }
-        let head = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&repo)
-            .args(["rev-parse", "HEAD"])
-            .output()
+let head = subprocess::RunConfig::default().cwd(&repo).run_sync("git", &["rev-parse", "HEAD"])
             .map_err(|e| PreserveFailed::Git(format!("rev-parse: {e}")))?;
         let base = if head.status.success() {
             String::from_utf8_lossy(&head.stdout).trim().to_string()

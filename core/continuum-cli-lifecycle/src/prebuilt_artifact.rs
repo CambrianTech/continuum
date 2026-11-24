@@ -16,7 +16,6 @@ use serde::Deserialize;
 
 use crate::deploy_provenance::sha_matches;
 use std::path::Path;
-use std::process::Stdio;
 
 /// Cooperating consumers hold the shared ledger lease for their entire command.
 pub const CONSUMER_LEASE_PROTOCOL: u32 = 1;
@@ -581,15 +580,12 @@ impl KeyResolution {
 /// [`BUILD_INPUTS`] path); `head` itself, typed as such, when git cannot say.
 pub fn checkout_build_key(cwd: &Path, git_dir: Option<&std::ffi::OsStr>, head: &str) -> KeyResolution {
     let args = build_key_log_args(head);
-    let mut cmd = std::process::Command::new("git");
-    cmd.current_dir(cwd).args(&args).env_remove("GIT_DIR").stdin(Stdio::null());
+    let mut cmd = continuum_host::subprocess::RunConfig::default()
+        .cwd(cwd)
+        .spawn_std("git");
+    cmd.args(&args).env_remove("GIT_DIR");
     if let Some(git_dir) = git_dir {
         cmd.env("GIT_DIR", git_dir);
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
     match cmd.output() {
         Ok(out) if out.status.success() => {
