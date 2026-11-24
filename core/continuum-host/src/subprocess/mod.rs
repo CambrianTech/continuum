@@ -128,6 +128,34 @@ impl RunConfig {
         let mut cmd = self.build(program, args);
         cmd.spawn().map_err(SpawnError::Io)
     }
+
+    // -- sync paths (for callers that are not async) ----------------------------
+
+    /// Apply config to a `std::process::Command` builder. Same semantics as [`Self::apply_to`].
+    pub fn apply_to_std(&self, cmd: &mut std::process::Command) {
+        if let Some(cwd) = &self.cwd {
+            cmd.current_dir(cwd);
+        }
+        for (key, value) in &self.envs {
+            cmd.env(key, value);
+        }
+    }
+
+    /// Build a configured `std::process::Command`.
+    pub fn build_std(&self, program: &str, args: &[&str]) -> std::process::Command {
+        let mut cmd = std::process::Command::new(program);
+        cmd.args(args);
+        self.apply_to_std(&mut cmd);
+        cmd
+    }
+
+    /// Run synchronously and capture output. No timeout support (use the async [`Self::run`] for that).
+    pub fn run_sync(&self, program: &str, args: &[&str]) -> Result<Output, SpawnError> {
+        self.build_std(program, args)
+            .output()
+            .map(Output::from_std)
+            .map_err(SpawnError::Io)
+    }
 }
 
 /// Check whether `binary` is reachable on PATH. This is the OS-differentiated seam: Unix checks
