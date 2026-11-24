@@ -172,10 +172,6 @@ pub enum StepOutcome {
     Uncertain { steps: u64 },
     /// Not learned; the shadow is as it was.
     Refused { why: Arc<str> },
-    /// The command was not applied and the seat is as it was, still holding what it held (an
-    /// out-of-order or repeated command, or a retain native code refused): keep every guard (Codex
-    /// on #6254).
-    Kept { why: Arc<str> },
 }
 
 /// What a checkpoint made.
@@ -184,10 +180,6 @@ pub enum GenerationOutcome {
     /// Written to `into`, with the optimizer steps the shadow had committed when it was saved.
     Saved { into: PathBuf, steps: u64 },
     Refused { why: Arc<str> },
-    /// The command was not applied and the seat is as it was, still holding what it held (an
-    /// out-of-order or repeated command, or a retain native code refused): keep every guard (Codex
-    /// on #6254).
-    Kept { why: Arc<str> },
 }
 
 /// No engine took the command: it comes back to the trainer.
