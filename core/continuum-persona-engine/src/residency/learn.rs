@@ -15,7 +15,8 @@ pub trait Learns: Execute {
     type Shadow;
     /// What pays for a shadow's optimizer while the tier retains it.
     type Lease;
-    /// One reply: what she holds before it, its tokens, their labels and the tail to restore.
+    /// One reply, naming the mind it is hers: what she holds before it, its tokens, their labels and
+    /// the tail to restore.
     type Reply;
     /// The memory owner's admission for one reply's workspace.
     type Admission;
@@ -42,15 +43,8 @@ pub trait Learns: Execute {
     /// (and still retained) while native code holds it.
     fn release(&mut self, mind: MindId, shadow: &Self::Shadow) -> Result<Self::Lease, TierRefusal>;
 
-    /// Learn `reply` as `mind`, into `shadow`, asking `go_on` between chunks. Refused before any
+    /// Learn `reply` into `shadow` as the mind it names, asking `go_on` between chunks. Refused before any
     /// native state changed, with the admission handed back, when she is not bound here or the reply
     /// cannot begin.
-    fn learn(
-        &mut self,
-        mind: MindId,
-        shadow: &Self::Shadow,
-        reply: &Self::Reply,
-        admission: Self::Admission,
-        go_on: &mut dyn FnMut() -> bool,
-    ) -> Result<Self::Learned, (TierRefusal, Self::Admission)>;
+    fn learn(&mut self, shadow: &Self::Shadow, reply: &Self::Reply, admission: Self::Admission, go_on: &mut dyn FnMut() -> bool) -> Result<Self::Learned, (TierRefusal, Self::Admission)>;
 }

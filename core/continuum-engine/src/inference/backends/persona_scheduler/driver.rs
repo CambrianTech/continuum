@@ -97,7 +97,7 @@ enum Tenure {
 mod ending;
 mod history;
 mod learning;
-pub(crate) use learning::Job as LearningJob;
+pub(crate) use learning::{Job as LearningJob, Lesson as LearningLesson};
 
 use ending::{Ending, Stop, Suspension};
 pub(super) use ending::finish;

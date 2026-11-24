@@ -105,30 +105,28 @@ impl Model {
     /// (native code's dry run of the same writer).
     pub fn measure_fresh_shadow(&self, geometry: &FreshGeometry<'_>) -> Result<Vec<MemoryRow>, LearnRefusal> {
         let mut rows: Vec<MemoryRow> = Vec::new();
-        self.fresh_shadow(Path::new(""), geometry, Some(adapter_row), std::ptr::from_mut(&mut rows).cast(), "measure_fresh_shadow")?;
+        self.fresh_shadow(Path::new(""), geometry, Some(&mut rows))?;
         Ok(rows)
     }
 
     /// Write a fresh shadow at `path`: it leaves the model's output unchanged until its first
     /// optimizer step.
     pub fn write_fresh_shadow(&self, path: &Path, geometry: &FreshGeometry<'_>) -> Result<(), LearnRefusal> {
-        self.fresh_shadow(path, geometry, None, std::ptr::null_mut(), "write_fresh_shadow")
+        self.fresh_shadow(path, geometry, None)
     }
 
-    /// common's one writer: with `measure` it reports each tensor and writes nothing, without it it
-    /// writes the file.
-    fn fresh_shadow(
-        &self,
-        path: &Path,
-        geometry: &FreshGeometry<'_>,
-        measure: sys::llama_adapter_memory_callback,
-        rows: *mut c_void,
-        step: &'static str,
-    ) -> Result<(), LearnRefusal> {
+    /// common's one writer: given `measured`, it reports each tensor there and writes nothing;
+    /// without it, it writes the file.
+    fn fresh_shadow(&self, path: &Path, geometry: &FreshGeometry<'_>, measured: Option<&mut Vec<MemoryRow>>) -> Result<(), LearnRefusal> {
+        let step = if measured.is_some() { "measure_fresh_shadow" } else { "write_fresh_shadow" };
         let path = c_path(path, step)?;
         let targets = CString::new(geometry.targets.join(",")).map_err(|_| LearnRefusal { step, message: "a target with a NUL".into() })?;
         let (Ok(rank), Ok(top_layers)) = (i32::try_from(geometry.rank), i32::try_from(geometry.top_layers)) else {
             return Err(LearnRefusal { step, message: "a rank or layer count past what native code takes".into() });
+        };
+        let (measure, rows): (sys::llama_adapter_memory_callback, *mut c_void) = match measured {
+            Some(rows) => (Some(adapter_row), std::ptr::from_mut(rows).cast()),
+            None => (None, std::ptr::null_mut()),
         };
         let refused = unsafe {
             continuum_lora_write_fresh(self.as_ptr(), path.as_ptr(), rank, geometry.alpha, targets.as_ptr(), geometry.seed, top_layers, measure, rows)

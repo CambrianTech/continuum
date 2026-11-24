@@ -27,7 +27,15 @@ pub(crate) enum Job {
     /// Measure, Load, Seat, Checkpoint or Release, as the trainer told it.
     Told(Told),
     /// A lesson rendered with her template on the submitter's thread.
-    Learn { seat: SeatId, step: StepId, rendered: Rendered, admission: Box<dyn ReplyAdmission> },
+    Learn(Lesson),
+}
+
+/// One lesson for a seat, rendered, with its workspace admission view.
+pub(crate) struct Lesson {
+    pub(crate) seat: SeatId,
+    pub(crate) step: StepId,
+    pub(crate) rendered: Rendered,
+    pub(crate) admission: Box<dyn ReplyAdmission>,
 }
 
 impl Job {
@@ -35,7 +43,7 @@ impl Job {
     pub(crate) fn refuse(self, why: &str) {
         let why: Arc<str> = Arc::from(why);
         match self {
-            Job::Learn { seat, step, .. } => say(Said::Step { seat, step, outcome: StepOutcome::Refused { why } }),
+            Job::Learn(Lesson { seat, step, .. }) => say(Said::Step { seat, step, outcome: StepOutcome::Refused { why } }),
             Job::Told(Told::Learn(learn)) => say(Said::Step { seat: learn.seat, step: learn.step, outcome: StepOutcome::Refused { why } }),
             Job::Told(Told::Measure(measure)) => say(Said::Seat { seat: measure.seat, state: SeatState::Refused { why } }),
             Job::Told(Told::Load { seat }) => say(Said::Seat { seat, state: SeatState::Refused { why } }),
@@ -101,7 +109,7 @@ impl Driver<'_, '_> {
             Job::Told(Told::Seat(seated)) => self.seat(seated),
             Job::Told(Told::Checkpoint { seat, into, binding }) => self.checkpoint(seat, &into, &binding),
             Job::Told(Told::Release { seat }) => self.release(seat),
-            Job::Learn { seat, step, rendered, admission } => self.lesson(seat, step, &rendered, admission, go_on),
+            Job::Learn(lesson) => self.lesson(lesson, go_on),
             // A lesson is rendered before it is queued; one that arrives unrendered is refused.
             told @ Job::Told(Told::Learn(_)) => told.refuse("the lesson reached the engine unrendered"),
         }
@@ -145,15 +153,14 @@ impl Driver<'_, '_> {
             // only a checkpoint makes it durable.
             ShadowSource::Fresh(fresh) => {
                 let path = std::env::temp_dir().join(format!("continuum-shadow-{}.gguf", seat.0));
-                let written = self.model.write_fresh_shadow(&path, &FreshGeometry {
-                    rank: fresh.rank,
-                    alpha: fresh.alpha,
-                    targets: &fresh.targets,
-                    seed: fresh.seed,
-                    top_layers: fresh.top_layers,
-                });
-                let loaded = written.map_err(|refusal| refusal.to_string()).and_then(|()| self.model.load_lora(&path));
-                let _ = std::fs::remove_file(&path);
+                let geometry = FreshGeometry { rank: fresh.rank, alpha: fresh.alpha, targets: &fresh.targets, seed: fresh.seed, top_layers: fresh.top_layers };
+                if let Err(refusal) = self.model.write_fresh_shadow(&path, &geometry) {
+                    return say(Said::Seat { seat, state: SeatState::Refused { why: refusal.to_string().into() } });
+                }
+                let loaded = self.model.load_lora(&path);
+                if let Err(kept) = std::fs::remove_file(&path) {
+                    continuum_base::probe!(class = "learning.shadow_file.kept", path = %path.display(), error = %kept, "the fresh shadow's scratch file stays on disk");
+                }
                 loaded
             }
             ShadowSource::Generation(dir) => self.model.load_lora(dir.join("adapter.gguf")),
@@ -197,13 +204,10 @@ impl Driver<'_, '_> {
 
     fn checkpoint(&mut self, seat: SeatId, into: &std::path::Path, binding: &str) {
         let outcome = match self.learning.seats.get(&seat) {
-            Some(Entry { mind, phase: Phase::Seated { shadow }, .. }) => {
-                let (mind, shadow) = (*mind, Shadow { adapter: Arc::clone(&shadow.adapter), ..*shadow });
-                match self.engine.save_shadow(mind_of(mind), &shadow, into, binding) {
-                    Ok(steps) => GenerationOutcome::Saved { into: into.to_path_buf(), steps },
-                    Err(refusal) => GenerationOutcome::Refused { why: refusal.to_string().into() },
-                }
-            }
+            Some(Entry { mind, phase: Phase::Seated { shadow }, .. }) => match self.engine.save_shadow(mind_of(*mind), shadow, into, binding) {
+                Ok(steps) => GenerationOutcome::Saved { into: into.to_path_buf(), steps },
+                Err(refusal) => GenerationOutcome::Refused { why: refusal.to_string().into() },
+            },
             _ => GenerationOutcome::Refused { why: "checkpoint of a seat not seated".into() },
         };
         say(Said::Generation { seat, outcome });
@@ -228,52 +232,71 @@ impl Driver<'_, '_> {
         }
     }
 
-    fn lesson(&mut self, seat: SeatId, step: StepId, rendered: &Rendered, admission: Box<dyn ReplyAdmission>, go_on: &mut dyn FnMut() -> bool) {
-        let refused = |why: &str| say(Said::Step { seat, step, outcome: StepOutcome::Refused { why: why.into() } });
-        let Some(Entry { mind, reply_rows, phase: Phase::Seated { shadow }, .. }) = self.learning.seats.get(&seat) else {
-            return refused("a lesson for a seat not seated");
+    fn lesson(&mut self, lesson: Lesson, go_on: &mut dyn FnMut() -> bool) {
+        let Lesson { seat, step, rendered, admission } = lesson;
+        let refused = |why: String| say(Said::Step { seat, step, outcome: StepOutcome::Refused { why: why.into() } });
+        let Some(entry) = self.learning.seats.remove(&seat) else {
+            return refused("a lesson for a seat never seated".into());
         };
-        let (mind, reply_rows, shadow) = (*mind, *reply_rows, Shadow { adapter: Arc::clone(&shadow.adapter), ..*shadow });
-        if let Err(unbound) = self.switch_to(mind, false) {
-            return refused(&format!("she could not be bound to learn: {unbound}"));
+        let Entry { mind, optimizer, reply_rows, phase } = entry;
+        let shadow = match phase {
+            Phase::Seated { shadow } => shadow,
+            other => {
+                self.learning.seats.insert(seat, Entry { mind, optimizer, reply_rows, phase: other });
+                return refused("a lesson for a seat not seated".into());
+            }
+        };
+        // Taken out while she learns (binding her needs the whole driver); put back whatever happens.
+        let (outcome, quarantined) = self.learn_seated(Seated { mind, reply_rows, shadow: &shadow, rendered: &rendered }, admission, go_on);
+        let phase = if quarantined.is_some() { Phase::Quarantined { shadow } } else { Phase::Seated { shadow } };
+        self.learning.seats.insert(seat, Entry { mind, optimizer, reply_rows, phase });
+        if let Some(why) = quarantined {
+            say(Said::Seat { seat, state: SeatState::Quarantined { why } });
+        }
+        say(Said::Step { seat, step, outcome });
+    }
+
+    /// Bind her and learn one rendered lesson into her seated shadow: the step's outcome, and why the
+    /// seat is quarantined when native code could not confirm her restoration.
+    fn learn_seated(&mut self, seated: Seated<'_>, admission: Box<dyn ReplyAdmission>, go_on: &mut dyn FnMut() -> bool) -> (StepOutcome, Option<Arc<str>>) {
+        let refused = |why: String| (StepOutcome::Refused { why: why.into() }, None);
+        if let Err(unbound) = self.switch_to(seated.mind, false) {
+            return refused(format!("she could not be bound to learn: {unbound}"));
         }
         let held = match self.engine.active_mut() {
             Some(her) => her.parts().tokens.held.clone(),
-            None => return refused("she was not bound after the switch"),
+            None => return refused("she was not bound after the switch".into()),
         };
-        let reply = match reply_for(&held, rendered) {
-            Some(reply) => reply,
-            None => return refused("the lesson has no reply past what she holds"),
+        let Some(reply) = reply_for(mind_of(seated.mind), &held, seated.rendered) else {
+            return refused("the lesson has no reply past what she holds".into());
         };
-        if reply.tokens.len() > reply_rows.get() as usize {
-            return refused(&format!("{} reply tokens past the {} the seat was measured for", reply.tokens.len(), reply_rows));
+        if reply.tokens.len() > seated.reply_rows.get() as usize {
+            return refused(format!("{} reply tokens past the {} the seat was measured for", reply.tokens.len(), seated.reply_rows));
         }
-        let outcome = match self.engine.learn_active(&shadow, &reply, admission, go_on) {
-            Ok(Finished::Learned { steps, loss, .. }) => StepOutcome::Learned { steps, loss },
-            Ok(Finished::Unchanged { .. }) => StepOutcome::Unchanged,
-            Ok(Finished::Uncertain { steps, .. }) => StepOutcome::Uncertain { steps },
+        match self.engine.learn_active(seated.shadow, &reply, admission, go_on) {
+            Ok(Finished::Learned { steps, loss, .. }) => (StepOutcome::Learned { steps, loss }, None),
+            Ok(Finished::Unchanged { .. }) => (StepOutcome::Unchanged, None),
+            Ok(Finished::Uncertain { steps, .. }) => (StepOutcome::Uncertain { steps }, None),
             Ok(Finished::Failed { refusal, .. }) => {
-                let why: Arc<str> = refusal.to_string().into();
-                if let Some(entry) = self.learning.seats.remove(&seat) {
-                    let shadow = match entry.phase {
-                        Phase::Seated { shadow } | Phase::Quarantined { shadow } | Phase::Loaded { shadow } => shadow,
-                        Phase::Measured { .. } => shadow,
-                    };
-                    self.learning.seats.insert(seat, Entry { phase: Phase::Quarantined { shadow }, ..entry });
-                }
-                say(Said::Seat { seat, state: SeatState::Quarantined { why: Arc::clone(&why) } });
-                StepOutcome::Refused { why }
+                (StepOutcome::Refused { why: "her restoration was not confirmed: the seat is quarantined".into() }, Some(refusal.to_string().into()))
             }
-            Err((refusal, _admission)) => StepOutcome::Refused { why: refusal.to_string().into() },
-        };
-        say(Said::Step { seat, step, outcome });
+            Err((refusal, _admission)) => refused(refusal.to_string()),
+        }
     }
+}
+
+/// A seated lesson's inputs: whose, how long a lesson it was measured for, its shadow and its tokens.
+struct Seated<'a> {
+    mind: PersonaId,
+    reply_rows: NonZeroU32,
+    shadow: &'a Shadow,
+    rendered: &'a Rendered,
 }
 
 /// Her reply on her own sequence: from the longest prefix she holds of the lesson (never past the
 /// token before her reply, whose label is the reply's first token), the lesson's tokens with a label
 /// on every one whose next token is hers, and the tail she held past that prefix, restored after.
-fn reply_for(held: &[i32], rendered: &Rendered) -> Option<LearnReply> {
+fn reply_for(mind: MindId, held: &[i32], rendered: &Rendered) -> Option<LearnReply> {
     let last_context = rendered.reply_from.checked_sub(1)?;
     let n_cached = common_prefix(held, &rendered.tokens).min(last_context);
     let tokens = rendered.tokens[n_cached..].to_vec();
@@ -283,8 +306,8 @@ fn reply_for(held: &[i32], rendered: &Rendered) -> Option<LearnReply> {
             _ => Label::Unlabelled,
         })
         .collect();
-    let n_cached = i32::try_from(n_cached).ok()?;
-    Some(LearnReply { n_cached, tokens, labels, restore: held[n_cached as usize..].to_vec() })
+    let restore = held[n_cached..].to_vec();
+    Some(LearnReply { mind, n_cached: i32::try_from(n_cached).ok()?, tokens, labels, restore })
 }
 
 #[cfg(test)]
@@ -297,7 +320,7 @@ mod tests {
     fn her_reply_learns_from_the_prefix_she_holds_and_restores_her_tail() {
         let rendered = Rendered { tokens: vec![1, 2, 3, 4, 50, 51], reply_from: 4 };
         let held = [1, 2, 9, 9];
-        let reply = reply_for(&held, &rendered).expect("test: a reply");
+        let reply = reply_for(mind_of(PersonaId(uuid::Uuid::nil())), &held, &rendered).expect("test: a reply");
         assert_eq!(reply.n_cached, 2, "learned from the prefix she holds");
         assert_eq!(reply.tokens, vec![3, 4, 50, 51]);
         assert_eq!(reply.labels, vec![Label::Unlabelled, Label::Target(50), Label::Target(51), Label::Unlabelled], "only her reply is a target");
@@ -309,7 +332,7 @@ mod tests {
     #[test]
     fn a_lesson_she_holds_whole_still_learns_her_reply_from_its_first_token() {
         let rendered = Rendered { tokens: vec![1, 2, 3, 50], reply_from: 3 };
-        let reply = reply_for(&[1, 2, 3, 50, 7], &rendered).expect("test: a reply");
+        let reply = reply_for(mind_of(PersonaId(uuid::Uuid::nil())), &[1, 2, 3, 50, 7], &rendered).expect("test: a reply");
         assert_eq!(reply.n_cached, 2);
         assert_eq!(reply.labels, vec![Label::Target(50), Label::Unlabelled]);
         assert_eq!(reply.restore, vec![3, 50, 7]);

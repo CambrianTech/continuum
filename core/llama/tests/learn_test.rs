@@ -89,7 +89,7 @@ fn a_reply_trains_her_shadow_and_leaves_her_sequence_as_it_was() {
     let optimizer_rows = learner.measure_optimizer(&shadow).expect("test: the optimizer measures");
     let workspace_rows = learner.measure_workspace(&shadow, NonZeroU32::new(64).expect("test: nonzero")).expect("test: the workspace measures");
     eprintln!("measured: weights {weight_bytes} B, optimizer {optimizer_rows:?}, workspace {workspace_rows:?}");
-    assert!(learner.retain_shadow(Arc::clone(&adapter), Box::new(Counted(Arc::clone(&charged)))).is_ok(), "the shadow is retained");
+    assert!(learner.retain_shadow(&adapter, Box::new(Counted(Arc::clone(&charged)))).is_ok(), "the shadow is retained");
 
     // the reply to learn: from her last served token, the answer; the label after each token is the next
     let answer = model.tokenize("Topeka.<|im_end|>", false, true).expect("test: answer");

@@ -303,22 +303,16 @@ where
 
     /// The active mind learns `reply` into `shadow`, asking `go_on` between chunks. Waits for her
     /// submitted step to land first, so the reply begins from what she decoded.
-    pub fn learn_active(
-        &mut self,
-        shadow: &T::Shadow,
-        reply: &T::Reply,
-        admission: T::Admission,
-        go_on: &mut dyn FnMut() -> bool,
-    ) -> Result<T::Learned, (DecodeError, T::Admission)> {
-        let mind = match self.active_mind() {
-            Ok(mind) => mind,
-            Err(none) => return Err((none, admission)),
-        };
+    pub fn learn_active(&mut self, shadow: &T::Shadow, reply: &T::Reply, admission: T::Admission, go_on: &mut dyn FnMut() -> bool) -> Result<T::Learned, (DecodeError, T::Admission)> {
+        // A reply learns only on a bound mind's stream: the tier refuses one naming a mind not bound.
+        if let Err(none) = self.active_mind() {
+            return Err((none, admission));
+        }
         if let Err(refused) = self.tier.settle() {
             return Err((refused.into(), admission));
         }
         self.decoding = None;
-        self.tier.learn(mind, shadow, reply, admission, go_on).map_err(|(refused, admission)| (refused.into(), admission))
+        self.tier.learn(shadow, reply, admission, go_on).map_err(|(refused, admission)| (refused.into(), admission))
     }
 }
 

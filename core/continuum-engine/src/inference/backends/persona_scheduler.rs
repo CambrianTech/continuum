@@ -28,7 +28,7 @@ mod admission;
 pub(crate) use admission::Capacity;
 mod transition;
 pub(crate) mod lesson;
-pub(crate) use driver::LearningJob;
+pub(crate) use driver::{LearningJob, LearningLesson};
 
 pub use geometry::{EngineGeometry, EngineState, Incarnation, Requested};
 

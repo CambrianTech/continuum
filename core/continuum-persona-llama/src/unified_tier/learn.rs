@@ -19,6 +19,8 @@ use super::{refused, UnifiedTier, TIER};
 /// the exact tail she held past `n_cached`, restored afterwards.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LearnReply {
+    /// Whose reply it is: learned on the stream she is bound to.
+    pub mind: MindId,
     pub n_cached: i32,
     pub tokens: Vec<i32>,
     /// One per token: the target after it.
@@ -77,21 +79,15 @@ impl Learns for UnifiedTier<'_, '_> {
     }
 
     fn retain(&mut self, shadow: &Shadow, lease: Box<dyn OptimizerLease>) -> Result<(), Box<dyn OptimizerLease>> {
-        Learner::new(self.ctx).retain_shadow(std::sync::Arc::clone(&shadow.adapter), lease)
+        Learner::new(self.ctx).retain_shadow(&shadow.adapter, lease)
     }
 
     fn release(&mut self, mind: MindId, shadow: &Shadow) -> Result<Box<dyn OptimizerLease>, TierRefusal> {
         Learner::new(self.ctx).release_shadow(&shadow.adapter).map_err(|refusal| reported(mind, "the engine kept her shadow's optimizer", refusal))
     }
 
-    fn learn(
-        &mut self,
-        mind: MindId,
-        shadow: &Shadow,
-        reply: &LearnReply,
-        admission: Box<dyn ReplyAdmission>,
-        go_on: &mut dyn FnMut() -> bool,
-    ) -> Result<Finished, (TierRefusal, Box<dyn ReplyAdmission>)> {
+    fn learn(&mut self, shadow: &Shadow, reply: &LearnReply, admission: Box<dyn ReplyAdmission>, go_on: &mut dyn FnMut() -> bool) -> Result<Finished, (TierRefusal, Box<dyn ReplyAdmission>)> {
+        let mind = reply.mind;
         let Some(stream) = self.stream_of(mind) else {
             return Err((refused(mind, "not bound"), admission));
         };
