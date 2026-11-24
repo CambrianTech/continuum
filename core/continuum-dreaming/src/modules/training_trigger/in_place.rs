@@ -29,10 +29,11 @@ use crate::genome::learner::{
 use crate::inference::engine_residency::{EngineIncarnation, Liveness};
 use crate::inference::llama_server::{CheckpointAnswer, FreshShadow, LearnOutcome, LearningEngine, LedgerAnswer, RestoreCheckpoint, RestoreOutcome};
 use crate::inference::slots::LearnSlot;
+use continuum_base::probe;
+use continuum_host::process_exit;
 use std::collections::HashMap;
 use std::sync::Arc;
 use uuid::Uuid;
-
 /// What an outcome means for the example's place in the journal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Verdict {
