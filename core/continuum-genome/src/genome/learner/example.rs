@@ -2,15 +2,9 @@
 //! (card 4114a2c6). The one owner of this framing; the batch trainer reads it until it is deleted.
 
 use crate::genome::fine_tuning::types::TrainingExample;
+use crate::inference::learning::Lesson;
 use crate::inference::request_body::{close_trailing_assistant, openai_tools, wire_messages, wire_tool_call};
 use serde_json::{json, Value};
-
-/// The messages and tools `/learn` receives for one example.
-#[derive(Debug, Clone, PartialEq)]
-pub struct LearnMessages {
-    pub messages: Vec<Value>,
-    pub tools: Option<Value>,
-}
 
 /// Frame `example` for the engine. A lived call goes as its served conversation: the system prompt
 /// and every served message exactly as serving framed them (`wire_messages`: her earlier tool calls
@@ -18,9 +12,9 @@ pub struct LearnMessages {
 /// assistant turns are context (`"train": false`), not this lesson, and the tools she was offered
 /// ride along so the rendered prompt has the tool block she saw. Anything else is a user prompt and
 /// the assistant completion, the framing the engine gives a prompt/completion pair.
-pub fn learn_messages(example: &TrainingExample) -> LearnMessages {
+pub fn learn_messages(example: &TrainingExample) -> Lesson {
     let Some(call) = example.lived.as_ref() else {
-        return LearnMessages {
+        return Lesson {
             messages: vec![json!({"role": "user", "content": example.prompt}), json!({"role": "assistant", "content": example.completion})],
             tools: None,
         };
@@ -44,5 +38,5 @@ pub fn learn_messages(example: &TrainingExample) -> LearnMessages {
         answer["tool_calls"] = json!(calls);
     }
     messages.push(answer);
-    LearnMessages { messages, tools: call.request.tools.as_deref().filter(|t| !t.is_empty()).map(|tools| json!(openai_tools(tools))) }
+    Lesson { messages, tools: call.request.tools.as_deref().filter(|t| !t.is_empty()).map(|tools| json!(openai_tools(tools))) }
 }
