@@ -23,10 +23,11 @@ use std::num::NonZeroU64;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use continuum_persona_engine::persona::PersonaId;
+pub use continuum_persona_engine::persona::PersonaId;
 use continuum_sage::dataflow::TopicName;
 use crate::inference::llama_server::FreshShadow;
-use llama::{MemoryRow, Optimizer, OptimizerLease, ReplyAdmission};
+// The seam's own vocabulary: a caller names the guards and the optimizer through it, never through llama.
+pub use llama::{BufferType, MemoryRow, Optimizer, OptimizerLease, ReplyAdmission, Slot};
 
 /// The engine's one learning stream: every [`Said`], from its one producer (Cormac on #6254).
 pub const LEARNING_SAID: TopicName = TopicName("learning/said");
