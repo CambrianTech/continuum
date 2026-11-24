@@ -41,9 +41,16 @@ struct Fresh {
 extern "C" {
     fn continuum_lora_write_fresh(model: *const sys::llama_model, path: *const c_char, fresh: *const Fresh, sink: *const Sink) -> c_int;
     fn continuum_adapter_measure(model: *mut sys::llama_model, path: *const c_char, sink: *const Sink) -> bool;
-    fn continuum_opt_measure_shadow(ctx: *mut sys::llama_context, params: sys::llama_opt_params, sink: *const Sink) -> bool;
     fn continuum_opt_measure_shadow_graph(ctx: *mut sys::llama_context, params: sys::llama_opt_params, reply_rows: u32, sink: *const Sink) -> bool;
     fn continuum_opt_shadow_state_write_path(ctx: *mut sys::llama_context, shadow: *const sys::llama_adapter_lora, path: *const c_char, binding: *const c_char) -> c_int;
+}
+
+/// What a shadow learning a reply would hold, by owner: the optimizer's own state (static for the
+/// shadow's life, leased with her seat) and the shared workspace the reply needs while it learns.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShadowMeasure {
+    pub optimizer: Vec<MemoryRow>,
+    pub workspace: Vec<MemoryRow>,
 }
 
 /// A fresh shadow's geometry: the targets it adapts and how.
@@ -158,19 +165,16 @@ impl FreshText {
 }
 
 impl Learner<'_, '_> {
-    /// What `shadow`'s optimizer would hold on this context, allocating nothing.
-    pub fn measure_optimizer(&mut self, shadow: &Shadow) -> Result<Vec<MemoryRow>, LearnRefusal> {
+    /// What `shadow` learning a reply of up to `reply_rows` tokens would hold on this context, allocating
+    /// nothing: its optimizer's own state, and the shared workspace that reply needs. One measure, sized by
+    /// the reply, never by the context's window (a window-sized measure reported 5,513,766,976 bytes of
+    /// compute on the 0.5B at 2,048 tokens where its lesson needed 451,808,352, 2026-11-24).
+    pub fn measure(&mut self, shadow: &Shadow, reply_rows: NonZeroU32) -> Result<ShadowMeasure, LearnRefusal> {
         let params = shadow_params(shadow, std::ptr::from_mut(self.holder()).cast());
         let ctx = self.ctx.as_ptr();
-        Measured::through("measure_shadow", |sink| unsafe { continuum_opt_measure_shadow(ctx, params, sink) }, || self.refusal("measure_shadow"))
-    }
-
-    /// What a reply of up to `reply_rows` tokens would hold in the shared workspace, allocating
-    /// nothing.
-    pub fn measure_workspace(&mut self, shadow: &Shadow, reply_rows: NonZeroU32) -> Result<Vec<MemoryRow>, LearnRefusal> {
-        let params = shadow_params(shadow, std::ptr::from_mut(self.holder()).cast());
-        let ctx = self.ctx.as_ptr();
-        Measured::through("measure_shadow_graph", |sink| unsafe { continuum_opt_measure_shadow_graph(ctx, params, reply_rows.get(), sink) }, || self.refusal("measure_shadow_graph"))
+        let rows = Measured::through("measure_shadow_graph", |sink| unsafe { continuum_opt_measure_shadow_graph(ctx, params, reply_rows.get(), sink) }, || self.refusal("measure_shadow_graph"))?;
+        let (optimizer, workspace) = rows.into_iter().partition(|row| matches!(row.role, MemoryRole::OptimizerStatic | MemoryRole::OptimizerHost));
+        Ok(ShadowMeasure { optimizer, workspace })
     }
 
     /// Save `adapter` as a generation in `into`: `adapter.gguf` (its weights) and `optimizer.gguf`

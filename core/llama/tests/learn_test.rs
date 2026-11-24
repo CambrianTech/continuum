@@ -86,9 +86,20 @@ fn a_reply_trains_her_shadow_and_leaves_her_sequence_as_it_was() {
     };
     let charged = Arc::new(AtomicU64::new(0));
     let mut learner = Learner::new(&mut ctx);
-    let optimizer_rows = learner.measure_optimizer(&shadow).expect("test: the optimizer measures");
-    let workspace_rows = learner.measure_workspace(&shadow, NonZeroU32::new(64).expect("test: nonzero")).expect("test: the workspace measures");
+    let nonzero = |n| NonZeroU32::new(n).expect("test: nonzero");
+    let llama::ShadowMeasure { optimizer: optimizer_rows, workspace: workspace_rows } = learner.measure(&shadow, nonzero(64)).expect("test: her shadow learning measures");
     eprintln!("measured: weights {weight_bytes} B, optimizer {optimizer_rows:?}, workspace {workspace_rows:?}");
+    // what this catches: a learning seat priced at the context's whole window instead of her lesson (on
+    // this 0.5B at 2,048 tokens: 5,513,766,976 bytes of compute against 451,808,352; the 5090 refused a
+    // seat asking 428,581,700,665,600 bytes, 2026-11-24). Each row belongs to one owner, and the
+    // workspace grows with the reply it is measured for.
+    let owns = |rows: &[llama::MemoryRow], roles: &[llama::MemoryRole]| rows.iter().all(|row| roles.contains(&row.role));
+    assert!(owns(&optimizer_rows, &[llama::MemoryRole::OptimizerStatic, llama::MemoryRole::OptimizerHost]), "optimizer rows only: {optimizer_rows:?}");
+    assert!(owns(&workspace_rows, &[llama::MemoryRole::SharedComputeRequired, llama::MemoryRole::SharedComputeHeld]), "workspace rows only: {workspace_rows:?}");
+    let required = |rows: &[llama::MemoryRow]| rows.iter().filter(|row| row.role == llama::MemoryRole::SharedComputeRequired).map(|row| row.bytes).sum::<u64>();
+    let longer = learner.measure(&shadow, nonzero(512)).expect("test: a longer reply measures");
+    eprintln!("required workspace: {} B for 64 rows, {} B for 512", required(&workspace_rows), required(&longer.workspace));
+    assert!(required(&workspace_rows) < required(&longer.workspace), "the workspace is sized by the reply, not the window");
     assert!(learner.retain_shadow(&adapter, Box::new(Counted(Arc::clone(&charged)))).is_ok(), "the shadow is retained");
 
     // the reply to learn: from her last served token, the answer; the label after each token is the next
