@@ -294,6 +294,7 @@ impl LlamaCppBackend {
                 n_batch: self.config.n_batch,
                 n_ubatch: self.config.n_ubatch,
                 n_seq_max: 1,
+                kv_layout: llama::KvLayout::Streams,
                 flash_attn: self.config.flash_attn,
                 type_k: self.config.type_k,
                 type_v: self.config.type_v,
@@ -364,7 +365,7 @@ impl LlamaCppBackend {
             // turn's failure, never a quietly shorter answer.
             let mut batch = llama::Batch::allocated(1, 1);
             batch.push(token, pos, &[0], true);
-            ctx.decode(&batch)?;
+            ctx.decode(&batch).map_err(String::from)?;
             let Ok(next) = pos.advanced(1) else { break TurnEnd::CapacityReached };
             pos = next;
         };
@@ -466,8 +467,8 @@ impl LlamaCppBackend {
     }
 
     /// Lazily spawn (or get) the persona scheduler. Single instance per backend: it owns the context
-    /// and the driver thread. The allocation is the Core's whole context, and the mind swapped in has
-    /// all of it: one mind decodes at a time, so nothing divides it among minds.
+    /// and the driver thread. The allocation is the Core's pool and its seats: every seated mind grows
+    /// into the whole pool, so nothing divides it among minds.
     pub(super) fn scheduler(&self, allocation: GenerationAllocation) -> Result<&Scheduler, String> {
         let total_n_ctx = self.effective_context_length(allocation)?;
         let (bound, scheduler) = self.scheduler.get_or_init(|| {
@@ -478,6 +479,7 @@ impl LlamaCppBackend {
                     SchedulerConfig {
                         model: self.config.model_path.display().to_string(),
                         n_ctx: total_n_ctx,
+                        seats: allocation.seats(),
                         n_batch: self.config.n_batch,
                         n_ubatch: self.config.n_ubatch,
                         type_k: self.config.type_k,

@@ -52,6 +52,10 @@ impl Driver<'_, '_> {
     /// terminal record (its turn row when answered, else `persona.engine.refused`), its one-off
     /// mind released, and its caller told.
     pub(super) fn end(&mut self, turn: Turn, ending: Ending) {
+        // a one-off's id serves only this turn: the lane forgets her however it ended
+        if turn.one_off {
+            self.lanes.forget(turn.id);
+        }
         let event = match ending {
             Ending::Answered { tokens_generated, end } => {
                 self.record.send(record::Fact::Turn(Self::row(&turn, tokens_generated)));

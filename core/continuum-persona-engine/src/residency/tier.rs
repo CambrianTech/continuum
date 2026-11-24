@@ -25,6 +25,16 @@ pub enum Native {
     Refused { status: i32, name: String },
     /// The backend refused with a message and no status.
     Reported(String),
+    /// No room for her: every sequence is seated, or the pool has fewer empty cells than she needs. A
+    /// seated mind evicted makes room; nothing of hers changed.
+    NoRoom,
+}
+
+impl TierRefusal {
+    /// Whether evicting a seated mind would make room for what was refused.
+    pub fn wants_room(&self) -> bool {
+        matches!(self.native, Native::NoRoom)
+    }
 }
 
 impl std::fmt::Display for Native {
@@ -33,6 +43,7 @@ impl std::fmt::Display for Native {
             Self::NotAsked => Ok(()),
             Self::Refused { status, name } => write!(f, " (backend status {status}: {name})"),
             Self::Reported(message) => write!(f, " (backend: {message})"),
+            Self::NoRoom => write!(f, " (no room: a seated mind must leave first)"),
         }
     }
 }

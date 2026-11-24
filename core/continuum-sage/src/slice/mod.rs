@@ -219,6 +219,20 @@ impl<K: Copy + Eq + Hash + Ord> Slicer<K> {
         }
     }
 
+    /// She left for good (a one-off whose turn ended, a mind gone from this engine): everything learned
+    /// of her goes with her, so the slicer tracks only minds that may step again.
+    pub fn forget(&mut self, mind: &K) {
+        self.minds.remove(mind);
+        if self.running.as_ref().is_some_and(|r| &r.mind == mind) {
+            self.running = None;
+        }
+    }
+
+    /// How many minds it tracks: the ones that may step again.
+    pub fn tracked(&self) -> usize {
+        self.minds.len()
+    }
+
     /// She took one step, measured. Named, so a step reported after a handover is charged to her.
     /// Her first step after waiting ends her wait.
     pub fn stepped(&mut self, mind: &K, took: Duration) {

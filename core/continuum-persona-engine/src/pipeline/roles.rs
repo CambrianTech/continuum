@@ -1,12 +1,14 @@
-//! [`Roles`]: one Core's three places, one mind each. Exactly one mind is active, so one decodes
-//! at a time on this Core by construction (the engine owns the list of Cores and the measured
-//! admission of another, CONTINUUM-ENGINE 4.14).
+//! [`Roles`]: one Core's minds by place (CONTINUUM-ENGINE 4.3, 4.14). Several minds are **seated**: each
+//! holds her own state in place in the Core's pool, and switching between seated minds moves nothing. One
+//! of them is **active**, so one decodes at a time on this Core by construction. A mind moves only to be
+//! seated or to leave:
 //!
-//! - **next** is staged as data under her copy-in fence while the active mind decodes;
-//! - **handoff** binds next once her fence lands and leaves the previous mind *awaiting copy-out*:
-//!   no read of her blocks starts before she has stopped being active;
-//! - **begin_retire** attaches the copy-out the completion owner started after the bind;
-//! - **release_retired** gives her back to her tier once that copy-out lands.
+//! - **next** is a mind coming in, staged as data under her copy-in fence (her blocks paged back in, or a
+//!   new mind claiming a sequence) while the active mind decodes;
+//! - **seat** seats next once her fence lands; she may then be made active;
+//! - **evict** takes a seated mind out (the pool needs her room): she awaits the copy-out the completion
+//!   owner begins next, so no read of her blocks starts before she has stopped being seated;
+//! - **begin_retire** attaches that copy-out; **release_retired** gives her back to her tier once it lands.
 //!
 //! Every refusal that receives owned values returns them ([`Refused`]): nothing is dropped.
 
@@ -49,11 +51,17 @@ pub enum StageRefusal {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum HandoffRefusal {
+pub enum SeatRefusal {
     #[error("nobody is staged")]
     NothingStaged,
     #[error("{staged:?} is staged but her copy-in has not landed")]
     NotReady { staged: PersonaId },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum SeatedRefusal {
+    #[error("{persona:?} is not seated")]
+    NotSeated { persona: PersonaId },
     #[error("{retiring:?} is still retiring; her copy-out must land first")]
     RetireInFlight { retiring: PersonaId },
 }
@@ -78,7 +86,7 @@ struct InFlight<U, F> {
 }
 
 enum Retiring<U, F> {
-    /// Bound out of active; no read of her blocks has begun.
+    /// Out of her seat; no read of her blocks has begun.
     AwaitingCopyOut(U),
     Moving(InFlight<U, F>),
 }
@@ -92,16 +100,17 @@ impl<U, F> Retiring<U, F> {
     }
 }
 
-/// One Core's three places.
+/// One Core's minds by place.
 pub struct Roles<U, F> {
-    active: Option<U>,
+    seated: Vec<U>,
+    active: Option<PersonaId>,
     next: Option<InFlight<U, F>>,
     retiring: Option<Retiring<U, F>>,
 }
 
 impl<U, F> Default for Roles<U, F> {
     fn default() -> Self {
-        Self { active: None, next: None, retiring: None }
+        Self { seated: Vec::new(), active: None, next: None, retiring: None }
     }
 }
 
@@ -112,19 +121,30 @@ fn expects<U: Identified>(unit: &U, direction: Direction) -> FenceTag {
 impl<U: Identified, F: Fence> Roles<U, F> {
     /// The mind decoding now.
     pub fn active(&self) -> Option<&U> {
-        self.active.as_ref()
-    }
-
-    /// All units this Core owns, including those in flight.
-    pub fn units(&self) -> impl Iterator<Item = &U> {
-        self.active.iter()
-            .chain(self.next.iter().map(|next| &next.unit))
-            .chain(self.retiring.iter().map(Retiring::unit))
+        let active = self.active?;
+        self.seated.iter().find(|unit| unit.persona() == active)
     }
 
     /// Mutable access to the active mind only: decoding touches nobody else.
     pub fn active_mut(&mut self) -> Option<&mut U> {
-        self.active.as_mut()
+        let active = self.active?;
+        self.seated.iter_mut().find(|unit| unit.persona() == active)
+    }
+
+    /// The minds seated in the pool, the active one among them.
+    pub fn seated(&self) -> impl Iterator<Item = &U> {
+        self.seated.iter()
+    }
+
+    pub fn is_seated(&self, persona: PersonaId) -> bool {
+        self.seated.iter().any(|unit| unit.persona() == persona)
+    }
+
+    /// All units this Core owns, including those in flight.
+    pub fn units(&self) -> impl Iterator<Item = &U> {
+        self.seated.iter()
+            .chain(self.next.iter().map(|next| &next.unit))
+            .chain(self.retiring.iter().map(Retiring::unit))
     }
 
     pub fn staged(&self) -> Option<PersonaId> {
@@ -155,9 +175,7 @@ impl<U: Identified, F: Fence> Roles<U, F> {
     }
 
     fn present(&self, persona: PersonaId) -> bool {
-        self.active.as_ref().is_some_and(|a| a.persona() == persona)
-            || self.staged() == Some(persona)
-            || self.retiring() == Some(persona)
+        self.is_seated(persona) || self.staged() == Some(persona) || self.retiring() == Some(persona)
     }
 
     /// Whether `persona` may be staged now: next is free and she is not already here. The one check,
@@ -191,44 +209,44 @@ impl<U: Identified, F: Fence> Roles<U, F> {
         }
     }
 
-    /// Bind the staged mind as active once her copy-in has landed. The previous active mind (if
-    /// any) moves to retiring, awaiting the copy-out the completion owner begins after this
-    /// returns. Refused, changing nothing, until next has landed and the previous retirement is
-    /// released.
-    pub fn handoff(&mut self) -> Result<Option<PersonaId>, HandoffRefusal> {
-        if let Some(retiring) = self.retiring() {
-            return Err(HandoffRefusal::RetireInFlight { retiring });
-        }
+    /// Seat the staged mind once her copy-in has landed. Returns who was seated.
+    pub fn seat(&mut self) -> Result<PersonaId, SeatRefusal> {
         match self.next.as_ref() {
-            None => return Err(HandoffRefusal::NothingStaged),
-            Some(next) if !next.fence.complete() => {
-                return Err(HandoffRefusal::NotReady { staged: next.unit.persona() })
-            }
+            None => return Err(SeatRefusal::NothingStaged),
+            Some(next) if !next.fence.complete() => return Err(SeatRefusal::NotReady { staged: next.unit.persona() }),
             Some(_) => {}
         }
         let Some(next) = self.next.take() else {
-            return Err(HandoffRefusal::NothingStaged);
+            return Err(SeatRefusal::NothingStaged);
         };
-        let previous = self.active.replace(next.unit);
-        let retired = previous.as_ref().map(Identified::persona);
-        self.retiring = previous.map(Retiring::AwaitingCopyOut);
-        Ok(retired)
+        let seated = next.unit.persona();
+        self.seated.push(next.unit);
+        Ok(seated)
     }
 
-    /// Retire the active mind with nobody to follow her (a stop's suspend, CONTINUUM-ENGINE 4.16):
-    /// she awaits her copy-out as after a handoff. Returns who retired (`None` when nobody was
-    /// active). Refused while another retirement is in flight.
-    pub fn retire(&mut self) -> Result<Option<PersonaId>, HandoffRefusal> {
-        if let Some(retiring) = self.retiring() {
-            return Err(HandoffRefusal::RetireInFlight { retiring });
+    /// Make a seated mind active: nothing moves. Returns who was active before (`None` when nobody was).
+    pub fn activate(&mut self, persona: PersonaId) -> Result<Option<PersonaId>, SeatedRefusal> {
+        if !self.is_seated(persona) {
+            return Err(SeatedRefusal::NotSeated { persona });
         }
-        let previous = self.active.take();
-        let retired = previous.as_ref().map(Identified::persona);
-        self.retiring = previous.map(Retiring::AwaitingCopyOut);
-        Ok(retired)
+        Ok(self.active.replace(persona))
     }
 
-    /// Attach the copy-out begun after the handoff. A refusal returns the fence.
+    /// Take a seated mind out of her seat (active or not: the active one stops being active). She awaits
+    /// her copy-out. Refused while another retirement is in flight, so one copy-out runs at a time.
+    pub fn evict(&mut self, persona: PersonaId) -> Result<(), SeatedRefusal> {
+        if let Some(retiring) = self.retiring() {
+            return Err(SeatedRefusal::RetireInFlight { retiring });
+        }
+        let at = self.seated.iter().position(|unit| unit.persona() == persona).ok_or(SeatedRefusal::NotSeated { persona })?;
+        if self.active == Some(persona) {
+            self.active = None;
+        }
+        self.retiring = Some(Retiring::AwaitingCopyOut(self.seated.swap_remove(at)));
+        Ok(())
+    }
+
+    /// Attach the copy-out begun after an eviction. A refusal returns the fence.
     pub fn begin_retire(&mut self, fence: F) -> Result<(), Refused<RetireRefusal, F>> {
         let check = match self.retiring.as_ref() {
             None => Err(RetireRefusal::NothingRetiring),
