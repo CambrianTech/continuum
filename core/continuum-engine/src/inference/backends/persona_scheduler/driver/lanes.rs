@@ -58,6 +58,16 @@ impl Lanes {
         presence.decoding.publish(Decoding(true), by(run));
     }
 
+    /// She leaves for good (a one-off whose only turn ended, however it ended): her seat, her state and
+    /// what the slicer learned of her go, so the lane tracks only minds that may step again.
+    pub(super) fn forget(&mut self, mind: PersonaId) {
+        self.lane.unseat(&mind);
+        self.minds.remove(&mind);
+        if self.holder == Some(mind) {
+            self.holder = None;
+        }
+    }
+
     /// Her last turn ended: she has nothing to decode until her next one.
     pub(super) fn rested(&mut self, mind: PersonaId) {
         if let Some(presence) = self.minds.get_mut(&mind) {
@@ -114,4 +124,31 @@ impl super::Driver<'_, '_> {
 /// A publication by the lane's run, from no input it read.
 fn by(run: RunId) -> Provenance {
     Provenance { by: run, from: Vec::new() }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use continuum_sage::component::Urgency;
+
+    // what this catches (Codex on #6258 at 717bf9eca2): every anonymous turn gets a fresh id, so a lane
+    // that only marks a finished mind as resting keeps her seat, her state and the slicer's history of
+    // her forever, and scans them all at every step. After a thousand one-offs come and go the lane
+    // tracks nobody, and a resident asking after them still steps.
+    #[test]
+    fn one_offs_leave_nothing_behind_and_a_later_resident_still_steps() {
+        let mut lanes = Lanes::new(Incarnation::next());
+        let want = Need { urgency: Urgency::Want, waiting: 1 };
+        for _ in 0..1_000 {
+            let one_off = PersonaId(uuid::Uuid::new_v4());
+            lanes.ready(one_off, want);
+            assert_eq!(lanes.next(), Some(one_off), "the one-off steps");
+            lanes.stepped(one_off, Duration::from_millis(20), Some(Duration::ZERO));
+            lanes.forget(one_off);
+        }
+        assert_eq!((lanes.minds.len(), lanes.lane.seated(), lanes.lane.tracked()), (0, 0, 0), "nothing of them is tracked");
+        let resident = PersonaId(uuid::Uuid::new_v4());
+        lanes.ready(resident, want);
+        assert_eq!(lanes.next(), Some(resident), "a later resident still steps");
+    }
 }

@@ -348,7 +348,9 @@ impl Driver<'_, '_> {
         // A reply that ran ends at her served prefix, nothing past it: her next turn prefills what
         // follows under her own genes. One that failed may have left the lesson's tokens on her
         // sequence, so she holds nothing and her next turn prefills from the start.
-        let served = usize::try_from(reply.n_cached).unwrap_or(0); // unwrap_or: n_cached is a native position, never negative
+        let Ok(served) = usize::try_from(reply.n_cached) else {
+            return refused(format!("a served prefix of {} positions", reply.n_cached));
+        };
         let (learned, holds) = match self.engine.attach_shadow(mind, seated.shadow) {
             Ok(()) => match self.engine.learn_active(seated.shadow, &reply, admission, go_on) {
                 Ok(Finished::Learned { steps, loss, .. }) => ((StepOutcome::Learned { steps, loss }, None), Some(served)),
