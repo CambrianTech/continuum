@@ -261,12 +261,15 @@ mod tests {
 
     // what this catches (Codex on #6229, the 5090: 12,000 identical vectors scored 0.466, not 1): a
     // cluster's pair total accumulated in f32, which stops gaining past 2^24, so a large cluster's
-    // strength (and its representative's average) comes out wrong and themes mis-rank. 6,000 members
-    // give ~18M pairs, past 2^24, with every similarity 1: the total must be exactly the pair count.
+    // strength (and its representative's average) comes out wrong and themes mis-rank. 12,000 members
+    // give ~72M pairs, past 2^24, with every similarity 1: the total must be exactly the pair count.
+    // One worker, so a single fold holds the whole total: across many workers each partition stays
+    // under 2^24 and an f32 fold still passed (Codex, mutation on the 5090).
     #[test]
     fn a_large_clusters_pair_sums_stay_exact_past_f32s_range() {
-        let k = 6_000usize;
-        let (total, sums) = pair_sums(k, |_, _| 1.0);
+        let k = 12_000usize;
+        let one_worker = rayon::ThreadPoolBuilder::new().num_threads(1).build().expect("a one-worker pool");
+        let (total, sums) = one_worker.install(|| pair_sums(k, |_, _| 1.0));
         let pairs = (k * (k - 1) / 2) as f64;
         assert!(pairs > f64::from(1u32 << 24), "test: the cluster is past f32's exact range");
         assert_eq!(total, pairs, "every pair counted exactly");
