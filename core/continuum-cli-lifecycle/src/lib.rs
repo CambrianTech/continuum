@@ -46,4 +46,7 @@ pub mod prebuilt_artifact;
 pub mod unelevated_service;
 
 pub mod prebuilt_validation;
-pub mod cargo_cache_custody;
+/// Boot-time environment setup — PATH/cargo sourcing, config.env loading,
+/// CARGO_TARGET_DIR management, CONTINUUM_BUILD_SOURCE computation, and the
+/// prebuilt guard. Replaces start-server.sh lines ~38–101.
+pub mod env_setup;
