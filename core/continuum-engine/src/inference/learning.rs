@@ -2,9 +2,11 @@
 //! "How the trainer reaches it"; agreed on airc with Codex and Cormac, 2026-11-24).
 //!
 //! The trainer and the engine are disconnected parts. The trainer TELLS the engine a [`Learning`]
-//! on the engine's one queue, beside her turns, and never awaits an answer. The engine SAYS what
-//! became of each seat, step and checkpoint on that seat's own stream ([`Said`]), which the trainer
-//! watches. The engine owns no cadence: the trainer decides when to learn, checkpoint and release.
+//! on the engine's one queue, beside her turns, and never awaits an answer. The engine PUBLISHES what
+//! became of each seat, step and checkpoint on one bus stream, [`LEARNING_SAID`], every [`Said`]
+//! naming its seat; the trainer hears it as a SAGE input and routes by seat, and an observer or a
+//! replay hears the same feed. The engine owns no cadence: the trainer decides when to learn,
+//! checkpoint and release.
 //!
 //! Memory is carried as guards. A seat's optimizer lease and a step's workspace admission ride in
 //! the command, the engine holds each while native code does, and dropping it releases its bytes,
@@ -18,9 +20,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use continuum_persona_engine::persona::PersonaId;
+use continuum_sage::dataflow::TopicName;
 use crate::inference::llama_server::FreshShadow;
 use llama::{Optimizer, OptimizerLease, ReplyAdmission};
-use tokio::sync::mpsc::UnboundedSender;
+
+/// The engine's one learning stream: every [`Said`], from its one producer (Cormac on #6254).
+pub const LEARNING_SAID: TopicName = TopicName("learning/said");
 
 /// One shadow seated for one mind: the adapter she learns into while it is held.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -32,7 +37,7 @@ pub struct StepId(pub uuid::Uuid);
 
 /// What the trainer tells the engine.
 pub enum Learning {
-    /// Seat `shadow` for `mind`. Everything the engine says about this seat goes to `said`.
+    /// Seat `shadow` for `mind`.
     Seat(Seat),
     /// Learn one lesson into a seated shadow.
     Learn(Learn),
@@ -50,8 +55,6 @@ pub struct Seat {
     pub optimizer: Optimizer,
     /// Admits and releases the optimizer's bytes as native code allocates and frees them.
     pub lease: Box<dyn OptimizerLease>,
-    /// This seat's stream: every [`Said`] about it, in order.
-    pub said: UnboundedSender<Said>,
 }
 
 /// Where a seat's shadow comes from (Cormac on #6254). Either way the engine makes it on her resident
@@ -83,7 +86,7 @@ pub struct Lesson {
     pub tools: Option<serde_json::Value>,
 }
 
-/// What the engine says on a seat's stream, in the order it happened to that seat. The stream is
+/// What the engine says on [`LEARNING_SAID`], in the order it happened to each seat. The stream is
 /// bounded by what the trainer told: the engine says one state per Seat and per Release, one outcome
 /// per Learn and one per Checkpoint, and nothing on its own, so the trainer that tells at its own
 /// cadence also sets how much can wait in it. A Generation answers the Checkpoints of its seat in
