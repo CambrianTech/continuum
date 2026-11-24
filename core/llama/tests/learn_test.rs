@@ -97,7 +97,7 @@ fn a_reply_trains_her_shadow_and_leaves_her_sequence_as_it_was() {
     let tokens: Vec<i32> = std::iter::once(last).chain(answer.iter().copied()).collect();
     let labels: Vec<Label> = (0..tokens.len()).map(|i| tokens.get(i + 1).map_or(Label::Unlabelled, |&next| Label::Target(next))).collect();
     let n_cached = prompt.len() as i32 - 1;
-    let reply = Reply { seq: 0, n_cached, tokens: &tokens, labels: &labels, restore: &[last] };
+    let reply = Reply { seq: 0, n_cached, tokens: &tokens, labels: &labels };
 
     let mut losses: Vec<f64> = Vec::new();
     for round in 0..6 {
@@ -120,7 +120,10 @@ fn a_reply_trains_her_shadow_and_leaves_her_sequence_as_it_was() {
         }
     }
     drop(learner);
-    assert_eq!(ctx.memory_seq_pos_max(0), held, "her sequence holds what it held before the replies");
+    // what this catches (Cormac on c2d7a457): the lesson's tokens left on her sequence past her served
+    // prefix, or her tail re-decoded under the shadow. She ends at the prefix; her next turn prefills
+    // what follows under her own adapters.
+    assert_eq!(ctx.memory_seq_pos_max(0), Pos::try_from(n_cached as usize - 1).ok(), "her sequence ends at her served prefix (it held {held:?})");
     let (first, last_loss) = (losses[0], losses[losses.len() - 1]);
     assert!(last_loss < first, "the reply trains: loss {first} -> {last_loss} over {} replies", losses.len());
     assert!(charged.load(Ordering::SeqCst) > 0, "the optimizer's bytes were charged to its lease");

@@ -1,6 +1,7 @@
 //! The tier's learning in place (IN-PROCESS-LEARNING.md, L2): the bound mind learns a reply into a
 //! shadow on her own stream, through the llama crate's [`Learner`]. Between chunks it asks the caller
-//! whether to go on; a no drains the reply, which restores her served tail and keeps what committed.
+//! whether to go on; a no drains the reply, which keeps what committed. Either way she ends at her
+//! served prefix.
 //!
 //! Native code trains (and measures) only a shadow attached at a non-zero scale (`opt_untrainable`).
 //! Attaching and detaching are the caller's: it holds the shadow until a detach is confirmed, so the
@@ -16,8 +17,8 @@ use llama::{Finished, Label, Learner, MemoryRow, OptimizerLease, Progress, Reply
 
 use super::{refused, UnifiedTier, TIER};
 
-/// One reply for her stream: the positions she holds before it, its tokens and their labels, and
-/// the exact tail she held past `n_cached`, restored afterwards.
+/// One reply for her stream: the positions she holds before it, its tokens and their labels. After it
+/// she holds exactly her first `n_cached` positions; her next turn prefills what follows, under her genes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LearnReply {
     /// Whose reply it is: learned on the stream she is bound to.
@@ -26,7 +27,6 @@ pub struct LearnReply {
     pub tokens: Vec<i32>,
     /// One per token: the target after it.
     pub labels: Vec<Label>,
-    pub restore: Vec<i32>,
 }
 
 fn reported(mind: MindId, reason: &'static str, refusal: impl std::fmt::Display) -> TierRefusal {
@@ -83,7 +83,7 @@ impl Learns for UnifiedTier<'_, '_> {
         if let Err(unsettled) = self.settle() {
             return Err((unsettled, admission));
         }
-        let native = Reply { seq: stream.seq(), n_cached: reply.n_cached, tokens: &reply.tokens, labels: &reply.labels, restore: &reply.restore };
+        let native = Reply { seq: stream.seq(), n_cached: reply.n_cached, tokens: &reply.tokens, labels: &reply.labels };
         let mut learner = Learner::new(self.ctx);
         let mut run = learner.begin(shadow, admission, &native).map_err(|refused| (reported(mind, "the reply did not begin", refused.refusal), refused.admission))?;
         loop {
