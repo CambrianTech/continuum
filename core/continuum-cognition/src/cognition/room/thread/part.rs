@@ -32,8 +32,8 @@ pub enum Threading {
     Heard(Event<Arrival>),
     /// Her memberships: the rooms she is in.
     Joined(Vec<Uuid>),
-    /// One airc page of a room, read off her worker.
-    Read { room: Uuid, page: Result<Vec<airc_core::TranscriptEvent>, Unread> },
+    /// One airc page of a room, read off her worker: the answer to her `reading`th read of it.
+    Read { room: Uuid, reading: u64, page: Result<Vec<airc_core::TranscriptEvent>, Unread> },
 }
 
 impl From<Event<Arrival>> for Threading {
@@ -45,6 +45,36 @@ impl From<Event<Arrival>> for Threading {
 struct Room {
     publisher: Publisher<RoomThread>,
     now: RoomThread,
+    /// How many reads of the room's page she started: only the newest one's answer is taken, so
+    /// a read that began before a gap can neither close it nor overwrite a newer read's outcome.
+    reading: u64,
+}
+
+impl Room {
+    /// Start a read of the room's page: its number.
+    fn reading(&mut self) -> u64 {
+        self.reading += 1;
+        self.reading
+    }
+
+    /// The next revision from the answer to read `reading`; `None` when a newer read started since
+    /// (its answer is the one taken).
+    fn read_back(&self, reading: u64, page: Result<Vec<airc_core::TranscriptEvent>, Unread>) -> Option<RoomThread> {
+        if reading != self.reading {
+            return None;
+        }
+        Some(match page {
+            // A page with nothing new leaves the lines as they are; only the seed changes.
+            Ok(page) => match self.now.with(page.iter().filter_map(Line::of), continuum_context::history::ROOM_HISTORY_NEED) {
+                Some(merged) => merged.seeded(Seed::Read),
+                None => self.now.seeded(Seed::Read),
+            },
+            Err(why) => {
+                continuum_base::probe!(class = "mind.thread.unread", room = %self.now.room, why = %why, "her room's airc page did not read: her thread holds only what she heard live");
+                self.now.seeded(Seed::Unread(why))
+            }
+        })
+    }
 }
 
 /// Her threads.
@@ -65,7 +95,6 @@ pub struct Thread {
 }
 
 impl Thread {
-    /// Her threads on `bus`, hearing the one feed with `window` of slack.
     /// Her threads on `bus`, hearing the one feed with `window` of slack, already threading `rooms`
     /// (the rooms her saved mind state holds), so no line in them can arrive before she threads it.
     pub fn new(bus: Arc<Bus>, reader: Option<Arc<dyn AircTranscriptReader>>, window: std::num::NonZeroUsize, rooms: &[Uuid]) -> Result<Self, continuum_sage::component::Taken> {
@@ -87,7 +116,7 @@ impl Thread {
         // it again rather than claiming a second writer.
         match self.bus.publisher::<RoomThread>(THREAD, Key::of(room)) {
             Ok(publisher) => {
-                self.rooms.insert(room, Room { publisher, now: RoomThread::new(room) });
+                self.rooms.insert(room, Room { publisher, now: RoomThread::new(room), reading: 0 });
                 self.unread.push(room);
                 true
             }
@@ -117,15 +146,17 @@ impl Thread {
 
     /// Read one page of `room` off her worker; it comes back as [`Threading::Read`].
     fn read(&mut self, room: Uuid, ctx: &Ctx<Self>) {
+        let Some(entry) = self.rooms.get_mut(&room) else { return };
+        let reading = entry.reading();
         let Some(reader) = self.reader.clone() else {
-            self.read_back(room, Err(Unread::NoRuntime), ctx);
+            self.read_back(room, reading, Err(Unread::NoRuntime), ctx);
             return;
         };
         let runtime = tokio::runtime::Handle::current();
         let needs = continuum_context::history::ROOM_HISTORY_NEED;
         ctx.off(
             move || runtime.block_on(reader.page_recent_in(Some(airc_core::RoomId::from_uuid(room)), needs)).map_err(|error| Unread::Airc(Arc::new(error))),
-            move |page| Threading::Read { room, page },
+            move |page| Threading::Read { room, reading, page },
         );
     }
 
@@ -158,22 +189,12 @@ impl Thread {
         ctx.emit(&mut self.forward, Threaded(Arc::clone(&event.value)));
     }
 
-    fn read_back(&mut self, room: Uuid, page: Result<Vec<airc_core::TranscriptEvent>, Unread>, ctx: &Ctx<Self>) {
+    fn read_back(&mut self, room: Uuid, reading: u64, page: Result<Vec<airc_core::TranscriptEvent>, Unread>, ctx: &Ctx<Self>) {
         let Some(entry) = self.rooms.get_mut(&room) else { return };
-        let next = match page {
-            Ok(page) => {
-                // A page with nothing new leaves the lines as they are; only the seed changes.
-                match entry.now.with(page.iter().filter_map(Line::of), continuum_context::history::ROOM_HISTORY_NEED) {
-                    Some(merged) => merged.seeded(Seed::Read),
-                    None => entry.now.seeded(Seed::Read),
-                }
-            }
-            Err(why) => {
-                continuum_base::probe!(class = "mind.thread.unread", room = %room, why = %why, "her room's airc page did not read: her thread holds only what she heard live");
-                entry.now.seeded(Seed::Unread(why))
-            }
-        };
-        Self::publish(entry, next, ctx);
+        match entry.read_back(reading, page) {
+            Some(next) => Self::publish(entry, next, ctx),
+            None => continuum_base::probe!(class = "mind.thread.read_superseded", room = %room, reading, newest = entry.reading, "a newer read of her room started; this answer is not taken"),
+        }
     }
 }
 
@@ -190,8 +211,46 @@ impl Component for Thread {
         match input {
             Threading::Heard(event) => self.heard(event, ctx),
             Threading::Joined(rooms) => self.joined(rooms),
-            Threading::Read { room, page } => self.read_back(room, page, ctx),
+            Threading::Read { room, reading, page } => self.read_back(room, reading, page, ctx),
         }
         self.read_taken(ctx);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn refused() -> Unread {
+        Unread::Airc(Arc::new(airc_lib::AircError::NoCurrentRoom))
+    }
+
+    // what this catches: Codex on #6244: a seed read A that began before a gap, answering after the
+    // gap's reread B began, must neither close the gap with its pre-gap page nor overwrite B's
+    // outcome, whichever order the two answers arrive in and whichever of them failed.
+    #[test]
+    fn only_the_newest_read_of_a_room_is_taken_whatever_order_the_answers_come_in() {
+        let bus = Bus::new();
+        let room = Uuid::from_u128(9);
+        for (a, b, a_first) in [(Ok(vec![]), Err(refused()), false), (Err(refused()), Ok(vec![]), false), (Ok(vec![]), Err(refused()), true), (Err(refused()), Ok(vec![]), true)] {
+            let mut entry = Room { publisher: bus.publisher(THREAD, Key::of(Uuid::new_v4())).unwrap(), now: RoomThread::new(room), reading: 0 };
+            let seed = entry.reading();
+            entry.now = entry.now.gapped();
+            let reread = entry.reading();
+            let b_read = b.is_ok();
+            let (first, second) = if a_first { ((seed, a), (reread, b)) } else { ((reread, b), (seed, a)) };
+            for (reading, page) in [first, second] {
+                let stale = reading == seed;
+                match entry.read_back(reading, page) {
+                    Some(next) => {
+                        assert!(!stale, "the seed read began before the gap; its answer is not taken");
+                        entry.now = next;
+                    }
+                    None => assert!(stale, "the newest read's answer is taken"),
+                }
+            }
+            assert_eq!(entry.now.seed == Seed::Read, b_read, "the thread says what the newest read found");
+            assert_eq!(entry.now.gapped, !b_read, "only a read begun after the gap closes it");
+        }
     }
 }
