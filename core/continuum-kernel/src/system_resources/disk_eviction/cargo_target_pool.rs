@@ -126,14 +126,61 @@ impl CargoTargetPool {
         None
     }
 
+    /// A root holding cargo trees it did not write itself holds one tree per worktree
+    /// (`cargo-target-wt/<card>`, each built through its own `CARGO_TARGET_DIR`): each is cut
+    /// under its own locks, the longest unbuilt first. On the IntelMac (2026-11-24) the pass
+    /// laddered `cargo-target-wt/debug`, which no build writes, and freed 0 of 74 GB wanted on
+    /// every relief pass while 60 GB of per-card trees sat below it.
     fn evict_pass(&self, want_bytes: u64) -> PassEnd {
         let mut table = crate::system_resources::process_tree::PassTable::new(self.process_table);
         let root = self.tracked.path().to_path_buf();
-        // The cheap declines first: no root, an unsafe path or a held lock never pays for the
-        // node's quiescence (a table read).
         if !root.exists() {
             return PassEnd::settled(self.declined(DeclinedEviction::NoSuchDirectory));
         }
+        let trees = if is_cargo_target(&root) { Vec::new() } else { Self::trees_longest_unbuilt_first(&root) };
+        if trees.is_empty() {
+            return self.evict_tree(&root, want_bytes, &mut table);
+        }
+        let (mut freed, mut settles) = (0u64, true);
+        for tree in trees {
+            if freed >= want_bytes.max(1) {
+                return PassEnd::open(freed);
+            }
+            let pass = self.evict_tree(&tree, want_bytes - freed, &mut table);
+            freed = freed.saturating_add(pass.freed);
+            settles &= pass.settles;
+        }
+        PassEnd { freed, settles: settles && freed < want_bytes.max(1) }
+    }
+
+    /// The cargo trees directly under a root that holds them, the one built longest ago first:
+    /// a tree's last build touches its profile directories, so their newest mtime is its age.
+    pub(super) fn trees_longest_unbuilt_first(root: &Path) -> Vec<PathBuf> {
+        let Ok(entries) = std::fs::read_dir(root) else {
+            return Vec::new();
+        };
+        let built = |tree: &Path| {
+            [tree.to_path_buf(), tree.join("debug"), tree.join("release")]
+                .iter()
+                .filter_map(|dir| std::fs::symlink_metadata(dir).and_then(|meta| meta.modified()).ok())
+                .max()
+        };
+        let mut trees: Vec<(Option<std::time::SystemTime>, PathBuf)> = entries
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+            .map(|entry| entry.path())
+            .filter(|tree| is_cargo_target(tree))
+            .map(|tree| (built(&tree), tree))
+            .collect();
+        trees.sort();
+        trees.into_iter().map(|(_, tree)| tree).collect()
+    }
+
+    /// One cargo tree's ladder, under that tree's own locks.
+    fn evict_tree(&self, root: &Path, want_bytes: u64, table: &mut crate::system_resources::process_tree::PassTable) -> PassEnd {
+        let root = root.to_path_buf();
+        // The cheap declines first: an unsafe path or a held lock never pays for the node's
+        // quiescence (a table read).
         let citizen_custody = self.tracked.eviction_custody();
         let _hands = if let Some(peer) = *citizen_custody {
             let Some(hands) = PersonaHandsLease::try_take(peer) else {
@@ -184,7 +231,7 @@ impl CargoTargetPool {
         }
 
         if let Some((_, home)) = &_hands {
-            if let Err(declined) = self.citizen_quiet(home, &mut table) {
+            if let Err(declined) = self.citizen_quiet(home, table) {
                 return PassEnd::open(declined);
             }
         }
@@ -196,7 +243,7 @@ impl CargoTargetPool {
         let release = root.join("release");
         for rung in Self::ladder(&root) {
             if let Some((_, home)) = &_hands {
-                if self.citizen_quiet(home, &mut table).is_err() {
+                if self.citizen_quiet(home, table).is_err() {
                     transient = true;
                     break;
                 }

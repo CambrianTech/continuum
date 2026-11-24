@@ -695,6 +695,8 @@ pub fn bind_cargo_owners(
             register_pool(broker, dir.clone());
         } else if dir.class() == "worktrees" {
             broker.register(Arc::new(super::super::dev_worktree_pool::DevWorktreePool::new(dir.clone())));
+        } else if dir.class() == "airc-worktrees" {
+            broker.register(Arc::new(super::super::airc_worktree_pool::AircWorktreePool::new(Arc::clone(dir))));
         }
     }
     state.consumers = Some(Consumers {
