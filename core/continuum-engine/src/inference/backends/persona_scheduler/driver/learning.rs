@@ -46,11 +46,11 @@ impl Job {
             Job::Learn(Lesson { seat, step, .. }) => say(Said::Step { seat, step, outcome: StepOutcome::Refused { why } }),
             Job::Told(Told::Learn(learn)) => say(Said::Step { seat: learn.seat, step: learn.step, outcome: StepOutcome::Refused { why } }),
             Job::Told(Told::Measure(measure)) => say(Said::Seat { seat: measure.seat, state: SeatState::Refused { why } }),
-            Job::Told(Told::Load { seat }) => say(Said::Seat { seat, state: SeatState::Refused { why } }),
-            Job::Told(Told::Seat(seated)) => say(Said::Seat { seat: seated.seat, state: SeatState::Refused { why } }),
+            // A seat told to load, seat or release already holds what it holds: kept, never ended.
+            Job::Told(Told::Load { seat }) => say(Said::Seat { seat, state: SeatState::Kept { why } }),
+            Job::Told(Told::Seat(seated)) => say(Said::Seat { seat: seated.seat, state: SeatState::Kept { why } }),
             Job::Told(Told::Checkpoint { seat, .. }) => say(Said::Generation { seat, outcome: GenerationOutcome::Refused { why } }),
-            // A release refused leaves the seat as it was: nothing more was allocated, nothing freed.
-            Job::Told(Told::Release { seat }) => say(Said::Seat { seat, state: SeatState::Quarantined { why } }),
+            Job::Told(Told::Release { seat }) => say(Said::Seat { seat, state: SeatState::Kept { why } }),
         }
     }
 }
@@ -91,8 +91,9 @@ enum Phase {
     Measured { source: ShadowSource },
     Loaded { shadow: Shadow },
     Seated { shadow: Shadow },
-    /// A reply's restoration or a release was not confirmed: held until a release is.
-    Quarantined { shadow: Shadow },
+    /// Held until a release proves it gone: a detach, a reply's restoration or a release was not
+    /// confirmed, so the shadow may still be attached and, when `retained`, holds an optimizer.
+    Quarantined { shadow: Shadow, retained: bool },
 }
 
 fn mind_of(persona: PersonaId) -> MindId {
@@ -115,10 +116,27 @@ impl Driver<'_, '_> {
         }
     }
 
+    /// Every seat ends with the engine, through the same release a trainer tells: detached,
+    /// its optimizer released, its last reference dropped, then said Released. One native code keeps
+    /// stays quarantined, its guards kept, and goes with the context.
+    pub(super) fn end_learning(&mut self, why: &str) {
+        self.learning.refuse_waiting(why);
+        let seats: Vec<SeatId> = self.learning.seats.keys().copied().collect();
+        for seat in seats {
+            self.release(seat);
+        }
+    }
+
+    /// A command this seat cannot take now: it stays as it was.
+    fn keep(&mut self, seat: SeatId, entry: Entry, why: &str) {
+        self.learning.seats.insert(seat, entry);
+        say(Said::Seat { seat, state: SeatState::Kept { why: why.into() } });
+    }
+
     fn measure(&mut self, measure: Measure) {
         let Measure { seat, mind, shadow, optimizer, reply_rows } = measure;
         if self.learning.seats.contains_key(&seat) {
-            return say(Said::Seat { seat, state: SeatState::Refused { why: "the seat is already measured".into() } });
+            return say(Said::Seat { seat, state: SeatState::Kept { why: "the seat is already measured".into() } });
         }
         let weights = match &shadow {
             ShadowSource::Fresh(fresh) => self.model.measure_fresh_shadow(&FreshGeometry {
@@ -143,10 +161,9 @@ impl Driver<'_, '_> {
         let Some(entry) = self.learning.seats.remove(&seat) else {
             return say(Said::Seat { seat, state: SeatState::Refused { why: "load of a seat never measured".into() } });
         };
-        let Phase::Measured { source } = entry.phase else {
-            let why = "load of a seat past measuring";
-            self.learning.seats.insert(seat, entry);
-            return say(Said::Seat { seat, state: SeatState::Refused { why: why.into() } });
+        let source = match entry.phase {
+            Phase::Measured { source } => source,
+            phase => return self.keep(seat, Entry { phase, ..entry }, "load of a seat past measuring"),
         };
         let loaded = match &source {
             // Written where nothing else reads it, loaded, and removed: the shadow lives in memory, and
@@ -165,19 +182,29 @@ impl Driver<'_, '_> {
             }
             ShadowSource::Generation(dir) => self.model.load_lora(dir.join("adapter.gguf")),
         };
-        let adapter = match loaded {
-            Ok(adapter) => Arc::new(adapter),
+        let shadow = match loaded {
+            Ok(adapter) => Shadow { adapter: Arc::new(adapter), optimizer: entry.optimizer, recompute: false, walk: Walk::default() },
             Err(why) => return say(Said::Seat { seat, state: SeatState::Refused { why: why.into() } }),
         };
-        let shadow = Shadow { adapter, optimizer: entry.optimizer, recompute: false, walk: Walk::default() };
-        match self.engine.measure_shadow(mind_of(entry.mind), &shadow, entry.reply_rows) {
+        let mind = mind_of(entry.mind);
+        let measured = self.engine.attach_shadow(mind, &shadow).and_then(|()| self.engine.measure_shadow(mind, &shadow, entry.reply_rows));
+        // Off the context before the shadow can be dropped; if that is not confirmed, the engine
+        // holds it until a release proves it off.
+        if let Err(attached) = self.engine.detach_shadow(mind) {
+            self.learning.seats.insert(seat, Entry { phase: Phase::Quarantined { shadow, retained: false }, ..entry });
+            return say(Said::Seat { seat, state: SeatState::Quarantined { why: attached.to_string().into() } });
+        }
+        match measured {
             Ok((optimizer, workspace)) => {
                 let reply_rows = entry.reply_rows;
                 self.learning.seats.insert(seat, Entry { phase: Phase::Loaded { shadow }, ..entry });
                 say(Said::Seat { seat, state: SeatState::Loaded { optimizer, workspace, reply_rows } });
             }
-            // The shadow is detached and dropped here: its weights are freed, so nothing remains.
-            Err(refusal) => say(Said::Seat { seat, state: SeatState::Refused { why: refusal.to_string().into() } }),
+            Err(refusal) => {
+                // Detached: the last reference goes before the trainer hears nothing remains.
+                drop(shadow);
+                say(Said::Seat { seat, state: SeatState::Refused { why: refusal.to_string().into() } });
+            }
         }
     }
 
@@ -186,19 +213,16 @@ impl Driver<'_, '_> {
         let Some(entry) = self.learning.seats.remove(&seat) else {
             return say(Said::Seat { seat, state: SeatState::Refused { why: "seat of a seat never loaded".into() } });
         };
-        let Phase::Loaded { shadow } = entry.phase else {
-            self.learning.seats.insert(seat, entry);
-            return say(Said::Seat { seat, state: SeatState::Refused { why: "seat of a seat not loaded".into() } });
+        let shadow = match entry.phase {
+            Phase::Loaded { shadow } => shadow,
+            phase => return self.keep(seat, Entry { phase, ..entry }, "seat of a seat not loaded"),
         };
         match self.engine.retain_shadow(&shadow, lease) {
             Ok(()) => {
                 self.learning.seats.insert(seat, Entry { phase: Phase::Seated { shadow }, ..entry });
                 say(Said::Seat { seat, state: SeatState::Seated { optimizer: OptimizerStart::Cold } });
             }
-            Err(_lease) => {
-                self.learning.seats.insert(seat, Entry { phase: Phase::Loaded { shadow }, ..entry });
-                say(Said::Seat { seat, state: SeatState::Refused { why: "the shadow is already retained".into() } });
-            }
+            Err(_lease) => self.keep(seat, Entry { phase: Phase::Loaded { shadow }, ..entry }, "native code refused to retain the shadow"),
         }
     }
 
@@ -217,19 +241,34 @@ impl Driver<'_, '_> {
         let Some(entry) = self.learning.seats.remove(&seat) else {
             return say(Said::Seat { seat, state: SeatState::Released });
         };
-        let shadow = match entry.phase {
-            // Never retained: dropping the shadow frees its weights.
-            Phase::Measured { .. } | Phase::Loaded { .. } => return say(Said::Seat { seat, state: SeatState::Released }),
-            Phase::Seated { shadow } | Phase::Quarantined { shadow } => shadow,
-        };
-        match self.engine.release_shadow(mind_of(entry.mind), &shadow) {
-            // The lease view drops here; the trainer releases its guards on hearing Released.
-            Ok(_lease) => say(Said::Seat { seat, state: SeatState::Released }),
-            Err(refusal) => {
-                say(Said::Seat { seat, state: SeatState::Quarantined { why: refusal.to_string().into() } });
-                self.learning.seats.insert(seat, Entry { phase: Phase::Quarantined { shadow }, ..entry });
+        let mind = mind_of(entry.mind);
+        let (shadow, retained) = match entry.phase {
+            Phase::Measured { .. } => (None, false),
+            // Detached since its measure: dropping it frees its weights.
+            Phase::Loaded { shadow } => (Some(shadow), false),
+            Phase::Seated { shadow } => (Some(shadow), true),
+            Phase::Quarantined { shadow, retained } => {
+                if let Err(attached) = self.engine.detach_shadow(mind) {
+                    self.learning.seats.insert(seat, Entry { phase: Phase::Quarantined { shadow, retained }, ..entry });
+                    return say(Said::Seat { seat, state: SeatState::Quarantined { why: attached.to_string().into() } });
+                }
+                (Some(shadow), retained)
             }
+        };
+        let released = match (&shadow, retained) {
+            // The lease view drops here; the trainer releases its guards on hearing Released.
+            (Some(held), true) => self.engine.release_shadow(mind, held).map(drop),
+            _ => Ok(()),
+        };
+        if let Err(refusal) = released {
+            if let Some(shadow) = shadow {
+                self.learning.seats.insert(seat, Entry { phase: Phase::Quarantined { shadow, retained: true }, ..entry });
+            }
+            return say(Said::Seat { seat, state: SeatState::Quarantined { why: refusal.to_string().into() } });
         }
+        // The last native reference goes before the trainer hears nothing remains.
+        drop(shadow);
+        say(Said::Seat { seat, state: SeatState::Released });
     }
 
     fn lesson(&mut self, lesson: Lesson, go_on: &mut dyn FnMut() -> bool) {
@@ -248,7 +287,7 @@ impl Driver<'_, '_> {
         };
         // Taken out while she learns (binding her needs the whole driver); put back whatever happens.
         let (outcome, quarantined) = self.learn_seated(Seated { mind, reply_rows, shadow: &shadow, rendered: &rendered }, admission, go_on);
-        let phase = if quarantined.is_some() { Phase::Quarantined { shadow } } else { Phase::Seated { shadow } };
+        let phase = if quarantined.is_some() { Phase::Quarantined { shadow, retained: true } } else { Phase::Seated { shadow } };
         self.learning.seats.insert(seat, Entry { mind, optimizer, reply_rows, phase });
         if let Some(why) = quarantined {
             say(Said::Seat { seat, state: SeatState::Quarantined { why } });
@@ -256,8 +295,9 @@ impl Driver<'_, '_> {
         say(Said::Step { seat, step, outcome });
     }
 
-    /// Bind her and learn one rendered lesson into her seated shadow: the step's outcome, and why the
-    /// seat is quarantined when native code could not confirm her restoration.
+    /// Bind her, attach her shadow, learn one rendered lesson, and take the shadow off: the step's
+    /// outcome, and why the seat is quarantined when native code could not confirm her restoration or
+    /// the shadow's detach.
     fn learn_seated(&mut self, seated: Seated<'_>, admission: Box<dyn ReplyAdmission>, go_on: &mut dyn FnMut() -> bool) -> (StepOutcome, Option<Arc<str>>) {
         let refused = |why: String| (StepOutcome::Refused { why: why.into() }, None);
         if let Err(unbound) = self.switch_to(seated.mind, false) {
@@ -267,20 +307,28 @@ impl Driver<'_, '_> {
             Some(her) => her.parts().tokens.held.clone(),
             None => return refused("she was not bound after the switch".into()),
         };
-        let Some(reply) = reply_for(mind_of(seated.mind), &held, seated.rendered) else {
+        let mind = mind_of(seated.mind);
+        let Some(reply) = reply_for(mind, &held, seated.rendered) else {
             return refused("the lesson has no reply past what she holds".into());
         };
         if reply.tokens.len() > seated.reply_rows.get() as usize {
             return refused(format!("{} reply tokens past the {} the seat was measured for", reply.tokens.len(), seated.reply_rows));
         }
-        match self.engine.learn_active(seated.shadow, &reply, admission, go_on) {
-            Ok(Finished::Learned { steps, loss, .. }) => (StepOutcome::Learned { steps, loss }, None),
-            Ok(Finished::Unchanged { .. }) => (StepOutcome::Unchanged, None),
-            Ok(Finished::Uncertain { steps, .. }) => (StepOutcome::Uncertain { steps }, None),
-            Ok(Finished::Failed { refusal, .. }) => {
-                (StepOutcome::Refused { why: "her restoration was not confirmed: the seat is quarantined".into() }, Some(refusal.to_string().into()))
-            }
-            Err((refusal, _admission)) => refused(refusal.to_string()),
+        let learned = match self.engine.attach_shadow(mind, seated.shadow) {
+            Ok(()) => match self.engine.learn_active(seated.shadow, &reply, admission, go_on) {
+                Ok(Finished::Learned { steps, loss, .. }) => (StepOutcome::Learned { steps, loss }, None),
+                Ok(Finished::Unchanged { .. }) => (StepOutcome::Unchanged, None),
+                Ok(Finished::Uncertain { steps, .. }) => (StepOutcome::Uncertain { steps }, None),
+                Ok(Finished::Failed { refusal, .. }) => {
+                    (StepOutcome::Refused { why: "her restoration was not confirmed: the seat is quarantined".into() }, Some(refusal.to_string().into()))
+                }
+                Err((refusal, _admission)) => refused(refusal.to_string()),
+            },
+            Err(refusal) => refused(refusal.to_string()),
+        };
+        match self.engine.detach_shadow(mind) {
+            Ok(()) => learned,
+            Err(attached) => (learned.0, Some(attached.to_string().into())),
         }
     }
 }

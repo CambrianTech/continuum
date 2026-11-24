@@ -278,7 +278,19 @@ where
     U: Identified + Carries<T::Blocks>,
     T: Learns,
 {
-    /// What `shadow`'s optimizer and a lesson of up to `reply_rows` tokens would hold, for `mind`:
+    /// Attach `shadow` alone for `mind`: hold it until [`Self::detach_shadow`] confirms it off.
+    pub fn attach_shadow(&mut self, mind: MindId, shadow: &T::Shadow) -> Result<(), TierRefusal> {
+        self.decoding = None;
+        self.tier.attach(mind, shadow)
+    }
+
+    /// Take every adapter off the context; until this succeeds, an attached shadow is referenced.
+    pub fn detach_shadow(&mut self, mind: MindId) -> Result<(), TierRefusal> {
+        self.decoding = None;
+        self.tier.detach(mind)
+    }
+
+    /// What an attached `shadow`'s optimizer and a lesson of up to `reply_rows` tokens would hold, for `mind`:
     /// `(optimizer, workspace)`. Waits for a submitted step to land first.
     pub fn measure_shadow(&mut self, mind: MindId, shadow: &T::Shadow, reply_rows: std::num::NonZeroU32) -> Result<(Vec<T::Row>, Vec<T::Row>), TierRefusal> {
         self.decoding = None;

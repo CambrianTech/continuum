@@ -493,7 +493,7 @@ impl Driver<'_, '_> {
                 None
             }
             Submission::Suspend(reply) => {
-                self.learning.refuse_waiting("the engine is stopping");
+                self.end_learning("the engine is stopping");
                 Some(Stop { reply, suspension: self.suspend(turns) })
             }
         }

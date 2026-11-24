@@ -135,7 +135,8 @@ struct ScratchDir(PathBuf);
 
 impl ScratchDir {
     fn new() -> Self {
-        let dir = std::env::temp_dir().join(format!("learn-test-{}-{}", std::process::id(), std::time::SystemTime::UNIX_EPOCH.elapsed().map_or(0, |d| d.as_nanos())));
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!("learn-test-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::SeqCst)));
         std::fs::create_dir_all(&dir).expect("test: a scratch dir");
         Self(dir)
     }
@@ -147,6 +148,8 @@ impl ScratchDir {
 
 impl Drop for ScratchDir {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+        if let Err(kept) = std::fs::remove_dir_all(&self.0) {
+            eprintln!("the scratch dir stays at {}: {kept}", self.0.display());
+        }
     }
 }

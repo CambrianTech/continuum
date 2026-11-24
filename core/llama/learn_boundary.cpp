@@ -1,7 +1,9 @@
-// A fresh shadow adapter for in-place learning (IN-PROCESS-LEARNING.md, L2): llama.cpp common's one
-// writer (common_lora_write_fresh, which llama-server's /train also uses), reached from Rust. The
-// adapter it writes leaves the model's output unchanged until the first optimizer step. Exceptions
-// terminate on this side of the Rust FFI boundary.
+// In-place learning's native boundary (IN-PROCESS-LEARNING.md, L2), in our own file: llama.cpp
+// common's one fresh-adapter writer (common_lora_write_fresh, which llama-server's /train also uses),
+// the native measurements as one row shape, and a shadow's optimizer state written to a path.
+// llama.h's measurement callbacks differ per source (an adapter's rows carry no role; an optimizer's
+// carry its shadow and role); here each is adapted to one `continuum_row`, so Rust reads one shape.
+// Exceptions terminate on this side of the Rust FFI boundary.
 #include "common.h"
 
 #include <cstdio>
@@ -9,31 +11,85 @@
 #include <string>
 #include <vector>
 
-// Write a fresh adapter at `path` for every target the model has (`targets`, comma separated), its
-// geometry `rank`, `alpha`, `seed`, and `top_layers` (0: every block). `measure` (nullable) is told
-// each tensor's bytes as it is written. Returns 0 when written, 1 when refused.
-extern "C" int continuum_lora_write_fresh(const llama_model *model, const char *path, int32_t rank, float alpha,
-        const char *targets, uint32_t seed, int32_t top_layers, llama_adapter_memory_callback measure,
-        void *user_data) noexcept {
+// One measured row: where it lives, what it is held for (null for an adapter's weights), its size.
+struct continuum_row {
+    const char *device;
+    const char *buffer_type;
+    const char *role;
+    size_t bytes;
+    bool host;
+};
+
+// Where measured rows go: Rust's one callback and its data.
+struct continuum_rows_sink {
+    void (*row)(const continuum_row *row, void *data);
+    void *data;
+};
+
+// A fresh shadow's geometry: the targets it adapts (comma separated) and how.
+struct continuum_fresh {
+    int32_t rank;
+    float alpha;
+    const char *targets;
+    uint32_t seed;
+    int32_t top_layers;
+};
+
+static void adapter_row(const char *device, const char *buffer_type, size_t bytes, bool host, void *data) {
+    const auto *sink = static_cast<const continuum_rows_sink *>(data);
+    const continuum_row row{device, buffer_type, nullptr, bytes, host};
+    sink->row(&row, sink->data);
+}
+
+static void optimizer_row(const llama_adapter_lora * /*shadow*/, const char *device, const char *buffer_type,
+        const char *kind, size_t bytes, bool host, void *data) {
+    const auto *sink = static_cast<const continuum_rows_sink *>(data);
+    const continuum_row row{device, buffer_type, kind, bytes, host};
+    sink->row(&row, sink->data);
+}
+
+// Write a fresh adapter at `path` for every target the model has. With a `sink` it writes nothing and
+// reports each tensor's bytes there (common's dry run); without one it writes the file.
+// Returns 0 when done, 1 when refused.
+extern "C" int continuum_lora_write_fresh(const llama_model *model, const char *path, const continuum_fresh *fresh,
+        const continuum_rows_sink *sink) noexcept {
     try {
         std::vector<std::string> named;
-        std::string rest(targets);
+        const std::string targets(fresh->targets);
         size_t start = 0;
-        while (start <= rest.size()) {
-            const size_t comma = rest.find(',', start);
-            const size_t end = comma == std::string::npos ? rest.size() : comma;
+        while (start <= targets.size()) {
+            const size_t comma = targets.find(',', start);
+            const size_t end = comma == std::string::npos ? targets.size() : comma;
             if (end > start) {
-                named.push_back(rest.substr(start, end - start));
+                named.push_back(targets.substr(start, end - start));
             }
             if (comma == std::string::npos) {
                 break;
             }
             start = comma + 1;
         }
-        return common_lora_write_fresh(model, path, rank, alpha, named, seed, top_layers, measure, user_data) ? 0 : 1;
+        auto *measure = sink != nullptr ? adapter_row : nullptr;
+        void *data = const_cast<continuum_rows_sink *>(sink);
+        return common_lora_write_fresh(model, path, fresh->rank, fresh->alpha, named, fresh->seed, fresh->top_layers, measure, data) ? 0 : 1;
     } catch (...) {
         return 1;
     }
+}
+
+// What loading the adapter at `path` would hold, allocating nothing.
+extern "C" bool continuum_adapter_measure(llama_model *model, const char *path, const continuum_rows_sink *sink) noexcept {
+    return llama_adapter_lora_measure(model, path, adapter_row, const_cast<continuum_rows_sink *>(sink));
+}
+
+// What an attached shadow's optimizer would hold on `ctx`, allocating nothing.
+extern "C" bool continuum_opt_measure_shadow(llama_context *ctx, llama_opt_params params, const continuum_rows_sink *sink) noexcept {
+    return llama_opt_measure_shadow(ctx, params, optimizer_row, const_cast<continuum_rows_sink *>(sink));
+}
+
+// What a reply of up to `reply_rows` tokens would hold in the shared workspace, allocating nothing.
+extern "C" bool continuum_opt_measure_shadow_graph(llama_context *ctx, llama_opt_params params, uint32_t reply_rows,
+        const continuum_rows_sink *sink) noexcept {
+    return llama_opt_measure_shadow_graph(ctx, params, reply_rows, optimizer_row, const_cast<continuum_rows_sink *>(sink));
 }
 
 // Write `shadow`'s optimizer state to `path`, bound to `binding` (the generation's identity the caller

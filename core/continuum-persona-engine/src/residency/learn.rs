@@ -26,9 +26,16 @@ pub trait Learns: Execute {
     /// One row of memory the backend measured.
     type Row;
 
-    /// What `shadow`'s optimizer, and a lesson of up to `reply_rows` tokens, would hold, allocating
-    /// nothing: `(optimizer, workspace)`. The backend may attach the shadow to measure it; the next
-    /// decode applies her own genes again.
+    /// Attach `shadow` alone, at full scale: native code measures and trains only an attached shadow.
+    /// Until [`Self::detach`] confirms it off, the shadow must not be dropped.
+    fn attach(&mut self, mind: MindId, shadow: &Self::Shadow) -> Result<(), TierRefusal>;
+
+    /// Take every adapter off the context; her next decode applies her own genes. Until this
+    /// succeeds, an attached shadow is still referenced by the context.
+    fn detach(&mut self, mind: MindId) -> Result<(), TierRefusal>;
+
+    /// What an attached `shadow`'s optimizer, and a lesson of up to `reply_rows` tokens, would hold, allocating
+    /// nothing: `(optimizer, workspace)`.
     fn measure(&mut self, mind: MindId, shadow: &Self::Shadow, reply_rows: std::num::NonZeroU32) -> Result<(Vec<Self::Row>, Vec<Self::Row>), TierRefusal>;
 
     /// Save `shadow` as a generation in `into` (its weights and its optimizer state, bound to

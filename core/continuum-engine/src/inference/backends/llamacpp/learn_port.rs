@@ -4,7 +4,7 @@
 
 use crate::inference::backends::persona_scheduler::lesson::{self, LessonRefusal};
 use crate::inference::backends::persona_scheduler::{LearningJob, LearningLesson};
-use crate::inference::learning::{say, LearnPort, Learning, Said, StepOutcome, Unavailable};
+use crate::inference::learning::{say, speaks, LearnPort, Learning, Said, StepOutcome, Unavailable};
 
 use super::LlamaCppBackend;
 
@@ -25,7 +25,7 @@ impl LlamaCppBackend {
 
 impl LearnPort for LlamaCppBackend {
     fn tell(&self, learning: Learning) -> Result<(), Unavailable> {
-        let Some((_, Ok(scheduler))) = self.scheduler.get() else {
+        let Some((_, Ok(scheduler))) = self.scheduler.get().filter(|_| speaks()) else {
             return Err(Unavailable { returned: learning });
         };
         let job = match learning {

@@ -193,13 +193,24 @@ pub trait LearnPort: Send + Sync {
     fn tell(&self, learning: Learning) -> Result<(), Unavailable>;
 }
 
-/// Say `said` on [`LEARNING_SAID`]. The node bus's one emitter for the topic is claimed here, once
-/// per process (a scheduler may be spawned again; the stream's producer is this owner), and an
-/// emit never waits.
-pub(crate) fn say(said: Said) {
+/// The node bus's one emitter for [`LEARNING_SAID`], claimed here once per process (a scheduler may
+/// be spawned again; this is the stream's producer). `None` when another producer holds it.
+fn said_emitter() -> Option<&'static parking_lot::Mutex<continuum_sage::dataflow::Emitter<Said>>> {
     static SAID: std::sync::OnceLock<Option<parking_lot::Mutex<continuum_sage::dataflow::Emitter<Said>>>> = std::sync::OnceLock::new();
-    let emitter = SAID.get_or_init(|| continuum_sage::component::node().emitter::<Said>(LEARNING_SAID).ok().map(parking_lot::Mutex::new));
-    match emitter {
+    SAID.get_or_init(|| continuum_sage::component::node().emitter::<Said>(LEARNING_SAID).ok().map(parking_lot::Mutex::new)).as_ref()
+}
+
+/// Whether this process can say what the engine learned. A port that cannot is [`Unavailable`]
+/// before it takes any command, so no outcome (above all a Released) is ever told into silence
+/// (Codex on L2).
+pub(crate) fn speaks() -> bool {
+    said_emitter().is_some()
+}
+
+/// Say `said` on [`LEARNING_SAID`]; an emit never waits. Reached only through a port that
+/// [`speaks`].
+pub(crate) fn say(said: Said) {
+    match said_emitter() {
         Some(emitter) => {
             emitter.lock().emit(said);
         }

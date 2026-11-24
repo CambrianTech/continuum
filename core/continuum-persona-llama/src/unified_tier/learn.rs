@@ -2,9 +2,10 @@
 //! shadow on her own stream, through the llama crate's [`Learner`]. Between chunks it asks the caller
 //! whether to go on; a no drains the reply, which restores her served tail and keeps what committed.
 //!
-//! Native code trains (and measures) only a shadow attached at a non-zero scale (`opt_untrainable`),
-//! so measuring and learning attach the shadow alone and take it off after; the next decode applies her
-//! own genes again.
+//! Native code trains (and measures) only a shadow attached at a non-zero scale (`opt_untrainable`).
+//! Attaching and detaching are the caller's: it holds the shadow until a detach is confirmed, so the
+//! context never references a freed adapter (Codex on L2). The shadow is attached alone: it learns
+//! against the base weights, never another mind's genes left applied.
 
 use std::num::NonZeroU32;
 use std::path::Path;
@@ -32,24 +33,6 @@ fn reported(mind: MindId, reason: &'static str, refusal: impl std::fmt::Display)
     TierRefusal { tier: TIER, mind, reason, native: Native::Reported(refusal.to_string()) }
 }
 
-impl UnifiedTier<'_, '_> {
-    /// Attach `shadow` alone, at full scale, for one measure or reply: it learns against the base
-    /// weights. The genes applied last may be another mind's, so none are attached with it; learning
-    /// under her own gene set needs her genes in the command (named follow-up). [`Self::detach`]
-    /// takes it off before it can be dropped.
-    fn attach(&mut self, mind: MindId, shadow: &Shadow) -> Result<(), TierRefusal> {
-        self.applied_genes = None;
-        self.ctx.set_loras(&[(shadow.adapter.as_ref(), 1.0)]).map_err(|message| reported(mind, "the engine refused the shadow", message))
-    }
-
-    /// No adapter left on the context, so no released shadow stays attached to it; her next decode
-    /// applies her own genes (nothing is marked applied).
-    fn detach(&mut self, mind: MindId) -> Result<(), TierRefusal> {
-        self.applied_genes = None;
-        self.ctx.clear_loras().map_err(|message| reported(mind, "the engine could not take the shadow off", message))
-    }
-}
-
 impl Learns for UnifiedTier<'_, '_> {
     type Shadow = Shadow;
     type Lease = Box<dyn OptimizerLease>;
@@ -58,19 +41,25 @@ impl Learns for UnifiedTier<'_, '_> {
     type Learned = Finished;
     type Row = MemoryRow;
 
+    fn attach(&mut self, mind: MindId, shadow: &Shadow) -> Result<(), TierRefusal> {
+        self.settle()?;
+        // Whatever the context held is replaced: her next decode applies her genes again.
+        self.applied_genes = None;
+        self.ctx.set_loras(&[(shadow.adapter.as_ref(), 1.0)]).map_err(|message| reported(mind, "the engine refused the shadow", message))
+    }
+
+    fn detach(&mut self, mind: MindId) -> Result<(), TierRefusal> {
+        self.settle()?;
+        self.applied_genes = None;
+        self.ctx.clear_loras().map_err(|message| reported(mind, "the engine could not take the shadow off", message))
+    }
+
     fn measure(&mut self, mind: MindId, shadow: &Shadow, reply_rows: NonZeroU32) -> Result<(Vec<MemoryRow>, Vec<MemoryRow>), TierRefusal> {
         self.settle()?;
-        self.attach(mind, shadow)?;
         let mut learner = Learner::new(self.ctx);
-        let measured = learner
-            .measure_optimizer(shadow)
-            .map_err(|refusal| reported(mind, "the engine could not measure the optimizer", refusal))
-            .and_then(|optimizer| {
-                let workspace = learner.measure_workspace(shadow, reply_rows).map_err(|refusal| reported(mind, "the engine could not measure the workspace", refusal))?;
-                Ok((optimizer, workspace))
-            });
-        self.detach(mind)?;
-        measured
+        let optimizer = learner.measure_optimizer(shadow).map_err(|refusal| reported(mind, "the engine could not measure the optimizer", refusal))?;
+        let workspace = learner.measure_workspace(shadow, reply_rows).map_err(|refusal| reported(mind, "the engine could not measure the workspace", refusal))?;
+        Ok((optimizer, workspace))
     }
 
     fn save(&mut self, mind: MindId, shadow: &Shadow, into: &Path, binding: &str) -> Result<u64, TierRefusal> {
@@ -94,32 +83,19 @@ impl Learns for UnifiedTier<'_, '_> {
         if let Err(unsettled) = self.settle() {
             return Err((unsettled, admission));
         }
-        if let Err(unattached) = self.attach(mind, shadow) {
-            return Err((unattached, admission));
-        }
         let native = Reply { seq: stream.seq(), n_cached: reply.n_cached, tokens: &reply.tokens, labels: &reply.labels, restore: &reply.restore };
         let mut learner = Learner::new(self.ctx);
-        let learned = match learner.begin(shadow, admission, &native) {
-            Ok(mut run) => {
-                loop {
-                    if !go_on() {
-                        run.drain();
-                    }
-                    match run.step() {
-                        Ok(Progress::More) => {}
-                        // Done, or a refusal: finish says which, and quarantines an unconfirmed restoration.
-                        Ok(Progress::Done) | Err(_) => break,
-                    }
-                }
-                Ok(run.finish())
+        let mut run = learner.begin(shadow, admission, &native).map_err(|refused| (reported(mind, "the reply did not begin", refused.refusal), refused.admission))?;
+        loop {
+            if !go_on() {
+                run.drain();
             }
-            Err(refused) => Err((reported(mind, "the reply did not begin", refused.refusal), refused.admission)),
-        };
-        // Her genes back whatever the reply did: a shadow is never left attached for a release to
-        // free under the context. A refusal here already marked her genes for the next decode.
-        if let Err(still) = self.detach(mind) {
-            continuum_base::probe!(class = "persona.learn.detach_refused", refusal = %still, "the shadow stays attached until her next decode applies her genes");
+            match run.step() {
+                Ok(Progress::More) => {}
+                // Done, or a refusal: finish says which, and quarantines an unconfirmed restoration.
+                Ok(Progress::Done) | Err(_) => break,
+            }
         }
-        learned
+        Ok(run.finish())
     }
 }

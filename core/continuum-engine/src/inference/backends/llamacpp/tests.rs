@@ -122,13 +122,15 @@
         use std::sync::atomic::{AtomicU64, Ordering};
 
         /// What the test hears on learning/said, handed to its channel.
-        struct Heard(tokio::sync::mpsc::UnboundedSender<Said>);
+        struct Heard(tokio::sync::mpsc::UnboundedSender<Arc<Said>>);
 
         impl Stage for Heard {
             type Input = Event<Said>;
             const QOS: Qos = Qos::Background;
             async fn handle(&mut self, event: Event<Said>) {
-                let _ = self.0.send((*event.value).clone());
+                if self.0.send(event.value).is_err() {
+                    eprintln!("the test stopped hearing learning/said");
+                }
             }
         }
 
@@ -151,8 +153,8 @@
             }
         }
 
-        async fn next(heard: &mut tokio::sync::mpsc::UnboundedReceiver<Said>) -> Said {
-            tokio::time::timeout(std::time::Duration::from_secs(120), heard.recv()).await.expect("test: the engine says within 120 s").expect("test: the stream is open")
+        async fn next(heard: &mut tokio::sync::mpsc::UnboundedReceiver<Arc<Said>>) -> Said {
+            Arc::unwrap_or_clone(tokio::time::timeout(std::time::Duration::from_secs(120), heard.recv()).await.expect("test: the engine says within 120 s").expect("test: the stream is open"))
         }
 
         fn lesson() -> Lesson {
@@ -201,11 +203,16 @@
                 Said::Seat { state: SeatState::Measured { weights }, .. } => assert!(weights.iter().map(|row| row.bytes).sum::<u64>() > 0, "the weights are measured"),
                 other => panic!("expected Measured, heard {other:?}"),
             }
+            // Out of order: a Seat before its Load is rejected, and the seat keeps what it holds.
+            assert!(port.tell(Learning::Seat(Seat { seat, lease: Box::new(Counted::default()) })).is_ok());
+            assert!(matches!(next(&mut heard).await, Said::Seat { state: SeatState::Kept { .. }, .. }), "a Seat before its Load is kept, never ended");
             assert!(port.tell(Learning::Load { seat }).is_ok());
             match next(&mut heard).await {
                 Said::Seat { state: SeatState::Loaded { optimizer, workspace, .. }, .. } => assert!(!optimizer.is_empty() && !workspace.is_empty(), "optimizer and workspace measured"),
                 other => panic!("expected Loaded, heard {other:?}"),
             }
+            assert!(port.tell(Learning::Load { seat }).is_ok());
+            assert!(matches!(next(&mut heard).await, Said::Seat { state: SeatState::Kept { .. }, .. }), "a second Load is kept, never ended");
             let charged = Arc::new(AtomicU64::new(0));
             assert!(port.tell(Learning::Seat(Seat { seat, lease: Box::new(Counted(Arc::clone(&charged))) })).is_ok());
             assert!(matches!(next(&mut heard).await, Said::Seat { state: SeatState::Seated { .. }, .. }), "seated");
@@ -226,14 +233,27 @@
             let answer = turn(prompt).expect("test: her next turn submits").collect().await.expect("test: her next turn answers after she learned");
             eprintln!("her turn after learning: {:?}", answer.text);
 
-            let into = std::env::temp_dir().join(format!("learn-port-validator-{}", seat.0));
-            assert!(port.tell(Learning::Checkpoint { seat, into: into.clone(), binding: "validator".into() }).is_ok());
+            let generation = || std::env::temp_dir().join(format!("learn-port-validator-{}", seat.0));
+            assert!(port.tell(Learning::Checkpoint { seat, into: generation(), binding: "validator".into() }).is_ok());
             match next(&mut heard).await {
                 Said::Generation { outcome: GenerationOutcome::Saved { steps, .. }, .. } => assert!(steps >= 4, "the generation holds every step: {steps}"),
                 other => panic!("expected Saved, heard {other:?}"),
             }
             assert!(port.tell(Learning::Release { seat }).is_ok());
             assert!(matches!(next(&mut heard).await, Said::Seat { state: SeatState::Released, .. }), "released");
-            let _ = std::fs::remove_dir_all(into);
+            // A shadow loaded but never seated is released whole, and a seat never told is released too.
+            let loaded = SeatId(uuid::Uuid::new_v4());
+            let fresh = crate::inference::llama_server::FreshShadow { name: "loaded".into(), rank: 4, alpha: 8.0, targets: vec!["attn_q".into()], top_layers: 0, seed: 7 };
+            assert!(port.tell(Learning::Measure(Measure { seat: loaded, mind: continuum_persona_engine::persona::PersonaId(her), shadow: ShadowSource::Fresh(fresh), optimizer, reply_rows })).is_ok());
+            assert!(matches!(next(&mut heard).await, Said::Seat { state: SeatState::Measured { .. }, .. }));
+            assert!(port.tell(Learning::Load { seat: loaded }).is_ok());
+            assert!(matches!(next(&mut heard).await, Said::Seat { state: SeatState::Loaded { .. }, .. }));
+            assert!(port.tell(Learning::Release { seat: loaded }).is_ok());
+            assert!(matches!(next(&mut heard).await, Said::Seat { state: SeatState::Released, .. }), "a loaded shadow is released");
+            assert!(port.tell(Learning::Release { seat: SeatId(uuid::Uuid::new_v4()) }).is_ok());
+            assert!(matches!(next(&mut heard).await, Said::Seat { state: SeatState::Released, .. }), "a seat never told holds nothing");
+            if let Err(kept) = std::fs::remove_dir_all(generation()) {
+                eprintln!("the validator's generation stays at {}: {kept}", generation().display());
+            }
         }
     }
