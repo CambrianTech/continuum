@@ -25,6 +25,9 @@ airc-core = { workspace = true }
 # airc's own header keys (`airc.correlation_id`): the inbound classifier routes
 # command-bus frames by header, never by payload (`inbound.rs`).
 airc-protocol = { workspace = true }
+# rmp-serde (MessagePack) for binary wire serialization of event envelopes.
+# Pipes 4-5: airc bodies are typed bytes on the wire and in store; JSON only at gist/SOS edge.
+rmp-serde.workspace = true
 # positron-core owns the cross-language UI contract's session frames
 # (Subscribe/Observe/State + StateEnvelope/StateLayer/ObserverSpec/
 # KindRevision). The thin-client WS envelope multiplexes those state-
