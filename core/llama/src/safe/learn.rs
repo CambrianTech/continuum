@@ -25,6 +25,9 @@ use std::sync::Arc;
 
 use super::optimizer_slots::{OptimizerLease, Role, Slot, Slots};
 
+mod memory;
+pub use memory::{MemoryRole, MemoryRow};
+
 use super::*;
 
 /// One allocator a buffer comes from: the physical device it lives on, as the backend names it.

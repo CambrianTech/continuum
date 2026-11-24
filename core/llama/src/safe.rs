@@ -18,7 +18,7 @@ pub use chat::{ChatRefusal, ChatRender, ChatTemplates, ReasoningFormat, Sampling
 mod learn;
 mod optimizer_slots;
 pub use optimizer_slots::{OptimizerLease, Role, Slot};
-pub use learn::{BufferType, Finished, Label, LearnRefusal, LearnRun, Learner, Optimizer, Progress, Recovered, Refused, Reply, ReplyAdmission, Shadow, Walk};
+pub use learn::{BufferType, Finished, Label, LearnRefusal, LearnRun, Learner, MemoryRole, MemoryRow, Optimizer, Progress, Recovered, Refused, Reply, ReplyAdmission, Shadow, Walk};
 mod persona;
 pub use persona::{BindRefusal, PersonaBlocks, PersonaCheckpoint, PersonaOwner, PersonaRefusal};
 mod position;

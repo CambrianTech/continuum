@@ -8,9 +8,13 @@
 //! replay hears the same feed. The engine owns no cadence: the trainer decides when to learn,
 //! checkpoint and release.
 //!
-//! Memory is carried as guards. A seat's optimizer lease and a step's workspace admission ride in
-//! the command, the engine holds each while native code does, and dropping it releases its bytes,
-//! so nothing is handed back across the seam.
+//! Memory is leased by the trainer and only checked by the engine (Codex on #6254). The trainer owns
+//! every lease guard: dropping one releases through the resource authority, which takes its governor
+//! lock, so it must never happen on the serving thread. A command carries non-owning, fail-closed
+//! views of those leases (the optimizer's [`OptimizerLease`], a lesson's [`ReplyAdmission`]); native
+//! code consults them before it allocates. The trainer releases its guards when it hears the step or
+//! the seat end on [`LEARNING_SAID`], whatever ended it: an outcome, a refusal, a dropped command or a
+//! quarantine's release.
 //!
 //! No engine is a typed [`Unavailable`] that returns the command (its guards drop at the caller),
 //! never a fallback to another path.
@@ -22,7 +26,7 @@ use std::sync::Arc;
 use continuum_persona_engine::persona::PersonaId;
 use continuum_sage::dataflow::TopicName;
 use crate::inference::llama_server::FreshShadow;
-use llama::{Optimizer, OptimizerLease, ReplyAdmission};
+use llama::{MemoryRow, Optimizer, OptimizerLease, ReplyAdmission};
 
 /// The engine's one learning stream: every [`Said`], from its one producer (Cormac on #6254).
 pub const LEARNING_SAID: TopicName = TopicName("learning/said");
@@ -65,34 +69,20 @@ pub struct Measure {
     pub reply_rows: std::num::NonZeroU32,
 }
 
-/// A measured seat, under its leases.
+/// A measured seat, under the leases the trainer took for it.
 pub struct Seat {
     pub seat: SeatId,
-    /// Admits and releases the optimizer's bytes as native code allocates and frees them.
+    /// A non-owning view of the optimizer's lease: native code asks it before each allocation.
     pub lease: Box<dyn OptimizerLease>,
-    /// The lease on the shadow's measured weight bytes, held for as long as the seat is.
-    pub weights: Box<dyn Send>,
-}
-
-/// One row of memory a native measurement reported: where it lives, what it is for, and its size.
-/// The scope the memory owner checks admissions against (device, buffer type, role, host).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MeasuredRow {
-    pub device: Arc<str>,
-    pub buffer_type: Arc<str>,
-    /// What native code holds it for (an optimizer role, the shared workspace, the shadow's weights).
-    pub role: Arc<str>,
-    pub bytes: u64,
-    pub host: bool,
 }
 
 /// What a measured seat would hold.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Need {
-    pub weights: Vec<MeasuredRow>,
-    pub optimizer: Vec<MeasuredRow>,
+    pub weights: Vec<MemoryRow>,
+    pub optimizer: Vec<MemoryRow>,
     /// The shared workspace for a lesson of up to `reply_rows` tokens: a longer lesson is refused.
-    pub workspace: Vec<MeasuredRow>,
+    pub workspace: Vec<MemoryRow>,
     pub reply_rows: std::num::NonZeroU32,
 }
 
@@ -111,7 +101,7 @@ pub struct Learn {
     pub seat: SeatId,
     pub step: StepId,
     pub lesson: Lesson,
-    /// Checks the shared workspace's growth against what the memory owner holds for this step.
+    /// A non-owning view of this step's workspace lease: native code asks it before the workspace grows.
     pub admission: Box<dyn ReplyAdmission>,
 }
 
@@ -158,7 +148,8 @@ pub enum SeatState {
 pub enum OptimizerStart {
     /// Its moments came back from the generation it was seated from.
     Restored,
-    /// It starts cold: a fresh shadow, or a generation saved without optimizer state.
+    /// It starts cold: a fresh shadow, or a generation whose weights were reloaded with cold moments
+    /// (one saved without optimizer state, or any generation until the optimizer restore lands).
     Cold,
 }
 
