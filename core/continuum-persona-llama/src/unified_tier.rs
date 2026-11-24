@@ -45,33 +45,14 @@ impl Fence for Landed {
     }
 }
 
-/// How a mind's last bind met her blocks: on the sequence she was saved from (her cells keep their
-/// label), or on the other one (the fork relabels her cells, a walk over her span; Codex on #6134).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Rebind {
-    SameSequence,
-    OtherSequence,
-    /// Her blocks came back from her file after a restart (CONTINUUM-ENGINE 4.16).
-    FromFile,
-}
-
-/// What her blocks hold beyond their preparation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Saved {
-    /// Nothing: she starts on a stream as it is.
-    Never,
-    /// Saved out of this stream.
-    From(Stream),
-    /// Read back from her file after a restart.
-    Restored,
-}
-
 /// Her blocks: the unit's blocks part (CONTINUUM-ENGINE 4.17). The native blocks her moves copy,
 /// stamped with her owner at creation, and what they hold. The unit carries them; the tier moves
 /// them when handed them and keeps no copy of who she is.
 pub struct Blocks {
     native: PersonaBlocks,
-    saved: Saved,
+    /// Whether they hold her rows (a copy-out, or her file read back): bound, they are written in;
+    /// otherwise she starts on an empty sequence.
+    holds: bool,
 }
 
 impl Blocks {
@@ -97,7 +78,6 @@ pub struct UnifiedTier<'c, 'm> {
     ctx: &'c mut Context<'m>,
     /// Who occupies each execution stream, by her whole id: a stream holds one generation of her.
     streams: Vec<Option<MindId>>,
-    last_rebind: Option<Rebind>,
     /// The last submitted decode's landed flag, until the device is known to have finished it.
     in_flight: Option<Rc<Cell<bool>>>,
     /// The gene set on the context now (`None` before any step).
@@ -107,7 +87,7 @@ pub struct UnifiedTier<'c, 'm> {
 impl<'c, 'm> UnifiedTier<'c, 'm> {
     pub fn new(ctx: &'c mut Context<'m>) -> Self {
         let seats = ctx.n_seq_max().max(1) as usize; // u32 into usize: every target this builds for is 32 bits or wider
-        Self { ctx, streams: vec![None; seats], last_rebind: None, in_flight: None, applied_genes: None }
+        Self { ctx, streams: vec![None; seats], in_flight: None, applied_genes: None }
     }
 
     /// The stream `mind` is bound to, if she is in the execution stream.
@@ -159,17 +139,12 @@ impl<'c, 'm> UnifiedTier<'c, 'm> {
         self.ctx
     }
 
-    /// How the last move in met her blocks; `None` when she had never been saved.
-    pub fn last_rebind(&self) -> Option<Rebind> {
-        self.last_rebind
-    }
-
     /// Her blocks read back from `path` (CONTINUUM-ENGINE 4.16), bound when she is next scheduled. A
     /// file of another owner, epoch or memory layout is refused and nothing is made.
     pub fn read_file(&mut self, mind: MindId, path: &std::path::Path) -> Result<Blocks, TierRefusal> {
         let mut blocks = self.blocks_for(mind)?;
         blocks.native.read_file(path).map_err(|e| native(mind, "the fork refused her file", e))?;
-        blocks.saved = Saved::Restored;
+        blocks.holds = true;
         Ok(blocks)
     }
 
@@ -182,17 +157,12 @@ impl<'c, 'm> UnifiedTier<'c, 'm> {
         // A mind with nothing to bind starts on this stream as it is, so it must hold nothing (the
         // context may have been in use before this tier wrapped it). The engine's own memory is the
         // evidence, never this tier's bookkeeping.
-        if blocks.saved == Saved::Never && self.ctx.memory_seq_pos_max(stream.seq()).is_some() {
+        if !blocks.holds && self.ctx.memory_seq_pos_max(stream.seq()).is_some() {
             return Err(refused(mind, "her stream already holds another sequence's state"));
         }
-        self.last_rebind = None;
-        if blocks.saved != Saved::Never {
+        if blocks.holds {
             blocks.native.bind(self.ctx, stream.seq(), owner_of(mind)).map_err(|e| bind_refused(mind, e))?;
-            self.last_rebind = Some(match blocks.saved {
-                Saved::From(from) if from == stream => Rebind::SameSequence,
-                Saved::Restored => Rebind::FromFile,
-                _ => Rebind::OtherSequence,
-            });
+            blocks.holds = false; // her rows are in the pool now; her blocks are empty again
         }
         self.streams[slot] = Some(mind);
         Ok(())
@@ -204,7 +174,7 @@ impl<'c, 'm> UnifiedTier<'c, 'm> {
         let slot = self.streams.iter().position(|held| *held == Some(mind)).ok_or_else(|| refused(mind, "not bound"))?;
         let stream = stream_at(slot);
         blocks.native.save(self.ctx, stream.seq()).map_err(|e| native(mind, "the fork refused her save", e))?;
-        blocks.saved = Saved::From(stream);
+        blocks.holds = true;
         self.streams[slot] = None;
         Ok(())
     }
@@ -221,7 +191,7 @@ impl Tier for UnifiedTier<'_, '_> {
     /// New blocks for `mind`, stamped with her owner and epoch.
     fn blocks_for(&mut self, mind: MindId) -> Result<Blocks, TierRefusal> {
         let native = PersonaBlocks::new(self.ctx, owner_of(mind)).ok_or_else(|| refused(mind, "this context's memory has no persona move"))?;
-        Ok(Blocks { native, saved: Saved::Never })
+        Ok(Blocks { native, holds: false })
     }
 
     fn begin(&mut self, mind: MindId, blocks: &mut Blocks, direction: Direction) -> Result<Landed, TierRefusal> {

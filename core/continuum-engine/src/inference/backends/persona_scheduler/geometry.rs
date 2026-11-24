@@ -48,8 +48,6 @@ pub struct EngineGeometry {
     pub n_ubatch: u32,
     /// Minds that decode at once: always one (one mind decodes at a time).
     pub decoding: u32,
-    /// Minds held in place beside the decoding one: a switch to any of them moves nothing.
-    pub seated_beside: u32,
     pub requested: Requested,
 }
 
@@ -65,7 +63,6 @@ impl EngineGeometry {
             n_batch: ctx.n_batch(),
             n_ubatch: ctx.n_ubatch(),
             decoding: 1,
-            seated_beside: n_seq_max.saturating_sub(1),
             requested: Requested { type_k: config.type_k, type_v: config.type_v },
         }
     }
