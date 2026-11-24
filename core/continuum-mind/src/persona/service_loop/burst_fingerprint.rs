@@ -372,7 +372,7 @@ pub(super) async fn run_self_cycle(
     // focus room while the anchor/burst/drive/say all used default — she reasoned
     // about her claim's room and then acted in a different one.
     let tick_room = work_room.as_uuid(); // the cycle's one room, resolved and refused-if-nil above
-    let said = super::turn_context::heard_in(ctx.identity.peer_id, tick_room).await;
+    let said = super::turn_context::heard_in(ctx.identity.peer_id, tick_room);
     append_ring_anchor_if_starved(&mut selftick_turns, &deliveries, &said);
     let burst = crate::cognition::workspace::Burst::from_turns_at(
         work_room,

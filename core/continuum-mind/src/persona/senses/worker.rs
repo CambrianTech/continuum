@@ -11,6 +11,7 @@ use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 
 use crate::cognition::room::feed::{Arrival, Fed};
+use crate::cognition::room::thread::{Threaded, THREADED};
 use crate::cognition::attention::{AttentionDial, Continuation};
 use crate::cognition::conversation::persona_identity::PersonaIdentity;
 use crate::cognition::conversation::salience::{BoardChange, SpeechLine};
@@ -21,8 +22,8 @@ use crate::persona::perception_region::PerceptionRegion;
 
 /// What wakes her senses: a room event, or one of her own acts.
 pub enum Sensed {
-    /// A room event from the one feed, classified once there.
-    Heard(Event<Arrival>),
+    /// A room event of her rooms from the one feed (classified once there), after her thread took it in.
+    Heard(Event<Threaded>),
     /// Her memberships: the activities she is in.
     Joined(Vec<(Uuid, String)>),
     /// Where room events go on to her conversation's admission (replaced on every membership
@@ -40,8 +41,8 @@ pub enum Sensed {
     Due,
 }
 
-impl From<Event<Arrival>> for Sensed {
-    fn from(event: Event<Arrival>) -> Self {
+impl From<Event<Threaded>> for Sensed {
+    fn from(event: Event<Threaded>) -> Self {
         Sensed::Heard(event)
     }
 }
@@ -75,18 +76,13 @@ impl Component for Senses {
     const QOS: Qos = Qos::Interactive;
 
     fn wire(&self, wiring: &mut Wiring<'_, Self>) {
-        // Her window on the feed: as much as her room view keeps unperceived.
-        const WINDOW: std::num::NonZeroUsize = match std::num::NonZeroUsize::new(crate::persona::perception_region::UNPERCEIVED_CAP) {
-            Some(window) => window,
-            None => std::num::NonZeroUsize::MIN,
-        };
-        wiring.hear_on::<Arrival>(crate::cognition::room::feed::node_bus(), crate::cognition::room::feed::FEED, WINDOW);
+        wiring.hear::<Threaded>(THREADED, super::UNHEARD);
     }
 
     async fn handle(&mut self, input: Sensed, ctx: &mut Ctx<Self>) {
         let now = EpochMs::now().millis();
         match input {
-            Sensed::Heard(event) => self.hear(&event.value, now),
+            Sensed::Heard(event) => self.hear(&event.value.0, now),
             Sensed::Joined(rooms) => {
                 for (room, name) in rooms {
                     self.region.join(room, name);
