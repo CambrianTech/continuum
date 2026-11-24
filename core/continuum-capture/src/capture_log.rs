@@ -80,6 +80,8 @@ pub enum LogError {
     Frame(#[from] FrameError),
     #[error("a frame of {0} bytes does not fit the index's 32-bit length")]
     TooLong(usize),
+    #[error("this generation was damaged by an earlier failed append: its offsets no longer match its files, so it takes no more frames")]
+    Damaged,
 }
 
 fn frames_of(generation: u64) -> PathBuf {
@@ -125,6 +127,16 @@ pub struct CaptureLog {
     scratch: Vec<u8>,
     /// This log's frames file, held in the live set until the log drops.
     held: std::sync::Arc<std::path::Path>,
+    /// An append failed after it began writing: the files may hold bytes the offsets do not count,
+    /// so every later frame would be indexed at the wrong place. A damaged log takes nothing more;
+    /// its owner opens the next generation (Codex on #6236).
+    damaged: bool,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Fail this thread's next index append, once (a full disk, injected; never another test's thread).
+    pub(crate) static FAIL_NEXT_INDEX: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 impl Drop for CaptureLog {
@@ -146,7 +158,7 @@ impl CaptureLog {
         let index = writer.append(&index_of(generation))?;
         let held: std::sync::Arc<std::path::Path> = writer.path(&frames_of(generation))?.into();
         live().lock().map_err(|_| io::Error::other("the live capture set was poisoned"))?.insert(std::sync::Arc::clone(&held));
-        Ok(Self { writer, generation, frames, index, offset: 0, entries: 0, scratch: Vec::new(), held })
+        Ok(Self { writer, generation, frames, index, offset: 0, entries: 0, scratch: Vec::new(), held, damaged: false })
     }
 
     pub fn generation(&self) -> u64 {
@@ -165,17 +177,34 @@ impl CaptureLog {
         self.scratch.clear();
         frame::encode_parts(&mut self.scratch, parts)?;
         let length = u32::try_from(self.scratch.len()).map_err(|_| LogError::TooLong(self.scratch.len()))?;
+        if self.damaged {
+            return Err(LogError::Damaged);
+        }
         let started = std::time::Instant::now();
-        self.frames.write_all(&self.scratch)?;
-        self.frames.flush()?;
+        if let Err(error) = self.frames.write_all(&self.scratch).and_then(|()| self.frames.flush()) {
+            self.damaged = true;
+            return Err(error.into());
+        }
         let write_us = started.elapsed().as_micros().min(u128::from(u32::MAX)) as u32; // a write over ~71 minutes saturates the field
         let entry = Entry { offset: self.offset, length, kind: kind as u8, captured_at_ms, write_us };
-        self.index.write_all(&entry.bytes())?;
-        self.index.flush()?;
+        if let Err(error) = self.write_index(&entry) {
+            self.damaged = true;
+            return Err(error.into());
+        }
         self.offset += u64::from(length);
         let cursor = Cursor { generation: self.generation, entry: self.entries };
         self.entries += 1;
         Ok(cursor)
+    }
+
+    /// Append `entry` to the index, the one place an injected failure stands in for a full disk in a test.
+    fn write_index(&mut self, entry: &Entry) -> io::Result<()> {
+        #[cfg(test)]
+        if FAIL_NEXT_INDEX.with(|fail| fail.replace(false)) {
+            return Err(io::Error::new(io::ErrorKind::StorageFull, "test: the index write failed as a full disk would"));
+        }
+        self.index.write_all(&entry.bytes())?;
+        self.index.flush()
     }
 
     /// The class writer this log appends through (the readers read the same owner's files).
@@ -235,12 +264,45 @@ pub struct CaptureRecord {
     pub captured_at_ms: u64,
 }
 
+/// Every registered open-log set, by weak handle (`OpenLogs::shared`).
+fn registry() -> &'static parking_lot::Mutex<Vec<std::sync::Weak<OpenLogs>>> {
+    static REGISTRY: std::sync::OnceLock<parking_lot::Mutex<Vec<std::sync::Weak<OpenLogs>>>> = std::sync::OnceLock::new();
+    REGISTRY.get_or_init(Default::default)
+}
+
+/// Roll every registered open-log set (forgetting those gone): under disk pressure the generations a
+/// running writer holds open become evictable, so a long-running node can reclaim its own history
+/// (Codex on #6236). Returns the logs closed.
+pub fn roll_open() -> usize {
+    let mut registered = registry().lock();
+    registered.retain(|logs| logs.strong_count() > 0);
+    registered.iter().filter_map(std::sync::Weak::upgrade).map(|logs| logs.roll()).sum()
+}
+
 /// Each owner's open log, opened on its first record: the one place records are appended, shared
 /// by the node's writer and the one-time migration so they never open competing generations.
 #[derive(Default)]
 pub struct OpenLogs(parking_lot::Mutex<std::collections::HashMap<uuid::Uuid, CaptureLog>>);
 
 impl OpenLogs {
+    /// An open-log set the captures pool can roll under disk pressure (every long-lived set is one:
+    /// the node writer's, an inline delivery's). A set only a test holds may stay unregistered.
+    pub fn shared() -> std::sync::Arc<Self> {
+        let logs = std::sync::Arc::new(Self::default());
+        registry().lock().push(std::sync::Arc::downgrade(&logs));
+        logs
+    }
+
+    /// Close every open log, so each generation it held is closed and evictable; each owner's next
+    /// record opens its next generation. Taken under the same lock as an append, so a roll never
+    /// splits one. Returns how many logs it closed.
+    pub fn roll(&self) -> usize {
+        let mut logs = self.0.lock();
+        let closed = logs.len();
+        logs.clear();
+        closed
+    }
+
     /// Append `record` to its owner's open log in `class`, opening the owner's next generation first.
     pub fn append(&self, class: &ClassWriter, record: &CaptureRecord) -> io::Result<()> {
         let mut logs = self.0.lock();
@@ -249,7 +311,12 @@ impl OpenLogs {
             std::collections::hash_map::Entry::Vacant(slot) => slot.insert(CaptureLog::open(class.owned_by(record.owner))?),
         };
         let runs: Vec<&[u8]> = record.runs.iter().map(AsRef::as_ref).collect();
-        log.append_parts(frame::Parts { kind: record.kind, header: &record.header, runs: &runs }, record.captured_at_ms).map(|_| ()).map_err(io::Error::other)
+        let appended = log.append_parts(frame::Parts { kind: record.kind, header: &record.header, runs: &runs }, record.captured_at_ms);
+        if appended.is_err() {
+            // a failed append damages its generation: retire it, and the owner's next record opens the next
+            logs.remove(&record.owner);
+        }
+        appended.map(|_| ()).map_err(io::Error::other)
     }
 }
 
@@ -281,6 +348,29 @@ mod tests {
 
     fn writer(dir: &std::path::Path) -> ClassWriter {
         TrackedDir::new("captures-test", dir.to_path_buf()).writer().owned_by(uuid::Uuid::nil())
+    }
+
+    // what this catches (Codex on #6236): a frame written whose index append then failed (a full
+    // disk) leaving the log's offset behind its file, so the next frame's index entry points at the
+    // orphaned bytes and reads back as the frame that failed; and an owner that cannot record again
+    // once space returns.
+    #[test]
+    fn an_append_that_fails_midway_retires_its_generation_and_the_next_frame_reads_back_as_itself() {
+        let dir = tempfile::tempdir().expect("test: dir");
+        let class = TrackedDir::new("captures-test", dir.path().to_path_buf()).writer();
+        let owner = uuid::Uuid::new_v4();
+        let logs = OpenLogs::default();
+        let record = |kind| CaptureRecord { owner, kind, header: vec![0x90], runs: vec![std::sync::Arc::from(&b"bytes"[..])], captured_at_ms: 1 };
+
+        logs.append(&class, &record(FrameKind::Submitted)).expect("test: the first frame");
+        FAIL_NEXT_INDEX.with(|fail| fail.set(true));
+        assert!(logs.append(&class, &record(FrameKind::Terminal)).is_err(), "its index append failed");
+        logs.append(&class, &record(FrameKind::Incomplete)).expect("test: space is back, the owner records again");
+
+        let mut kinds = Vec::new();
+        scan(&class.owned_by(owner), |_, frame| kinds.push(frame.kind)).expect("test: the owner's log reads");
+        assert_eq!(kinds, vec![FrameKind::Submitted, FrameKind::Incomplete], "the failed frame is not history, and the next reads back as itself");
+        assert_eq!(generations(&class.owned_by(owner)).expect("test: generations").len(), 2, "the damaged generation retired; the next began");
     }
 
     // what this catches: a frame read back through its index that is not the frame written (an

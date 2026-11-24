@@ -102,7 +102,7 @@ impl CaptureWriter {
         });
         continuum_base::probe!(class = "capture.writer.sized", window = sizing.window.get() as u64, mean_frame = ?sizing.mean_frame, bytes = ?bytes,
             "the capture writer's window, measured from the frames it wrote before");
-        let logs: Arc<OpenLogs> = Default::default();
+        let logs = OpenLogs::shared();
         // Earlier builds' JSONL captures move into frames through these same open logs, off the
         // workers, while the writer serves (card 699578cb, slice 5).
         let (moving, into) = (class.clone(), Arc::clone(&logs));
@@ -125,7 +125,7 @@ pub enum Delivery {
 /// An inline delivery's own open logs.
 pub struct Inline {
     class: ClassWriter,
-    logs: OpenLogs,
+    logs: Arc<OpenLogs>,
 }
 
 impl Delivery {
@@ -138,7 +138,7 @@ impl Delivery {
         if let Some(open) = shared.get(&root).and_then(std::sync::Weak::upgrade) {
             return Self::Inline(open);
         }
-        let inline = Arc::new(Inline { class, logs: Default::default() });
+        let inline = Arc::new(Inline { class, logs: OpenLogs::shared() });
         shared.retain(|_, held| held.strong_count() > 0);
         shared.insert(root, Arc::downgrade(&inline));
         Self::Inline(inline)

@@ -182,6 +182,19 @@ fn legacy_files(class: &ClassWriter) -> io::Result<HashMap<Uuid, Vec<PathBuf>>> 
     Ok(found)
 }
 
+/// Whether `path` ends in a newline: only a file that does not can end in a torn record.
+fn ends_in_newline(path: &std::path::Path) -> io::Result<bool> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = std::fs::File::open(path)?;
+    if file.metadata()?.len() == 0 {
+        return Ok(true); // an empty file holds no torn record
+    }
+    file.seek(SeekFrom::End(-1))?;
+    let mut last = [0u8; 1];
+    file.read_exact(&mut last)?;
+    Ok(last[0] == b'\n')
+}
+
 /// Move one persona's JSONL rows into frames through `write`, verify they read back, then remove
 /// the JSONL files and their index sidecars. Returns the calls moved.
 pub fn migrate_persona(
@@ -192,6 +205,7 @@ pub fn migrate_persona(
 ) -> Result<usize, MigrationError> {
     let mut moved = BTreeSet::new();
     for file in files {
+        let torn_tail_possible = !ends_in_newline(file)?;
         let mut lines = io::BufReader::new(std::fs::File::open(file)?).lines().enumerate().peekable();
         let mut previous_at = 0;
         while let Some((at, line)) = lines.next() {
@@ -207,8 +221,10 @@ pub fn migrate_persona(
                     moved.insert(key);
                     previous_at = at_ms;
                 }
-                // a torn last line is a crash mid-write, never a call
-                Err(_) if lines.peek().is_none() => {}
+                // a torn last line is a crash mid-write, never a call: only an UNTERMINATED one. A
+                // complete line that does not parse is a record this build cannot read, kept with its file
+                // (the move would otherwise delete the only copy; Codex on #6236).
+                Err(_) if lines.peek().is_none() && torn_tail_possible => {}
                 Err(error) => return Err(MigrationError::Row { file: file.clone(), line: at + 1, error }),
             }
         }
@@ -325,6 +341,17 @@ mod tests {
         let files = legacy_files(&class).expect("test: list").remove(&persona).expect("test: files");
         assert!(matches!(migrate_persona(&class, persona, &files, &mut write), Err(MigrationError::Row { line: 1, .. })));
         assert!(class.path(&legacy_name(persona, false)).expect("test: path").exists(), "kept for the next start");
+
+        // what this catches (Codex on #6236): a complete last row this build cannot read, taken for a
+        // torn tail because it is last, and its file deleted with the only copy of that record. Only
+        // an unterminated last line is torn.
+        let terminated = Uuid::new_v4();
+        let legacy = serde_json::json!({ "schema_version": 3, "captured_at_ms": 5, "persona_id": terminated, "room_id": Uuid::new_v4(), "cause": "stimulus", "iteration": 0,
+            "system": "s", "messages": [], "offered_tools": [], "response": response("old", "an old answer") });
+        class.replace(&legacy_name(terminated, false), format!("{legacy}\n{{\"schema_version\":99}}\n").as_bytes()).expect("test: current");
+        let files = legacy_files(&class).expect("test: list").remove(&terminated).expect("test: files");
+        assert!(matches!(migrate_persona(&class, terminated, &files, &mut write), Err(MigrationError::Row { line: 2, .. })), "a complete unreadable last row is no torn tail");
+        assert!(class.path(&legacy_name(terminated, false)).expect("test: path").exists(), "and its file is kept");
 
         // what this catches: JSONL removed on the strength of writes that never landed (a writer
         // that reported success and wrote nothing): only frames that read back authorize removal.

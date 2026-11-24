@@ -52,7 +52,10 @@ impl<P: Component> Ctx<P> {
     /// Resize its window on `topic` (one it hears): from a measurement it just took, never a constant.
     /// Shrinking drops the oldest it holds now. False when it hears no such topic.
     pub fn resize(&self, topic: TopicName, holds: std::num::NonZeroUsize) -> bool {
-        let Some(window) = self.windows.lock().get(&topic).cloned() else { return false };
+        // held through the resize: once `Running::take_window` has the window, no resize of this
+        // component's can still land on it (Codex on #6236)
+        let windows = self.windows.lock();
+        let Some(window) = windows.get(&topic) else { return false };
         window.resize(holds);
         true
     }

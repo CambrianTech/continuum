@@ -24,6 +24,13 @@ struct Closed {
     index_bytes: u64,
     frames_bytes: u64,
     modified: std::time::SystemTime,
+    /// Its owner's newest generation: emptied, never removed, so the owner's next opens at a higher
+    /// number. A number reused after eviction would let a stored cursor, or an index that already read
+    /// that generation's first entries, point into different records.
+    newest: bool,
+    /// Its owner's class writer and its number: what empties the newest in place, through the class.
+    scoped: ClassWriter,
+    generation: u64,
 }
 
 /// A file's bytes; `None` for one already gone.
@@ -36,19 +43,20 @@ impl CapturesPool {
         Self { class: class.clone() }
     }
 
-    /// Every generation of every owner, live ones included, as (index, frames) paths.
-    fn generations(&self) -> Vec<(PathBuf, PathBuf)> {
+    /// Every generation of every owner, live ones included, as (index, frames, its owner's newest).
+    fn generations(&self) -> Vec<(PathBuf, PathBuf, bool, ClassWriter, u64)> {
         let owners = self.class.owners().unwrap_or_default(); // unwrap_or_default: an unreadable class root holds nothing this pool can free
         owners
             .into_iter()
             .flat_map(|owner| {
                 let scoped = self.class.owned_by(owner);
                 let gens = capture_log::generations(&scoped).unwrap_or_default(); // unwrap_or_default: an unreadable owner holds nothing this pool can free
+                let newest = gens.last().copied();
                 gens.into_iter()
                     .filter_map(move |generation| {
                         let index = scoped.path(Path::new(&format!("{generation:016}.index"))).ok()?;
                         let frames = scoped.path(Path::new(&format!("{generation:016}.frames"))).ok()?;
-                        Some((index, frames))
+                        Some((index, frames, Some(generation) == newest, scoped.clone(), generation))
                     })
                     .collect::<Vec<_>>()
             })
@@ -60,10 +68,12 @@ impl CapturesPool {
         let mut closed: Vec<Closed> = self
             .generations()
             .into_iter()
-            .filter(|(_, frames)| !capture_log::is_live(frames))
-            .filter_map(|(index, frames)| {
+            .filter(|(_, frames, ..)| !capture_log::is_live(frames))
+            .filter_map(|(index, frames, newest, scoped, generation)| {
                 let modified = std::fs::metadata(&frames).and_then(|m| m.modified()).ok()?;
-                Some(Closed { index_bytes: size(&index)?, frames_bytes: size(&frames)?, index, frames, modified })
+                let (index_bytes, frames_bytes) = (size(&index)?, size(&frames)?);
+                // an emptied newest holds nothing to free
+                (index_bytes + frames_bytes > 0).then_some(Closed { index_bytes, frames_bytes, index, frames, modified, newest, scoped, generation })
             })
             .collect();
         closed.sort_by(|a, b| a.modified.cmp(&b.modified).then_with(|| a.frames.cmp(&b.frames))); // equal times: the lower generation first
@@ -86,21 +96,45 @@ impl ResourcePool for CapturesPool {
     }
 
     fn usage_bytes(&self) -> u64 {
-        self.generations().iter().flat_map(|(index, frames)| [size(index), size(frames)]).flatten().sum()
+        self.generations().iter().flat_map(|(index, frames, ..)| [size(index), size(frames)]).flatten().sum()
     }
 
     fn evict_at_least(&self, want_bytes: u64) -> u64 {
-        let mut freed = 0u64;
+        let freed = self.evict_closed(want_bytes, 0);
+        if freed >= want_bytes {
+            return freed;
+        }
+        // not enough closed history: close what the running writer holds open, so its own
+        // generations become evictable too, and take those (Codex on #6236)
+        let rolled = capture_log::roll_open();
+        continuum_base::probe!(class = "capture.generation.rolled", rolled = rolled as u64, freed, want_bytes,
+            "closed capture history did not cover the pressure: the open logs rolled to their next generations");
+        if rolled == 0 {
+            return freed;
+        }
+        self.evict_closed(want_bytes, freed)
+    }
+
+    fn snapshot(&self) -> Vec<ResourcePoolEntry> {
+        Vec::new()
+    }
+}
+
+impl CapturesPool {
+    /// Remove closed generations oldest first until `want_bytes` (counting `freed` already) are free.
+    fn evict_closed(&self, want_bytes: u64, mut freed: u64) -> u64 {
         for gen in self.closed() {
             if freed >= want_bytes {
                 break;
             }
-            // the index first: a removal cut short leaves frames no reader lists
-            if std::fs::remove_file(&gen.index).is_err() {
+            // the index first: a removal cut short leaves frames no reader lists. The owner's newest is
+            // emptied in place instead, so its number is never reused.
+            let let_go = |path: &Path, suffix: &str| if gen.newest { gen.scoped.replace(Path::new(&format!("{:016}.{suffix}", gen.generation)), b"") } else { std::fs::remove_file(path) };
+            if let_go(&gen.index, "index").is_err() {
                 continue;
             }
             freed = freed.saturating_add(gen.index_bytes);
-            match std::fs::remove_file(&gen.frames) {
+            match let_go(&gen.frames, "frames") {
                 Ok(()) => freed = freed.saturating_add(gen.frames_bytes),
                 // its index is gone, so no reader lists these frames, but their bytes are still held
                 Err(error) => continuum_base::probe!(class = "capture.generation.frames_kept", frames = %gen.frames.display(), error = %error,
@@ -110,10 +144,6 @@ impl ResourcePool for CapturesPool {
                 "a closed capture generation was removed under disk pressure, oldest first");
         }
         freed
-    }
-
-    fn snapshot(&self) -> Vec<ResourcePoolEntry> {
-        Vec::new()
     }
 }
 
@@ -151,5 +181,25 @@ mod tests {
         let left = capture_log::generations(&class.owned_by(owner)).expect("test: generations");
         assert_eq!(left, vec![2], "however much is asked, the live generation stays");
         drop(live);
+    }
+
+    // what this catches (Codex on #6236): a long-running node that can never reclaim its own capture
+    // history, because the writer holds every owner's generation open for its whole life and the pool
+    // skips every open generation; and a writer that cannot record again after a roll.
+    #[test]
+    fn under_pressure_a_running_writers_own_history_is_reclaimed_and_it_keeps_recording() {
+        let dir = tempfile::tempdir().expect("test: dir");
+        let class = TrackedDir::new("captures-pool-roll-test", dir.path().to_path_buf()).writer();
+        let owner = uuid::Uuid::new_v4();
+        let logs = crate::capture_log::OpenLogs::shared();
+        let record = || crate::capture_log::CaptureRecord { owner, kind: FrameKind::Submitted, header: vec![0x90], runs: vec![std::sync::Arc::from(&[7u8; 1024][..])], captured_at_ms: 1 };
+        logs.append(&class, &record()).expect("test: the running writer's first record");
+
+        let pool = CapturesPool::new(&TrackedDir::new("captures-pool-roll-test", dir.path().to_path_buf()).writer());
+        assert!(pool.evict_at_least(u64::MAX) > 1024, "the writer's own open generation rolled and was reclaimed");
+        assert_eq!(capture_log::generations(&class.owned_by(owner)).expect("test: generations"), vec![0], "its bytes are gone; its number stays, emptied, so it is never reused");
+
+        logs.append(&class, &record()).expect("test: the writer records again after the roll");
+        assert_eq!(capture_log::generations(&class.owned_by(owner)).expect("test: generations"), vec![0, 1], "into its next generation, the emptied one keeping its number");
     }
 }
