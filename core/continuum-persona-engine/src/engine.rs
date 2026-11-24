@@ -39,7 +39,7 @@ mod tests;
 
 use crate::persona::{MindId, PersonaId};
 use crate::pipeline::{HandoffRefusal, Identified, Refused, RetireRefusal, Roles, StageRefusal};
-use crate::residency::{Completion, Direction, Execute, Native, TierRefusal};
+use crate::residency::{Completion, Direction, Execute, Learns, Native, TierRefusal};
 use crate::persona::Carries;
 
 /// Why a mind was not staged. Either way she is handed back.
@@ -268,6 +268,63 @@ where
         }
         self.retry_retire()?;
         Ok(Some(self.release_retired()?))
+    }
+}
+
+/// Learning in place: the active mind learns a reply between her turns (IN-PROCESS-LEARNING.md, L2).
+/// Like a decode, it runs only on the mind bound now, after her submitted step landed.
+impl<U, T> PersonaEngine<U, T>
+where
+    U: Identified + Carries<T::Blocks>,
+    T: Learns,
+{
+    /// Attach `shadow` alone for `mind`: hold it until [`Self::detach_shadow`] confirms it off.
+    pub fn attach_shadow(&mut self, mind: MindId, shadow: &T::Shadow) -> Result<(), TierRefusal> {
+        self.decoding = None;
+        self.tier.attach(mind, shadow)
+    }
+
+    /// Take every adapter off the context; until this succeeds, an attached shadow is referenced.
+    pub fn detach_shadow(&mut self, mind: MindId) -> Result<(), TierRefusal> {
+        self.decoding = None;
+        self.tier.detach(mind)
+    }
+
+    /// What an attached `shadow`'s optimizer and a lesson of up to `reply_rows` tokens would hold, for `mind`:
+    /// `(optimizer, workspace)`. Waits for a submitted step to land first.
+    pub fn measure_shadow(&mut self, mind: MindId, shadow: &T::Shadow, reply_rows: std::num::NonZeroU32) -> Result<(Vec<T::Row>, Vec<T::Row>), TierRefusal> {
+        self.decoding = None;
+        self.tier.measure(mind, shadow, reply_rows)
+    }
+
+    /// Save `shadow` as a generation in `into`, bound to `binding`: the optimizer steps it holds.
+    pub fn save_shadow(&mut self, mind: MindId, shadow: &T::Shadow, into: &std::path::Path, binding: &str) -> Result<u64, TierRefusal> {
+        self.decoding = None;
+        self.tier.save(mind, shadow, into, binding)
+    }
+
+    /// Retain a shadow on the tier with the lease that pays for its optimizer.
+    pub fn retain_shadow(&mut self, shadow: &T::Shadow, lease: T::Lease) -> Result<(), T::Lease> {
+        self.tier.retain(shadow, lease)
+    }
+
+    /// Release a shadow once native code frees its optimizer; `mind` names whose it was.
+    pub fn release_shadow(&mut self, mind: MindId, shadow: &T::Shadow) -> Result<T::Lease, TierRefusal> {
+        self.tier.release(mind, shadow)
+    }
+
+    /// The active mind learns `reply` into `shadow`, asking `go_on` between chunks. Waits for her
+    /// submitted step to land first, so the reply begins from what she decoded.
+    pub fn learn_active(&mut self, shadow: &T::Shadow, reply: &T::Reply, admission: T::Admission, go_on: &mut dyn FnMut() -> bool) -> Result<T::Learned, (DecodeError, T::Admission)> {
+        // A reply learns only on a bound mind's stream: the tier refuses one naming a mind not bound.
+        if let Err(none) = self.active_mind() {
+            return Err((none, admission));
+        }
+        if let Err(refused) = self.tier.settle() {
+            return Err((refused.into(), admission));
+        }
+        self.decoding = None;
+        self.tier.learn(shadow, reply, admission, go_on).map_err(|(refused, admission)| (refused.into(), admission))
     }
 }
 

@@ -210,6 +210,11 @@ impl LlamaCppAdapter {
         self
     }
 
+    /// The backend serving now, never loading one: learning rides the engine serving her.
+    pub(crate) fn loaded_backend(&self) -> Option<Arc<LlamaCppBackend>> {
+        self.backend.read().clone()
+    }
+
     /// Lazy-load the backend on first use. Cheap if already loaded.
     pub(super) fn ensure_loaded(&self) -> Result<Arc<LlamaCppBackend>, String> {
         // Fast path — already loaded.

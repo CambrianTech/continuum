@@ -54,7 +54,7 @@ pub enum Learning {
     /// [`SeatState::Measured`].
     Measure(Measure),
     /// Load the measured shadow, under the weights lease the trainer took, and measure what its
-    /// optimizer and a lesson of up to `reply_rows` tokens would hold. Says [`SeatState::Loaded`].
+    /// optimizer and the lesson it was sized for would hold. Says [`SeatState::Loaded`].
     Load { seat: SeatId },
     /// Seat the loaded shadow under the optimizer and workspace leases the trainer took for it.
     Seat(Seat),
@@ -69,13 +69,16 @@ pub enum Learning {
     Release { seat: SeatId },
 }
 
-/// A seat to measure: whose, which shadow, how it learns, and the longest lesson it is sized for.
+/// A seat to measure: whose, which shadow, how it learns, and the lesson it is sized for.
 pub struct Measure {
     pub seat: SeatId,
     pub mind: PersonaId,
     pub shadow: ShadowSource,
     pub optimizer: Optimizer,
-    pub reply_rows: std::num::NonZeroU32,
+    /// The lesson the seat is sized for (Cormac on #6255): the port renders it with her template
+    /// and sizes the workspace at the whole rendered lesson, the most a reply on it can be. A later,
+    /// longer lesson is [`StepOutcome::TooLong`].
+    pub sized_for: Lesson,
 }
 
 /// A loaded seat, under the optimizer and workspace leases the trainer took for it.
@@ -132,7 +135,8 @@ pub enum SeatState {
     /// Measured: lease `weights`, then tell Load. Nothing is allocated yet.
     Measured { weights: Vec<MemoryRow> },
     /// Loaded (its weights held) and measured: lease `optimizer` and `workspace`, then tell Seat.
-    /// `workspace` is sized for a lesson of up to `reply_rows` tokens; a longer lesson is refused.
+    /// `workspace` is sized for a lesson of up to `reply_rows` tokens; a longer one is
+    /// [`StepOutcome::TooLong`].
     Loaded { optimizer: Vec<MemoryRow>, workspace: Vec<MemoryRow>, reply_rows: std::num::NonZeroU32 },
     /// Retained: lessons may be learned into it.
     Seated { optimizer: OptimizerStart },
@@ -170,6 +174,8 @@ pub enum StepOutcome {
     Unchanged,
     /// Native code marks the shadow's effects uncertain: it must not be kept or published.
     Uncertain { steps: u64 },
+    /// Longer than the seat was measured for: release it and measure again for `need` tokens.
+    TooLong { need: std::num::NonZeroU32 },
     /// Not learned; the shadow is as it was.
     Refused { why: Arc<str> },
 }
@@ -191,4 +197,29 @@ pub struct Unavailable {
 pub trait LearnPort: Send + Sync {
     /// Queue `learning` beside her turns. Its outcome arrives on the seat's stream.
     fn tell(&self, learning: Learning) -> Result<(), Unavailable>;
+}
+
+/// The node bus's one emitter for [`LEARNING_SAID`], claimed here once per process (a scheduler may
+/// be spawned again; this is the stream's producer). `None` when another producer holds it.
+fn said_emitter() -> Option<&'static parking_lot::Mutex<continuum_sage::dataflow::Emitter<Said>>> {
+    static SAID: std::sync::OnceLock<Option<parking_lot::Mutex<continuum_sage::dataflow::Emitter<Said>>>> = std::sync::OnceLock::new();
+    SAID.get_or_init(|| continuum_sage::component::node().emitter::<Said>(LEARNING_SAID).ok().map(parking_lot::Mutex::new)).as_ref()
+}
+
+/// Whether this process can say what the engine learned. A port that cannot is [`Unavailable`]
+/// before it takes any command, so no outcome (above all a Released) is ever told into silence
+/// (Codex on L2).
+pub(crate) fn speaks() -> bool {
+    said_emitter().is_some()
+}
+
+/// Say `said` on [`LEARNING_SAID`]; an emit never waits. Reached only through a port that
+/// [`speaks`].
+pub(crate) fn say(said: Said) {
+    match said_emitter() {
+        Some(emitter) => {
+            emitter.lock().emit(said);
+        }
+        None => continuum_base::probe!(class = "learning.said.unclaimed", said = ?said, "another producer holds learning/said: what the engine learned is not said"),
+    }
 }

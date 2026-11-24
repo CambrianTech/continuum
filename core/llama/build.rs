@@ -57,6 +57,19 @@ fn main() {
         .include(submodule.join("vendor"))
         .file(manifest_dir.join("chat_boundary.cpp"))
         .compile("continuum_chat_boundary");
+    // A fresh shadow for in-place learning (common's one adapter writer), before llama-common links.
+    println!("cargo:rerun-if-changed=learn_boundary.cpp");
+    cc::Build::new()
+        .cpp(true)
+        .std("c++17")
+        .flag_if_supported("/EHsc")
+        .flag_if_supported("/utf-8")
+        .include(submodule.join("include"))
+        .include(submodule.join("ggml/include"))
+        .include(submodule.join("common"))
+        .include(submodule.join("vendor"))
+        .file(manifest_dir.join("learn_boundary.cpp"))
+        .compile("continuum_learn_boundary");
     println!("cargo:rerun-if-changed={}", submodule.display());
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=msvc_cache.rs");

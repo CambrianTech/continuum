@@ -85,6 +85,7 @@ impl Driver<'_, '_> {
     /// a caller still reading gets her answer's end in order and this thread ends without waiting on
     /// Emit (Codex on #6208 at 162fbe5fa7: a full Emit dropped them with the driver).
     pub(super) fn close(mut self, turns: &mut Vec<Turn>, stages_on: &tokio::runtime::Handle) {
+        self.end_learning("the engine closed");
         for turn in turns.drain(..) {
             self.end(turn, Ending::Closed);
         }

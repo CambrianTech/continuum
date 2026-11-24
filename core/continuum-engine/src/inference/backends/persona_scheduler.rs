@@ -27,6 +27,8 @@ mod geometry;
 mod admission;
 pub(crate) use admission::Capacity;
 mod transition;
+pub(crate) mod lesson;
+pub(crate) use driver::{LearningJob, LearningLesson, LearningMeasuring};
 
 pub use geometry::{EngineGeometry, EngineState, Incarnation, Requested};
 
@@ -226,6 +228,8 @@ pub struct SchedulerConfig {
 pub(super) enum Submission {
     Turn(GenerationRequest),
     Suspend(tokio::sync::oneshot::Sender<Suspended>),
+    /// What the trainer told (IN-PROCESS-LEARNING.md, L2): worked between her turns.
+    Learning(driver::LearningJob),
 }
 
 /// What a stop can say about the records of the turns it ended. The record stage confirms it
@@ -356,6 +360,14 @@ impl Scheduler {
 
     /// The engine's published snapshot (CONTINUUM-ENGINE 4.16): its busy share and longest idle gap
     /// per window. Observational: grants commit through their owners.
+    /// Queue what the trainer told beside her turns. An engine whose thread is gone says the job
+    /// refused on learning/said: the trainer hears every outcome there.
+    pub(crate) fn learn(&self, job: LearningJob) {
+        if let Err(tokio::sync::mpsc::error::SendError(Submission::Learning(job))) = self.request_tx.send(Submission::Learning(job)) {
+            job.refuse("the engine stopped");
+        }
+    }
+
     pub fn snapshot(&self) -> tokio::sync::watch::Receiver<continuum_persona_engine::protocol::EngineSnapshot> {
         self.snapshot.clone()
     }

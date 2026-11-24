@@ -26,6 +26,7 @@ mod llama_cpp_backend;
 pub use llama_cpp_backend::{Answer, TurnAnswer, TurnPrompt};
 mod embedding_lane;
 mod embedding_batch;
+mod learn_port;
 pub(crate) use embedding_batch::{ContextBytes, EmbedWindow, EmbeddingBatch, NO_TRAINED_CONTEXT};
 
 #[cfg(test)]

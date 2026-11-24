@@ -27,6 +27,8 @@ use super::optimizer_slots::{OptimizerLease, Role, Slot, Slots};
 
 mod memory;
 pub use memory::{MemoryRole, MemoryRow};
+mod shadow;
+pub use shadow::FreshGeometry;
 
 use super::*;
 
@@ -312,9 +314,9 @@ impl<'c, 'm> Learner<'c, 'm> {
     /// Retain a shadow before she learns into it: the context keeps the adapter and its optimizer
     /// lease until [`Learner::release_shadow`]. Retaining one already retained hands the new lease
     /// back (the first one stays, with whatever it already admitted).
-    pub fn retain_shadow(&mut self, adapter: Arc<LoraAdapter>, lease: Box<dyn OptimizerLease>) -> Result<(), Box<dyn OptimizerLease>> {
-        let key = ShadowKey::of(&adapter);
-        self.holder().shadows.retain(key, Retained { _adapter: adapter, lease, slots: Slots::default() }).map_err(|refused| refused.lease)
+    pub fn retain_shadow(&mut self, adapter: &Arc<LoraAdapter>, lease: Box<dyn OptimizerLease>) -> Result<(), Box<dyn OptimizerLease>> {
+        let key = ShadowKey::of(adapter);
+        self.holder().shadows.retain(key, Retained { _adapter: Arc::clone(adapter), lease, slots: Slots::default() }).map_err(|refused| refused.lease)
     }
 
     /// Release a shadow's optimizer: only when native code confirms no optimizer references the
