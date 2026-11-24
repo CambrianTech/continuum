@@ -39,15 +39,24 @@ pub struct SeatId(pub uuid::Uuid);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct StepId(pub uuid::Uuid);
 
-/// What the trainer tells the engine, in this order for a seat: Measure, then Seat once the trainer
-/// leased what was measured, then Learn and Checkpoint as it chooses, then Release.
+/// What the trainer tells the engine, in this order for a seat: Measure, Load, Seat, each after the
+/// trainer leased what the step before measured; then Learn and Checkpoint as it chooses; then
+/// Release.
+///
+/// Native measurement needs the serving context, which only the engine thread holds, and leasing
+/// takes the resource authority's lock, which the engine thread must never wait on (Codex on
+/// #6254): so the engine measures and the trainer leases. And native code measures a shadow's
+/// optimizer only once the shadow is loaded and attached (`opt_untrainable`, the check every
+/// training entry makes): so its weights are measured and leased first, then loaded, then the
+/// optimizer and workspace are measured and leased.
 pub enum Learning {
-    /// Measure what seating `shadow` for `mind` and learning lessons up to `reply_rows` tokens long
-    /// would hold, allocating nothing. Native measurement needs the serving context, which only the
-    /// engine thread holds; leasing takes the resource authority's lock, which the engine thread
-    /// must never wait on (Codex on #6254). So the engine measures and the trainer leases.
+    /// Measure what loading `shadow` for `mind` would hold, allocating nothing. Says
+    /// [`SeatState::Measured`].
     Measure(Measure),
-    /// Seat the measured shadow under the leases the trainer took for it.
+    /// Load the measured shadow, under the weights lease the trainer took, and measure what its
+    /// optimizer and a lesson of up to `reply_rows` tokens would hold. Says [`SeatState::Loaded`].
+    Load { seat: SeatId },
+    /// Seat the loaded shadow under the optimizer and workspace leases the trainer took for it.
     Seat(Seat),
     /// Learn one lesson into a seated shadow.
     Learn(Learn),
@@ -69,21 +78,11 @@ pub struct Measure {
     pub reply_rows: std::num::NonZeroU32,
 }
 
-/// A measured seat, under the leases the trainer took for it.
+/// A loaded seat, under the optimizer and workspace leases the trainer took for it.
 pub struct Seat {
     pub seat: SeatId,
     /// A non-owning view of the optimizer's lease: native code asks it before each allocation.
     pub lease: Box<dyn OptimizerLease>,
-}
-
-/// What a measured seat would hold.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Need {
-    pub weights: Vec<MemoryRow>,
-    pub optimizer: Vec<MemoryRow>,
-    /// The shared workspace for a lesson of up to `reply_rows` tokens: a longer lesson is refused.
-    pub workspace: Vec<MemoryRow>,
-    pub reply_rows: std::num::NonZeroU32,
 }
 
 /// Where a seat's shadow comes from (Cormac on #6254). Either way the engine makes it on her resident
@@ -116,7 +115,7 @@ pub struct Lesson {
 }
 
 /// What the engine says on [`LEARNING_SAID`], in the order it happened to each seat. The stream is
-/// bounded by what the trainer told: the engine says one state per Measure, Seat and Release, one outcome
+/// bounded by what the trainer told: the engine says one state per Measure, Load, Seat and Release, one outcome
 /// per Learn and one per Checkpoint, and nothing on its own, so the trainer that tells at its own
 /// cadence also sets how much can wait in it. A Generation answers the Checkpoints of its seat in
 /// the order they were told.
@@ -130,10 +129,13 @@ pub enum Said {
 /// Where a seat stands.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SeatState {
-    /// Measured: lease `need`, then tell Seat. Nothing is allocated yet.
-    Measured { need: Need },
-    /// Loaded and retained: lessons may be learned into it. `bytes` is the shadow's weights.
-    Seated { bytes: u64, optimizer: OptimizerStart },
+    /// Measured: lease `weights`, then tell Load. Nothing is allocated yet.
+    Measured { weights: Vec<MemoryRow> },
+    /// Loaded (its weights held) and measured: lease `optimizer` and `workspace`, then tell Seat.
+    /// `workspace` is sized for a lesson of up to `reply_rows` tokens; a longer lesson is refused.
+    Loaded { optimizer: Vec<MemoryRow>, workspace: Vec<MemoryRow>, reply_rows: std::num::NonZeroU32 },
+    /// Retained: lessons may be learned into it.
+    Seated { optimizer: OptimizerStart },
     /// Not seated; nothing is held.
     Refused { why: Arc<str> },
     /// Released: native code freed its optimizer and the lease dropped.
