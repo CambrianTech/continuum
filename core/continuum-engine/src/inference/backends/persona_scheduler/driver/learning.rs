@@ -30,6 +30,9 @@ pub(crate) enum Job {
     Learn(Lesson),
     /// A Measure, its lesson rendered on the submitter's thread into the rows it is sized for.
     Measure(Measuring),
+    /// A Measure whose lesson could not be rendered: the driver says whether that seat already holds
+    /// anything (Kept) or never existed (Refused), never the port, which cannot see the seats (Codex).
+    Unmeasured { seat: SeatId, why: Arc<str> },
 }
 
 /// A seat to measure, its lesson rendered into the rows its workspace is sized for.
@@ -56,6 +59,7 @@ impl Job {
         match self {
             Job::Learn(Lesson { seat, step, .. }) => say(Said::Step { seat, step, outcome: StepOutcome::Refused { why } }),
             Job::Measure(Measuring { seat, .. }) => say(Said::Seat { seat, state: SeatState::Refused { why } }),
+            Job::Unmeasured { seat, .. } => say(Said::Seat { seat, state: SeatState::Refused { why } }),
             Job::Told(Told::Learn(learn)) => say(Said::Step { seat: learn.seat, step: learn.step, outcome: StepOutcome::Refused { why } }),
             Job::Told(Told::Measure(measure)) => say(Said::Seat { seat: measure.seat, state: SeatState::Refused { why } }),
             // A seat told to load, seat or release already holds what it holds: kept, never ended.
@@ -85,8 +89,15 @@ impl Learning {
 
     /// Everything still waiting, refused for `why` (the engine is stopping or closed).
     pub(super) fn refuse_waiting(&mut self, why: &str) {
-        for job in self.waiting.drain(..) {
-            job.refuse(why);
+        let waiting: Vec<Job> = self.waiting.drain(..).collect();
+        for job in waiting {
+            match job {
+                // A measure for a seat that already holds something leaves it as it was.
+                Job::Measure(Measuring { seat, .. }) | Job::Unmeasured { seat, .. } if self.seats.contains_key(&seat) => {
+                    say(Said::Seat { seat, state: SeatState::Kept { why: why.into() } });
+                }
+                job => job.refuse(why),
+            }
         }
     }
 }
@@ -118,6 +129,10 @@ impl Driver<'_, '_> {
         let Some(job) = self.learning.waiting.pop_front() else { return };
         match job {
             Job::Measure(sized) => self.measure(sized),
+            Job::Unmeasured { seat, why } => {
+                let state = if self.learning.seats.contains_key(&seat) { SeatState::Kept { why } } else { SeatState::Refused { why } };
+                say(Said::Seat { seat, state });
+            }
             told @ Job::Told(Told::Measure(_)) => told.refuse("the measure reached the engine unrendered"),
             Job::Told(Told::Load { seat }) => self.load(seat),
             Job::Told(Told::Seat(seated)) => self.seat(seated),

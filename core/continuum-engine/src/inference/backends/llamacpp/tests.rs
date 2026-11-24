@@ -247,6 +247,11 @@
             assert!(matches!(next(&mut heard).await, Said::Seat { state: SeatState::Measured { .. }, .. }));
             assert!(port.tell(Learning::Load { seat: loaded }).is_ok());
             assert!(matches!(next(&mut heard).await, Said::Seat { state: SeatState::Loaded { .. }, .. }));
+            // A repeated Measure whose lesson cannot render (no reply of hers) on that loaded seat keeps it.
+            let unrenderable = Lesson { messages: vec![serde_json::json!({"role": "user", "content": "no reply"})], tools: None };
+            let refit = crate::inference::llama_server::FreshShadow { name: "loaded".into(), rank: 4, alpha: 8.0, targets: vec!["attn_q".into()], top_layers: 0, seed: 7 };
+            assert!(port.tell(Learning::Measure(Measure { seat: loaded, mind: continuum_persona_engine::persona::PersonaId(her), shadow: ShadowSource::Fresh(refit), optimizer, sized_for: unrenderable })).is_ok());
+            assert!(matches!(next(&mut heard).await, Said::Seat { state: SeatState::Kept { .. }, .. }), "a malformed repeat Measure on a loaded seat keeps it, never ends it");
             assert!(port.tell(Learning::Release { seat: loaded }).is_ok());
             assert!(matches!(next(&mut heard).await, Said::Seat { state: SeatState::Released, .. }), "a loaded shadow is released");
             assert!(port.tell(Learning::Release { seat: SeatId(uuid::Uuid::new_v4()) }).is_ok());

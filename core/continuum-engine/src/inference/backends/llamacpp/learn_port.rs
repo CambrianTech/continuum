@@ -4,7 +4,7 @@
 
 use crate::inference::backends::persona_scheduler::lesson::{self, LessonRefusal};
 use crate::inference::backends::persona_scheduler::{LearningJob, LearningLesson, LearningMeasuring};
-use crate::inference::learning::{say, speaks, LearnPort, Learning, Said, SeatState, StepOutcome, Unavailable};
+use crate::inference::learning::{say, speaks, LearnPort, Learning, Said, StepOutcome, Unavailable};
 
 use super::LlamaCppBackend;
 
@@ -43,16 +43,11 @@ impl LearnPort for LlamaCppBackend {
                 // Sized at the whole rendered lesson: the most a reply on it can be (from no prefix).
                 let rows = lesson::render(&measure.sized_for, |request| self.rendered_prompt(request), |text| self.model.tokenize(text, true, true).map_err(LessonRefusal::Template))
                     .map(|rendered| u32::try_from(rendered.tokens.len()).ok().and_then(std::num::NonZeroU32::new));
+                // A render refusal goes to the driver, which alone knows whether this seat holds anything.
                 match rows {
                     Ok(Some(reply_rows)) => LearningJob::Measure(LearningMeasuring { seat: measure.seat, mind: measure.mind, shadow: measure.shadow, optimizer: measure.optimizer, reply_rows }),
-                    Ok(None) => {
-                        say(Said::Seat { seat: measure.seat, state: SeatState::Refused { why: "the lesson it is sized for renders to no rows a seat can hold".into() } });
-                        return Ok(());
-                    }
-                    Err(refused) => {
-                        say(Said::Seat { seat: measure.seat, state: SeatState::Refused { why: refused.to_string().into() } });
-                        return Ok(());
-                    }
+                    Ok(None) => LearningJob::Unmeasured { seat: measure.seat, why: "the lesson it is sized for renders to no rows a seat can hold".into() },
+                    Err(refused) => LearningJob::Unmeasured { seat: measure.seat, why: refused.to_string().into() },
                 }
             }
             told => LearningJob::Told(told),
