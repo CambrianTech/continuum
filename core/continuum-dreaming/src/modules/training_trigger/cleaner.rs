@@ -108,10 +108,17 @@ impl Sweepable<'_> {
     }
 }
 
+/// What a sweep freed, and the shadows it removed (their names leave the cleaner's settled set).
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Swept {
+    pub freed: u64,
+    pub removed: Vec<std::ffi::OsString>,
+}
+
 /// Every sweepable shadow in `train_dir` no seat holds, oldest first, released until `want` bytes
-/// are freed. Returns the bytes freed.
-pub fn sweep(train_dir: &Path, held: &BTreeSet<std::ffi::OsString>, sweepable: &Sweepable<'_>, want: u64) -> u64 {
-    let Ok(entries) = std::fs::read_dir(train_dir) else { return 0 };
+/// are freed.
+pub fn sweep(train_dir: &Path, held: &BTreeSet<std::ffi::OsString>, sweepable: &Sweepable<'_>, want: u64) -> Swept {
+    let Ok(entries) = std::fs::read_dir(train_dir) else { return Swept::default() };
     let mut shadows: Vec<(std::time::SystemTime, std::ffi::OsString)> = entries
         .flatten()
         .filter(|e| e.file_name().to_str().is_some_and(is_shadow))
@@ -119,16 +126,17 @@ pub fn sweep(train_dir: &Path, held: &BTreeSet<std::ffi::OsString>, sweepable: &
         .filter(|(written, name)| sweepable.admits(name, *written))
         .collect();
     shadows.sort();
-    let mut freed = 0u64;
+    let mut swept = Swept::default();
     for (_, name) in shadows {
-        if freed >= want {
+        if swept.freed >= want {
             break;
         }
         if let Released::Removed(bytes) = release(&name, train_dir, held) {
-            freed = freed.saturating_add(bytes);
+            swept.freed = swept.freed.saturating_add(bytes);
+            swept.removed.push(name);
         }
     }
-    freed
+    swept
 }
 
 /// What wakes the cleaner.
@@ -137,7 +145,7 @@ pub enum Wake {
     Seated(Arc<Seated>),
     Disk(Arc<Volumes>),
     /// File work it handed off, finished.
-    Done { what: &'static str, freed: u64 },
+    Done { what: &'static str, freed: u64, removed: Vec<std::ffi::OsString> },
 }
 
 impl From<Event<Settled>> for Wake {
@@ -205,9 +213,11 @@ impl Component for Cleaner {
                     let dir = self.train_dir.clone();
                     let held = Arc::clone(&self.held);
                     ctx.need(Urgency::Want);
-                    ctx.off(move || release(&name, &dir, &held), |released| match released {
-                        Released::Removed(freed) => Wake::Done { what: "settled", freed },
-                        Released::Kept(_) | Released::Failed(_) => Wake::Done { what: "settled-kept", freed: 0 },
+                    let removing = name.clone();
+                    ctx.off(move || release(&name, &dir, &held), move |released| match released {
+                        Released::Removed(freed) => Wake::Done { what: "settled", freed, removed: vec![removing] },
+                        // kept or failed: its name stays settled, for a later sweep to retry
+                        Released::Kept(_) | Released::Failed(_) => Wake::Done { what: "settled-kept", freed: 0, removed: Vec::new() },
                     });
                 }
             }
@@ -227,11 +237,19 @@ impl Component for Cleaner {
                 let booted = self.booted;
                 self.sweeping = true;
                 ctx.need(Urgency::Want);
-                ctx.off(move || sweep(&dir, &held, &Sweepable { booted, settled: &settled }, want), |freed| Wake::Done { what: "swept", freed });
+                ctx.off(move || sweep(&dir, &held, &Sweepable { booted, settled: &settled }, want), |swept| Wake::Done { what: "swept", freed: swept.freed, removed: swept.removed });
             }
-            Wake::Done { what, freed } => {
+            Wake::Done { what, freed, removed } => {
                 if what == "swept" {
                     self.sweeping = false;
+                }
+                // a removed shadow is gone: its name leaves the settled set, which so holds only what may
+                // still be on disk (Codex on #6240: it grew with every seat ever settled)
+                if !removed.is_empty() {
+                    let settled = Arc::make_mut(&mut self.settled);
+                    for name in &removed {
+                        settled.remove(name);
+                    }
                 }
                 continuum_base::probe!(class = "training.shadows.cleaned", what, freed,
                     "the engine-train cleaner released shadows nothing holds");
@@ -304,8 +322,9 @@ mod tests {
         let reported = dir.path().join("engine-train/../engine-train").join(&before_boot);
         let held: BTreeSet<OsString> = [shadow_name(&reported).expect("test: a name")].into();
 
-        let freed = sweep(&train, &held, &Sweepable { booted, settled: &settled }, u64::MAX);
-        assert_eq!(freed, 6, "only the settled shadow written since boot goes");
+        let swept = sweep(&train, &held, &Sweepable { booted, settled: &settled }, u64::MAX);
+        assert_eq!(swept.freed, 6, "only the settled shadow written since boot goes");
+        assert_eq!(swept.removed, vec![settled_name.clone()], "and it names what it removed, so the owner prunes it (Codex on #6240)");
         assert!(!train.join(&settled_name).exists());
         assert!(train.join(&unsettled).exists(), "a shadow written since boot that never settled may be a live seat's");
         assert!(train.join(&before_boot).exists(), "a held shadow survives whatever path spelled it");
