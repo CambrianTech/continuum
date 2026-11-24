@@ -202,6 +202,30 @@ pub(super) async fn lease_rows(authority: &Authority, admission: Admission<'_>, 
     Ok(leases)
 }
 
+/// Lease what the in-process engine measured for a seat (`learning::SeatState::Measured` or
+/// `Loaded`), one guard per memory class (device rows as VRAM, host rows as RAM), in ONE attempt
+/// under the serving lifecycle gate, as [`lease_rows`] does for the HTTP engine. A shortfall answers
+/// `AwaitingMemory` and the guards already taken drop with it. The trainer keeps the guards; the
+/// engine gets `learning::LearningMemory::from_rows` over them, a view that owns nothing.
+pub fn lease_memory(authority: &Authority, consumer: &str, rows: &[crate::inference::learning::MemoryRow]) -> Result<Vec<(LeaseKind, u64, LeaseGuard)>, SeatRefusal> {
+    let mut leases = Vec::new();
+    for (kind, resource, host) in [(LeaseKind::Vram, ResourceKind::Vram, false), (LeaseKind::Ram, ResourceKind::Ram, true)] {
+        let bytes = rows
+            .iter()
+            .filter(|row| row.host == host)
+            .try_fold(0u64, |sum, row| sum.checked_add(row.bytes))
+            .ok_or_else(|| SeatRefusal::Unleased("the measured rows overflow a byte count".into()))?;
+        if bytes == 0 {
+            continue;
+        }
+        let guard = crate::inference::training_admission::try_training_memory(&authority.resources, Admission::Free(&authority.serving), consumer, resource, bytes)
+            .map_err(SeatRefusal::Unleased)?
+            .map_err(SeatRefusal::AwaitingMemory)?;
+        leases.push((kind, bytes, guard));
+    }
+    Ok(leases)
+}
+
 impl Seat {
     /// Unload the shadow (the engine releases its optimizer first). Its residency stays until
     /// released.
