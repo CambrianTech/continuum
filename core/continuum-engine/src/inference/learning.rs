@@ -16,8 +16,8 @@
 //! the seat end on [`LEARNING_SAID`], whatever ended it: an outcome, a refusal, a dropped command or a
 //! quarantine's release.
 //!
-//! No engine is a typed [`Unavailable`] that returns the command (its guards drop at the caller),
-//! never a fallback to another path.
+//! No engine is a typed [`Unavailable`] that returns the command to the trainer, which still owns its
+//! guards; never a fallback to another path.
 
 use std::num::NonZeroU64;
 use std::path::PathBuf;
@@ -174,7 +174,7 @@ pub enum GenerationOutcome {
     Refused { why: Arc<str> },
 }
 
-/// No engine took the command: it comes back, and its guards drop with it at the caller.
+/// No engine took the command: it comes back to the trainer.
 pub struct Unavailable {
     pub returned: Learning,
 }
