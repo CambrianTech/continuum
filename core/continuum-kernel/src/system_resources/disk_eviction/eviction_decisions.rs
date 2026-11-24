@@ -19,6 +19,10 @@ pub(super) const OWNED: &[&str] = &[
         "citizens",
         // Owner: DevWorktreePool: clean, pushed, idle, unborrowed checkouts only (git's facts).
         "worktrees",
+        // Owner: AircWorktreePool: airc's own drain removes checkouts of Merged/Closed cards only;
+        // a claimed or reviewed card stays however clean (81 GB sat in no pool on the IntelMac,
+        // 2026-11-24, while relief wanted 74 GB and freed 67 KB).
+        "airc-worktrees",
         "genome-models",
         "logs",
         "probes",
@@ -221,15 +225,8 @@ pub(super) const DEFERRED: &[(&str, &str)] = &[
         ),
         ("airc-mirrors", "card d166e4f2 (Cormac): never pruned in place (preciousObjects; card clones borrow its objects); evict a whole mirror only when no live card clone's alternates name it. Owner not built"),
         // airc's own state (card 0af5d5ec). Deferred, never owned by a continuum
-        // delete: every byte's safety is a fact only airc holds — which worktree
-        // carries unpushed work, which store pages are free, which log the daemon
-        // still writes. Each owner drains through airc.
-        (
-            "airc-worktrees",
-            "186ee967: AircWorktreePool — the broker runs airc's own drain (`airc work \
-             cleanup --force`: Merged/Closed cards in every subscribed room, airc#1574), \
-             never a dirty or unpushed worktree, never a continuum rm",
-        ),
+        // delete: every byte's safety is a fact only airc holds — which store pages are
+        // free, which log the daemon still writes. Each owner drains through airc.
         (
             "airc-store",
             "airc bdf34c4c: retention reclaims the pages it frees (the pass removes rows \

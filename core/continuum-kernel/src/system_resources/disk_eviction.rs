@@ -37,6 +37,7 @@ use std::sync::{Arc, RwLock};
 
 use crate::paging::pool::{ResourcePool, ResourcePoolEntry};
 
+use super::citizen_workspace_pool::is_cargo_target;
 use super::disk_reporters::{dir_size_bytes, TrackedDir};
 
 // The tests gate themselves (`#![cfg(test)]` in tests.rs), so the scanner reads the file as test code.

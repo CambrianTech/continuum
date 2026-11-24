@@ -169,7 +169,7 @@ pub fn standard_tracked_dirs(home: &std::path::Path, continuum: &std::path::Path
         // 0af5d5ec. Measured IntelMac 2026-10-15T22:28Z: worktrees 103 GB (one per claimed
         // card, never drained), events.sqlite 678 MiB, the daemon log 523 MiB (written into
         // whichever scope spawned the daemon, here the project's `.airc`). airc owns every
-        // byte; continuum weighs them so pressure names its biggest holder.
+        // byte (its worktrees drain through `airc work cleanup`); continuum weighs them.
         TrackedDir::new("airc-worktrees", home.join(".airc/worktrees")),
         // File roots with the companions they own: the store's WAL and shared-memory
         // index, the log's one rotated predecessor (airc 551fe5ae).

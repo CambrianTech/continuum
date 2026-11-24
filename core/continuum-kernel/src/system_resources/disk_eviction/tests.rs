@@ -298,6 +298,51 @@
       }
     }
 
+    // what this catches: the IntelMac, 2026-11-24: relief asked `cargo-target-wt` for 74 GB on
+    // every pass and it gave 0, because the pass laddered the class root, which no build writes,
+    // while 60 GB of per-card trees (`cargo-target-wt/<card>`) sat below it. A root cargo did
+    // not write is a holder of trees: the tree built longest ago is cut first, and a want it meets
+    // leaves the newer tree whole.
+    #[test]
+    fn a_root_of_per_card_trees_cuts_the_longest_unbuilt_tree_first() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let tree = |name: &str, built_secs_ago: u64| {
+            let at = tmp.path().join(name);
+            seeded_target(&at);
+            std::fs::write(at.join("CACHEDIR.TAG"), "Signature: 8a477f597d28d172789f06886806bc55\n").expect("tag");
+            std::fs::write(at.join(".rustc_info.json"), "{}").expect("rustc info");
+            let built = std::time::SystemTime::now() - std::time::Duration::from_secs(built_secs_ago);
+            for dir in [at.clone(), at.join("debug"), at.join("release")] {
+                filetime::set_file_mtime(&dir, filetime::FileTime::from_system_time(built)).expect("mtime");
+            }
+            at
+        };
+        let fresh = tree("card-fresh", 60);
+        let stale = tree("card-stale", 86_400);
+        let tracked = TrackedDir::new("cargo-target-wt", tmp.path().canonicalize().expect("root"));
+        tracked.set_bytes(dir_size_bytes(tmp.path()));
+        let pool = fixture_pool(tracked, 1);
+
+        assert_eq!(CargoTargetPool::trees_longest_unbuilt_first(tmp.path()), vec![stale.clone(), fresh.clone()]);
+        let freed = past_spawn_windows(&pool, |f| *f, || pool.evict_at_least(1000));
+        assert_eq!(freed, 4000, "the stale tree's incremental rung alone meets the want");
+        assert!(!stale.join("debug/incremental").exists());
+        assert!(fresh.join("debug/incremental/a.o").exists(), "the tree built a minute ago is untouched");
+
+        // A build holds the stale tree (its card retired mid-build, Codex): that tree stands, the
+        // next gives, and the held tree is reclaimable as soon as its build lets go.
+        let building = continuum_host::durable::lock_path(&stale.join(".cargo-lock"), false).expect("the build takes its lock first");
+        let freed = pool.evict_at_least(u64::MAX);
+        assert_eq!(freed, 2000 + 3000 + 4000, "only the fresh tree's ladder, while the stale one builds");
+        assert!(stale.join("tests/t.bin").exists() && stale.join("debug/lib.rlib").exists(), "a tree under a build lock is untouched");
+        drop(building);
+
+        let freed = past_spawn_windows(&pool, |f| *f, || pool.evict_at_least(u64::MAX));
+        assert_eq!(freed, 2000 + 3000, "released, the rest of the stale tree");
+        assert!(!stale.join("tests").exists());
+        assert!(stale.join("release/keep.bin").exists() && fresh.join("release/keep.bin").exists(), "release outputs survive in both");
+    }
+
     #[test]
     fn ladder_frees_in_order_and_preserves_release_outputs() {
         let tmp = tempfile::tempdir().expect("tempdir");

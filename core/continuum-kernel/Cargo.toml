@@ -74,6 +74,7 @@ objc = { workspace = true }
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }
+filetime = { workspace = true }
 source-hygiene = { path = "../source-hygiene" }
 
 [features]

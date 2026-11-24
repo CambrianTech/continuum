@@ -71,7 +71,7 @@ fn candidates(root: &Path) -> Vec<(PathBuf, SystemTime)> {
 // derived-or-floor: a local git status or rev-parse on one worktree; the bound keeps a wedged git from stalling relief
 const GIT_BOUND: Duration = Duration::from_secs(10);
 
-fn git(dir: &Path, args: &[&str]) -> Option<String> {
+pub(super) fn git(dir: &Path, args: &[&str]) -> Option<String> {
     let dir = dir.to_str()?; // a non-UTF-8 path is never judged safe to remove
     let mut all = vec!["-C", dir];
     all.extend_from_slice(args);

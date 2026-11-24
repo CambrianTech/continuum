@@ -439,6 +439,7 @@ similar = "2.6"
 syn = { version = "2", features = ["extra-traits", "full"] }
 sysinfo = "0.33"
 tempfile = "3"
+filetime = "0.2"
 toml = "0.8"
 wide = "0.7"
 windows-sys = { version = "0.60", features = ["Win32_Foundation"] }
