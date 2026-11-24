@@ -77,6 +77,7 @@ regex = { workspace = true }
 [dev-dependencies]
 continuum-kernel = { path = "../continuum-kernel", features = ["test-fixtures"] }  # every test build of this crate gets the per-process continuum home (card d11d9827)
 continuum-capture = { path = "../continuum-capture", features = ["test-fixtures"] }  # the capture's inline sink and playback fixtures
+continuum-grounding = { path = "../continuum-grounding", features = ["test-fixtures"] }  # the shared room-line builder (room_thread::said)
 tokio = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }
 continuum-host = { path = "../continuum-host", features = ["test-fixtures"] }

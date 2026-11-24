@@ -219,5 +219,5 @@ async fn her_thread_holds_a_line_before_it_calls_her() {
     }
     let thread = kimi.resident.handle().thread(room).expect("she joined the room, so she threads it"); // JUSTIFIED: Joined reached her thread before her senses
     assert!(thread.holds(event), "the revision she pins holds the line that called her");
-    assert!(matches!(thread.seed, crate::cognition::room::thread::Seed::Unread(_) | crate::cognition::room::thread::Seed::Pending), "no runtime: the room's history is not claimed read");
+    assert!(matches!(thread.seed, continuum_grounding::room_thread::Seed::Unread(_) | continuum_grounding::room_thread::Seed::Pending), "no runtime: the room's history is not claimed read");
 }

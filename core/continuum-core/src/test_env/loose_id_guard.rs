@@ -101,8 +101,6 @@ const LOOSE_IDS: &[LooseId] = &[
     LooseId { file: "cognition/conversation/channel_items.rs", field: "persona_id", why: "pending: airc wire id, arrives as text from the daemon. Types when the airc-side ids do — #396" },
     LooseId { file: "cognition/conversation/channel_items.rs", field: "room_id", why: "pending: airc wire id, arrives as text from the daemon. Types when the airc-side ids do — #396" },
     LooseId { file: "cognition/conversation/channel_items.rs", field: "sender_id", why: "pending: airc wire id, arrives as text from the daemon. Types when the airc-side ids do — #396" },
-    LooseId { file: "persona/durable_history.rs", field: "message_id", why: "pending: airc wire id, arrives as text from the daemon. Types when the airc-side ids do — #396" },
-    LooseId { file: "persona/durable_history.rs", field: "sender_id", why: "pending: airc wire id, arrives as text from the daemon. Types when the airc-side ids do — #396" },
     LooseId { file: "engram.rs", field: "message_id", why: "pending: airc wire id, arrives as text from the daemon. Types when the airc-side ids do — #396" },
     LooseId { file: "engram.rs", field: "room_id", why: "pending: airc wire id, arrives as text from the daemon. Types when the airc-side ids do — #396" },
     LooseId { file: "engram.rs", field: "sender_id", why: "pending: airc wire id, arrives as text from the daemon. Types when the airc-side ids do — #396" },

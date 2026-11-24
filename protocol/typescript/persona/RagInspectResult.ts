@@ -10,8 +10,8 @@ import type { RagInspectModelResponse } from "./RagInspectModelResponse";
  *   the actual model response is captured in `modelResponse`.
  * - "Which layer is broken?" — per-source deliveries and each item's
  *   levels (`hasSummary`, `hasPointer`).
- * - "Is this contextually relevant?" — per-item score + age +
- *   peer in the deliveries.
+ * - "Is this contextually relevant?" — per-item age + peer in the
+ *   deliveries.
  */
 export type RagInspectResult = { personaId: string, personaName: string, contextWindow: number, deliveries: Array<RagInspectDelivery>, 
 /**

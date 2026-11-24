@@ -84,9 +84,12 @@ impl SubstrateContext {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RagContext {
     pub substrate: SubstrateContext,
-    // Future RAG-specific extensions go here. Empty for now is fine —
-    // the wrapper exists so future fields don't change trait
-    // signatures.
+    /// Her thread of the turn's room at the revision the turn pinned: every source renders what
+    /// was said from this one value, read once by the turn, never re-read by a source. `None` where
+    /// the turn has no room or she has no thread of it. Not serialized: a capture names the events
+    /// it rendered instead (`PromptCall::thread`), and the airc room holds them.
+    #[serde(skip)]
+    pub thread: Option<std::sync::Arc<crate::room_thread::RoomThread>>,
 }
 
 impl std::ops::Deref for RagContext {
@@ -100,6 +103,7 @@ impl RagContext {
     pub fn for_persona(persona_id: uuid::Uuid, now_ms: u64) -> Self {
         Self {
             substrate: SubstrateContext::for_persona(persona_id, now_ms),
+            thread: None,
         }
     }
 
@@ -107,7 +111,13 @@ impl RagContext {
     pub fn for_persona_in_room(persona_id: uuid::Uuid, now_ms: u64, room: uuid::Uuid) -> Self {
         Self {
             substrate: SubstrateContext::for_persona_in_room(persona_id, now_ms, room),
+            thread: None,
         }
+    }
+
+    /// The same context carrying the thread revision the turn pinned.
+    pub fn pinning(self, thread: Option<std::sync::Arc<crate::room_thread::RoomThread>>) -> Self {
+        Self { thread, ..self }
     }
 }
 

@@ -238,7 +238,7 @@ async fn a_turn_cancelled_at_its_read_receipt_still_counts_its_stop() {
     struct NeverReturns(Arc<tokio::sync::Notify>);
     #[async_trait::async_trait]
     impl crate::cognition::llm_deliberation_faculty::ReadReceipt for NeverReturns {
-        async fn read_through(&self, _room: Uuid, _event: Uuid) {
+        async fn read_through(&self, _room: Uuid, _record: &airc_core::TranscriptEvent) {
             self.0.notify_one();
             std::future::pending::<()>().await;
         }
@@ -251,8 +251,12 @@ async fn a_turn_cancelled_at_its_read_receipt_still_counts_its_stop() {
         .with_context_window(32_768)
         .with_read_receipt(Arc::new(NeverReturns(entered.clone())));
     let mut ws = Workspace::new("fix the parser");
-    let source = crate::cognition::workspace::TurnSource { room: Uuid::new_v4(), event: Uuid::new_v4(), lamport: 1 };
+    let (room, joel) = (Uuid::new_v4(), Uuid::new_v4());
+    let source = crate::cognition::workspace::TurnSource { room, event: Uuid::from_u128(1), lamport: 1 };
     ws.turns = vec![crate::cognition::workspace::BurstTurn::attributed(false, "Joel", "fix the parser", None).from_event(source)];
+    // The prompt's pinned thread holds the line, so its receipt resolves to that airc event.
+    let thread = continuum_grounding::room_thread::RoomThread::new(room).with([continuum_grounding::room_thread::said(room, 1, 1, joel, "fix the parser")], 32).unwrap_or_default();
+    ws.said = Arc::new(crate::cognition::room::said::Said::of(Arc::new(thread), Uuid::new_v4()));
 
     let before = crate::cognition::health_ledger::hour(crate::cognition::health_ledger::Read::Peek).stops;
     tokio::select! {

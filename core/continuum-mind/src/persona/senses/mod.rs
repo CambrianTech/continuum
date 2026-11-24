@@ -94,8 +94,8 @@ impl Handle {
     }
 
     /// Her thread of `room` as it is now: the revision a turn pins. `None` before she joined it.
-    pub fn thread(&self, room: Uuid) -> Option<Arc<crate::cognition::room::thread::RoomThread>> {
-        let reader = self.bus.reader::<crate::cognition::room::thread::RoomThread>(crate::cognition::room::thread::THREAD, Key::of(room));
+    pub fn thread(&self, room: Uuid) -> Option<Arc<continuum_grounding::room_thread::RoomThread>> {
+        let reader = self.bus.reader::<continuum_grounding::room_thread::RoomThread>(crate::cognition::room::thread::THREAD, Key::of(room));
         reader.latest().map(|snapshot| snapshot.value)
     }
 

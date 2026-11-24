@@ -21,3 +21,7 @@ uuid.workspace = true
 [dev-dependencies]
 continuum-kernel = { path = "../continuum-kernel", features = ["test-fixtures"] }
 tokio = { workspace = true, features = ["test-util"] }
+
+[features]
+# The shared room-line builder (`room_thread::said`) for every crate's tests that build a thread.
+test-fixtures = []

@@ -13,7 +13,9 @@ use continuum_sage::dataflow::{Emitter, Event, Publisher, TopicName};
 use continuum_sage::Qos;
 use uuid::Uuid;
 
-use super::{Line, RoomThread, Seed, Unread};
+use continuum_grounding::room_thread::{RoomThread, Seed, Unread};
+
+use super::line;
 use crate::cognition::conversation::transcript_reader::AircTranscriptReader;
 use crate::cognition::room::feed::{Arrival, FEED};
 
@@ -65,7 +67,7 @@ impl Room {
         }
         Some(match page {
             // A page with nothing new leaves the lines as they are; only the seed changes.
-            Ok(page) => match self.now.with(page.iter().filter_map(Line::of), continuum_context::history::ROOM_HISTORY_NEED) {
+            Ok(page) => match self.now.with(page.iter().filter_map(line), continuum_context::history::ROOM_HISTORY_NEED) {
                 Some(merged) => merged.seeded(Seed::Read),
                 None => self.now.seeded(Seed::Read),
             },
@@ -183,7 +185,7 @@ impl Thread {
         self.heard_through = through;
         let room = event.value.event.event().room_id.as_uuid();
         let Some(entry) = self.rooms.get_mut(&room) else { return };
-        if let Some(next) = Line::of(event.value.event.event()).and_then(|line| entry.now.with([line], continuum_context::history::ROOM_HISTORY_NEED)) {
+        if let Some(next) = line(event.value.event.event()).and_then(|line| entry.now.with([line], continuum_context::history::ROOM_HISTORY_NEED)) {
             Self::publish(entry, next, ctx);
         }
         ctx.emit(&mut self.forward, Threaded(Arc::clone(&event.value)));

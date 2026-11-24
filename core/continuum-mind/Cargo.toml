@@ -44,6 +44,7 @@ continuum-cli-lifecycle = { path = "../continuum-cli-lifecycle" }  # the CLI's p
 base64 = { workspace = true }
 sha2 = { workspace = true }   # SHA-256 for OAuth 2.0 PKCE code challenges (RFC 7636) + L1-6 contract canonical hash
 continuum-cognition = { path = "../continuum-cognition" }
+continuum-grounding = { path = "../continuum-grounding" }  # her thread of a room, the value a turn pins and hands its sources
 airc-core.workspace = true
 airc-blobs.workspace = true
 airc-protocol.workspace = true
@@ -78,6 +79,7 @@ continuum-genome = { path = "../continuum-genome", features = ["test-fixtures"] 
 continuum-rooms = { path = "../continuum-rooms", features = ["test-fixtures"] }
 continuum-experience = { path = "../continuum-experience", features = ["test-fixtures"] }
 continuum-cognition = { path = "../continuum-cognition", features = ["test-fixtures"] }  # the shared TranscriptEvent fixture (channel_digest::test_event_in)
+continuum-grounding = { path = "../continuum-grounding", features = ["test-fixtures"] }  # the shared room-line builder (room_thread::said)
 # The real store, so loop tests write obligations through the same data module production uses
 # (stop-drain S2: a turn runs only on a confirmed obligation). The store sits below the mind.
 continuum-store = { path = "../continuum-store", features = ["test-fixtures"] }
