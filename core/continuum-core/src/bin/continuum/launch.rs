@@ -274,7 +274,7 @@ pub(super) async fn launch_core(wait_for_death: &[i32], policy: LaunchSource<'_>
 
             let auto_features = continuum_cli_lifecycle::core_features::detect_gpu_features();
             let features_result = continuum_cli_lifecycle::core_features::select_core_features(
-                auto_features,
+                auto_features.clone(),
                 &config_path,
             );
 
