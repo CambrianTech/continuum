@@ -106,7 +106,7 @@ impl From<Unavailable> for NotTold {
 }
 
 /// One seat the trainer drives.
-pub(crate) struct SeatRun {
+pub(crate) struct SeatRun<G> {
     seat: SeatId,
     phase: Phase,
     /// Where the seat stood before its last Load, Seat or Release: a Kept answer returns it there.
@@ -119,15 +119,18 @@ pub(crate) struct SeatRun {
     checkpoints: VecDeque<Vec<Position>>,
     /// The leases the engine's views draw on: the weights' from Load, the optimizer's and the
     /// workspace's from Seat. Dropped only when the engine proves nothing of the seat remains.
-    guards: Vec<Box<dyn Send>>,
+    guards: Vec<G>,
+    /// The workspace's lease, from Seat: each lesson's admission is a view over it. Held and
+    /// dropped with the other guards.
+    workspace: Option<G>,
 }
 
-impl SeatRun {
+impl<G: Send> SeatRun<G> {
     /// Measure the seat `measure` names: the first thing told for it.
     pub(crate) fn measure(port: &dyn LearnPort, measure: Measure) -> Result<Self, NotTold> {
         let seat = measure.seat;
         port.tell(Learning::Measure(measure))?;
-        Ok(Self { seat, phase: Phase::Measuring, before: Phase::Measuring, in_flight: None, progress: HashMap::new(), checkpoints: VecDeque::new(), guards: Vec::new() })
+        Ok(Self { seat, phase: Phase::Measuring, before: Phase::Measuring, in_flight: None, progress: HashMap::new(), checkpoints: VecDeque::new(), guards: Vec::new(), workspace: None })
     }
 
     pub(crate) fn id(&self) -> SeatId {
@@ -139,6 +142,11 @@ impl SeatRun {
         self.phase == Phase::Seated && self.in_flight.is_none()
     }
 
+    /// The workspace lease each lesson's admission is a view over, once seated.
+    pub(crate) fn workspace(&self) -> Option<&G> {
+        self.workspace.as_ref()
+    }
+
     /// What each submission has learned since the newest saved generation.
     pub(crate) fn progress(&self) -> &HashMap<Uuid, u32> {
         &self.progress
@@ -146,7 +154,7 @@ impl SeatRun {
 
     /// Load the measured shadow under `weights`, the lease the trainer took for its measured weights.
     /// Not told, the guard drops here: nothing was allocated under it.
-    pub(crate) fn load(&mut self, port: &dyn LearnPort, weights: Box<dyn Send>) -> Result<(), NotTold> {
+    pub(crate) fn load(&mut self, port: &dyn LearnPort, weights: G) -> Result<(), NotTold> {
         if self.phase != Phase::Measured {
             return Err(NotTold::OutOfOrder("load before its weights were measured"));
         }
@@ -156,14 +164,15 @@ impl SeatRun {
         Ok(())
     }
 
-    /// Seat the loaded shadow under `guards` (its optimizer's and workspace's leases), with `lease`
-    /// the engine's non-owning view of the optimizer's.
-    pub(crate) fn seat(&mut self, port: &dyn LearnPort, lease: Box<dyn OptimizerLease>, guards: impl IntoIterator<Item = Box<dyn Send>>) -> Result<(), NotTold> {
+    /// Seat the loaded shadow under its `optimizer` and `workspace` leases, with `lease` the engine's
+    /// non-owning view of the optimizer's.
+    pub(crate) fn seat(&mut self, port: &dyn LearnPort, lease: Box<dyn OptimizerLease>, optimizer: G, workspace: G) -> Result<(), NotTold> {
         if self.phase != Phase::Loaded {
             return Err(NotTold::OutOfOrder("seat before its shadow was loaded"));
         }
         port.tell(Learning::Seat(Seat { seat: self.seat, lease }))?;
-        self.guards.extend(guards);
+        self.guards.push(optimizer);
+        self.workspace = Some(workspace);
         self.told(Phase::Seating);
         Ok(())
     }
@@ -324,12 +333,13 @@ impl SeatRun {
         self.phase = Phase::Gone;
         self.in_flight = None;
         self.guards.clear();
+        self.workspace = None;
     }
 
     /// How many lease guards the seat holds.
     #[cfg(test)]
     fn held(&self) -> usize {
-        self.guards.len()
+        self.guards.len() + usize::from(self.workspace.is_some())
     }
 }
 
