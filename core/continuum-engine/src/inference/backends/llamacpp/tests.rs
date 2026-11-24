@@ -428,4 +428,60 @@
             assert!(matches!(next(&mut heard).await, Said::Seat { state: SeatState::Released, .. }), "released");
             (losses, answer.facts.reused_tokens)
         }
+
+        // what this catches (Codex on c2d7a457): a learn step that re-decoded her served tail with only
+        // the shadow attached, so she then served from KV the shadow computed, not her own genes. After
+        // two learned steps her next turn (greedy) answers exactly as a mind that never learned answers
+        // the same history under the same serving genes.
+        //     cargo test -p continuum-engine --features metal --lib after_a_learn_step -- --ignored --nocapture
+        #[tokio::test(flavor = "multi_thread")]
+        #[ignore = "requires qwen2.5-0.5b-instruct under ~/.continuum/genome/models; run explicitly"]
+        async fn after_a_learn_step_she_answers_as_a_mind_that_never_learned() {
+            let path = dirs::home_dir().expect("test: a home").join(".continuum/genome/models/qwen2.5-0.5b-instruct/qwen2.5-0.5b-instruct-q4_k_m.gguf");
+            if !path.exists() {
+                eprintln!("SKIPPED: {} not present", path.display());
+                return;
+            }
+            let backend = LlamaCppBackend::load(LlamaCppConfig { model_path: path, ..Default::default() }).expect("test: the 0.5B loads");
+            let nonzero = |n| std::num::NonZeroU32::new(n).expect("test: nonzero");
+            let allocation = GenerationAllocation::seated(nonzero(4096), nonzero(2));
+            let mut state = backend.start_scheduler(allocation).expect("test: the scheduler starts");
+            state.wait_for(|state| state.ready().is_some()).await.expect("test: the engine becomes ready");
+            let (tx, mut heard) = tokio::sync::mpsc::unbounded_channel();
+            let (input, _worker) = continuum_sage::spawn_stage(Heard(tx), continuum_sage::Capacity::granted(std::num::NonZeroUsize::new(64).expect("test: nonzero")));
+            let _subscribed = continuum_sage::component::node().subscribe::<Said>(LEARNING_SAID).attach(&input, std::num::NonZeroUsize::new(64).expect("test: nonzero"));
+            // greedy: the same state answers the same tokens
+            let turn = |who: uuid::Uuid, text: &str| {
+                let sampler = backend.turn_sampler(None, &crate::inference::backends::SamplingConfig::code(), None).expect("test: a sampler");
+                let prompt = TurnPrompt { text, stable_prefix: None, urgency: continuum_sage::component::Urgency::Want, request: None };
+                backend.submit_for_persona(allocation, Some(who), prompt, 24, sampler, &[], &[]).expect("test: the turn submits")
+            };
+
+            let her = uuid::Uuid::new_v4();
+            let first = "<|im_start|>user\nWhat is the capital of Kansas?<|im_end|>\n<|im_start|>assistant\n";
+            let answered = turn(her, first).collect().await.expect("test: her first turn answers");
+            let seat = SeatId(uuid::Uuid::new_v4());
+            let fresh = crate::inference::llama_server::FreshShadow { name: "replay".into(), rank: 8, alpha: 16.0, targets: vec!["attn_q".into(), "attn_v".into()], top_layers: 0, seed: 42 };
+            let optimizer = llama::Optimizer::AdamW { learning_rate: 5e-3, beta1: 0.9, beta2: 0.999, eps: 1e-8, weight_decay: 0.0 };
+            let port: &dyn LearnPort = &backend;
+            assert!(port.tell(Learning::Measure(Measure { seat, mind: continuum_persona_engine::persona::PersonaId(her), shadow: ShadowSource::Fresh(fresh), optimizer, sized_for: lesson() })).is_ok());
+            assert!(matches!(next(&mut heard).await, Said::Seat { state: SeatState::Measured { .. }, .. }));
+            assert!(port.tell(Learning::Load { seat }).is_ok());
+            assert!(matches!(next(&mut heard).await, Said::Seat { state: SeatState::Loaded { .. }, .. }));
+            assert!(port.tell(Learning::Seat(Seat { seat, lease: Box::new(Counted::default()) })).is_ok());
+            assert!(matches!(next(&mut heard).await, Said::Seat { state: SeatState::Seated { .. }, .. }));
+            for _ in 0..2 {
+                let step = StepId(uuid::Uuid::new_v4());
+                assert!(port.tell(Learning::Learn(crate::inference::learning::Learn { seat, step, lesson: lesson(), admission: Box::new(Open) })).is_ok());
+                assert!(matches!(next(&mut heard).await, Said::Step { outcome: StepOutcome::Learned { .. }, .. }), "she learned");
+            }
+
+            let history = format!("{first}{}<|im_end|>\n<|im_start|>user\nAnd of Kentucky?<|im_end|>\n<|im_start|>assistant\n", answered.text);
+            let hers = turn(her, &history).collect().await.expect("test: her next turn answers");
+            let never_learned = turn(uuid::Uuid::new_v4(), &history).collect().await.expect("test: the other mind answers");
+            eprintln!("after learning: {:?} (reused {}); never learned: {:?}", hers.text, hers.facts.reused_tokens, never_learned.text);
+            assert_eq!(hers.text, never_learned.text, "she answers under her own genes, as a mind that never learned does");
+            assert!(port.tell(Learning::Release { seat }).is_ok());
+            assert!(matches!(next(&mut heard).await, Said::Seat { state: SeatState::Released, .. }));
+        }
     }
