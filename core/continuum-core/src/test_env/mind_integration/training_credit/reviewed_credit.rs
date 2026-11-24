@@ -375,7 +375,7 @@ use super::*;
         );
         assert_eq!(pending.decision_review_id, Some(review_id));
         let mut later = receipts;
-        later.push(captured(persona, served_receipt("later-request", "actual-model")));
+        later.push(captured(persona, served_receipt("later-request", "actual-model")).await);
         assert!(
             capture
                 .record(&settlement_acts(8), &later, None, true)
@@ -637,7 +637,7 @@ use super::*;
             .unwrap();
         assert_eq!(binding.transfer_intent_id, selected.id);
         let mut later = receipts;
-        later.push(captured(persona, served_receipt("generation-b", "model-a")));
+        later.push(captured(persona, served_receipt("generation-b", "model-a")).await);
         assert!(
             capture
                 .record(

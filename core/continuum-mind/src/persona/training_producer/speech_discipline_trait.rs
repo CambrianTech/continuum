@@ -360,8 +360,8 @@ pub(super) async fn read_lived(
         .map(|r| r.capture.clone())
         .collect();
     let read = tokio::task::spawn_blocking(move || {
-        let dir = crate::cognition::capture::fixture_dir(crate::cognition::prompt_capture::FIXTURE_DIR);
-        read_lived_calls(dir.as_deref(), persona_id, served, known)
+        let class = crate::cognition::capture::prompt_class().ok(); // no class: every unread call says "capture class unavailable" below
+        read_lived_calls(class.as_ref(), persona_id, served, known)
     })
     .await;
     let (calls, missing) = match read {
@@ -393,10 +393,10 @@ pub(super) async fn read_lived(
 }
 
 /// The blocking read behind [`read_lived`]: every served call's cursor in dispatch
-/// order (`None` for a served call no capture recorded), decoded from `dir`. Returns
+/// order (`None` for a served call no capture recorded), decoded from `class`. Returns
 /// the calls read and the first reason the set is incomplete, if any.
 pub(super) fn read_lived_calls(
-    dir: Option<&std::path::Path>,
+    class: Option<&continuum_kernel::system_resources::disk_reporters::ClassWriter>,
     persona_id: Uuid,
     served: Vec<Option<String>>,
     known: Vec<crate::genome::fine_tuning::LivedCall>,
@@ -414,13 +414,13 @@ pub(super) fn read_lived_calls(
             calls.push(call);
             continue;
         }
-        let Some(dir) = dir else {
-            missing.get_or_insert_with(|| "capture directory unavailable".into());
+        let Some(class) = class else {
+            missing.get_or_insert_with(|| "capture class unavailable".into());
             continue;
         };
-        let decoded = crate::cognition::prompt_capture::detail(dir, persona_id, &cursor)
+        let decoded = crate::cognition::prompt_capture::Playback::of(class, persona_id)
+            .call(&cursor)
             .map_err(|e| e.to_string())
-            .and_then(crate::cognition::prompt_capture::decode)
             .and_then(|call| {
                 call.response
                     .map(|response| (call.request, response))

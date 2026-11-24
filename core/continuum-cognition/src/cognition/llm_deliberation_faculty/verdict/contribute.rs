@@ -531,11 +531,6 @@ impl LlmDeliberationFaculty {
         crate::cognition::health_ledger::note_stop(stop.counted(answered, reasoned));
         // Sent and answered: she read what this prompt rendered (read_receipt.rs), never before.
         self.send_read_receipt(ws).await;
-        let messages = &view.messages;
-        let lifecycle_recorded = self
-            .prompt_capture
-            .as_ref()
-            .is_some_and(|sink| sink.lifecycle_enabled());
         // #139 latency split: the model call's wall time. Compare to the forwarder's
         // `persona.turn.first_token` (whole-turn spawn→first token): first_token −
         // gen_await ≈ cognition-prep (recall/embeddings/context assembly BEFORE the
@@ -606,31 +601,6 @@ impl LlmDeliberationFaculty {
 
         // Which segment broke reuse this turn (the rent ledger, `segment_attribution.rs`).
         self.attribute_segments(&view, &resp);
-
-        // Verbatim glass box: the EXACT request thread + the raw response. Iteration
-        // is always 0 now (single shot); the act→observe driver re-enters this
-        // faculty on the NEXT tick with the result folded into perception, and that
-        // tick captures itself. Best-effort; never affects the turn.
-        if let Some(cap) = self.prompt_capture.as_ref().filter(|_| !lifecycle_recorded) {
-            // What was SENT, not the whole registry: the capture is the turn's glass box.
-            let offered: Vec<String> = request_template
-                .as_ref()
-                .and_then(|template| template.tools.as_deref())
-                .into_iter()
-                .flatten()
-                .map(|s| s.name.clone())
-                .collect();
-            cap.record(
-                self.persona_id,
-                ws.room_id,
-                ws.cause.as_str(),
-                0,
-                &view.system,
-                messages,
-                &offered,
-                &resp,
-            );
-        }
 
         // Record the chain-of-thought into working memory, so next tick the persona
         // resumes its train of thought instead of re-deriving it cold. `reasoning`

@@ -11,3 +11,17 @@ use std::path::PathBuf;
 pub fn fixture_dir(relative: &str) -> Option<PathBuf> {
     continuum_kernel::paths::continuum_home().ok().map(|home| home.join(relative))
 }
+
+/// Where prompt-call frames live: the `prompt-captures` scope of the `fixtures` disk class, one
+/// directory per persona below it. The one place that scope is named; the writer, its retention and
+/// every reader resolve it here.
+pub fn prompt_class() -> std::io::Result<continuum_kernel::system_resources::disk_reporters::ClassWriter> {
+    continuum_kernel::system_resources::disk_reporters::ClassWriter::of("fixtures")?.within("prompt-captures")
+}
+
+/// The prompt-captures scope of a `fixtures` class rooted at `dir`, for a test or tool.
+#[cfg(any(test, feature = "test-fixtures"))]
+pub fn fixture_class(dir: &std::path::Path) -> continuum_kernel::system_resources::disk_reporters::ClassWriter {
+    let class = continuum_kernel::system_resources::disk_reporters::TrackedDir::new("fixtures", dir.to_path_buf()).writer();
+    class.within("prompt-captures").expect("a plain scope name") // JUSTIFIED: a constant plain name, refused only if it had a separator
+}

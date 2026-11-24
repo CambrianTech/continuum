@@ -346,10 +346,12 @@ async fn deliberates_through_a_real_adapter() {
 // cancellation are distinct. Reading playback cannot call the adapter.
 #[tokio::test]
 async fn playback_captures_actual_dispatch_before_completion_and_cancellation() {
-    use crate::cognition::prompt_capture::{self, CallStatus, JsonlPromptCaptureSink};
+    use crate::cognition::prompt_capture::{CallStatus, FramePromptCaptureSink, Playback};
     let dir = tempfile::tempdir().expect("capture fixture directory");
     let persona = Uuid::new_v4();
     let room = Uuid::new_v4();
+    let ten = std::num::NonZeroUsize::new(10).expect("ten");
+    let playback = Playback::at(dir.path(), persona);
     let calls = Arc::new(Mutex::new(Vec::new()));
     let adapter = Arc::new(
         HeuristicInferenceAdapter::new()
@@ -357,9 +359,7 @@ async fn playback_captures_actual_dispatch_before_completion_and_cancellation() 
             .with_request_recorder(Arc::clone(&calls)),
     );
     let faculty = LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter)
-        .with_prompt_capture(Arc::new(
-            JsonlPromptCaptureSink::open(dir.path(), persona).expect("real capture writer"),
-        ));
+        .with_prompt_capture(Arc::new(FramePromptCaptureSink::at(dir.path(), persona)));
     let ws = Workspace::in_room("Review this real task and its receipt.", room)
         .with_cycle(crate::cognition::workspace::CycleId(17));
     let mut turn = Box::pin(faculty.contribute(&ws));
@@ -368,30 +368,24 @@ async fn playback_captures_actual_dispatch_before_completion_and_cancellation() 
         _ = &mut turn => panic!("delayed fixture must remain in flight"),
         _ = tokio::time::sleep(std::time::Duration::from_millis(5)) => {}
     }
-    let pending =
-        prompt_capture::page(dir.path(), persona, None, false, 10).expect("pending page");
+    let pending = playback.page(None, false, ten).expect("pending page");
     assert_eq!(pending.entries.len(), 1);
     let first = &pending.entries[0];
     assert!(matches!(first.status, CallStatus::Submitted));
     assert_eq!(first.cycle_id, Some(17));
     assert_eq!(first.room_id, room);
-    let input =
-        prompt_capture::detail(dir.path(), persona, &first.cursor).expect("pending input");
+    let input = playback.detail(&first.cursor).expect("pending input");
     assert!(input.terminal.is_none());
-    assert!(
-        input.submitted.as_ref().expect("submitted")["request"]["messages"]
-            .to_string()
-            .contains("Review this real task")
-    );
+    assert!(serde_json::to_string(&input.submitted.as_ref().expect("submitted").request.messages)
+        .expect("messages")
+        .contains("Review this real task"));
     let verdict = turn.await.expect("completed deliberation");
     assert!(verdict.decision.is_some());
-    let completed =
-        prompt_capture::page(dir.path(), persona, Some(&first.cursor), true, 10)
-            .expect("terminal page");
-    assert_eq!(completed.entries.len(), 1);
+    let completed = playback.page(None, false, ten).expect("terminal page");
+    assert_eq!(completed.entries.len(), 1, "one entry per call, upserted by its cursor");
+    assert_eq!(completed.entries[0].cursor, first.cursor);
     assert!(matches!(completed.entries[0].status, CallStatus::Completed));
-    let detail = prompt_capture::detail(dir.path(), persona, &completed.entries[0].cursor)
-        .expect("completed payload");
+    let detail = playback.detail(&completed.entries[0].cursor).expect("completed payload");
     assert!(detail.issues.is_empty());
     {
         let actual = calls.lock().expect("fixture request recorder");
@@ -400,37 +394,16 @@ async fn playback_captures_actual_dispatch_before_completion_and_cancellation() 
             actual[0].request_id.as_deref(),
             Some(first.request_id.as_str())
         );
-        // Match the actual serialized wire representation: f32 JSON
-        // numbers need not equal serde_json::to_value's widened f64.
-        let wire_request: serde_json::Value = serde_json::from_str(
-            &serde_json::to_string(&actual[0]).expect("typed request wire serialization"),
-        )
-        .expect("serialized wire request JSON");
         assert_eq!(
-            wire_request,
-            detail.submitted.as_ref().expect("submitted")["request"]
+            serde_json::to_value(&actual[0]).expect("the request sent"),
+            serde_json::to_value(&detail.submitted.as_ref().expect("submitted").request).expect("the request captured"),
+            "the capture holds the request exactly as dispatched"
         );
     }
-    let legacy =
-        prompt_capture::completed_file(&dir.path().join(format!("{persona}.jsonl")), 10)
-            .expect("existing prompt/dataset reader");
-    assert_eq!(legacy.len(), 1);
-    assert!(legacy[0]["messages"]
-        .to_string()
-        .contains("Review this real task"));
-    assert!(legacy[0]["response"]["text"].is_string());
-
-    let mut malformed =
-        prompt_capture::detail(dir.path(), persona, &completed.entries[0].cursor)
-            .expect("completed payload for integrity check");
-    malformed.submitted.as_mut().expect("submitted request")["request"]
-        .as_object_mut()
-        .expect("typed request object")
-        .remove("messages");
-    assert!(
-        prompt_capture::legacy_projection(malformed).is_err(),
-        "missing required payload must stay explicit, not resemble a filtered provider failure"
-    );
+    let learned = playback.completed(ten).expect("the completed calls training reads");
+    assert_eq!(learned.len(), 1);
+    assert!(serde_json::to_string(&learned[0].request.messages).expect("messages").contains("Review this real task"));
+    assert!(learned[0].response.is_some());
 
     let mut cancelled = Box::pin(faculty.contribute(&ws));
     tokio::select! {
@@ -439,51 +412,42 @@ async fn playback_captures_actual_dispatch_before_completion_and_cancellation() 
         _ = tokio::time::sleep(std::time::Duration::from_millis(5)) => {}
     }
     drop(cancelled);
-    let page =
-        prompt_capture::page(dir.path(), persona, None, false, 10).expect("cancelled page");
+    let page = playback.page(None, false, ten).expect("cancelled page");
     assert!(matches!(
         page.entries.last().expect("terminal").status,
         CallStatus::Cancelled
     ));
     assert_ne!(
-        page.entries[0].request_id, page.entries[2].request_id,
+        page.entries[0].request_id, page.entries[1].request_id,
         "two calls on one workspace have distinct actual request IDs"
     );
 }
 
 #[tokio::test]
 async fn playback_records_inference_failure_without_a_fake_response() {
-    use crate::cognition::prompt_capture::{self, CallStatus, JsonlPromptCaptureSink};
+    use crate::cognition::prompt_capture::{CallStatus, FramePromptCaptureSink, Playback};
     let dir = tempfile::tempdir().expect("capture fixture directory");
     let persona = Uuid::new_v4();
+    let ten = std::num::NonZeroUsize::new(10).expect("ten");
+    let playback = Playback::at(dir.path(), persona);
     let faculty = LlmDeliberationFaculty::new(
         persona,
         "Ivar",
         "You are Ivar.",
         Arc::new(HeuristicInferenceAdapter::new().with_responses(Vec::new())),
     )
-    .with_prompt_capture(Arc::new(
-        JsonlPromptCaptureSink::open(dir.path(), persona).expect("capture sink"),
-    ));
+    .with_prompt_capture(Arc::new(FramePromptCaptureSink::at(dir.path(), persona)));
     let ws = Workspace::in_room("Review the pending task.", Uuid::new_v4());
     let result = faculty.contribute(&ws).await.expect("fault contribution");
     assert!(result.fault.is_some());
-    let page = prompt_capture::page(dir.path(), persona, None, false, 10)
-        .expect("failed call page");
+    let page = playback.page(None, false, ten).expect("failed call page");
     let last = page.entries.last().expect("failed terminal");
     assert!(matches!(last.status, CallStatus::Failed));
-    let detail =
-        prompt_capture::detail(dir.path(), persona, &last.cursor).expect("failure detail");
-    let terminal = detail.terminal.expect("failed terminal payload");
-    assert!(terminal["response"].is_null());
-    assert!(terminal["error"]
-        .as_str()
-        .expect("failure cause")
-        .contains("exhausted"));
+    let terminal = playback.detail(&last.cursor).expect("failure detail").terminal.expect("failed terminal payload");
+    assert!(terminal.response.is_none(), "no response is manufactured for a failed inference");
+    assert!(terminal.head.error.as_deref().expect("failure cause").contains("exhausted"));
     assert!(
-        prompt_capture::completed_file(&dir.path().join(format!("{persona}.jsonl")), 10)
-            .expect("compatibility reader")
-            .is_empty(),
+        playback.completed(ten).expect("the completed calls").is_empty(),
         "failed calls must not become training examples"
     );
 }
@@ -492,9 +456,11 @@ async fn playback_records_inference_failure_without_a_fake_response() {
 // for inspection without accepting it as a decision or training example.
 #[tokio::test]
 async fn playback_excludes_typed_error_responses_from_completed_training_rows() {
-    use crate::cognition::prompt_capture::{self, CallStatus, JsonlPromptCaptureSink};
+    use crate::cognition::prompt_capture::{CallStatus, FramePromptCaptureSink, Playback};
     let dir = tempfile::tempdir().expect("capture fixture directory");
     let persona = Uuid::new_v4();
+    let ten = std::num::NonZeroUsize::new(10).expect("ten");
+    let playback = Playback::at(dir.path(), persona);
     let mut response = HeuristicInferenceAdapter::new()
         .generate_text(TextGenerationRequest {
             messages: vec![ChatMessage::text("user", "fixture input")],
@@ -520,9 +486,7 @@ async fn playback_excludes_typed_error_responses_from_completed_training_rows() 
             response,
         ])),
     )
-    .with_prompt_capture(Arc::new(
-        JsonlPromptCaptureSink::open(dir.path(), persona).expect("capture sink"),
-    ));
+    .with_prompt_capture(Arc::new(FramePromptCaptureSink::at(dir.path(), persona)));
     let ws = Workspace::in_room("Review the task.", Uuid::new_v4());
     for _ in 0..2 {
         let contribution = faculty
@@ -540,9 +504,8 @@ async fn playback_excludes_typed_error_responses_from_completed_training_rows() 
     assert!(
         matches!(accepted.decision, Some(Decision::Speak { text }) if text == "Ship it.")
     );
-    let page = prompt_capture::page(dir.path(), persona, None, false, 10)
-        .expect("typed error page");
-    assert_eq!(page.entries.len(), 6);
+    let page = playback.page(None, false, ten).expect("typed error page");
+    assert_eq!(page.entries.len(), 3, "one entry per call");
     let failures: Vec<_> = page
         .entries
         .iter()
@@ -550,23 +513,20 @@ async fn playback_excludes_typed_error_responses_from_completed_training_rows() 
         .collect();
     assert_eq!(failures.len(), 2);
     for terminal in failures {
-        let detail = prompt_capture::detail(dir.path(), persona, &terminal.cursor)
-            .expect("actual error response");
+        let detail = playback.detail(&terminal.cursor).expect("actual error response");
         assert_eq!(
-            detail.terminal.expect("terminal record")["response"]["text"],
+            detail.terminal.and_then(|end| end.response).expect("its partial response").text,
             "Ship it.",
             "the actual failed partial response remains inspectable"
         );
     }
-    let completed =
-        prompt_capture::completed_file(&dir.path().join(format!("{persona}.jsonl")), 10)
-            .expect("completed reader");
+    let completed = playback.completed(ten).expect("completed reader");
     assert_eq!(
         completed.len(),
         1,
         "only the successful control can become a training candidate"
     );
-    assert_eq!(completed[0]["response"]["text"], "Ship it.");
+    assert_eq!(completed[0].response.as_ref().expect("its response").text, "Ship it.");
 }
 
 // what this catches: the live-airc bug where a grown room burst + many full

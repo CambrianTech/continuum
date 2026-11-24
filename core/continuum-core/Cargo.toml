@@ -78,6 +78,7 @@ continuum-embedding = { path = "../continuum-embedding" }
 continuum-store = { path = "../continuum-store" }  # the data layer and its commands (card 2709ec6d)
 continuum-grid = { path = "../continuum-grid" }  # grid discovery, trust and routing with their commands (plan phase 2)
 continuum-context = { path = "../continuum-context" }
+continuum-capture = { path = "../continuum-capture" }  # boot registers the captures pool with the pressure broker
 # JSON Schema generation from serde types — the runtime param schema every SDK
 # (CLI/web/mobile/RAG-tools) adapts from. Derived automatically by the command
 # base traits; uuid1 so Uuid fields schema-ize as string. See COMMAND-ORGANIZATION.md.

@@ -8,8 +8,8 @@ use crate::modules::dataset::{DatasetManifest, DatasetService, FromCapturesParam
 use crate::sdk_codegen::CommandError;
 
 crate::action_command! {
-    /// Convert live prompt-captures (default `~/.continuum/fixtures/prompt-captures`,
-    /// one `<persona>.jsonl` per persona) into a chat SFT dataset. Structural curation
+    /// Convert live prompt-captures (the node's prompt-captures class, one directory of
+    /// frames per persona) into a chat SFT dataset. Structural curation
     /// only: drops empty responses, bare un-acted tool-call JSON envelopes, and
     /// system-only turns. Filterable by personaId / roomId. Errors loud if nothing
     /// usable remains.
@@ -19,7 +19,8 @@ crate::action_command! {
     params: FromCapturesParams,
     output: DatasetManifest,
     run(this, _ctx, p) => {
-        this.service.from_captures(&p).map_err(CommandError::Internal)
+        let class = crate::cognition::capture::prompt_class().map_err(|e| CommandError::Internal(format!("prompt captures: {e}")))?;
+        this.service.from_captures(&class, &p).map_err(CommandError::Internal)
     }
 }
 

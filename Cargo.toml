@@ -322,6 +322,7 @@ half = "2.7"
 
 # Byte slice casting (for safetensors -> tensor conversion)
 bytemuck = { version = "1.14", features = ["derive"] }
+rmp-serde = "1"  # the capture frame header: typed fields as a MessagePack array (continuum-capture::frame)
 
 # HuggingFace Hub for model downloads
 # rustls, never the system OpenSSL (native-tls): one TLS stack in Rust, no OpenSSL to find, ship or patch.

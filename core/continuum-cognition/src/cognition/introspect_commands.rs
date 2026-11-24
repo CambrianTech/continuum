@@ -140,10 +140,23 @@ pub struct CognitionPromptParams {
     /// How many of the newest LLM calls to return (newest last): the caller's page, never a
     /// size this verb picks for her.
     pub limit: u32,
-    /// Read the retained previous capture segment instead of the current one.
-    #[serde(default)]
-    #[ts(optional)]
-    pub previous: Option<bool>,
+}
+
+/// A playback read's failure as the command's: a malformed cursor is the caller's, a call with no
+/// frames (not written yet, or retained away) is not found, anything else is the store's.
+pub(crate) fn playback_refusal(error: super::prompt_capture::PlaybackError) -> CommandError {
+    match error {
+        super::prompt_capture::PlaybackError::BadCursor(_) => CommandError::Invalid(error.to_string()),
+        super::prompt_capture::PlaybackError::NotCaptured(_) => CommandError::NotFound(error.to_string()),
+        super::prompt_capture::PlaybackError::Log(_) | super::prompt_capture::PlaybackError::Frame(_) | super::prompt_capture::PlaybackError::Undecodable { .. } => {
+            CommandError::Internal(error.to_string())
+        }
+    }
+}
+
+/// The prompt-captures class, or the command's refusal when the node has none.
+pub(crate) fn prompt_class() -> Result<continuum_kernel::system_resources::disk_reporters::ClassWriter, CommandError> {
+    crate::cognition::capture::prompt_class().map_err(|error| CommandError::Internal(format!("prompt captures: {error}")))
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -176,28 +189,17 @@ impl ActionCommand for CognitionPrompt {
         _ctx: &Ctx,
         p: CognitionPromptParams,
     ) -> Result<CognitionPromptResult, CommandError> {
-        let limit = p.limit as usize;
+        let limit = std::num::NonZeroUsize::new(p.limit as usize).ok_or_else(|| CommandError::Invalid("limit must be at least one call".into()))?;
         let persona = uuid::Uuid::parse_str(p.persona_id.as_str())
             .map_err(|_| CommandError::Arguments(crate::sdk_codegen::ArgumentsRefusal::not_an_id("persona_id", p.persona_id.as_str(), "persona")))?;
-        let dir = crate::cognition::capture::fixture_dir(super::prompt_capture::FIXTURE_DIR)
-            .ok_or_else(|| {
-                CommandError::Internal("cannot resolve capture home directory".into())
-            })?;
+        let class = prompt_class()?;
         tokio::task::spawn_blocking(move || {
-            let suffix = if p.previous == Some(true) {
-                // Omitted optional flag selects the current retained segment.
-                ".prev"
-            } else {
-                ""
-            };
-            let records = super::prompt_capture::completed_file(
-                &dir.join(format!("{persona}{suffix}.jsonl")),
-                limit,
-            )
-            .map_err(|error| CommandError::Internal(error.to_string()))?
-            .into_iter()
-            .map(|value| serde_json::to_string(&value)) // Existing cognition/prompt IPC contract returns combined records as JSON strings.
-            .collect::<Result<Vec<_>, _>>()
+            let records = super::prompt_capture::Playback::of(&class, persona)
+                .completed(limit)
+                .map_err(playback_refusal)?
+                .iter()
+                .map(serde_json::to_string) // the cognition/prompt IPC contract returns each call as a JSON string
+                .collect::<Result<Vec<_>, _>>()
             .map_err(|error| CommandError::Internal(error.to_string()))?;
             Ok(CognitionPromptResult {
                 persona_id: p.persona_id,
@@ -330,33 +332,17 @@ impl ActionCommand for CognitionPlayback {
     async fn run(&self, _ctx: &Ctx, p: Self::Params) -> Result<Self::Output, CommandError> {
         let persona = uuid::Uuid::parse_str(p.persona_id.as_str())
             .map_err(|_| CommandError::Arguments(crate::sdk_codegen::ArgumentsRefusal::not_an_id("persona_id", p.persona_id.as_str(), "persona")))?;
-        let dir = crate::cognition::capture::fixture_dir(super::prompt_capture::FIXTURE_DIR)
-            .ok_or_else(|| {
-                CommandError::Internal("cannot resolve capture home directory".into())
-            })?;
+        let class = prompt_class()?;
         tokio::task::spawn_blocking(move || {
-            let (page, detail) = if let Some(selected) = p.selected {
-                (
-                    None,
-                    Some(
-                        super::prompt_capture::detail(&dir, persona, &selected)
-                            .map_err(|error| CommandError::Internal(error.to_string()))?,
-                    ),
-                )
-            } else {
-                (
-                    Some(
-                        super::prompt_capture::page(
-                            &dir,
-                            persona,
-                            p.cursor.as_deref(),
-                            p.newer.unwrap_or(false), // Omitted direction opens the current tail or pages toward older entries.
-                            p.limit.unwrap_or(20) as usize, // Public command default; the reader independently enforces PAGE_LIMIT.
-                        )
-                        .map_err(|error| CommandError::Internal(error.to_string()))?,
-                    ),
-                    None,
-                )
+            let playback = super::prompt_capture::Playback::of(&class, persona);
+            let (page, detail) = match p.selected {
+                Some(selected) => (None, Some(playback.detail(&selected).map_err(playback_refusal)?)),
+                None => {
+                    let limit = std::num::NonZeroUsize::new(p.limit.unwrap_or(20) as usize) // Public command default page
+                        .ok_or_else(|| CommandError::Invalid("limit must be at least one call".into()))?;
+                    let newer = p.newer.unwrap_or(false); // unwrap_or: an omitted direction opens the current tail or pages toward older entries
+                    (Some(playback.page(p.cursor.as_deref(), newer, limit).map_err(playback_refusal)?), None)
+                }
             };
             Ok(CognitionPlaybackResult { page, detail })
         })

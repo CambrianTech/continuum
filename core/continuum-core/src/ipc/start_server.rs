@@ -95,12 +95,11 @@ pub fn start_server(
     // back when the OS reads normal: the one reclaim path for host RAM (card 0f631c46).
     serving_daemon.give_host_memory_back_first(&pressure_monitor, rt_handle.clone());
 
-    pressure_broker_wiring::register_pressure_broker(
-        &runtime,
-        &resource_daemon,
-        &disk_pressure_monitor,
-        &pressure_monitor,
-    );
+    {
+        // the capture writer it starts runs its worker on this runtime
+        let _rt_guard = rt_handle.enter();
+        pressure_broker_wiring::register_pressure_broker(&runtime, &resource_daemon, &disk_pressure_monitor, &pressure_monitor);
+    }
     inference_modules::register_inference_modules(&runtime);
 
     // The trainer resolves every submission's base on the same live catalog `models/*` mutates, so a

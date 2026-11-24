@@ -76,6 +76,7 @@ regex = { workspace = true }
 
 [dev-dependencies]
 continuum-kernel = { path = "../continuum-kernel", features = ["test-fixtures"] }  # every test build of this crate gets the per-process continuum home (card d11d9827)
+continuum-capture = { path = "../continuum-capture", features = ["test-fixtures"] }  # the capture's inline sink and playback fixtures
 tokio = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }
 continuum-host = { path = "../continuum-host", features = ["test-fixtures"] }
@@ -96,4 +97,4 @@ vulkan = ["continuum-kernel/vulkan", "continuum-engine/vulkan", "continuum-genom
 stress-tests = ["continuum-kernel/stress-tests"]
 # Test-only code (fixtures shared with core's integration tests, the heuristic adapter it
 # drives); production binaries never build with it.
-test-fixtures = ["continuum-host/test-fixtures", "continuum-kernel/test-fixtures", "continuum-engine/test-fixtures", "continuum-hands/test-fixtures", "continuum-live/test-fixtures", "continuum-perception/test-fixtures", "continuum-genome/test-fixtures", "continuum-experience/test-fixtures"]
+test-fixtures = ["continuum-host/test-fixtures", "continuum-kernel/test-fixtures", "continuum-capture/test-fixtures", "continuum-engine/test-fixtures", "continuum-hands/test-fixtures", "continuum-live/test-fixtures", "continuum-perception/test-fixtures", "continuum-genome/test-fixtures", "continuum-experience/test-fixtures"]

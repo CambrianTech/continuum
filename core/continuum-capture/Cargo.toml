@@ -12,11 +12,19 @@ continuum-base = { path = "../continuum-base" }
 continuum-kernel = { path = "../continuum-kernel" }
 continuum-engine = { path = "../continuum-engine" }
 continuum-rooms = { path = "../continuum-rooms" }
+continuum-sage = { path = "../continuum-sage" }  # the capture writer is a SAGE component on the node bus
+parking_lot.workspace = true
+tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+rmp-serde.workspace = true
+thiserror.workspace = true
 tracing.workspace = true
 ts-rs.workspace = true
 uuid.workspace = true
+
+[features]
+test-fixtures = ["continuum-kernel/test-fixtures"]
 
 [dev-dependencies]
 continuum-kernel = { path = "../continuum-kernel", features = ["test-fixtures"] }

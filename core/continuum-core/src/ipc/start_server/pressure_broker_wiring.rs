@@ -34,6 +34,17 @@ pub(super) fn register_pressure_broker(
     crate::system_resources::memory_pressure::register_org_room_voice(|line| {
         Box::pin(async move { crate::modules::grid::say_in_org_room(&line).await })
     });
+    // Capture generations have a writer on the node bus and an owner under disk pressure: closed ones go oldest first, never the one
+    // a live capture log appends to (card 699578cb). A class that cannot be resolved is said, never
+    // silently left without retention.
+    match continuum_capture::capture::prompt_class() {
+        Ok(class) => {
+            pressure_broker.broker().register(Arc::new(continuum_capture::capture_pool::CapturesPool::new(&class)));
+            continuum_capture::capture_writer::start_node(class);
+        }
+        Err(error) => continuum_base::probe!(class = "boot.captures_pool_unregistered", error = %error,
+            "the captures disk class did not resolve: capture generations have no retention owner this run"),
+    }
     runtime.register(pressure_broker);
     // InferenceCoordinatorModule — stands up the multi-persona-one-model
     // lane coordinator. Registered before the broker block below so its

@@ -2770,9 +2770,14 @@ dependencies = [
  "continuum-engine",
  "continuum-kernel",
  "continuum-rooms",
+ "continuum-sage",
+ "parking_lot",
+ "rmp-serde",
  "serde",
  "serde_json",
  "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
  "tracing",
  "ts-rs 12.0.1",
  "uuid",
@@ -2948,6 +2953,7 @@ dependencies = [
  "continuum-airc-protocol",
  "continuum-base",
  "continuum-bridge-protocol",
+ "continuum-capture",
  "continuum-cli-lifecycle",
  "continuum-client",
  "continuum-context",
@@ -3055,6 +3061,7 @@ dependencies = [
  "chrono",
  "continuum-academy",
  "continuum-base",
+ "continuum-capture",
  "continuum-client",
  "continuum-engine",
  "continuum-genome",
@@ -9551,6 +9558,25 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "rmp"
+version = "0.8.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4ba8be72d372b2c9b35542551678538b562e7cf86c3315773cae48dfbfe7790c"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
+name = "rmp-serde"
+version = "1.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72f81bee8c8ef9b577d1681a70ebbc962c232461e397b22c208c43c04b67a155"
+dependencies = [
+ "rmp",
+ "serde",
 ]
 
 [[package]]

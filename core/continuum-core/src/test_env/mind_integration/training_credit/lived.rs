@@ -40,8 +40,8 @@ pub(super) async fn an_incomplete_capture_waits_and_a_late_one_transfers_once() 
     assert!(partial.lived.is_none(), "an incomplete capture stages no lived record");
 
     // One call whose capture was unreadable while she staged, and lands after.
-    let late = captured(persona, served_receipt("late", "model-a"));
-    let (_, delayed) = captures_unreadable(stage_settlement_fixture(
+    let late = captured(persona, served_receipt("late", "model-a")).await;
+    let (_, delayed) = captures_unreadable(persona, stage_settlement_fixture(
         executor.clone(),
         persona,
         name,

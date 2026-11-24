@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 use crate::ai::{TextGenerationRequest, TextGenerationResponse};
 use crate::cognition::prompt_capture::{
-    self, CaptureLease, JsonlPromptCaptureSink, PromptCall, ReplaySource,
+    self, CaptureLease, FramePromptCaptureSink, PromptCall, ReplaySource,
 };
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
 
@@ -275,11 +275,8 @@ fn prepare(
             "provider must be explicit and max_tokens must be positive".into(),
         ));
     }
-    let prompt_capture::CapturedCall {
-        context_window,
-        mut request,
-        response,
-    } = prompt_capture::decode(detail).map_err(CommandError::Invalid)?;
+    let prompt_capture::CapturedCall { head, mut request, response } = prompt_capture::decode(detail).map_err(|refusal| CommandError::Invalid(refusal.to_string()))?;
+    let context_window = head.context_window;
     let input_comparison = compare_input(&mut request, p)?;
     let original = response.as_ref().map(ReplayOutcome::from);
     // An implicit provider default is only reproducible when the terminal receipt
@@ -349,11 +346,11 @@ impl ActionCommand for CognitionReplayRequest {
         let persona = Uuid::parse_str(p.persona_id.as_str())
             .map_err(|_| CommandError::Arguments(crate::sdk_codegen::ArgumentsRefusal::not_an_id("persona_id", p.persona_id.as_str(), "persona")))?;
         let selected = p.selected.clone();
+        let class = crate::cognition::introspect_commands::prompt_class()?;
         let prepared = tokio::task::spawn_blocking(move || {
-            let dir = crate::cognition::capture::fixture_dir(prompt_capture::FIXTURE_DIR)
-                .ok_or_else(|| CommandError::Internal("capture directory unavailable".into()))?;
-            let detail = prompt_capture::detail(&dir, persona, &selected)
-                .map_err(|e| CommandError::Invalid(format!("capture: {e}")))?;
+            let detail = prompt_capture::Playback::of(&class, persona)
+                .detail(&selected)
+                .map_err(crate::cognition::introspect_commands::playback_refusal)?;
             prepare(detail, &p, persona)
         })
         .await
@@ -369,12 +366,7 @@ impl ActionCommand for CognitionReplayRequest {
             )));
         }
         let replay_persona = prepared.call.persona_id;
-        let sink = tokio::task::spawn_blocking(move || {
-            JsonlPromptCaptureSink::open_for_persona(replay_persona)
-        })
-        .await
-        .map_err(|e| CommandError::Internal(e.to_string()))?
-        .map_err(|e| CommandError::Internal(format!("replay capture: {e}")))?;
+        let sink = FramePromptCaptureSink::new(replay_persona, continuum_capture::capture_writer::Delivery::Node);
         execute(prepared, adapter, sink).await
     }
 }
@@ -382,7 +374,7 @@ impl ActionCommand for CognitionReplayRequest {
 async fn execute(
     prepared: Prepared,
     adapter: Arc<dyn crate::ai::adapter::AIProviderAdapter>,
-    sink: JsonlPromptCaptureSink,
+    sink: FramePromptCaptureSink,
 ) -> Result<ReplayRequestResult, CommandError> {
     let Prepared {
         request,
@@ -483,7 +475,7 @@ mod tests {
             cause_root: None,
             replay_of: None,
         };
-        let sink = JsonlPromptCaptureSink::open(dir.path(), persona).expect("capture sink");
+        let sink = FramePromptCaptureSink::at(dir.path(), persona);
         let mut capture = CaptureLease::start(Arc::new(sink), &call, &request);
         let cursor = capture.cursor().expect("durable submission").to_string();
         capture.finish(None, Some("original interrupted"));
@@ -497,8 +489,17 @@ mod tests {
             tool_schema_override: None,
             identity: ReplayIdentity::Isolated,
         };
-        let read =
-            || prompt_capture::detail(dir.path(), persona, &cursor).expect("original capture");
+        let read = || prompt_capture::Playback::at(dir.path(), persona).detail(&cursor).expect("original capture");
+        let ended = |response: TextGenerationResponse| prompt_capture::CapturedEnd {
+            head: continuum_capture::call_frames::TerminalHead {
+                key: continuum_capture::call_playback::key_of(&cursor).expect("a capture cursor"),
+                status: prompt_capture::CallStatus::Completed,
+                elapsed_ms: 0,
+                error: None,
+            },
+            response: Some(response),
+            wire: None,
+        };
         let prepared = prepare(read(), &p, persona).expect("prepare replay");
         let actual = serde_json::to_value(&prepared.request).expect("request value");
         let mut expected = serde_json::to_value(&request).expect("original value");
@@ -577,9 +578,7 @@ mod tests {
 
         // Regression: the named-schema experiment changes no tool identity, request,
         // adapter or protocol field, and all invalid variants refuse before mutation.
-        // Compare the immutable capture in its own JSON representation: typed f32
-        // serialization through Value widens 0.35, unlike the original JSON writer.
-        let captured_request = read().submitted.unwrap()["request"].clone();
+        let captured_request = serde_json::to_value(&read().submitted.unwrap().request).unwrap();
         let mut schema_params = p.clone();
         schema_params.max_tokens = None;
         schema_params.expected_request_sha256 = Some(request_hash(&request).unwrap());
@@ -621,33 +620,27 @@ mod tests {
         let mut duplicate_params = schema_params.clone();
         duplicate_params.expected_request_sha256 = Some(request_hash(&duplicate).unwrap());
         assert!(compare_input(&mut duplicate, &duplicate_params).is_err());
-        assert_eq!(read().submitted.unwrap()["request"], captured_request);
+        assert_eq!(serde_json::to_value(&read().submitted.unwrap().request).unwrap(), captured_request);
 
         // The provenance rides the existing capture format, not an unrelated log.
         let replay_id = prepared.call.persona_id;
-        let replay_sink = JsonlPromptCaptureSink::open(dir.path(), replay_id).expect("replay sink");
+        let replay_sink = FramePromptCaptureSink::at(dir.path(), replay_id);
         let replay = CaptureLease::start(Arc::new(replay_sink), &prepared.call, &prepared.request);
         let replay_cursor = replay.cursor().expect("replay capture").to_string();
         drop(replay); // cancellation is a terminal event, never a successful replay
-        let detail =
-            prompt_capture::detail(dir.path(), replay_id, &replay_cursor).expect("replay detail");
-        let submitted = detail.submitted.expect("replay submitted");
-        assert_eq!(submitted["replay_of"]["persona_id"], persona.to_string());
-        assert_eq!(submitted["replay_of"]["cursor"], cursor);
-        assert_eq!(
-            read().submitted.expect("original retained")["request"]["maxTokens"],
-            16_384
-        );
+        let detail = prompt_capture::Playback::at(dir.path(), replay_id).detail(&replay_cursor).expect("replay detail");
+        let replay_of = detail.submitted.expect("replay submitted").replay.expect("its provenance");
+        assert_eq!((replay_of.persona_id, replay_of.cursor.as_str()), (persona, cursor.as_str()));
+        assert_eq!(read().submitted.expect("original retained").request.max_tokens, Some(16_384));
         let mut broken = read();
         broken.issues.push("request payload missing".into());
         assert!(prepare(broken, &p, persona).is_err());
         let mut missing_model = read();
-        missing_model.submitted.as_mut().expect("submitted")["request"]["model"] =
-            serde_json::Value::Null;
+        missing_model.submitted.as_mut().expect("submitted").request.model = None;
         assert!(prepare(missing_model, &p, persona).is_err());
         let prepared = schema_prepared;
         let replay_id = prepared.call.persona_id;
-        let sink = JsonlPromptCaptureSink::open(dir.path(), replay_id).expect("execution sink");
+        let sink = FramePromptCaptureSink::at(dir.path(), replay_id);
         let target = dir.path().join("must-not-be-written.txt");
         let response = TextGenerationResponse {
             text: String::new(),
@@ -671,9 +664,9 @@ mod tests {
         // Actual Kimi captures leave request.model null and report the serving
         // model only at completion. Replay must pin that receipt and expose it.
         let mut implicit = read();
-        implicit.submitted.as_mut().expect("submitted")["request"]["model"] =
-            serde_json::Value::Null;
-        implicit.terminal = Some(serde_json::json!({"response": &response}));
+        implicit.submitted.as_mut().expect("submitted").request.model = None;
+        let served = response.clone();
+        implicit.terminal = Some(ended(served));
         let implicit_replay = prepare(implicit, &p, persona).expect("observed model binding");
         assert_eq!(
             implicit_replay.request.model.as_deref(),
@@ -688,8 +681,7 @@ mod tests {
                 .model_from_response
         );
         let implicit_id = implicit_replay.call.persona_id;
-        let implicit_sink =
-            JsonlPromptCaptureSink::open(dir.path(), implicit_id).expect("implicit sink");
+        let implicit_sink = FramePromptCaptureSink::at(dir.path(), implicit_id);
         let implicit_capture = CaptureLease::start(
             Arc::new(implicit_sink),
             &implicit_replay.call,
@@ -700,23 +692,19 @@ mod tests {
             .expect("implicit recorded")
             .to_string();
         drop(implicit_capture);
-        let recorded = prompt_capture::detail(dir.path(), implicit_id, &implicit_cursor)
-            .expect("binding record");
-        assert_eq!(
-            recorded.submitted.expect("binding submission")["replay_of"]["model_from_response"],
-            true
-        );
+        let recorded = prompt_capture::Playback::at(dir.path(), implicit_id).detail(&implicit_cursor).expect("binding record");
+        assert!(recorded.submitted.expect("binding submission").replay.expect("its provenance").model_from_response);
         let mut unknown = read();
-        unknown.submitted.as_mut().expect("submitted")["request"]["model"] =
-            serde_json::Value::Null;
-        unknown.terminal = Some(serde_json::json!({"response": &response}));
-        unknown.terminal.as_mut().expect("terminal")["response"]["model"] = serde_json::json!(" ");
+        unknown.submitted.as_mut().expect("submitted").request.model = None;
+        let mut blank = response.clone();
+        blank.model = " ".into();
+        unknown.terminal = Some(ended(blank));
         assert!(prepare(unknown, &p, persona).is_err());
         // A request binding takes precedence over a provider's different spelling.
         let mut explicit = read();
-        explicit.terminal = Some(serde_json::json!({"response": &response}));
-        explicit.terminal.as_mut().expect("terminal")["response"]["model"] =
-            serde_json::json!("provider-alias");
+        let mut alias = response.clone();
+        alias.model = "provider-alias".into();
+        explicit.terminal = Some(ended(alias));
         let explicit = prepare(explicit, &p, persona).expect("request binding");
         assert_eq!(explicit.request.model.as_deref(), Some("captured-model"));
         assert!(
@@ -743,18 +731,15 @@ mod tests {
         assert_eq!(seen.len(), 1);
         assert_eq!(serde_json::to_value(&seen[0].tools).unwrap(), expected_schema["tools"]);
         assert!(result.input_comparison.tool_schema.is_some());
-        let page =
-            prompt_capture::page(dir.path(), replay_id, None, false, 10).expect("replay lifecycle");
-        let terminal = page.entries.last().expect("terminal event");
+        let replayed = prompt_capture::Playback::at(dir.path(), replay_id);
+        let page = replayed.page(None, false, std::num::NonZeroUsize::new(10).expect("ten")).expect("replay lifecycle");
+        let terminal = page.entries.last().expect("the replayed call");
         assert!(matches!(
             terminal.status,
             prompt_capture::CallStatus::Completed
         ));
-        let final_detail = prompt_capture::detail(dir.path(), replay_id, &terminal.cursor)
-            .expect("terminal detail");
-        assert_eq!(
-            final_detail.terminal.expect("terminal")["response"]["toolCalls"][0]["name"],
-            "code/write"
-        );
+        let final_detail = replayed.detail(&terminal.cursor).expect("terminal detail");
+        let calls = final_detail.terminal.and_then(|end| end.response).and_then(|r| r.tool_calls).expect("its proposed calls");
+        assert_eq!(calls[0].name, "code/write");
     }
 }

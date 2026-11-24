@@ -58,8 +58,7 @@ async fn serve<W: Wire>(State(abandoned): State<Signal>, headers: axum::http::He
         tools = call.request.tools.as_deref().map_or(0, <[_]>::len) as u64, messages = call.request.messages.len() as u64,
         "an agent's call reached the engine through the gateway");
     // Recorded or refused: an agent's call is never served outside the one capture.
-    let opened = continuum_capture::prompt_capture::JsonlPromptCaptureSink::open_for_persona(session);
-    let mut lease = match crate::session::record(opened, session, &id, W::NAME, &call.request) {
+    let mut lease = match crate::session::record(session, &id, W::NAME, &call.request) {
         Ok(lease) => lease,
         Err(unavailable) => return capture_refused::<W>(&unavailable),
     };

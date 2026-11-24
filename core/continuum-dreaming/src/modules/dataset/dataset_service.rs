@@ -7,9 +7,10 @@ impl DatasetService {
 
     /// Resolve the datasets root directory, preferring the per-call override.
     pub(super) fn resolve_root(&self, output_dir: Option<&str>) -> PathBuf {
-        output_dir
-            .map(PathBuf::from)
-            .unwrap_or_else(|| self.datasets_root.clone())
+        match output_dir {
+            Some(dir) => PathBuf::from(dir),
+            None => self.datasets_root.clone(),
+        }
     }
 
     /// Import a generic CSV file as a JSONL training dataset.
@@ -56,9 +57,10 @@ impl DatasetService {
         let mut examples: Vec<Value> = Vec::new();
         for result in reader.records() {
             let record = result.map_err(|e| format!("CSV parse error: {e}"))?;
-            let user_text = record.get(user_idx).unwrap_or("").trim();
-            let assistant_text = record.get(assistant_idx).unwrap_or("").trim();
-
+            // a short row lacks the column: no pair, like an empty field
+            let (Some(user_text), Some(assistant_text)) = (record.get(user_idx).map(str::trim), record.get(assistant_idx).map(str::trim)) else {
+                continue;
+            };
             if user_text.is_empty() || assistant_text.is_empty() {
                 continue;
             }
@@ -160,21 +162,11 @@ impl DatasetService {
     /// the data" had quietly stopped being true for the live path. Same one output
     /// shape, same split/write/manifest — only the SOURCE differs, so the genome
     /// loop trains on what the persona actually does today.
-    pub fn from_captures(&self, p: &FromCapturesParams) -> Result<DatasetManifest, String> {
-        let dir = p
-            .captures_dir
-            .as_deref()
-            .map(PathBuf::from)
-            .or_else(|| {
-                crate::cognition::capture::fixture_dir(crate::cognition::prompt_capture::FIXTURE_DIR)
-            })
-            .ok_or_else(|| "cannot resolve capture home directory".to_string())?;
-        if !dir.is_dir() {
-            return Err(format!(
-                "capturesDir not found: {} (default ~/.continuum/fixtures/prompt-captures)",
-                dir.display()
-            ));
-        }
+    pub fn from_captures(
+        &self,
+        class: &continuum_kernel::system_resources::disk_reporters::ClassWriter,
+        p: &FromCapturesParams,
+    ) -> Result<DatasetManifest, String> {
         // Fail loud on a bad axis filter rather than silently matching nothing (which
         // would surface as the misleading "No usable turns" error below).
         if let Some(axis) = p.skill_axis.as_deref() {
@@ -186,46 +178,33 @@ impl DatasetService {
         }
 
         let output_dir = self.resolve_root(p.output_dir.as_deref()).join(&p.name);
+        let persona = p
+            .persona_id
+            .as_ref()
+            .map(|r| uuid::Uuid::parse_str(r.as_str()).map_err(|_| format!("personaId {:?} is not a persona id", r.as_str())))
+            .transpose()?;
+        let owners = class.owners().map_err(|e| format!("prompt captures {}: {e}", class.dir().display()))?;
 
         let mut examples: Vec<Value> = Vec::new();
-        let entries = std::fs::read_dir(&dir)
-            .map_err(|e| format!("Failed to read capturesDir {}: {e}", dir.display()))?;
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
-                continue;
-            }
-            let captures = crate::cognition::prompt_capture::completed_file(&path, usize::MAX)
-                .map_err(|error| format!("capture {}: {error}", path.display()))?;
-            for cap in captures {
-                if let Some(pid) = p.persona_id.as_ref().map(|r| r.as_str()) {
-                    if cap.get("persona_id").and_then(|v| v.as_str()) != Some(pid) {
-                        continue;
-                    }
+        for owner in owners.into_iter().filter(|owner| persona.is_none_or(|wanted| wanted == *owner)) {
+            let calls = crate::cognition::prompt_capture::Playback::of(class, owner)
+                .completed(std::num::NonZeroUsize::MAX)
+                .map_err(|error| format!("captures of {owner}: {error}"))?;
+            for call in calls {
+                let room = call.head.room_id.to_string();
+                if p.room_id.as_deref().is_some_and(|rid| rid != room) {
+                    continue;
                 }
-                if let Some(rid) = p.room_id.as_deref() {
-                    if cap.get("room_id").and_then(|v| v.as_str()) != Some(rid) {
-                        continue;
-                    }
+                // FORK GUARD (#427): benchmark/eval fork ticks are captured under the persona's own
+                // id beside her live turns and must not teach. "synthetic" IS the fork/fixture
+                // cause; a nil room marks the forks recorded before every turn had a real room
+                // (#425). An explicit `room_id` filter already expresses the caller's intent, so
+                // the guard applies only to unfiltered runs.
+                if !p.include_forks && p.room_id.is_none() && (call.head.cause == "synthetic" || call.head.room_id.is_nil()) {
+                    continue;
                 }
-                // FORK GUARD (#427): benchmark/eval fork ticks land in the SAME
-                // per-persona capture file as live turns and must not teach.
-                // Schema v3 captures carry the turn's CAUSE — "synthetic" IS the
-                // fork/fixture marker (every turn now has a real room, #425, so
-                // nil-room inference is dead going forward). The nil-room check
-                // stays only for pre-v3 capture lines. An explicit `room_id`
-                // filter above already expresses the caller's intent, so the
-                // guard applies only to unfiltered runs.
-                if !p.include_forks && p.room_id.is_none() {
-                    if cap.get("cause").and_then(|v| v.as_str()) == Some("synthetic") {
-                        continue;
-                    }
-                    let nil = uuid::Uuid::nil().to_string();
-                    if cap.get("room_id").and_then(|v| v.as_str()) == Some(nil.as_str()) {
-                        continue;
-                    }
-                }
-                if let Some(example) = capture_to_example(&cap, p.include_system) {
+                let Some(response) = call.response.as_ref() else { continue };
+                if let Some(example) = capture_to_example(&call.request, response, p.include_system) {
                     if let Some(axis) = p.skill_axis.as_deref() {
                         if example.get("skillAxis").and_then(|a| a.as_str()) != Some(axis) {
                             continue;
@@ -239,7 +218,7 @@ impl DatasetService {
         if examples.is_empty() {
             return Err(format!(
                 "No usable turns in {} (after filters + structural curation) — nothing to train on",
-                dir.display()
+                class.dir().display()
             ));
         }
 
@@ -256,23 +235,21 @@ impl DatasetService {
     ///
     /// Accepts either:
     ///   - `repoDir`: path to cloned repo root (auto-discovers CSVs + tests)
-    ///   - `csvPath` + `testsDir`: legacy single-CSV mode (backward compat)
     pub fn import_realclasseval(
         &self,
         p: &ImportRealClassEvalParams,
     ) -> Result<DatasetManifest, String> {
-        let output_dir = p
-            .output_dir
-            .as_deref()
-            .map(PathBuf::from)
-            .unwrap_or_else(|| self.datasets_root.join("realclasseval"));
+        let output_dir = match p.output_dir.as_deref() {
+            Some(dir) => PathBuf::from(dir),
+            None => self.datasets_root.join("realclasseval"),
+        };
 
         let split_ratio = p.split_ratio;
 
         // Collect (csv_path, tests_dir, is_post_cutoff) pairs
-        let splits: Vec<(PathBuf, PathBuf, bool)> = if let Some(repo_dir) = p.repo_dir.as_deref() {
+        let splits: Vec<(PathBuf, PathBuf, bool)> = {
             // Auto-discover from repo directory structure
-            let base = PathBuf::from(repo_dir)
+            let base = PathBuf::from(&p.repo_dir)
                 .join("data")
                 .join("functional_correctness_data");
             if !base.exists() {
@@ -310,18 +287,6 @@ impl DatasetService {
                 ));
             }
             found
-        } else if let Some(csv_path) = p.csv_path.as_deref() {
-            // Legacy single-CSV mode
-            let tests_dir = p
-                .tests_dir
-                .as_deref()
-                .ok_or("Missing required param: testsDir (or use repoDir for auto-discovery)")?;
-            vec![(PathBuf::from(csv_path), PathBuf::from(tests_dir), false)]
-        } else {
-            return Err(
-                "Missing required param: repoDir (path to cloned RealClassEval repo) or csvPath"
-                    .to_string(),
-            );
         };
 
         let mut all_examples: Vec<Value> = Vec::new();
@@ -361,9 +326,12 @@ impl DatasetService {
             for result in reader.records() {
                 let record = result.map_err(|e| format!("CSV parse error: {e}"))?;
 
-                let snippet_id = record.get(snippet_id_idx).unwrap_or("").trim();
-                let human_code = record.get(human_code_idx).unwrap_or("").trim();
-                let skeleton = record.get(skeleton_idx).unwrap_or("").trim();
+                // a short row lacks a column: no example, like an empty field
+                let (Some(snippet_id), Some(human_code), Some(skeleton)) =
+                    (record.get(snippet_id_idx).map(str::trim), record.get(human_code_idx).map(str::trim), record.get(skeleton_idx).map(str::trim))
+                else {
+                    continue;
+                };
 
                 if snippet_id.is_empty() || human_code.is_empty() || skeleton.is_empty() {
                     continue;
@@ -449,9 +417,9 @@ impl DatasetService {
 
         // Re-write manifest with source metadata
         let manifest_path = output_dir.join("manifest.json");
-        let manifest_json = serde_json::to_string_pretty(&manifest)
+        let manifest_json = serde_json::to_vec_pretty(&manifest) // BOUNDARY: manifest.json is the dataset's disk format
             .map_err(|e| format!("Failed to serialize manifest: {e}"))?;
-        std::fs::write(&manifest_path, &manifest_json)
+        continuum_host::durable::write_replace(&manifest_path, &manifest_json)
             .map_err(|e| format!("Failed to write manifest: {e}"))?;
 
         Ok(manifest)
@@ -553,9 +521,9 @@ impl DatasetService {
         };
 
         let manifest_path = output_dir.join("manifest.json");
-        let manifest_json = serde_json::to_string_pretty(&manifest)
+        let manifest_json = serde_json::to_vec_pretty(&manifest) // BOUNDARY: manifest.json is the dataset's disk format
             .map_err(|e| format!("Failed to serialize manifest: {e}"))?;
-        std::fs::write(&manifest_path, &manifest_json)
+        continuum_host::durable::write_replace(&manifest_path, &manifest_json)
             .map_err(|e| format!("Failed to write manifest: {e}"))?;
 
         Ok(manifest)
@@ -587,7 +555,7 @@ impl Default for DatasetModule {
             // A module constructor cannot fail; with no home the service is rooted where
             // nothing persists, and says so once. Every command path resolves the root itself
             // and fails loud.
-            service: Arc::new(DatasetService::new(default_datasets_root().unwrap_or_else(|e| {
+            service: Arc::new(DatasetService::new(default_datasets_root().unwrap_or_else(|e| { // unwrap_or_else: a constructor cannot fail; the unrooted service is said below and every command resolves its own root
                 continuum_base::probe!(
                     class = "dataset.root.unresolved",
                     error = e.to_string().as_str(),
