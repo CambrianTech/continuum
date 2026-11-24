@@ -75,6 +75,9 @@ pub(crate) enum Heard {
     Unsaved { why: Arc<str>, positions: Vec<Position> },
     /// Refused: the engine holds nothing for it, and its guards are dropped.
     NotSeated { why: Arc<str> },
+    /// The last Load, Seat or Release was not applied (out of order, repeated, or a retain native
+    /// code refused): the seat is where it was, holding what it held.
+    Kept { why: Arc<str> },
     /// Quarantined: the engine holds it until it proves its memory released, so every guard stays
     /// held until it says [`Heard::Released`] (Codex on #6254).
     Quarantined { why: Arc<str> },
@@ -101,6 +104,8 @@ impl From<Unavailable> for NotTold {
 pub(crate) struct SeatRun {
     seat: SeatId,
     phase: Phase,
+    /// Where the seat stood before its last Load, Seat or Release: a Kept answer returns it there.
+    before: Phase,
     /// The lesson told and not yet answered: one at a time per seat.
     in_flight: Option<(StepId, Position)>,
     /// What each submission has learned since the newest saved generation: volatile.
@@ -117,7 +122,7 @@ impl SeatRun {
     pub(crate) fn measure(port: &dyn LearnPort, measure: Measure) -> Result<Self, NotTold> {
         let seat = measure.seat;
         port.tell(Learning::Measure(measure))?;
-        Ok(Self { seat, phase: Phase::Measuring, in_flight: None, progress: HashMap::new(), checkpoints: VecDeque::new(), guards: Vec::new() })
+        Ok(Self { seat, phase: Phase::Measuring, before: Phase::Measuring, in_flight: None, progress: HashMap::new(), checkpoints: VecDeque::new(), guards: Vec::new() })
     }
 
     pub(crate) fn id(&self) -> SeatId {
@@ -142,7 +147,7 @@ impl SeatRun {
         }
         port.tell(Learning::Load { seat: self.seat })?;
         self.guards.push(weights);
-        self.phase = Phase::Loading;
+        self.told(Phase::Loading);
         Ok(())
     }
 
@@ -154,7 +159,7 @@ impl SeatRun {
         }
         port.tell(Learning::Seat(Seat { seat: self.seat, lease }))?;
         self.guards.extend(guards);
-        self.phase = Phase::Seating;
+        self.told(Phase::Seating);
         Ok(())
     }
 
@@ -192,7 +197,7 @@ impl SeatRun {
             return Ok(());
         }
         port.tell(Learning::Release { seat: self.seat })?;
-        self.phase = Phase::Releasing;
+        self.told(Phase::Releasing);
         Ok(())
     }
 
@@ -233,6 +238,11 @@ impl SeatRun {
                 Heard::NotSeated { why: Arc::clone(why) }
             }
             // the engine has not proved its memory released: every guard stays until it says Released
+            // not applied: the seat is where it was and holds what it held
+            SeatState::Kept { why } => {
+                self.phase = self.before;
+                Heard::Kept { why: Arc::clone(why) }
+            }
             SeatState::Quarantined { why } => {
                 self.phase = Phase::Quarantined;
                 self.in_flight = None;
@@ -295,6 +305,12 @@ impl SeatRun {
             }
             GenerationOutcome::Refused { why } => Heard::Unsaved { why: Arc::clone(why), positions },
         })
+    }
+
+    /// A seat command was told: the seat moves to `next`, and a Kept answer returns it.
+    fn told(&mut self, next: Phase) {
+        self.before = self.phase;
+        self.phase = next;
     }
 
     /// Nothing of the seat remains on the engine: its guards drop.
