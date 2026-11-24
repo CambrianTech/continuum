@@ -148,13 +148,16 @@ mod tests {
                 let at = root.join(format!("{project}-{card}"));
                 run(&main, &["worktree", "add", "-q", "--detach", at.to_str().expect("utf-8"), "HEAD"]);
             }
-            main.canonicalize().expect("main").join(".airc")
+            main.join(".airc")
         };
-        let continuum = cut("continuum", true);
-        let airc = cut("airc", true);
+        let continuum = cut("continuum", true).canonicalize().expect("scope");
+        let airc = cut("airc", true).canonicalize().expect("scope");
         cut("unscoped", false);
         std::fs::create_dir_all(root.join("not-a-worktree")).expect("dir");
-        assert_eq!(scopes(&checkouts(&root)), BTreeSet::from([continuum, airc]), "one scope per project, each once");
+        // git names a path its own way (on Windows `C:/...`, never the `\\?\` form canonicalize
+        // gives), so both sides are compared as the filesystem resolves them (Codex on #6253).
+        let found: BTreeSet<PathBuf> = scopes(&checkouts(&root)).iter().map(|home| home.canonicalize().expect("scope")).collect();
+        assert_eq!(found, BTreeSet::from([continuum, airc]), "one scope per project, each once");
     }
 
     // what this catches (Codex on 186ee967): the pool credited itself with the volume's whole gain,

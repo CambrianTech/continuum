@@ -3377,6 +3377,7 @@ dependencies = [
  "dashmap",
  "dirs 5.0.1",
  "ed25519-dalek",
+ "filetime",
  "fs2",
  "futures",
  "futures-util",

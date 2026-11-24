@@ -303,7 +303,6 @@
     // while 60 GB of per-card trees (`cargo-target-wt/<card>`) sat below it. A root cargo did
     // not write is a holder of trees: the tree built longest ago is cut first, and a want it meets
     // leaves the newer tree whole.
-    #[cfg(unix)]
     #[test]
     fn a_root_of_per_card_trees_cuts_the_longest_unbuilt_tree_first() {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -314,7 +313,7 @@
             std::fs::write(at.join(".rustc_info.json"), "{}").expect("rustc info");
             let built = std::time::SystemTime::now() - std::time::Duration::from_secs(built_secs_ago);
             for dir in [at.clone(), at.join("debug"), at.join("release")] {
-                std::fs::File::open(&dir).expect("dir").set_modified(built).expect("mtime");
+                filetime::set_file_mtime(&dir, filetime::FileTime::from_system_time(built)).expect("mtime");
             }
             at
         };
