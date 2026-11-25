@@ -746,7 +746,7 @@
                         for op in ops.iter() {
                             if op.get("collection")
                                     .and_then(Value::as_str)
-                                    == Some(crate::chat::arrival::Arrival::COLLECTION.to_string()) {
+                                    == Some("chat_arrivals") {
                                 let mut seq = self.seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                                 // The arrival is fresh only if this batch inserted a new message row (Create).
                                 // If the batch had an Ensure op for chat_messages that found an existing id,
