@@ -14,7 +14,7 @@ pub use backend_init::*;
 mod expert_eval_cb;
 pub use expert_eval_cb::*;
 mod sampler;
-pub use sampler::{Sampler, SamplerChainBuilder};
+pub use sampler::{Grammar, GrammarRefusal, LazyTriggers, Sampler, SamplerChainBuilder};
 mod chat;
 pub use chat::{ChatRefusal, ChatRender, ChatTemplates, ReasoningFormat};
 mod persona;

@@ -2,6 +2,32 @@
 
 use super::*;
 
+/// A GBNF constraint for the chain: the grammar, its start symbol, and (for a lazy grammar) what
+/// wakes it.
+#[derive(Debug, Clone, Copy)]
+pub struct Grammar<'a> {
+    pub gbnf: &'a str,
+    pub root: &'a str,
+    pub lazy: Option<LazyTriggers<'a>>,
+}
+
+/// What wakes a lazy grammar: regex patterns matched against the output from its start (the
+/// grammar is fed from the first match group), and tokens that wake it as they are sampled.
+#[derive(Debug, Clone, Copy)]
+pub struct LazyTriggers<'a> {
+    pub patterns: &'a [String],
+    pub tokens: &'a [i32],
+}
+
+/// Why a grammar could not join the chain.
+#[derive(Debug, thiserror::Error)]
+pub enum GrammarRefusal {
+    #[error("the grammar, its root or a trigger pattern holds a NUL byte")]
+    Nul(#[from] std::ffi::NulError),
+    #[error("llama.cpp could not parse the grammar")]
+    Unparsed,
+}
+
 /// A sampler pipeline. Build with `Sampler::chain()` and chain methods, or
 /// use `Sampler::greedy()` for deterministic argmax.
 pub struct Sampler {
@@ -112,33 +138,40 @@ impl SamplerChainBuilder {
         self.add(s)
     }
 
-    /// Add a GBNF grammar constraint. Forces output to match the grammar
-    /// — invalid tokens get probability zero. `grammar_root` is the
-    /// start-symbol name in the grammar (typically "root"). Use this to
-    /// enforce JSON output or any other structured format.
+    /// Add a GBNF grammar constraint: tokens the grammar rejects get probability zero. Needs the
+    /// model's vocab, and belongs early in the chain (before temp / dist) so the constraint applies
+    /// before probabilistic sampling. A lazy grammar (`grammar.lazy`) stays inert until one of its
+    /// triggers appears, as the model's chat handling asks for tool calls: free text, then a call
+    /// held to its schema.
     ///
-    /// Needs the model's vocab — pass the loaded `Model` so the chain
-    /// can wire the grammar against the right token table. Belongs early
-    /// in the chain (before temp / dist), so the constraint applies
-    /// before probabilistic sampling.
-    pub fn grammar(self, model: &Model, grammar_str: &str, grammar_root: &str) -> Self {
-        let g = std::ffi::CString::new(grammar_str).expect("grammar contains nul");
-        let r = std::ffi::CString::new(grammar_root).expect("grammar_root contains nul");
-        let s = unsafe {
-            let vocab = sys::llama_model_get_vocab(model.ptr.as_ptr());
-            sys::llama_sampler_init_grammar(vocab, g.as_ptr(), r.as_ptr())
+    /// A grammar llama.cpp cannot parse is refused, never skipped: a turn that asked for a
+    /// constraint and silently sampled without one emits what the caller said it must not.
+    pub fn grammar(self, model: &Model, grammar: &Grammar<'_>) -> Result<Self, GrammarRefusal> {
+        let gbnf = std::ffi::CString::new(grammar.gbnf)?;
+        let root = std::ffi::CString::new(grammar.root)?;
+        let vocab = unsafe { sys::llama_model_get_vocab(model.ptr.as_ptr()) };
+        let s = match grammar.lazy {
+            None => unsafe { sys::llama_sampler_init_grammar(vocab, gbnf.as_ptr(), root.as_ptr()) },
+            Some(lazy) => {
+                let patterns = lazy.patterns.iter().map(|p| std::ffi::CString::new(p.as_str())).collect::<Result<Vec<_>, _>>()?;
+                let pattern_ptrs: Vec<*const std::ffi::c_char> = patterns.iter().map(|p| p.as_ptr()).collect();
+                unsafe {
+                    sys::llama_sampler_init_grammar_lazy_patterns(
+                        vocab,
+                        gbnf.as_ptr(),
+                        root.as_ptr(),
+                        pattern_ptrs.as_ptr().cast_mut(),
+                        pattern_ptrs.len(),
+                        lazy.tokens.as_ptr(),
+                        lazy.tokens.len(),
+                    )
+                }
+            }
         };
-        // llama.cpp returns NULL on grammar parse failure. Adding a null
-        // sampler to the chain crashes inside llama_sampler_sample on
-        // first use (verified 2026-04-20: 'scheduler closed without Done
-        // event' for all personas when JSON grammar didn't parse). Skip
-        // the null pointer rather than ship a corrupted chain — caller
-        // gets unconstrained sampling instead of a crash.
         if s.is_null() {
-            eprintln!("[safe.rs] grammar parse failed for root='{grammar_root}' — skipping (chain unconstrained)");
-            return self;
+            return Err(GrammarRefusal::Unparsed);
         }
-        self.add(s)
+        Ok(self.add(s))
     }
 
     pub fn build(self) -> Sampler {
