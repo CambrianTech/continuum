@@ -72,6 +72,8 @@ enum StartError {
     Context(String),
     #[error("the persona scheduler's batch size is zero")]
     ZeroBatch,
+    #[error("no home for minds' KV and preserved state: {0}")]
+    Home(String),
 }
 
 /// One mind this scheduler serves: the unit that travels (CONTINUUM-ENGINE 4.17). Her blocks are her
@@ -245,26 +247,20 @@ pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
     let capacity = admission::Capacity::new(geometry.n_ctx_seq as usize);
     // The root resume (CONTINUUM-ENGINE 4.16): the minds the last stop preserved come back Warm, in
     // RAM, and bind when they are next scheduled. A mind that does not verify stays on disk, named.
-    let mut store = preserve::Preserved::at_home();
-    // each mind's KV is a block over her own mapped file there; with no home to map into, the fork's own memory
-    let home = match &store {
-        Ok(store) => match store.live_kv() {
-            Ok(instance) => KvHome::Mapped(instance),
-            Err(why) => {
-                log.warn(&format!("minds' KV stays the fork's own memory: {why}"));
-                KvHome::Native
-            }
-        },
-        Err(_) => KvHome::Native,
-    };
-    let mut tier = UnifiedTier::new(&mut ctx, home);
-    let parked = match &mut store {
-        Ok(store) => resume(&mut tier, store, &config.model, &log),
+    // Each mind's KV is a block over her own mapped file in this node's home. With no home, or no
+    // instance in it, the engine refuses to start: never the fork's row-copy memory (a 3 ms CPU copy
+    // per switch on the 35B) and never minds that a stop cannot preserve.
+    let (mut store, instance) = match preserve::Preserved::at_home().and_then(|store| store.live_kv().map(|kv| (store, kv))) {
+        Ok(found) => found,
         Err(why) => {
-            log.warn(&format!("no preserved minds resume: {why}"));
-            HashMap::new()
+            let refused = StartError::Home(why.to_string());
+            refuse(&refused);
+            refuse_all(refused.to_string());
+            return;
         }
     };
+    let mut tier = UnifiedTier::new(&mut ctx, KvHome::Mapped(instance));
+    let parked = resume(&mut tier, &mut store, &config.model, &log);
     log.info(&format!("persona scheduler ready: {geometry:?} (one mind decodes at a time; {} minds resumed)", parked.len()));
     state.send_replace(EngineState::Ready(geometry));
     let mut driver = Driver {
@@ -278,7 +274,7 @@ pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
         record: Outbox::new(record),
         log_failures: continuum_base::probe_writes::Reading::now(),
         answers: 0,
-        store: store.ok(),
+        store: Some(store),
         model_id: config.model.clone(),
         stopping: false,
         learning: learning::Learning::default(),
