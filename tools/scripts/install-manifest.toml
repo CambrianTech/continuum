@@ -283,13 +283,15 @@ manifest = "https://developer.download.nvidia.com/compute/cuda/redist/redistrib_
 version = "12.9.1"
 # minimum to COMPILE ggml-cuda + candle-kernels; libcurand is load-bearing
 # (candle's RNG links curand.lib -- omitting it fails the final link, not the build)
-components = ["cuda_nvcc", "cuda_cudart", "libcublas", "libcurand", "cuda_nvrtc", "cuda_cccl"]
+# cuda_nvml_dev: nvml.h, which ggml-cuda.cu includes since the 2026-11 upstream sync (it loads
+# nvml.dll itself at run time, so only the header is needed to compile)
+components = ["cuda_nvcc", "cuda_cudart", "libcublas", "libcurand", "cuda_nvrtc", "cuda_cccl", "cuda_nvml_dev"]
 # per-component sha256 comes from NVIDIA's manifest above (delegated verification)
 [module.sources.linux]
 type = "redist"           # schema-complete; run-verify pending on a linux+nvidia node (same no-admin redist)
 manifest = "https://developer.download.nvidia.com/compute/cuda/redist/redistrib_12.9.1.json"
 version = "12.9.1"
-components = ["cuda_nvcc", "cuda_cudart", "libcublas", "libcurand", "cuda_nvrtc", "cuda_cccl"]
+components = ["cuda_nvcc", "cuda_cudart", "libcublas", "libcurand", "cuda_nvrtc", "cuda_cccl", "cuda_nvml_dev"]
 # LAUNCH-time PATH: the running continuum-core-server must find cudart64_*.dll / cublas64_*.dll
 # etc. at load, or Windows kills it BEFORE main() with 0xC0000135 (STATUS_DLL_NOT_FOUND) —
 # zero output, the exact silent-exit we hit on the 5090. Version-agnostic globs so a CUDA

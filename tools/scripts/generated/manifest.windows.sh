@@ -20,7 +20,7 @@ declare -A MOD_VERSION=( ['cmake']='4.4.2' ['xz-decoder']='5.8.4' ['llvm-libclan
 declare -A MOD_SHA256=( ['cmake']='e8139d85b3813bc38833142ae1940472e9a587e9b5d2718ac1804c60f4e57a64' ['xz-decoder']='f31af7638391ecf286d48bc8555ce6e131691a1c52a9e44303bce57069e9de56' ['llvm-libclang']='22c5907db053026cc2a8ff96d21c0f642a90d24d66c23c6d28ee7b1d572b82e8' ['onnxruntime']='ec423825a8782c0bbd5cbfabcd984363fbb99ff084afae128719690d4db7f8d5' ['poppler']='7a6f256a0ddf7536182246a5733331bf4677cbcc34f4663774947ad34556c8d0' )
 declare -A MOD_EXTRACT=( ['cmake']='strip-top-dir' ['xz-decoder']='preserve-tree' ['llvm-libclang']='members:*/bin/libclang.dll,*/lib/clang/*' ['onnxruntime']='strip-top-dir' ['poppler']='strip-top-dir' )
 declare -A MOD_REDIST_MANIFEST=( ['cuda']='https://developer.download.nvidia.com/compute/cuda/redist/redistrib_12.9.1.json' )
-declare -A MOD_COMPONENTS=( ['cuda']='cuda_nvcc,cuda_cudart,libcublas,libcurand,cuda_nvrtc,cuda_cccl' )
+declare -A MOD_COMPONENTS=( ['cuda']='cuda_nvcc,cuda_cudart,libcublas,libcurand,cuda_nvrtc,cuda_cccl,cuda_nvml_dev' )
 declare -A MOD_FORMULA=()
 declare -A MOD_PACKAGE=()
 declare -A MOD_ARGS=()
