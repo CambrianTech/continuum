@@ -173,9 +173,9 @@ impl<K: Copy + Debug + PartialEq + Send + 'static> Policy<Lane<K>> for NeedFirst
     }
 }
 
-/// The algorithm serving runs unless its configuration names another: the cost model over the
-/// lane's history.
-pub const SERVING: &str = "cost-model";
+/// The algorithm serving runs unless its configuration names another: the stock linear UCB over the
+/// lane's features (on trial live against the cost model, which it matched in simulation).
+pub const SERVING: &str = super::super::linear_ucb::NAME;
 
 /// How many decisions the lane keeps for replay, and how many a learner remembers: one per step, so
 /// at 26 ms a step about three and a half minutes, what replay can check a learner against.

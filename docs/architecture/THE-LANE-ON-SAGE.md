@@ -509,7 +509,7 @@ every depth measured. The 35B's rows need serving down.
 - The history is the lane's own (`cases::lane_history`). The driver is only the executor: it reports
   each switch-in, reuse, step (tokens and time, prefill and decode apart), turn end, residency and
   departure. The history fills every mind's features; what it has not measured stays `Unmeasured`.
-- `cost-model` (the serving default; its `margin` is learned, below): the running mind continues while her next step, or her whole
+- `cost-model` (the serving default until the `linear-ucb` live trial; its `margin` is learned, below): the running mind continues while her next step, or her whole
   predicted remainder, fits a `margin` share of the tightest waiter's slack (her bound, less her wait,
   less her measured switch cost); otherwise that waiter is brought in, and a more urgent one at once.
   So a mind whose switch is costly is served before her bound arrives, and a long turn runs while it
