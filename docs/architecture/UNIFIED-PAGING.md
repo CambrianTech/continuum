@@ -359,6 +359,21 @@ CLAUDE.md's polymorphism pattern), so a node's configuration or a trial picks on
 - The restart maps each mind's files and checks her header's clean mark against the manifest's
   generation, then attaches and binds. No byte is read until a page is touched.
 
+**The stream is a view; a mind's storage never changes hands** (corrected while building slice 2).
+#6264's exchange swapped storage between the stream and the outgoing mind. With anonymous memory
+that is invisible. With a file-backed storage it would carry her file to the next mind, who would
+write her KV into it. So:
+- every mind owns her storage for life, attached over her mapped file or, where a device cannot wrap
+  host memory, reserved by the fork;
+- binding her points the stream's layer tensors at her storage, and parking her points them back at
+  the stream's own;
+- the cells object still swaps as today (small, owned metadata).
+
+No ownership moves, so `persona_resident` and the ownership swap are deleted. A clear zeroes whatever
+the stream views. Storage is taken at a mind's first bind, never by a copy at her first save. The
+stream's own KV allocation then serves only a mind without storage; its size at the window (about
+1.8 GB on the 35B) is measured and its release is a follow-up.
+
 **Crash safety:**
 - A mapped file changes while she runs, so only a clean mark that matches the manifest restores her.
 - A crash leaves the mark stale, and she starts cold, named, as today when a stop does not finish.
