@@ -31,10 +31,10 @@ if ($Check) {
 
 # The first CLI is not installed yet, so project its canonical build-key inputs
 # into the transport shim rather than maintaining a second policy list.
-$artifactSource = [IO.File]::ReadAllText((Join-Path $root 'core/continuum-cli-lifecycle/src/prebuilt_artifact.rs'))
-$inputBlock = [regex]::Match($artifactSource, '(?s)pub const BUILD_INPUTS:.*?=\s*\[(.*?)\];')
-if (-not $inputBlock.Success) { throw 'Missing canonical prebuilt build inputs.' }
-$inputs = @([regex]::Matches($inputBlock.Groups[1].Value, '"([^"]+)"') | ForEach-Object { $_.Groups[1].Value })
+# The list is build-inputs.txt, one path per line: the file prebuilt_artifact.rs includes
+# (#5893 moved it there; the old regex over a `const` array found nothing and failed every run).
+$inputs = @([IO.File]::ReadAllLines((Join-Path $root 'core/continuum-cli-lifecycle/build-inputs.txt')) | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+if ($inputs.Count -eq 0) { throw 'Missing canonical prebuilt build inputs.' }
 $prebuiltPath = Join-Path $PSScriptRoot 'lib/windows-prebuilt.ps1'
 $prebuiltText = [IO.File]::ReadAllText($prebuiltPath).Replace("`r`n", "`n")
 $projection = '# BEGIN GENERATED PREBUILT INPUTS' + "`n" + '$script:CorePrebuiltInputs = @(' + (($inputs | ForEach-Object { "'$_'" }) -join ', ') + ')' + "`n" + '# END GENERATED PREBUILT INPUTS'

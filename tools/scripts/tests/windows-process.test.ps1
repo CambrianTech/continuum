@@ -563,9 +563,9 @@ exit $Code
     New-Item -ItemType Directory -Path (Join-Path $fixtureScripts 'lib') -Force | Out-Null
     Copy-Item -LiteralPath "$PSScriptRoot/../lib/windows-elevation.ps1" -Destination (Join-Path $fixtureScripts 'lib')
     Copy-Item -LiteralPath "$PSScriptRoot/../lib/windows-prebuilt.ps1" -Destination (Join-Path $fixtureScripts 'lib')
-    $fixtureArtifactSource = Join-Path $fixtureRepo 'core/continuum-cli-lifecycle/src/prebuilt_artifact.rs'
-    New-Item -ItemType Directory -Path (Split-Path $fixtureArtifactSource) -Force | Out-Null
-    Copy-Item -LiteralPath "$PSScriptRoot/../../../core/continuum-cli-lifecycle/src/prebuilt_artifact.rs" -Destination $fixtureArtifactSource
+    $fixtureBuildInputs = Join-Path $fixtureRepo 'core/continuum-cli-lifecycle/build-inputs.txt'
+    New-Item -ItemType Directory -Path (Split-Path $fixtureBuildInputs) -Force | Out-Null
+    Copy-Item -LiteralPath "$PSScriptRoot/../../../core/continuum-cli-lifecycle/build-inputs.txt" -Destination $fixtureBuildInputs
     Copy-Item -LiteralPath "$PSScriptRoot/../sync-windows-bootstrap.ps1" -Destination $fixtureScripts
     $fixtureEntry = Join-Path $fixtureRepo 'install.ps1'
     Copy-Item -LiteralPath "$PSScriptRoot/../../../install.ps1" -Destination $fixtureEntry
