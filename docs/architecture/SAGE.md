@@ -252,6 +252,11 @@ The same pattern repeats wherever something finite is shared, so SAGE owns it on
 - **Capacity is measured continually,** never only at start. Other processes, other copies of us, and
   other nodes take and give back room; a growing budget is filled in steps, a shrinking one emptied
   before anything fails.
+- **Places are levels of detail as often as tiers of memory.** A call places participants at a
+  resolution and frame rate, as a game engine streams detail by distance. The same law decides who is
+  rendered full, who at a reduced level, and who as audio only.
+- **Value is priority, and priority comes from the activity,** read as SAGE state and events on the
+  bus, never polled: who is speaking, who is addressed, who is on screen, what the room is doing.
 - **Demand is forecast** by whoever knows it: the Lane knows who steps next, a room knows who is
   addressed.
 - **Each unit is worth something,** measured: a mind's need and how often she is used, against what
@@ -271,6 +276,8 @@ The same pattern repeats wherever something finite is shared, so SAGE owns it on
 | Who is awake on a node | minds | stepping on the Core, resident, parked to flash, asleep | Fable |
 | Who runs where on the grid | minds (leased in and out across nodes) | each node, by its measured capacity and its link to the mind's room | Codex (grid) |
 | What models are hot | models | VRAM or unified, flash, cold (the hot tier) | Codex |
+| A live call | participants, their video and avatars | levels of detail: rendered full, reduced resolution or frame rate, thumbnail, audio only | BigMama (live, media) |
+| Rendering anything | scenes, avatars, textures | LOD rungs, as a game engine streams detail | BigMama |
 
 Each instance supplies only what differs: its units, its places, how it measures, and its moves. The
 measurement, budgets, the law, its lifecycle, and the fencing and custody are the `Placer`'s, once.
