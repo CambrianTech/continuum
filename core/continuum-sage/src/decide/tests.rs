@@ -555,3 +555,18 @@ fn a_step_is_no_longer_than_the_tightest_other_minds_slack() {
     let unmeasured = Mind { step: Measured::Unmeasured, ..prefilling };
     assert_eq!(lane::step_tokens(&contended, &unmeasured, 4_096), 4_096, "her first step measures her rate");
 }
+
+// what this catches (the M5, 2026-11-25 20:54 to 21:04Z: 929 violations at p50 1.02 of the bound,
+// twelve resident turns at once): waiters checked one at a time, so a crowd nearing the bound together
+// each looked safe and overran by a step apiece. Counting the queue, the most pressed is forced while
+// every one of them can still be reached in time.
+#[test]
+fn a_crowd_nearing_the_bound_is_served_before_anyone_passes_it() {
+    let running = mind(1, 0); // 26 ms a step
+    // three waiters with 50, 55 and 60 ms of bound left: each alone fits one more step, but the third
+    // is reached only after three (78 ms)
+    let crowd = lane::Situation { running: Some(running), ready: vec![mind(2, 950), mind(3, 945), mind(4, 940)], batch_width: 1 };
+    assert_eq!(envelope::<Lane<u8>>(&crowd).0, Gate::Forced(lane::Action::Switch(0)), "the most pressed goes now");
+    let spread = lane::Situation { running: Some(running), ready: vec![mind(2, 900), mind(3, 600), mind(4, 300)], batch_width: 1 };
+    assert_eq!(envelope::<Lane<u8>>(&spread).0, Gate::Choose, "waiters far apart leave the choice to the policy");
+}

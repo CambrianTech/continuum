@@ -133,8 +133,20 @@ impl<K: Copy + Debug + PartialEq + Send + 'static> UseCase for Lane<K> {
         // misses the bound by a step every time (the M5, 2026-11-25 19:56 to 20:06Z: 1,037 violations,
         // p50 1.014 of the bound). The next step is the running mind's measured one; a step not yet
         // measured is a cost not yet seen.
+        //
+        // Waiters are served one a step, so a waiter with `k` more pressed ahead of her is reached only
+        // after `k + 1` steps: the most pressed goes next as soon as any waiter's slack is within her
+        // rank's steps (earliest deadline first, counting the queue). Checked one at a time, a crowd
+        // nearing the bound together each looked safe and overran by a step apiece (the M5, 2026-11-25
+        // 20:54 to 21:04Z: 929 violations, p50 1.02 of the bound, twelve resident turns at once).
         let next = situation.running.as_ref().and_then(|running| running.step.value()).unwrap_or(Duration::ZERO); // unwrap_or: an unmeasured step is a cost not yet seen
-        let overdue = ready.iter().enumerate().filter(|(_, mind)| mind.waited + next >= mind.deadline).max_by_key(|(_, mind)| (mind.waited + next).saturating_sub(mind.deadline));
+        let slack = |mind: &Mind<K>| mind.deadline.saturating_sub(mind.waited);
+        let crowded = ready.iter().enumerate().any(|(at, mind)| {
+            // ahead of her: less slack, or as little and earlier in the ready order
+            let ahead = ready.iter().enumerate().filter(|(other_at, other)| (slack(other), *other_at) < (slack(mind), at)).count() as u32;
+            slack(mind) <= next * (ahead + 1)
+        });
+        let overdue = ready.iter().enumerate().filter(|_| crowded).min_by_key(|(_, mind)| slack(mind));
         if let Some((slot, _)) = overdue {
             return Gate::Forced(Action::Switch(slot as Slot));
         }
