@@ -82,7 +82,7 @@ Learning keeps its place, between her turns while no turn waits.
 - The driver's own pick (`Driver::pick`): the lane is the one owner of who steps.
 - Any fixed chunk size taken from the batch "because the turn keeps the Core" (`prefill_chunk`).
 
-Nothing is added beside the Core: no pool, no seats, no second stream.
+Nothing is added beside the Core: no pool, no seats, no second stream. The swap itself becomes a transfer (below).
 
 ## The validator first (seconds, no live residents)
 
@@ -96,14 +96,32 @@ Nothing is added beside the Core: no pool, no seats, no second stream.
 It runs on the 0.5B and the qwen35moe hybrid on any machine, and on the 35B on the M5 with serving
 down. Its first run is today's whole-turn engine: the baseline row, reproducing the live shape.
 
+## The swap is a transfer: a pointer, DMA, or one block. Never a copy loop, never an encoding
+
+Read 2026-11-24 (fork `src/llama-kv-cache-persona.cpp`, `src/llama-persona-file.cpp`; Rust
+`persona_scheduler/driver.rs`, `preserve.rs`), the swap today:
+
+| Where | Today | The transfer |
+|---|---|---|
+| Save (`persona_commit_save`, :140-175) | `ggml_backend_tensor_get` per layer: her whole KV copied into a `std::vector` on the heap | **Unified memory (M5):** her KV lives in her own device buffer; the stream's tensors point at it. A swap is a pointer change: zero bytes moved |
+| Bind (:314-331) | `ggml_backend_tensor_set` per layer: copied back | the same pointer change |
+| **Discrete GPU (Windows, the 5090)** | the same synchronous copies, to pageable heap memory | parked blocks in pinned host memory (the backend's host buffer type); async DMA on a copy stream, overlapped with the active mind's decode; while VRAM has room, minds stay resident and swap by pointer |
+| The driver (`switch_to`, driver.rs:892) | retire, stage, settle, handoff in series: the GPU idles through every swap | `Roles` as built: next staged under her copy-in fence while the active mind decodes; handoff at the step boundary; previous retired after |
+| **Flash** (`llama_persona_write_file`; `preserve.rs`) | rows `fwrite`n from the heap copy; a per-cell loop for the cell table; every mind's token history as JSON in the saved-state manifest | her blocks written from her buffer in one transfer (or her file mapped as her host buffer, so parking to flash is the OS's page-out); her cells and tokens as raw arrays in her own block file. No text |
+
+A step never runs a CPU loop over cells or rows, and never encodes to a string. A swap that is not a
+pointer or a DMA overlapped with compute is the defect.
+
 ## The order, one PR each, merged before the next
 
 | # | Slice | Gate (validator, then the 15-minute live read) |
 |---|---|---|
-| 1 | The validator; swap cost at depth measured | reproduces the live shape (a short turn waits out a long one); swap ms at 2k/30k/130k on the 35B |
-| 2 | The lane replaces `frame.rs`; steps sized to the slice | worst ready-to-step wait <= 1 s at 4 minds, swap included; turns completed >= baseline; aggregate tok/s >= one mind alone minus the measured swap share |
-| 3 | The swap gets cheaper where slice 1 says it costs (the fork's save/bind at depth; recurrent state only where a hybrid needs it) | swap at 130k down by the measured factor; no change in replies (byte-identical continuation, as the fork's tests check) |
-| 4 | Her new tail prefilled while she is in a tool (it is her step, taken when the lane gives her one) | submit to first token < 1 s after a tool result |
+| 1 | The validator: swap time and bytes moved at 2k/30k/130k on the 0.5B, the hybrid and the 35B; today's whole-turn engine as the baseline row | reproduces the live shape (a short turn waits out a long one); swap ms by depth on the M5 |
+| 2 | **Pointer swap on unified memory** (fork, in its own files): each mind's KV in her own device buffer, the stream's tensors pointed at hers | swap at 130k: 0 bytes moved, < 1 ms; replies byte-identical (the fork's continuation tests) |
+| 3 | The lane replaces `frame.rs`; steps sized to the slice; Roles overlap in the driver | worst ready-to-step wait <= 1 s at 4 minds, swap included; turns completed >= baseline; aggregate tok/s >= one mind alone minus the swap share |
+| 4 | **Discrete GPU:** pinned host buffers and async DMA overlapped with decode; resident-by-pointer while VRAM has room | the 5090: swap hidden under decode (step time unchanged with a swap in flight) |
+| 5 | **Flash:** one block write from her buffer (or mmap); cells and tokens binary in her file; the JSON token history deleted | stop and restore at 130k: write and read at the drive's measured sequential rate |
+| 6 | Her new tail prefilled while she is in a tool (her step, when the lane gives her one) | submit to first token < 1 s after a tool result |
 
 Each slice deletes the path it replaces in the same PR. A live read worse than the one before it sends
 the node back at once.
