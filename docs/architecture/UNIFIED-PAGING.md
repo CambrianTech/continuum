@@ -120,6 +120,36 @@ cooperate instead of fighting over the same budget:
   node's budget and deletes their files. A dead instance's preserved minds are not touched, because
   they are durable state, not live memory.
 
+
+**Zero-downtime handoff: a new core beside the old one, minds moved one at a time** (as an elastic
+replacement on AWS starts the new instance before it stops the old). Because a mind's KV is already
+a file the OS pages, moving her between two cores on one node copies nothing:
+- **Custody per mind, not per instance.** Each mind's live file carries a custody lease, the same
+  OS-locked lease as an instance's. Exactly one core holds it, and only the holder maps her file
+  writable. Two cores can never both decode her.
+- **The move.**
+  - The old core parks her at a step boundary: her storage flushed, her header's clean mark
+    written, her lease released.
+  - The new core takes the lease and maps the same file. Her pages are still in the OS page cache,
+    so nothing is read from the drive.
+  - Her next step runs on the new core. Her wait is one park and one map, and her context is
+    untouched.
+- **Model weights are shared through the page cache.** Both cores map the same GGUF read-only, so
+  the overlap costs one copy of the weights in memory, not two. Only what each core allocates for
+  itself (its compute buffers, the stream's own KV) is extra. `Topology` counts the overlap, and the
+  new core takes minds only as fast as the budget allows.
+- **The old core drains, then exits.** It hands minds over in order of who is next to step (the
+  Lane's forecast), so none waits behind the handoff. It takes no new mind once the new core holds
+  its first lease, and exits when it holds none.
+- **Either core going down mid-handoff loses nothing.** A mind whose lease the old core released
+  and the new one never took is a released lease and a clean file, so whichever core runs next
+  takes her. A mind still leased to a core that died has her lease released by the OS. Her file's
+  clean mark then says whether her last park finished: a clean file is taken, a torn one starts her
+  cold, named.
+
+This extends `continuum-host`'s `core_handoff` (a core-only handoff that keeps the engine running)
+to the case where the engine itself is replaced: the minds move, not the engine.
+
 **`Region` and `Block`: the memory, and the thing consumers hold.**
 
 ```rust
