@@ -364,7 +364,7 @@ impl LlamaCppBackend {
             // turn's failure, never a quietly shorter answer.
             let mut batch = llama::Batch::allocated(1, 1);
             batch.push(token, pos, &[0], true);
-            ctx.decode(&batch)?;
+            ctx.decode(&batch).map_err(String::from)?;
             let Ok(next) = pos.advanced(1) else { break TurnEnd::CapacityReached };
             pos = next;
         };

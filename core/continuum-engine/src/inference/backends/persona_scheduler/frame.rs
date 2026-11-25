@@ -21,14 +21,40 @@
 pub(super) struct Candidate {
     /// How much her mind needs this turn.
     pub urgency: continuum_sage::component::Urgency,
-    /// Her mind is the one bound to the decoding stream now.
-    pub active: bool,
-    /// Her turn has begun: prefilling or decoding.
-    pub started: bool,
+    /// Whether her mind is bound to the decoding stream now, and whether her turn has begun.
+    pub place: Place,
     /// Prompt tokens still to prefill (0 once decoding).
     pub remaining: usize,
     /// Milliseconds since admission or her most recent completed frame.
     pub waited_ms: u64,
+}
+
+/// Where a turn stands against the decoding stream: the four combinations of bound and begun.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Place {
+    /// Not bound, not begun.
+    Waiting,
+    /// Bound to the stream, her turn not begun.
+    Bound,
+    /// Bound, her turn begun: prefilling or decoding.
+    Running,
+    /// Begun, then swapped out for a more urgent turn.
+    Paused,
+}
+
+impl Place {
+    pub(super) fn of(active: bool, started: bool) -> Self {
+        match (active, started) {
+            (false, false) => Self::Waiting,
+            (true, false) => Self::Bound,
+            (true, true) => Self::Running,
+            (false, true) => Self::Paused,
+        }
+    }
+
+    fn active(self) -> bool {
+        matches!(self, Self::Bound | Self::Running)
+    }
 }
 
 impl Candidate {
@@ -39,13 +65,13 @@ impl Candidate {
         if self.waited_ms.max(other.waited_ms) >= WAIT_BUDGET_MS {
             return other.waited_ms.cmp(&self.waited_ms)
                 .then(self.remaining.cmp(&other.remaining))
-                .then(other.active.cmp(&self.active));
+                .then(other.place.active().cmp(&self.place.active()));
         }
         let discounted = |turn: &Self, by: &Self| turn.remaining as u128 * (1_000 + u128::from(by.waited_ms));
         discounted(self, other)
             .cmp(&discounted(other, self))
             .then(other.waited_ms.cmp(&self.waited_ms))
-            .then(other.active.cmp(&self.active))
+            .then(other.place.active().cmp(&self.place.active()))
     }
 }
 
@@ -58,7 +84,7 @@ impl Candidate {
 /// takes the next frame, and the running one resumes from her cached state when it is next most needed.
 pub(super) fn pick(turns: &[Candidate]) -> Option<usize> {
     let most = turns.iter().map(|turn| turn.urgency).max()?;
-    if let Some(running) = turns.iter().position(|turn| turn.active && turn.started && turn.urgency == most) {
+    if let Some(running) = turns.iter().position(|turn| turn.place == Place::Running && turn.urgency == most) {
         return Some(running);
     }
     turns
@@ -75,7 +101,7 @@ mod tests {
     use continuum_sage::component::Urgency;
 
     fn turn(active: bool, started: bool, remaining: usize, waited_ms: u64) -> Candidate {
-        Candidate { urgency: Urgency::Want, active, started, remaining, waited_ms }
+        Candidate { urgency: Urgency::Want, place: Place::of(active, started), remaining, waited_ms }
     }
 
     #[test]
@@ -126,7 +152,7 @@ mod tests {
     // whether or not one is running; at equal need the running turn keeps the Core.
     #[test]
     fn the_most_urgent_turn_takes_the_next_frame_even_from_a_running_one() {
-        let with = |urgency, active, started, waited_ms| Candidate { urgency, active, started, remaining: 100, waited_ms };
+        let with = |urgency, active, started, waited_ms| Candidate { urgency, place: Place::of(active, started), remaining: 100, waited_ms };
         let addressed = with(Urgency::Urgent, false, false, 0);
         let continuing = with(Urgency::Want, false, false, 90_000);
         let musing = with(Urgency::Content, true, false, 120_000);

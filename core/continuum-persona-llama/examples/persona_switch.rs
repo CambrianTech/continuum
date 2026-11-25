@@ -146,7 +146,7 @@ fn main() -> Result<(), String> {
         // the occupant moves out first: one stream, whole to whoever is in it
         if engine.active().is_some() {
             engine.retire_active().map_err(|e| e.to_string())?;
-            parked.push(engine.release_retired().map_err(|e| format!("{e:?}"))?);
+            parked.push(engine.release_retired().map_err(|e| e.to_string())?);
         }
         engine.stage(next).map_err(|r| r.reason.to_string())?;
         let rebind = engine.tier().last_rebind();

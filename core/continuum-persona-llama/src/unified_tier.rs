@@ -291,7 +291,7 @@ impl Execute for UnifiedTier<'_, '_> {
         if !self.applied_genes.as_ref().is_some_and(|applied| Arc::ptr_eq(applied, &step.genes)) {
             let genes: Vec<(&LoraAdapter, f32)> = step.genes.iter().map(|(adapter, scale)| (adapter.as_ref(), *scale)).collect();
             let applied = if genes.is_empty() { self.ctx.clear_loras() } else { self.ctx.set_loras(&genes) };
-            applied.map_err(|message| TierRefusal { tier: TIER, mind, reason: "the engine refused her genes", native: Native::Reported(message) })?;
+            applied.map_err(|message| TierRefusal { tier: TIER, mind, reason: "the engine refused her genes", native: Native::Reported(message.into()) })?;
             self.applied_genes = Some(Arc::clone(&step.genes));
         }
         let last = step.tokens.len().checked_sub(1).ok_or_else(|| refused(mind, "an empty step"))?;
@@ -320,7 +320,7 @@ impl Execute for UnifiedTier<'_, '_> {
                 native = %message,
                 "the engine refused a decode: what it held then"
             );
-            TierRefusal { tier: TIER, mind, reason: "the engine refused her decode", native: Native::Reported(message) }
+            TierRefusal { tier: TIER, mind, reason: "the engine refused her decode", native: Native::Reported(message.into()) }
         })?;
         let landed = Rc::new(Cell::new(false));
         self.in_flight = Some(Rc::clone(&landed));

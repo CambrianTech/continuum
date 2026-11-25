@@ -632,7 +632,7 @@ impl Driver<'_, '_> {
                     Phase::Decoding { .. } => (true, 0),
                 };
                 let waited_ms = record::whole_ms(turn.ready_since.elapsed());
-                frame::Candidate { urgency: turn.req.urgency, active: active == Some(turn.id), started, remaining, waited_ms }
+                frame::Candidate { urgency: turn.req.urgency, place: frame::Place::of(active == Some(turn.id), started), remaining, waited_ms }
             })
             .collect();
         frame::pick(&candidates).map(|chosen| eligible[chosen])

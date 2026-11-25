@@ -226,12 +226,13 @@ impl<'m> Context<'m> {
     ///   2 — aborted (partial state retained)
     ///  -1 — invalid batch
     /// <-1 — fatal
-    pub fn decode(&mut self, batch: &Batch) -> Result<(), String> {
-        let rc = unsafe { crate::decode_boundary::decode(self.ptr.as_ptr(), batch.inner) }?;
+    /// A refusal is typed ([`DecodeRefusal`](super::DecodeRefusal)): every code is named.
+    pub fn decode(&mut self, batch: &Batch) -> Result<(), super::DecodeRefusal> {
+        let rc = unsafe { crate::decode_boundary::decode(self.ptr.as_ptr(), batch.inner) }.map_err(super::DecodeRefusal::Threw)?;
         if rc == 0 {
             Ok(())
         } else {
-            Err(format!("llama_decode returned {rc}"))
+            Err(super::DecodeRefusal::from_code(rc))
         }
     }
 
