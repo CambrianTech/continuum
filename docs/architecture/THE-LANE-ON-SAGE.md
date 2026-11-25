@@ -163,6 +163,22 @@ Her tokens and cells sit beside her KV in the same file as raw arrays. No JSON, 
 
   Valid only for an identical start under the same gene set.
 
+**SAGE components, wherever a concern has its own cadence.** Each is a `Component` on the engine's
+`Bus`: it hears topics, says topics and has a need, so nothing is wired to anything. A synchronous
+move inside the Core's step stays an adapter behind `Tier`, since it is part of one serial step.
+
+| Component | Hears | Says | Need |
+|---|---|---|---|
+| **Lane** (exists) | each mind's `Need`, `Decoding`; `Cost` | `Turn`, and `Forecast` (who steps next, and after) | Urgent while any mind's slack is near the bound |
+| **Core** (the engine thread: the one serial piece) | `Turn`, submissions | `Stepped` (step, swap and rebuild times); tokens to Emit | Want while a turn waits |
+| **Cost** | `Stepped`, `Moved` | `Cost` (the cost model as state) | Content; Want on a frame whose times drift from the model |
+| **Topology** | the backend at boot; memory pressure | `Topology` (`MemoryTopology`, `FlashTier` and its measured rates) | rests after boot; wakes on pressure |
+| **Prefetch** | `Forecast`, `Topology` | `Moved` | Want when a forecast mind is parked on slow flash: her blocks are read on its own worker (`ctx.off`) before her turn |
+| **Parker** | memory pressure, `Forecast`, `Topology` | `Moved` | Want under pressure: the mind forecast last is written to her backing off the engine thread |
+
+The Core never waits on Prefetch or Parker: a mind not yet resident is simply not in the lane's
+`Turn` until `Moved` says she is.
+
 **Rust:**
 - Adapters are chosen once at boot from `MemoryTopology` and `FlashTier`, then held as one object.
   The inner loops are monomorphized generics; boot-time choice is enum dispatch, never a branch in
