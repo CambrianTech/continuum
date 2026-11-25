@@ -136,7 +136,7 @@ branching on the platform. It extends what exists: `continuum-persona-engine`'s 
 
   The lane's control law reads it.
 
-**Where her KV lives: `Placement`, the trait behind `Tier`'s moves:**
+**Where her KV lives: `Placement`, the trait behind `Tier`'s moves.** Implemented once by the block layer ([UNIFIED-PAGING.md](UNIFIED-PAGING.md): `Retag`, `Dma`, `Mapping`, `Staged` links and the `Streamer`); the tables here are what the Core needs from it.
 
 | Adapter | Her storage | A move | Its fence |
 |---|---|---|---|
