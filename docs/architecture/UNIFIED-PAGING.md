@@ -329,6 +329,56 @@ CLAUDE.md's polymorphism pattern), so a node's configuration or a trial picks on
 | 7 | Genes (`Gene` blocks) and experts (`Expert` blocks) | Cormac (genes); experts with their pager's owner | gene page-in at the link's rate |
 | 8 | `PressureBroker`'s eviction folds into the Streamer; pools that moved bytes are deleted | Fable, Codex | no `evict_at_least` left on a tier the Streamer owns |
 
+## Slice 2, exactly: a parked mind's KV is a block backed by her own file
+
+**The fork** (`src/llama-persona-storage.cpp`, its own file; one-line hooks):
+- `llama_persona_storage_bytes(ctx)` and `llama_persona_storage_alignment(ctx)`: the bytes and
+  alignment of one mind's KV storage for this context's layout. Every layer's K and V, each at an
+  offset aligned for its buffer type.
+- `llama_persona_storage_attach(persona, base, bytes)`: her storage tensors are built over memory the
+  caller owns, through `ggml_backend_dev_buffer_from_host_ptr` on each KV device, in place of the
+  fork's private reservation (#6264, deleted). It is refused as `unsupported` when a KV device cannot
+  wrap host memory (CUDA, until slice 4). Then her storage stays the fork's own allocation, as on
+  canary today: the discrete adapter is slice 4's.
+- `llama_persona_write_file` no longer writes her rows, because her rows are already in her file.
+  It writes her cell table and identity into a small header region at the file's head, then flushes.
+
+**The Rust side:**
+- `continuum-persona-llama`: a mind's `Blocks` holds a `Block<MindId>` for her KV:
+  - `Region::mapped(Unified, <home>/persona-blocks/<persona>.<epoch>.kv, header + storage bytes)`;
+  - created at her first park;
+  - attached to her fork persona;
+  - dropped with her.
+- Her token history is a second mapped region beside it (`.tokens`): raw `i32`s, appended as she
+  grows.
+- `preserve.rs`:
+  - The stop flushes each mind's two regions and writes her header with a clean mark: the generation
+    number and the byte lengths it flushed.
+  - The manifest names each mind's files, generation and token count. It no longer carries her
+    tokens (the 5.3 MB of JSON on the M5 today).
+- The restart maps each mind's files and checks her header's clean mark against the manifest's
+  generation, then attaches and binds. No byte is read until a page is touched.
+
+**Crash safety:**
+- A mapped file changes while she runs, so only a clean mark that matches the manifest restores her.
+- A crash leaves the mark stale, and she starts cold, named, as today when a stop does not finish.
+  A torn file is never bound.
+
+**Deleted:**
+- the fork's private storage reservation;
+- the row copy in her file write and read;
+- the manifest's token history as JSON;
+- the per-generation rewrite of every mind's whole file at every stop (a stop now flushes only
+  dirty pages).
+
+**Gates:**
+- `test-persona-blocks --test-core` with attached storage: A/B/A byte-identical to isolated
+  controls;
+- a mind parked to flash (demoted) and back, byte-identical;
+- a stop and restore at 30k and 130k: restore in under 10 ms before her first touch, and her first
+  token byte-identical to her control;
+- a crash simulated between her writes and the clean mark: refused, cold, named.
+
 ## Questions for review
 
 1. **Metal and a file mapping as a buffer** (Fable, slice 1): does `buffer_from_host_ptr` over a
