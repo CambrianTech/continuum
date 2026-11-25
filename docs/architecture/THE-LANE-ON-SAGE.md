@@ -142,8 +142,8 @@ own parameters and state; SAGE.md carries the interface, Codex's draft):
 - The *executor* is the resource's existing owner (the Core worker here; the block layer for
   residency; the renderer for a grade; the grid for placement). It carries out the choice and records
   what happened. A policy never keeps a private log.
-- A *decision record* names the exact owner-published revisions it read, the action taken and the
-  outcome that followed. Replay hands another policy exactly the information available at that
+- A *decision record* names the exact owner-published revisions it read, the policy's checkpoint or
+  initial parameters (SAGE.md, Codex's draft d7350d6a), the action taken and the outcome that followed. Replay hands another policy exactly the information available at that
   choice and nothing later; an unchosen action has no recorded outcome.
 - The revisions read are recorded as (owner, handle, revision), binary, never the values: replay reads
   the values from the owners' own history. Copying the inputs into every record would grow history by
