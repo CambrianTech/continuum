@@ -91,6 +91,22 @@ pub struct Outcome {
     pub served: Measured<f64>,
 }
 
+/// How many tokens one step of `stepped` may move, at most `most` (the engine's batch). A step cannot
+/// be preempted, so the bound every other mind is promised is kept only if the step ends inside the
+/// tightest one's slack: that slack (her bound, less her wait, less her measured switch cost) at the
+/// stepped mind's measured time a token. With no one else ready, or her time a token not yet measured
+/// (her first step, which measures it), the whole batch. At least one token, so she always advances.
+/// The M5, 2026-11-25 19:40 to 19:50Z: prefill chunks a whole batch long left other minds 7 to 9 s
+/// without a step under a 1 s bound.
+pub fn step_tokens<K: PartialEq>(situation: &Situation<K>, stepped: &Mind<K>, most: u64) -> u64 {
+    let others = situation.running.iter().chain(situation.ready.iter()).filter(|mind| mind.mind != stepped.mind);
+    let slack = others.map(|mind| mind.deadline.saturating_sub(mind.waited).saturating_sub(mind.switch_in.value().unwrap_or(Duration::ZERO))).min(); // unwrap_or: an unmeasured switch is a cost not yet seen
+    match (slack, stepped.step.value()) {
+        (Some(slack), Some(per_token)) if per_token > Duration::ZERO => ((slack.as_secs_f64() / per_token.as_secs_f64()) as u64).clamp(1, most.max(1)),
+        _ => most.max(1),
+    }
+}
+
 /// The share of her remaining phase a decision finished: `moved` of the `left` tokens she had when
 /// it was made (at most all of it; a remainder predicted short is finished, not exceeded).
 pub fn served(moved: u64, left: Measured<u64>) -> Measured<f64> {

@@ -531,3 +531,20 @@ fn the_stock_linear_learner_learns_the_lane_and_keeps_the_bound() {
     assert_eq!(restarted.choose(&contended, &admissible), learned.choose(&contended, &admissible));
     assert_ne!(learned.choose(&contended, &admissible).expected, fresh.expected, "what was learned differs from the unlearned start");
 }
+
+// what this catches (the M5, 2026-11-25 19:40 to 19:50Z: other minds 7 to 9 s without a step under a
+// 1 s bound): a step that cannot be preempted sized to the engine's batch instead of every other
+// mind's slack.
+#[test]
+fn a_step_is_no_longer_than_the_tightest_other_minds_slack() {
+    let prefilling = Mind { phase: Phase::Prefill { remaining: 30_000 }, step: Measured::Value(Duration::from_micros(200)), ..mind(1, 0) };
+    let waiter = mind(2, 900); // 100 ms of bound left, less her 10 us switch
+    let contended = lane::Situation { running: Some(prefilling), ready: vec![waiter], batch_width: 1 };
+    assert_eq!(lane::step_tokens(&contended, &prefilling, 4_096), 499, "her slack at 0.2 ms a token");
+    let alone = lane::Situation { running: Some(prefilling), ready: vec![], batch_width: 1 };
+    assert_eq!(lane::step_tokens(&alone, &prefilling, 4_096), 4_096, "no one else waits: the whole batch");
+    let overdue = lane::Situation { running: Some(prefilling), ready: vec![mind(2, 1_500)], batch_width: 1 };
+    assert_eq!(lane::step_tokens(&overdue, &prefilling, 4_096), 1, "no slack left: one token, so she still advances");
+    let unmeasured = Mind { step: Measured::Unmeasured, ..prefilling };
+    assert_eq!(lane::step_tokens(&contended, &unmeasured, 4_096), 4_096, "her first step measures her rate");
+}

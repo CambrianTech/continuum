@@ -773,9 +773,9 @@ impl Driver<'_, '_> {
     fn prefill_chunk(&mut self, turn: &mut Turn, pos: usize) -> Result<(), TurnError> {
         // A chunk never runs past her view's end, so she can be checkpointed exactly there.
         let limit = turn.boundaries.next_end(pos, turn.prompt.len());
-        // Her turn keeps the Core until it ends (`frame`), so each chunk is as large as the engine's
-        // batch: nothing is sized to yield to another mind.
-        let end = pos.saturating_add(self.batch.get()).min(limit);
+        // As many tokens as the lane allows this step (`lane::step_tokens`): at most the engine's
+        // batch, and no longer than every other mind's slack.
+        let end = pos.saturating_add(self.lane.step_tokens()).min(limit);
         let chunk = &turn.prompt[pos..end];
         let last = end == turn.prompt.len();
         let from = Pos::try_from(pos).map_err(|_| TurnError::TooLong)?;

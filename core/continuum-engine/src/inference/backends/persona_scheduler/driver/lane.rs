@@ -60,6 +60,9 @@ pub(super) struct Lanes {
     moved: u64,
     /// Of the time since the open decision, what bringing a mind in took: its outcome's transition time.
     switching: Duration,
+    /// How many tokens the step just picked may move (`lane::step_tokens`): a prefill chunk is no
+    /// longer than every other mind's slack allows.
+    tokens: u64,
     /// Where what the algorithm learned is kept, once the node's home is known, and under what.
     learned: Option<(Store<LearnedLane>, uuid::Uuid, LaneContract)>,
     algorithm: &'static str,
@@ -78,6 +81,7 @@ impl Lanes {
             open: None,
             moved: 0,
             switching: Duration::ZERO,
+            tokens: 1,
             learned: None,
             algorithm,
         })
@@ -104,6 +108,11 @@ impl Lanes {
         let mut state = Vec::new(); // cold: once, at the stop
         self.decider.save(&mut state);
         store.save_rebuildable(class, contract, &state);
+    }
+
+    /// How many tokens the step the lane just picked may move.
+    pub(super) fn step_tokens(&self) -> usize {
+        usize::try_from(self.tokens).unwrap_or(usize::MAX) // unwrap_or: a count past the address space is no limit
     }
 
     /// What the driver measured, as the lane's executor.
@@ -146,7 +155,9 @@ impl Driver<'_, '_> {
     /// her oldest turn is offered.
     pub(super) fn pick(&mut self, turns: &[Turn]) -> Option<usize> {
         let active = self.engine.active();
+        let most = self.batch.get() as u64;
         let lanes = &mut self.lane;
+        lanes.tokens = most;
         let now = Instant::now();
         let situation = &mut lanes.situation;
         situation.ready.clear();
@@ -189,6 +200,9 @@ impl Driver<'_, '_> {
             lane::Action::Batch(_) | lane::Action::Idle => None,
         };
         lanes.open = Some((id, now, stepped.map_or(Measured::Unmeasured, |mind| mind.remaining))); // map_or: a batch or idle steps no one mind
+        if let Some(mind) = stepped {
+            lanes.tokens = lane::step_tokens(&lanes.situation, mind, most);
+        }
         match action {
             lane::Action::Continue => lanes.running,
             lane::Action::Switch(slot) => lanes.slots.get(usize::from(slot)).copied(),
