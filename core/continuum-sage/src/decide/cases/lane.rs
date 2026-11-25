@@ -128,8 +128,13 @@ impl<K: Copy + Debug + PartialEq + Send + 'static> UseCase for Lane<K> {
 
     fn envelope(situation: &Situation<K>, admissible: &mut Vec<Action>) -> Gate<Action> {
         let ready = &situation.ready[..situation.ready.len().min(SLOTS)];
-        // A mind past her deadline goes next: the most overdue, whatever any policy prefers.
-        let overdue = ready.iter().enumerate().filter(|(_, mind)| mind.waited >= mind.deadline).max_by_key(|(_, mind)| mind.waited.saturating_sub(mind.deadline));
+        // A mind the next step would carry past her deadline goes next (the most pressed), whatever
+        // any policy prefers: a step cannot be preempted, so forcing her only once she is past it
+        // misses the bound by a step every time (the M5, 2026-11-25 19:56 to 20:06Z: 1,037 violations,
+        // p50 1.014 of the bound). The next step is the running mind's measured one; a step not yet
+        // measured is a cost not yet seen.
+        let next = situation.running.as_ref().and_then(|running| running.step.value()).unwrap_or(Duration::ZERO); // unwrap_or: an unmeasured step is a cost not yet seen
+        let overdue = ready.iter().enumerate().filter(|(_, mind)| mind.waited + next >= mind.deadline).max_by_key(|(_, mind)| (mind.waited + next).saturating_sub(mind.deadline));
         if let Some((slot, _)) = overdue {
             return Gate::Forced(Action::Switch(slot as Slot));
         }

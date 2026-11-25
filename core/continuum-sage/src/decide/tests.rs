@@ -395,7 +395,7 @@ fn the_cost_models_margin_is_seeded_from_the_first_measurements_it_needs() {
 }
 
 /// A Core serving four minds, simulated: each turn prefills its prompt in chunks (0.2 ms a token),
-/// then decodes one token a step (26 ms), then her tool call runs off the Core for two seconds before
+/// sized by the lane (at most 256 tokens), then decodes one token a step (26 ms), then her tool call runs off the Core for two seconds before
 /// her next turn. Bringing a mind in costs 5 ms. Turn sizes come from a fixed generator, so every
 /// algorithm faces the same work. Answers tokens per second of Core time, the worst wait against the
 /// bound, the median turn latency in ms, and turns finished.
@@ -450,6 +450,12 @@ fn simulate(policy: Box<dyn Policy<Lane<u8>>>, seconds: u64) -> (f64, f64, u128,
             if running == Some(id) { situation.running = Some(Mind { waited: Duration::ZERO, ..mind }) } else { situation.ready.push(mind); slots.push(id) }
         }
         let Decided::Act(id, action) = decider.decide(&situation, &[]) else { panic!("test: the lane acts") };
+        let stepped_mind = match action {
+            lane::Action::Continue => situation.running,
+            lane::Action::Switch(slot) => situation.ready.get(usize::from(slot)).copied(),
+            lane::Action::Batch(_) | lane::Action::Idle => None,
+        };
+        let allowed = stepped_mind.map_or(CHUNK, |mind| lane::step_tokens(&situation, &mind, CHUNK)); // map_or: no one stepped, nothing sized
         let stepped = match action {
             lane::Action::Continue => running,
             lane::Action::Switch(slot) => slots.get(usize::from(slot)).copied(),
@@ -473,7 +479,7 @@ fn simulate(policy: Box<dyn Policy<Lane<u8>>>, seconds: u64) -> (f64, f64, u128,
         }
         let State::Ready { prompt, decode: left, began, .. } = &mut minds[who] else { panic!("test: a stepped mind is ready") };
         let left_before = if *prompt > 0 { *prompt } else { *left };
-        let moved = if *prompt > 0 { let chunk = (*prompt).min(CHUNK); *prompt -= chunk; engine += prefill_token * chunk as u32; chunk } else { *left -= 1; engine += decode; 1 };
+        let moved = if *prompt > 0 { let chunk = (*prompt).min(allowed); *prompt -= chunk; engine += prefill_token * chunk as u32; chunk } else { *left -= 1; engine += decode; 1 };
         let finished = *prompt == 0 && *left == 0;
         let began = *began;
         now += engine;
