@@ -386,6 +386,8 @@ The Core is a CPU core:
 
 The GPU never waits on the CPU: the next step's inputs are ready before the current step lands, and everything but the step runs as SAGE components on the other cores (gate: `busy_permille >= 950` while turns wait). Never a copy loop over cells or rows, never a string or JSON encoding of KV or tokens. Never a fixed seat count or a pool sized from a plan; whether a step decodes one mind or a batch of resident minds is the cost model's choice (batched decode measured faster at every depth on the 0.5B, 2026-11-24). A PR here quotes the line of THE-LANE-ON-SAGE.md it implements.
 
+Memory moving between tiers (VRAM, pinned, unified, flash, cold) goes through the one block layer, [docs/architecture/UNIFIED-PAGING.md](docs/architecture/UNIFIED-PAGING.md): never a private mover, a `fread` into a vector, or an encoding.
+
 **The cost of skipping this** (the M5, 2026-11-24):
 - #6258's five-seat pool: 5,855 evictions and turn p50 123 s, against 25 s.
 - The whole-turn rule it replaced: wait p50 12 s, max 277 s.
