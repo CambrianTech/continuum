@@ -91,10 +91,23 @@ pub(super) enum ConsumeVerdict {
     GaveUp,
 }
 
-/// Attempts per tip before the consumer stops trying it and lets `deploy.stranded`
-/// speak. Three: one for a transient (a fetch hiccup, a RAM dip), one to confirm it
-/// is not, one more than that is a rebuild loop.
-pub(super) const CONSUME_MAX_ATTEMPTS: u32 = 3;
+/// What each attempt at a tip is for, in order. Past the last the consumer stops trying it
+/// and lets `deploy.stranded` speak: another attempt would be a rebuild loop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum AttemptRole {
+    /// A transient: a fetch hiccup, a RAM dip.
+    Transient,
+    /// Confirms the failure is not a transient.
+    Confirm,
+    /// The last, before giving the tip up.
+    Last,
+}
+
+/// The attempts a tip gets here, by role.
+pub(super) const ATTEMPT_ROLES: [AttemptRole; 3] = [AttemptRole::Transient, AttemptRole::Confirm, AttemptRole::Last];
+
+/// Attempts per tip before the consumer gives it up: one per [`ATTEMPT_ROLES`].
+pub(super) const CONSUME_MAX_ATTEMPTS: u32 = ATTEMPT_ROLES.len() as u32;
 
 pub(super) fn consume_verdict(
     request_tip: Option<&str>,
@@ -175,15 +188,12 @@ impl ConsumeLedger {
     /// The existing consumer owns its ledger for the command's lifetime. The OS
     /// releases this nonblocking lease on crash; cooperating retries cannot race
     /// its writer. Older binaries require the explicit rollout/quiescence guard.
-    pub(super) fn take_lease(path: &Path) -> Result<std::fs::File, String> {
-        use fs2::FileExt;
+    pub(super) fn take_lease(path: &Path) -> Result<continuum_host::durable::Lock, String> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|error| format!("create consumer ledger directory: {error}"))?;
         }
-        let lease = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false)
-            .open(path.with_extension("lock")).map_err(|error| format!("open consumer lease: {error}"))?;
-        lease.try_lock_exclusive().map_err(|error| format!("another deploy consumer/retry owns the ledger, or its lease is unavailable: {error}"))?;
-        Ok(lease)
+        continuum_host::durable::lock_path(&path.with_extension("lock"), false)
+            .map_err(|error| format!("another deploy consumer/retry owns the ledger, or its lease is unavailable: {error}"))
     }
 
     pub(super) fn condition_digest(condition: &continuum_cli_lifecycle::prebuilt_artifact::ResourceDeferral) -> Result<String, String> {
@@ -224,20 +234,11 @@ impl ConsumeLedger {
         serde_json::from_value(value).map_err(|error| invalid(format!("{error}"))) // boundary: validated lifecycle receipt
     }
 
+    /// Staged beside the ledger, synced and renamed over it (`continuum_host::durable`): a
+    /// crash leaves the old ledger or the new, never a torn one.
     pub(super) fn write(&self, path: &Path) -> Result<(), String> {
-        use std::io::Write;
-        let temporary = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
-        let result = (|| -> Result<(), String> {
-            let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&temporary)
-                .map_err(|error| format!("create deploy ledger replacement: {error}"))?;
-            serde_json::to_writer(&mut file, self).map_err(|error| format!("encode deploy ledger: {error}"))?; // boundary: durable lifecycle receipt
-            file.flush().and_then(|_| file.sync_all()).map_err(|error| format!("sync deploy ledger: {error}"))?;
-            drop(file);
-            continuum_host::durable::replace(&temporary, path).map_err(|error| format!("replace deploy ledger: {error}"))?;
-            Ok(())
-        })();
-        if result.is_err() { let _ = std::fs::remove_file(&temporary); }
-        result
+        let bytes = serde_json::to_vec(self).map_err(|error| format!("encode deploy ledger: {error}"))?; // boundary: durable lifecycle receipt
+        continuum_host::durable::write_replace(path, &bytes).map_err(|error| format!("replace deploy ledger: {error}"))
     }
 
     pub(super) fn failures(&self, build: &str) -> u32 {
@@ -329,9 +330,12 @@ pub(super) fn build_key_in(repo: &Path, tip: &str) -> Option<String> {
     git_in(repo, &args).ok().map(|key| key.trim().to_string()).filter(|key| !key.is_empty())
 }
 
+/// Git in the deploy tree, never recursing into a submodule by itself
+/// ([`continuum_git::submodules::NO_RECURSION`]: `align` alone moves them).
 pub(super) fn git_in(repo: &Path, args: &[&str]) -> Result<String, String> {
     let out = std::process::Command::new("git")
         .current_dir(repo)
+        .args(continuum_git::submodules::NO_RECURSION)
         .args(args)
         .output()
         .map_err(|e| format!("git {}: {e}", args.join(" ")))?;

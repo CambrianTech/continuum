@@ -13,6 +13,19 @@
 
 use std::path::Path;
 
+/// The config every git command in a deploy tree runs with, before its own arguments, so none
+/// reaches into a submodule by itself and [`align`] alone moves them. A fetch otherwise also
+/// fetches the submodule commit each fetched branch pins (`submodule.recurse`, or
+/// `fetch.recurseSubmodules` set or at its on-demand default; an explicit `false` here stops
+/// all three, measured by the test below), so one branch pinning a commit its submodule's
+/// remote never got stops every node's deploy (the IntelMac, 2026-11-25 03:06Z: a resident's
+/// branch pinned fork commit f8eddaf2, "upload-pack: not our ref"). Given per command, never
+/// written to config: a repository's config is shared by every worktree on it, so a written
+/// `false` would change the operator's own worktrees (Codex on #6270, reproduced on Git 2.54).
+/// The tip's own pin is fetched by [`align`]'s `submodule update`, so a deploy needs nothing
+/// this skips.
+pub const NO_RECURSION: [&str; 2] = ["-c", "submodule.recurse=false"];
+
 /// The `git status` arguments whose output [`has_operator_work`] reads. Tracked changes only:
 /// an untracked file cannot change what a detached checkout of the tip builds.
 pub const STATUS_ARGS: [&str; 3] = ["status", "--porcelain=v2", "--untracked-files=no"];
@@ -50,17 +63,7 @@ pub fn uninitialized(submodule_status: &str) -> Vec<&str> {
 /// initialized first (`git submodule init` writes config only), so this never starts a
 /// clone; an absent one stays absent. The caller refuses a tree with [`has_operator_work`]
 /// before moving it, so nothing aligned here holds an operator's change.
-///
-/// It also writes `submodule.recurse=false` into the tree's config, so no other git command
-/// in it reaches into a submodule by itself and this stays the one place they move. A fetch
-/// otherwise fetches the submodule commit every fetched branch pins (`submodule.recurse`, or
-/// `fetch.recurseSubmodules` set or at its on-demand default; an explicit `false` here stops
-/// all three, measured by the test below), so one branch pinning a commit its submodule's
-/// remote never got stops every node's deploy (the IntelMac, 2026-11-25 03:06Z: a resident's
-/// branch pinned fork commit f8eddaf2, "upload-pack: not our ref"). The tip's own pin is
-/// fetched by the `submodule update` below, so a deploy needs nothing this skips.
 pub fn align(repo: &Path, git: &dyn Fn(&[&str]) -> Result<String, String>) -> Result<(), String> {
-    git(&["config", "submodule.recurse", "false"])?;
     let status = git(&["submodule", "status"])?;
     for path in uninitialized(&status) {
         if repo.join(path).join(".git").exists() {
@@ -189,8 +192,9 @@ mod tests {
 
     // what this catches (the IntelMac, 2026-11-25 03:06Z): a deploy that cannot fetch because
     // some other branch of origin pins a submodule commit its remote never received, with
-    // `submodule.recurse` set or under git's on-demand default. A tree its last deploy
-    // aligned fetches with the consumer's own unchanged command, deploys its tip, and aligns its pin.
+    // `submodule.recurse` set or under git's on-demand default. The deploy runs every
+    // command with NO_RECURSION, deploys its tip and aligns its pin, and a sibling worktree on
+    // the same repository keeps its own setting (Codex on #6270: config is shared by worktrees).
     #[test]
     fn another_branch_pinning_a_missing_submodule_commit_does_not_stop_a_deploy() {
         let _git_running = crate::GIT_PROCESSES.lock().unwrap_or_else(|poisoned| poisoned.into_inner()); // unwrap_or_else: a neighbour's failure must not fail this test too
@@ -223,11 +227,6 @@ mod tests {
         };
         let configs = [Some(("submodule.recurse", "true")), Some(("fetch.recurseSubmodules", "on-demand")), None];
         let trees: Vec<_> = configs.iter().enumerate().map(|(i, config)| (tree(&format!("plain-{i}"), *config), tree(&format!("deploy-{i}"), *config))).collect();
-        // Each deploy tree was aligned by its last deploy, as every node's is.
-        for (_, deploy) in &trees {
-            align(deploy, &runner(deploy)).expect("the last deploy's align");
-        }
-
         // Another branch pins an engine commit that only its author's checkout ever had.
         run(&origin.join("vendor/engine"), &["checkout", "-q", "-b", "unpushed"]);
         std::fs::write(origin.join("vendor/engine/a"), "never pushed").expect("write");
@@ -250,12 +249,19 @@ mod tests {
         for (plain, deploy) in &trees {
             // the engine commit lives only in origin's checkout, never in the engine remote
             assert!(runner(plain)(&["fetch", "--quiet", "origin"]).is_err(), "test: a plain fetch reaches the missing pin ({})", plain.display());
-            // the deploy consumer's own commands, unchanged: git_in runs plain git
-            let git = runner(deploy);
-            git(&["fetch", "--quiet", "origin"]).expect("an aligned tree's fetch never reaches into submodules");
+            // a sibling worktree on the deploy tree's repository, as an operator's checkout is
+            let sibling = deploy.with_extension("sibling");
+            run(deploy, &["worktree", "add", "-q", "--detach", &sibling.to_string_lossy()]);
+            let setting = |dir: &Path| runner(dir)(&["config", "--get", "submodule.recurse"]).ok();
+            let before = setting(&sibling);
+            // the deploy's runner, as `git_in` runs git: NO_RECURSION before every command
+            let plain_git = runner(deploy);
+            let git = |args: &[&str]| plain_git(&NO_RECURSION.iter().copied().chain(args.iter().copied()).collect::<Vec<_>>());
+            git(&["fetch", "--quiet", "origin"]).expect("the deploy's fetch never reaches into submodules");
             git(&["checkout", "--quiet", "--detach", &tip]).expect("the deploy checks out its tip");
             align(deploy, &git).expect("align the tip's own pin");
             assert_eq!(run(&deploy.join("vendor/engine"), &["rev-parse", "HEAD"]), published, "the tip's pin, as published");
+            assert_eq!(setting(&sibling), before, "a sibling worktree keeps its submodule.recurse");
         }
     }
 }
