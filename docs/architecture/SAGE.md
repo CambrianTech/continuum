@@ -279,6 +279,24 @@ The same pattern repeats wherever something finite is shared, so SAGE owns it on
 | A live call | participants, their video and avatars | levels of detail: rendered full, reduced resolution or frame rate, thumbnail, audio only | BigMama (live, media) |
 | Rendering anything | scenes, avatars, textures | LOD rungs, as a game engine streams detail | BigMama |
 
+**Every consumer of resources speaks one interface.** Anything in the system that holds memory, VRAM,
+disk, GPU time or bandwidth is a unit of a `Placer`, through one trait, so one law can weigh all of
+them against the same capacity:
+
+```rust
+pub trait Consumer {
+    type Unit;                                   // what it places: a mind, a block, a participant
+    fn levels(&self) -> &[Level];                // its places, best first: tiers, LOD rungs, awake to asleep
+    fn holds(&self, unit: &Self::Unit) -> Holding;      // what the unit costs at its level now, measured
+    fn value(&self, unit: &Self::Unit) -> Value;        // its priority, from the activity's state
+    fn move_to(&mut self, unit: &Self::Unit, level: Level) -> Carry;   // done, or in flight with a fence
+}
+```
+
+It replaces the kernel's `ResourcePool` and `PressureBroker` (18 adapters; 27 callers of
+`evict_at_least`), whose pools each evict on their own and can only delete. A pool migrating to
+`Consumer` keeps its own moves, and the `Placer` decides which unit moves and how far.
+
 **The unit starts as the whole mind.** For now a mind is placed whole: her KV, her genome (LoRA genes,
 voice genes among them), her senses and her live presence (voice, avatar render, every modality) count
 toward one unit's value and cost. Finer units come later, each placed on its own once it is: an
