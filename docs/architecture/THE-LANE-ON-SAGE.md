@@ -145,6 +145,14 @@ own parameters and state; SAGE.md carries the interface, Codex's draft):
 - A *decision record* names the exact owner-published revisions it read, the action taken and the
   outcome that followed. Replay hands another policy exactly the information available at that
   choice and nothing later; an unchosen action has no recorded outcome.
+- The revisions read are recorded as (owner, handle, revision), binary, never the values: replay reads
+  the values from the owners' own history. Copying the inputs into every record would grow history by
+  the whole read set at every decision, and the lane decides every few milliseconds.
+- Each view declares the window it needs; an owner keeps its history to the widest window declared
+  plus what replay asks for, priced in the ledger like any memory. No unbounded log.
+- A use case may mark an outcome as a constraint, never a reward term: next-token continuity after a
+  move and the codec's law (the head never changes, the newest is never clipped) are gates no policy
+  trades against throughput.
 - Every action is priced against the one scarcity ledger (memory, Core time, bandwidth, the drive).
 - The design test: **a new use case is added without editing any existing policy, and a new policy
   is tried against recorded history without changing the producer or the executor.**
