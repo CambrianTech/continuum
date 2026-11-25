@@ -164,11 +164,14 @@ tier is a hand-set `CONTINUUM_STORAGE_PATH`, and only model weights have a hot-t
 (`hot_tier.rs`, written after the 5090 served a 27B from its 16 TB SATA disk for months). Worktrees,
 cargo target dirs, the core binary, the continuum home and the KV block root land wherever they are
 pointed; on 2026-11-25 a SAGE design worktree sat on that same disk.
-- *Observations:* each volume's measured sequential and random read and write rates and sync latency
-  (`capacity/io-probe`, today run only on demand, measured once per volume at boot and then kept
-  current from the IO we already time: the block layer's syncs, renames and page faults, the build's
-  reads), its free space, and each working set's access pattern and size (hot: random reads, syncs,
-  builds; cold: written once, read rarely).
+- *Observations:* each volume's actual service rates (read, write, sync), its contention and its
+  available capacity, observed continuously by the runtime's resource owner from the IO we already
+  time (the block layer's syncs, renames and page faults, builds, scratch writes), each kind with its
+  own measurement semantics (`capacity/io-probe` is an uncached read benchmark, not a build's write
+  rate). A change in either direction publishes a revision, other processes and other copies of us
+  included (SAGE.md, "other processes"); unknown or stale stays explicit. Install, start and build read
+  the freshest frames; none runs a placement survey. Also each working set's access pattern and size
+  (hot: random reads, syncs, builds; cold: written once, read rarely).
 - *Actions:* place a working set on a volume; move it (a hot set up, a cold duplicate down).
 - *Outcomes:* build and check time, restore time, act time, and the disk-pressure level of each volume.
 - *Envelope:* a hot working set never goes to a volume measured slower than the fastest one with
@@ -177,7 +180,10 @@ pointed; on 2026-11-25 a SAGE design worktree sat on that same disk.
 - *Where hands touch it:* a path given by hand (`continuum reboot --prebuilt <exe>`, a cargo target
   dir, a worktree) is held to the same envelope. Its volume is measured, and if a faster volume has
   room the command refuses, naming both volumes and their measured rates. An override is explicit and
-  recorded. Owner: Codex (lifecycle and installer), from the 5090 on 2026-11-25.
+  recorded. Owner: Codex (lifecycle and installer), #6276.
+- *Every policy re-evaluates on a relevant revision,* not on a timer. Gate: a competing copy of
+  Continuum takes and releases a volume's bandwidth mid-run, and placement follows both ways without a
+  restart.
 
 **The observations we already measure: the starting catalog.** Each has one owner that publishes it
 and a receipt that it is measured today; each use case reads the ones it needs.
