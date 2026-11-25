@@ -221,6 +221,8 @@ pub struct SchedulerConfig {
     pub n_ubatch: u32,
     pub type_k: KvCacheType,
     pub type_v: KvCacheType,
+    /// The lane algorithm's registered name (driver/lane.rs).
+    pub lane_algorithm: &'static str,
 }
 
 /// What reaches the driver thread, in order: a turn, or the stop's suspend.

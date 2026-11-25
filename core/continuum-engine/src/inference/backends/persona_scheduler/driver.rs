@@ -16,6 +16,8 @@ use llama::{ContextParams, FlashAttn, LoraAdapter, Model, Pos};
 use uuid::Uuid;
 
 use super::geometry::StopsOnExit;
+use continuum_sage::decide::cases::lane_history::Observation;
+use continuum_sage::decide::Measured;
 use continuum_sage::{Outbox, StageInput};
 
 use super::{admission, emit, preserve, record, reuse, transition, EngineGeometry, EngineState, GenerationRequest, Incarnation, SchedulerConfig, Submission, Suspended, TokenEvent};
@@ -74,6 +76,8 @@ enum StartError {
     ZeroBatch,
     #[error("no home for minds' KV and preserved state: {0}")]
     Home(#[from] preserve::StoreError),
+    #[error("the lane has no algorithm named {name}", name = .0.name)]
+    Lane(continuum_sage::decide::Unknown),
 }
 
 /// One mind this scheduler serves: the unit that travels (CONTINUUM-ENGINE 4.17). Her blocks are her
@@ -233,6 +237,15 @@ pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
             }
         }
     };
+    let lane = match lane::Lanes::new(config.lane_algorithm) {
+        Ok(lane) => lane,
+        Err(unknown) => {
+            let refused = StartError::Lane(unknown);
+            refuse(&refused);
+            refuse_all(refused.to_string());
+            return;
+        }
+    };
     let mut ctx = match context(model, config) {
         Ok(ctx) => ctx,
         Err(refused) => {
@@ -281,7 +294,7 @@ pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
         model_id: config.model.clone(),
         stopping: false,
         learning: learning::Learning::default(),
-        lane: lane::Lanes::new(),
+        lane,
     };
     // The frame loop (CONTINUUM-ENGINE 4.15): submissions are drained without blocking, and each
     // frame advances ONE turn by ONE step (a prefill chunk or a token), chosen by the SAGE lane
@@ -628,11 +641,14 @@ impl Driver<'_, '_> {
         if self.engine.active() != Some(turn.id) {
             let switching = Instant::now();
             self.switch_to(turn.id, turn.one_off)?;
-            turn.spent.switch += switching.elapsed();
+            let took = switching.elapsed();
+            self.lane.observe(Observation::SwitchedIn { mind: turn.id, took });
+            turn.spent.switch += took;
             turn.spent.switches += 1;
         }
         if matches!(turn.phase, Phase::Waiting) {
             let from = self.resume(turn)?;
+            self.lane.observe(Observation::Reused { mind: turn.id, reused: from as u64, prompt: turn.prompt.len() as u64 });
             if from >= turn.prompt.len() {
                 return Err(TurnError::NothingDecoded);
             }
@@ -644,14 +660,24 @@ impl Driver<'_, '_> {
             }
         }
         let stepping = Instant::now();
-        let (advanced, decoding) = match std::mem::replace(&mut turn.phase, Phase::Waiting) {
-            Phase::Waiting => (Err(TurnError::NothingDecoded), false),
-            Phase::Prefilling { pos } => (self.prefill_chunk(turn, pos).map(|()| Advanced::Continues), false),
-            Phase::Decoding { token, pos, generated } => (self.decode_token(turn, token, pos, generated), true),
+        let (advanced, decoding, prefill_from) = match std::mem::replace(&mut turn.phase, Phase::Waiting) {
+            Phase::Waiting => (Err(TurnError::NothingDecoded), false, None),
+            Phase::Prefilling { pos } => (self.prefill_chunk(turn, pos).map(|()| Advanced::Continues), false, Some(pos)),
+            Phase::Decoding { token, pos, generated } => (self.decode_token(turn, token, pos, generated), true, None),
         };
         let stepped = Instant::now();
         turn.ready_since = stepped;
         let took = stepped.saturating_duration_since(stepping);
+        // what the step moved: one token decoded, or the prefill chunk up to where she now stands
+        let tokens = match (prefill_from, &turn.phase) {
+            (Some(from), Phase::Prefilling { pos }) => pos.saturating_sub(from),
+            (Some(from), Phase::Decoding { .. }) => turn.prompt.len().saturating_sub(from),
+            (Some(_), Phase::Waiting) | (None, _) => usize::from(decoding && advanced.is_ok()),
+        };
+        self.lane.observe(Observation::Stepped { mind: turn.id, took, tokens: tokens as u64, prefill: !decoding });
+        if let Ok(Advanced::Done { tokens_generated, .. }) = &advanced {
+            self.lane.observe(Observation::TurnEnded { mind: turn.id, decoded: *tokens_generated as u64 });
+        }
         if decoding {
             turn.spent.decode += took;
         } else {
@@ -907,6 +933,7 @@ impl Driver<'_, '_> {
         if turn.one_off {
             self.parked.remove(&turn.id);
             self.live_one_offs.remove(&turn.id);
+            self.lane.observe(Observation::Left { mind: turn.id });
         }
     }
 
@@ -938,7 +965,10 @@ impl Driver<'_, '_> {
         if blocks == Held::NOTHING {
             return;
         }
-        footprint_registry::global().report_authoritative(FootprintKey::for_persona(id.0, ResourceType::KvCache, Residency::Active), (blocks + own).total());
+        let bytes = (blocks + own).total();
+        footprint_registry::global().report_authoritative(FootprintKey::for_persona(id.0, ResourceType::KvCache, Residency::Active), bytes);
+        // her blocks' bytes for the lane; which of them are cold the block layer does not report yet
+        self.lane.observe(Observation::Resident { mind: id, kv_bytes: bytes as u64, cold_bytes: Measured::Unmeasured });
     }
 }
 

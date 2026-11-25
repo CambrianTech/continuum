@@ -482,6 +482,7 @@ impl LlamaCppBackend {
                         n_ubatch: self.config.n_ubatch,
                         type_k: self.config.type_k,
                         type_v: self.config.type_v,
+                        lane_algorithm: self.config.lane_algorithm,
                     },
                 ),
             )

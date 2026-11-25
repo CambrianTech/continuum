@@ -17,6 +17,7 @@
 //! The lane (`cases::lane`) is the first real use case; residency, placement and volume are scaffolds
 //! whose types exist from the start, so their owners add policies, not shapes.
 
+mod algorithms;
 mod capacity;
 pub mod cases;
 mod measured;
@@ -27,7 +28,8 @@ mod use_case;
 
 pub use capacity::{Capacity, Lease, Price};
 pub use measured::{Ewma, Fraction, Measured, Window};
-pub use policy::{Baseline, Choice, Policy, PolicyId};
+pub use algorithms::{Algorithms, Factory, Unknown};
+pub use policy::{Baseline, Choice, Param, Policy, PolicyId, Refused};
 pub use record::{DecisionId, Decided, Decider, Record, Verdict};
 pub use replay::{replay, Replayed};
 pub use use_case::{Deferred, Gate, UseCase, Violation};

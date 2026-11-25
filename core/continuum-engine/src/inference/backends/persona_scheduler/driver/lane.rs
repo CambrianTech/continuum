@@ -1,28 +1,32 @@
-//! The lane on the Core (THE-LANE-ON-SAGE.md): which turn takes the next step, decided by
-//! `continuum_sage::decide`'s lane use case at every step. Its envelope steps any mind past her wait
-//! bound, whatever the policy prefers; the policy (`NeedFirst`) lets an addressed mind take the next
-//! step and otherwise keeps the running one. It replaces `frame.rs`'s whole-turn rule, under which a
-//! running turn kept the Core at equal need until it ended (the M5, 2026-11-25 17:02Z: Benchy 38 asked,
-//! 0 completed, four minds on one Core).
+//! The lane on the Core (THE-LANE-ON-SAGE.md): which turn takes the next step, decided at every step
+//! by a lane algorithm created by name from `continuum_sage::decide::cases::lane::algorithms` (the
+//! scheduler's configuration names it), over the lane's history, which this driver feeds as the
+//! executor: every switch, step, turn end, reuse and residency it measures. The envelope steps any
+//! mind past her wait bound, whatever the algorithm prefers. It replaces `frame.rs`'s whole-turn rule
+//! (the M5, 2026-11-25 17:02Z: Benchy 38 asked, 0 completed, four minds on one Core).
 //! hot-path: the lane decides at every Core step.
 
 use std::num::NonZeroUsize;
 use std::time::{Duration, Instant};
 
 use continuum_persona_engine::persona::PersonaId;
-use continuum_sage::decide::cases::lane::{self, Lane, Mind, NeedFirst, SLOTS};
-use continuum_sage::decide::{DecisionId, Decided, Decider, Measured};
+use continuum_sage::decide::cases::lane::{self, Lane, Mind, SLOTS};
+use continuum_sage::decide::cases::lane_history::{LaneHistory, Observation, Views};
+use continuum_sage::decide::{DecisionId, Decided, Decider, Fraction, Measured, Unknown};
 
 use super::{Driver, Phase, Turn};
 
+/// Decisions kept for replay, one per step: at 26 ms a step, about three and a half minutes.
+const RECORDS: NonZeroUsize = match NonZeroUsize::new(8_192) {
+    Some(records) => records,
+    None => NonZeroUsize::MIN,
+};
 
-/// How many lane decisions are kept for replay: one per step, so a few minutes of steps at 26 ms each.
-const RECORDS: usize = 8_192;
-
-/// The lane's state, owned by the driver: the decider, and the situation and slot map it refills in
-/// place at every step (no allocation once they have held this many minds).
+/// The lane's state, owned by the driver: the algorithm's decider, the history it reads, and the
+/// situation and slot map refilled in place at every step (no allocation past their high-water mark).
 pub(super) struct Lanes {
     decider: Decider<Lane<PersonaId>>,
+    history: LaneHistory<PersonaId>,
     situation: lane::Situation<PersonaId>,
     /// Ready slot `i` is turn `slots[i]`; the running mind's turn is `running`.
     slots: Vec<usize>,
@@ -32,26 +36,33 @@ pub(super) struct Lanes {
 }
 
 impl Lanes {
-    pub(super) fn new() -> Self {
-        let records = NonZeroUsize::new(RECORDS).map_or(NonZeroUsize::MIN, |n| n); // map_or: RECORDS is a nonzero literal
-        Self {
-            decider: Decider::new(Box::new(NeedFirst), records), // cold: the lane is built once, with the driver
+    /// The lane running the algorithm registered as `algorithm`; refused when no such one exists.
+    pub(super) fn new(algorithm: &'static str) -> Result<Self, Unknown> {
+        let policy = lane::algorithms::<PersonaId>()?.create(algorithm)?;
+        Ok(Self {
+            decider: Decider::new(policy, RECORDS), // cold: the lane is built once, with the driver
+            history: LaneHistory::new(Views::default()),
             situation: lane::Situation { running: None, ready: Vec::with_capacity(SLOTS), batch_width: 1 }, // cold: built once; refilled in place
             slots: Vec::with_capacity(SLOTS), // cold: built once; refilled in place
             running: None,
             open: None,
-        }
+        })
+    }
+
+    /// What the driver measured, as the lane's executor.
+    pub(super) fn observe(&mut self, observation: Observation<PersonaId>) {
+        self.history.observe(observation);
     }
 }
 
-/// What the lane sees of one turn's mind now.
-fn mind(turn: &Turn) -> Mind<PersonaId> {
+/// What the lane sees of one turn's mind now: her turn's own facts, then her history's measurements.
+fn mind(turn: &Turn, history: &LaneHistory<PersonaId>) -> Mind<PersonaId> {
     let phase = match turn.phase {
         Phase::Prefilling { pos } => lane::Phase::Prefill { remaining: turn.prompt.len().saturating_sub(pos) as u64 },
         Phase::Waiting => lane::Phase::Prefill { remaining: turn.prompt.len() as u64 },
         Phase::Decoding { .. } => lane::Phase::Decode,
     };
-    Mind {
+    let mut mind = Mind {
         mind: turn.id,
         urgency: turn.req.urgency,
         waited: turn.ready_since.elapsed(),
@@ -63,7 +74,9 @@ fn mind(turn: &Turn) -> Mind<PersonaId> {
         step: Measured::Unmeasured,
         switch_in: Measured::Unmeasured,
         prefix_hit: Measured::Unmeasured,
-    }
+    };
+    history.fill(&mut mind, Fraction::HALF);
+    mind
 }
 
 impl Driver<'_, '_> {
@@ -84,10 +97,10 @@ impl Driver<'_, '_> {
                 continue;
             }
             if active == Some(turn.id) && !matches!(turn.phase, Phase::Waiting) {
-                situation.running = Some(mind(turn));
+                situation.running = Some(mind(turn, &lanes.history));
                 lanes.running = Some(index);
             } else if situation.ready.len() < SLOTS {
-                situation.ready.push(mind(turn));
+                situation.ready.push(mind(turn, &lanes.history));
                 lanes.slots.push(index);
             }
         }

@@ -28,6 +28,11 @@ impl<T: Copy> Measured<T> {
 pub struct Fraction(f64);
 
 impl Fraction {
+    /// One half: a median, an even split.
+    pub const HALF: Self = Self(0.5);
+    /// One quarter: an EWMA weight that remembers about the last four samples.
+    pub const QUARTER: Self = Self(0.25);
+
     /// In [0, 1]; `None` otherwise (and for NaN).
     pub fn of(value: f64) -> Option<Self> {
         (0.0..=1.0).contains(&value).then_some(Self(value))

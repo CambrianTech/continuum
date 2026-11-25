@@ -249,3 +249,81 @@ fn need_first_switches_to_a_more_urgent_mind_and_otherwise_continues() {
     let idle = lane::Situation { running: None, ready: vec![mind(2, 100), urgent(3, 10), mind(4, 900)], batch_width: 1 };
     assert_eq!(decide(&idle), lane::Action::Switch(1), "with nobody running, the most urgent starts");
 }
+
+// what this catches: an algorithm wired in as a type instead of created by name (OpenCV's
+// Algorithm::create), a name meaning two algorithms, an unknown name built anyway, a parameter set
+// outside its range or under a wrong name, and a saved state that does not restore what was learned.
+#[test]
+fn lane_algorithms_are_created_by_name_with_typed_params_and_saved_state() {
+    let registry = lane::algorithms::<u8>().expect("test: distinct names register"); // expect: the test's own precondition
+    assert_eq!(registry.names().collect::<Vec<_>>(), vec!["baseline", "need-first", "cost-model"]);
+    assert!(matches!(registry.create("no-such-algorithm"), Err(Unknown { use_case: "lane", name: "no-such-algorithm" })));
+    assert!(lane::algorithms::<u8>().and_then(|r| r.register("cost-model", || Box::new(Baseline))).is_err(), "a name means one algorithm");
+
+    let mut cost = registry.create("cost-model").expect("test: registered"); // expect: the test's own precondition
+    assert_eq!(cost.params(), &["margin"]);
+    assert_eq!(cost.param("margin"), Some(Param::Real(0.5)));
+    assert!(matches!(cost.set_param("margin", Param::Real(1.5)), Err(Refused::Value { .. })), "refused out of range, never clamped");
+    assert!(matches!(cost.set_param("depth", Param::Real(0.1)), Err(Refused::Unknown("depth"))));
+    cost.set_param("margin", Param::Real(0.25)).expect("test: in range"); // expect: the test's own precondition
+    let mut saved = Vec::new();
+    cost.save(&mut saved);
+    let mut restored = registry.create("cost-model").expect("test: registered"); // expect: the test's own precondition
+    restored.load(&saved).expect("test: its own state loads"); // expect: the test's own precondition
+    assert_eq!(restored.param("margin"), Some(Param::Real(0.25)), "a restart resumes what it was set to");
+    assert!(saved.split_last().is_some_and(|(_, truncated)| restored.load(truncated).is_err()), "a truncated state is refused");
+}
+
+// what this catches: features left unmeasured when the executor reported them, a track kept after its
+// mind left, a step time not per
+// token, a remainder that ignores what she already decoded, and an unseen mind given invented numbers.
+#[test]
+fn the_lane_history_fills_what_the_executor_observed_and_nothing_else() {
+    use super::cases::lane_history::{LaneHistory, Observation, Views};
+    let views = Views { smoothing: Fraction::positive(1.0).expect("test: a weight"), turns: capacity(4) }; // expect: the test's own precondition
+    let mut history = LaneHistory::new(views);
+    for decoded in [100, 300, 200] {
+        history.observe(Observation::TurnEnded { mind: 1u8, decoded });
+    }
+    history.observe(Observation::Stepped { mind: 1, took: Duration::from_millis(260), tokens: 10, prefill: false });
+    history.observe(Observation::SwitchedIn { mind: 1, took: Duration::from_micros(10) });
+    history.observe(Observation::Reused { mind: 1, reused: 900, prompt: 1_000 });
+    history.observe(Observation::Resident { mind: 1, kv_bytes: 64 << 20, cold_bytes: Measured::Value(0) });
+    let median = Fraction::of(0.5).expect("test: a quantile"); // expect: the test's own precondition
+    let mut her = mind(1, 0);
+    her.step = Measured::Unmeasured;
+    history.fill(&mut her, median);
+    assert_eq!(her.step, Measured::Value(Duration::from_millis(26)), "per token");
+    assert_eq!(her.switch_in, Measured::Value(Duration::from_micros(10)));
+    assert_eq!((her.prefix_hit, her.kv_bytes), (Measured::Value(0.9), Measured::Value(64 << 20)));
+    assert_eq!(her.remaining, Measured::Value(190), "the median turn (200) less the 10 she decoded");
+    let mut stranger = lane::Mind { step: Measured::Unmeasured, ..mind(7, 0) };
+    history.fill(&mut stranger, median);
+    assert_eq!((stranger.step, stranger.remaining), (Measured::Unmeasured, Measured::Unmeasured), "unseen stays unmeasured");
+    history.observe(Observation::Left { mind: 1 });
+    let mut gone = lane::Mind { step: Measured::Unmeasured, ..mind(1, 0) };
+    history.fill(&mut gone, median);
+    assert_eq!(gone.step, Measured::Unmeasured, "a mind that left keeps no track");
+}
+
+// what this catches: a cost model that switches on a fixed count instead of costs: a running mind whose
+// next step fits every waiter's slack continues; a waiter whose slack is nearly spent is brought in; and
+// a costly switch (a deep cold mind) leaves less slack, so she is brought in sooner, before her bound.
+#[test]
+fn the_cost_model_continues_while_steps_fit_and_brings_in_the_tightest_waiter() {
+    let registry = lane::algorithms::<u8>().expect("test: distinct names register"); // expect: the test's own precondition
+    let mut cost = registry.create("cost-model").expect("test: registered"); // expect: the test's own precondition
+    let mut decide = |situation: &lane::Situation<u8>| {
+        let (gate, admissible) = envelope::<Lane<u8>>(situation);
+        assert_eq!(gate, Gate::Choose);
+        admissible[cost.choose(situation, &admissible).index]
+    };
+    let running = mind(1, 0); // 26 ms a step
+    let fresh = lane::Situation { running: Some(running), ready: vec![mind(2, 100)], batch_width: 1 };
+    assert_eq!(decide(&fresh), lane::Action::Continue, "900 ms of slack: her next 26 ms step fits");
+    let near = lane::Situation { running: Some(running), ready: vec![mind(2, 100), mind(3, 960)], batch_width: 1 };
+    assert_eq!(decide(&near), lane::Action::Switch(1), "40 ms of slack, half kept: the tightest is brought in");
+    let cold = lane::Mind { switch_in: Measured::Value(Duration::from_millis(880)), ..mind(4, 100) };
+    let costly = lane::Situation { running: Some(running), ready: vec![mind(2, 100), cold], batch_width: 1 };
+    assert_eq!(decide(&costly), lane::Action::Switch(1), "her 880 ms switch leaves 20 ms of slack: she is brought in now");
+}

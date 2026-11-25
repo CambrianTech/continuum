@@ -48,7 +48,7 @@ pub struct Mind<K> {
     pub kv_bytes: Measured<u64>,
     pub cold_bytes: Measured<u64>,
     /// Tokens left in her turn, predicted from her own history in this activity.
-    pub remaining: Measured<u32>,
+    pub remaining: Measured<u64>,
     /// Her step time, and the cost of bringing her in from where she is now.
     pub step: Measured<Duration>,
     pub switch_in: Measured<Duration>,
@@ -111,7 +111,7 @@ impl<K: Copy + Debug + PartialEq + Send + 'static> UseCase for Lane<K> {
         };
         // Finish first: her measured remainder costs less than bringing anyone in.
         let cheapest_switch = ready.iter().filter_map(|mind| mind.switch_in.value()).min();
-        let finishing = matches!((running.remaining.value(), running.step.value(), cheapest_switch), (Some(left), Some(step), Some(switch)) if step * left < switch);
+        let finishing = matches!((running.remaining.value(), running.step.value(), cheapest_switch), (Some(left), Some(step), Some(switch)) if step.mul_f64(left as f64) < switch);
         if finishing || ready.is_empty() {
             return Gate::Forced(Action::Continue);
         }
@@ -168,4 +168,17 @@ impl<K: Copy + Debug + PartialEq + Send + 'static> Policy<Lane<K>> for NeedFirst
         let index = admissible.iter().position(|action| *action == wanted).unwrap_or(0); // unwrap_or: not offered means the envelope decided; its first is its choice
         Choice { index, expected: None }
     }
+}
+
+/// The algorithm serving runs unless its configuration names another: the cost model over the
+/// lane's history.
+pub const SERVING: &str = "cost-model";
+
+/// The lane's algorithms by name: the baseline, need-first, and the cost model over the lane's
+/// history. A caller (the Core's driver) creates the one its configuration names.
+pub fn algorithms<K: Copy + Debug + PartialEq + Send + 'static>() -> Result<super::super::Algorithms<Lane<K>>, super::super::Unknown> {
+    super::super::Algorithms::default()
+        .register("baseline", || Box::new(super::super::Baseline))? // cold: the registry is built once, when the lane is
+        .register("need-first", || Box::new(NeedFirst))? // cold: the registry is built once, when the lane is
+        .register("cost-model", || Box::new(super::lane_cost::CostModel::default())) // cold: the registry is built once, when the lane is
 }
