@@ -254,12 +254,13 @@ mod tests {
             run(deploy, &["worktree", "add", "-q", "--detach", &sibling.to_string_lossy()]);
             let setting = |dir: &Path| runner(dir)(&["config", "--get", "submodule.recurse"]).ok();
             let before = setting(&sibling);
-            // the deploy's runner, as `git_in` runs git: NO_RECURSION before every command
+            // the deploy's runner no longer blanket-injects recursion flags; only fetch gets
+            // --no-recurse-submodules explicitly, checkout runs bare (it never recurses
+            // submodules), and align() handles pin updates through its own submodule update.
             let plain_git = runner(deploy);
-            let git = |args: &[&str]| plain_git(&NO_RECURSION.iter().copied().chain(args.iter().copied()).collect::<Vec<_>>());
-            git(&["fetch", "--quiet", "origin"]).expect("the deploy's fetch never reaches into submodules");
-            git(&["checkout", "--quiet", "--detach", &tip]).expect("the deploy checks out its tip");
-            align(deploy, &git).expect("align the tip's own pin");
+            plain_git(&["fetch", "--quiet", "--no-recurse-submodules", "origin"]).expect("the deploy's fetch never reaches into submodules");
+            plain_git(&["checkout", "--quiet", "--detach", &tip]).expect("the deploy checks out its tip");
+            align(deploy, &|args: &[&str]| plain_git(args)).expect("align the tip's own pin");
             assert_eq!(run(&deploy.join("vendor/engine"), &["rev-parse", "HEAD"]), published, "the tip's pin, as published");
             assert_eq!(setting(&sibling), before, "a sibling worktree keeps its submodule.recurse");
         }

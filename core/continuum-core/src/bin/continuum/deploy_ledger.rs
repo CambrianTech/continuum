@@ -330,12 +330,10 @@ pub(super) fn build_key_in(repo: &Path, tip: &str) -> Option<String> {
     git_in(repo, &args).ok().map(|key| key.trim().to_string()).filter(|key| !key.is_empty())
 }
 
-/// Git in the deploy tree, never recursing into a submodule by itself
-/// ([`continuum_git::submodules::NO_RECURSION`]: `align` alone moves them).
+/// Git in the deploy tree; each call receives its own flags.
 pub(super) fn git_in(repo: &Path, args: &[&str]) -> Result<String, String> {
     let out = std::process::Command::new("git")
         .current_dir(repo)
-        .args(continuum_git::submodules::NO_RECURSION)
         .args(args)
         .output()
         .map_err(|e| format!("git {}: {e}", args.join(" ")))?;
