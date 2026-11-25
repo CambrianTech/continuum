@@ -101,6 +101,25 @@ A shrinking budget is an input like any other: the Streamer demotes to fit it be
 and a law that learned on a quiet machine adapts as the machine fills. The hot tier's drive detection
 moves into `Topology`.
 
+
+**Other copies of us: in parallel, or gone.** Two cores on one machine (a development core beside a
+running one, or two models served side by side) are each other's "everything else", and the
+measurements above already see each other's memory. Copies of us also know each other, so they
+cooperate instead of fighting over the same budget:
+- **A lease per instance.** Each core holds an OS file lock on its own lease file in the node's
+  shared blocks directory, for as long as it runs. The lock is the liveness truth, not a pid or a
+  heartbeat: the OS releases it the moment the process dies, however it dies.
+- **Its own live directory per instance** (`persona-blocks/live/<instance>/`). Two copies never map
+  the same file, so a parallel copy can never write another's KV.
+- **Shared holdings.** Each instance publishes what it holds on each tier beside its lease, so every
+  `Topology` reads its peers' share as theirs and divides the node's budget between live instances.
+  Each instance's law learns with its peers present, rather than both laws discovering each other's
+  pressure as misses.
+- **A copy going down is reclaimed, not leaked.** At start, and whenever a peer's lock is released,
+  `Topology` finds live directories whose lease is no longer held. It returns their bytes to the
+  node's budget and deletes their files. A dead instance's preserved minds are not touched, because
+  they are durable state, not live memory.
+
 **`Region` and `Block`: the memory, and the thing consumers hold.**
 
 ```rust
