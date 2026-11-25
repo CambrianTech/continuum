@@ -68,6 +68,40 @@ topic; no component holds another.
 
   An algorithm declares only its parameters, its state and its objective; saving, keying and
   resuming are SAGE's, as a component's worker and rest are.
+- **The algorithm and its view of history can vary independently.** A component declares the
+  typed inputs and outputs of its operation. Its history view names the source handles, schema,
+  and exact owner-published frame revisions used to produce that input. A decision records
+  the owner, handle and revision it read for each source, plus the policy checkpoint or initial
+  parameters. The resource owner charges retention for declared history and replay pins.
+  A detector can read a previous frame, a
+  throughput estimator can read a time-weighted summary of completed transfers, and a cache
+  policy can read a sequence of episodes. Native payloads stay with their owners. Each view
+  declares what it retains and how it resumes when history is short or a source revision expires.
+- **A choice and its outcome are distinct observations.** The resource owner applies an
+  admissible choice and publishes its measured outcome against the choice's handle. Replay
+  pins the history available when the choice was made. Later frames can grade the prediction.
+  Grading an alternative action needs a separate trial or an explicitly identified estimate.
+  Placement uses the common scarcity ledger below. A novelty detector can emit change through
+  the same lifecycle using its own objective.
+- **Placement follows the cost of completing work.** The node keeps observing headroom and
+  achieved service rates as external demand and its own decisions change them. During a video
+  export, new work may finish more cheaply on a grid peer. When the export ends, the same
+  comparison can admit more local work, even while the editor stays open. Charge transfer,
+  restore and lost warmth when comparing a handoff with finishing work in place.
+  Across independently operated grids, a peer can offer a grade at a price until a stated
+  expiry. Only an accepted lease commits capacity for its agreed term. Reevaluate new work
+  as offers, budgets and service rates change. The custody and completion owners govern
+  any transfer. Replay contention and relief with queued arrivals, then with an expiring
+  peer offer, and check useful completions, deadlines, spend and continuity.
+- **Compare cache policies against the current engine on the same workload.** Continuum can
+  keep a warm prefix, restore exact native state, or offer a cheaper grade under its shared
+  budget. Published cache policies provide additional candidates. One ranks tokens from per-head key and value
+  vectors and can use a later attention trace to grade its ranking. Another groups conversation
+  segments into episodes and measures answer quality at a fixed cache budget. Both can offer
+  compression grades. Exact restore keeps its own continuity criterion against uninterrupted
+  decoding. Rendering and peer placement can supply different grades and measurements through
+  the same lifecycle. [Learning to Evict](https://arxiv.org/html/2602.10238v2) ·
+  [EpiCache](https://arxiv.org/html/2509.17396v4)
 - **Rest is as important as action.** A component with no new input frame does nothing and publishes
   nothing. Resting frees the Core, memory and the GPU for others.
 - **Need comes from novelty, awareness and appraisal.** A part measures how unknown an input is against
