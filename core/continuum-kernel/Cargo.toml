@@ -13,15 +13,15 @@ command-name resolver, MeshPresence, ClogSink) installed at boot.
 """
 
 [dependencies]
-continuum-base = { path = "../continuum-base" }
-continuum-sage = { path = "../continuum-sage" } # node-bus states and components (disk relief)
-continuum-host = { path = "../continuum-host" }
-continuum-saved-state = { path = "../continuum-saved-state" }  # the module-init record the boot's init deadline derives from
-continuum-airc-protocol = { path = "../continuum-airc-protocol" }
-continuum-cli-lifecycle = { path = "../continuum-cli-lifecycle" }
-continuum-orm-derive = { path = "../continuum-orm-derive" }
-continuum-client = { path = "../../client/continuum-client" }
-continuum-tool-protocol = { path = "../continuum-tool-protocol" }  # a call's arguments, unparsed or not, are typed where her executor refuses them (ONE-ACT 6b)
+continuum-base = { workspace = true }
+continuum-sage = { workspace = true } # node-bus states and components (disk relief)
+continuum-host = { workspace = true }
+continuum-saved-state = { workspace = true }  # the module-init record the boot's init deadline derives from
+continuum-airc-protocol = { workspace = true }
+continuum-cli-lifecycle = { workspace = true }
+continuum-orm-derive = { workspace = true }
+continuum-client = { workspace = true }
+continuum-tool-protocol = { workspace = true }  # a call's arguments, unparsed or not, are typed where her executor refuses them (ONE-ACT 6b)
 serde_path_to_error = "0.1"  # the path to a refused field, as segments, never read out of a message
 tokio.workspace = true
 serde.workspace = true
@@ -75,7 +75,7 @@ objc = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }
 filetime = { workspace = true }
-source-hygiene = { path = "../source-hygiene" }
+source-hygiene = { workspace = true }
 
 [features]
 default = []

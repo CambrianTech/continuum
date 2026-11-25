@@ -46,39 +46,39 @@ name = "forge-custodian"
 path = "src/bin/forge_custodian.rs"
 
 [dependencies]
-continuum-process = { path = "../continuum-process" }
-continuum-git = { path = "../continuum-git" } # the deploy tree's stale index.lock and its submodules (bin/continuum deploy_ledger, deploy_consume; deploy_tracker)
-tool-working-set = { path = "../tool-working-set" }  # one relevance seam: commands/help ranks a query the way the learned tool head reads relevance
-continuum-tool-protocol = { path = "../continuum-tool-protocol" }
+continuum-process = { workspace = true }
+continuum-git = { workspace = true } # the deploy tree's stale index.lock and its submodules (bin/continuum deploy_ledger, deploy_consume; deploy_tracker)
+tool-working-set = { workspace = true }  # one relevance seam: commands/help ranks a query the way the learned tool head reads relevance
+continuum-tool-protocol = { workspace = true }
 tokio.workspace = true
-expert-pager-policy = { path = "../expert-pager-policy" }
+expert-pager-policy = { workspace = true }
 serde.workspace = true
 serde_json.workspace = true
 ron = { workspace = true }     # RON scene descriptions (Bevy-idiomatic on-disk format)
 uuid.workspace = true
-continuum-base = { path = "../continuum-base" }
-continuum-host = { path = "../continuum-host" }
-continuum-saved-state = { path = "../continuum-saved-state" } # main names the build every saved value records
-continuum-kernel = { path = "../continuum-kernel" }
-continuum-sage = { path = "../continuum-sage" } # the node's Owner: its parts start at boot and stop with the core
-continuum-perception = { path = "../continuum-perception" }
-continuum-sentinel = { path = "../continuum-sentinel" }
-continuum-mind = { path = "../continuum-mind" }
-continuum-memory = { path = "../continuum-memory" }
-continuum-academy = { path = "../continuum-academy" }  # commands::hf re-exports its hf/* (#5452): a normal dependency, not only a test one
-continuum-dreaming = { path = "../continuum-dreaming" }
-continuum-live = { path = "../continuum-live" }
-continuum-hands = { path = "../continuum-hands" }
-continuum-engine = { path = "../continuum-engine" }
-continuum-service = { path = "../continuum-service" }  # each resident's window judged, and the alarm the beacon carries (card 1c157668)
-continuum-models = { path = "../continuum-models" }
-continuum-serving = { path = "../continuum-serving" }
-continuum-gateway = { path = "../continuum-gateway" }
-continuum-embedding = { path = "../continuum-embedding" }
-continuum-store = { path = "../continuum-store" }  # the data layer and its commands (card 2709ec6d)
-continuum-grid = { path = "../continuum-grid" }  # grid discovery, trust and routing with their commands (plan phase 2)
-continuum-context = { path = "../continuum-context" }
-continuum-capture = { path = "../continuum-capture" }  # boot registers the captures pool with the pressure broker
+continuum-base = { workspace = true }
+continuum-host = { workspace = true }
+continuum-saved-state = { workspace = true } # main names the build every saved value records
+continuum-kernel = { workspace = true }
+continuum-sage = { workspace = true } # the node's Owner: its parts start at boot and stop with the core
+continuum-perception = { workspace = true }
+continuum-sentinel = { workspace = true }
+continuum-mind = { workspace = true }
+continuum-memory = { workspace = true }
+continuum-academy = { workspace = true }  # commands::hf re-exports its hf/* (#5452): a normal dependency, not only a test one
+continuum-dreaming = { workspace = true }
+continuum-live = { workspace = true }
+continuum-hands = { workspace = true }
+continuum-engine = { workspace = true }
+continuum-service = { workspace = true }  # each resident's window judged, and the alarm the beacon carries (card 1c157668)
+continuum-models = { workspace = true }
+continuum-serving = { workspace = true }
+continuum-gateway = { workspace = true }
+continuum-embedding = { workspace = true }
+continuum-store = { workspace = true }  # the data layer and its commands (card 2709ec6d)
+continuum-grid = { workspace = true }  # grid discovery, trust and routing with their commands (plan phase 2)
+continuum-context = { workspace = true }
+continuum-capture = { workspace = true }  # boot registers the captures pool with the pressure broker
 # JSON Schema generation from serde types — the runtime param schema every SDK
 # (CLI/web/mobile/RAG-tools) adapts from. Derived automatically by the command
 # base traits; uuid1 so Uuid fields schema-ize as string. See COMMAND-ORGANIZATION.md.
@@ -86,8 +86,8 @@ schemars = { workspace = true }
 # Procedural derive macros for ORM entities — #[derive(Entity)].
 # Same crate would be path-deps elsewhere; explicit path makes the
 # dev loop tight (no version juggle while the macro evolves).
-continuum-orm-derive = { path = "../continuum-orm-derive" }
-continuum-airc-protocol = { path = "../continuum-airc-protocol" }
+continuum-orm-derive = { workspace = true }
+continuum-airc-protocol = { workspace = true }
 # The positron substrate side (task #29 Layer 1): `Substrate` (snapshot +
 # live broadcast), `run_session` (the transport-generic live session task),
 # and the `CommandDispatch` seam. The WS ingress owns the transport: it
@@ -95,14 +95,14 @@ continuum-airc-protocol = { path = "../continuum-airc-protocol" }
 # channel and serializes its `ServerMessage::State` output back as
 # `WsServerMessage`. The `CommandDispatch` seam keeps continuum-positron free
 # of a continuum-core dependency (no cycle — this crate implements the trait).
-continuum-positron = { path = "../continuum-positron" }
-continuum-text-analysis = { path = "../continuum-text-analysis" }
+continuum-positron = { workspace = true }
+continuum-text-analysis = { workspace = true }
 # The client SDK. `InProcessTransport` (runtime/in_process_transport.rs)
 # implements `continuum_client::Transport` so an in-core citizen (persona,
 # foundry) holds the SAME `Connection` every external client uses — citizens
 # use clients ([[persona-is-a-client]]). No cycle: continuum-client does not
 # depend on continuum-core.
-continuum-client = { path = "../../client/continuum-client" }
+continuum-client = { workspace = true }
 reqwest = { workspace = true, features = ["json", "multipart", "stream"] }
 thiserror.workspace = true
 dashmap = { workspace = true }  # Lock-free concurrent HashMap
@@ -117,7 +117,7 @@ inventory = { workspace = true }
 libc = { workspace = true }     # Process group management (setsid, kill -pgid)
 fs2 = { workspace = true }      # Cross-platform advisory file locks (flock / LockFileEx)
 toml = { workspace = true }     # Avatar model manifest parsing
-continuum-cli-lifecycle = { path = "../continuum-cli-lifecycle" }  # the CLI's platform lifecycle; its tests must not link this crate
+continuum-cli-lifecycle = { workspace = true }  # the CLI's platform lifecycle; its tests must not link this crate
 base64 = { workspace = true }  # Base64 encoding for audio data
 sha2 = { workspace = true }   # SHA-256 for OAuth 2.0 PKCE code challenges (RFC 7636) + L1-6 contract canonical hash
 zip = "0.6"     # Extract .vrm from downloaded VRoid avatar archives (provisioning fetch executor)
@@ -181,7 +181,7 @@ sysinfo = { workspace = true }  # Cross-platform CPU, memory, system resource mo
 
 # llama — our owned substrate for inference (67.8 tok/s on M5 Metal).
 # Vendored llama.cpp built via cmake, features gate metal/cuda.
-llama = { path = "../llama" }
+llama = { workspace = true }
 
 # Candle — kept for training, Orpheus TTS, and legacy backends.
 # Inference flows through the llama crate above.
@@ -218,7 +218,7 @@ ts-rs.workspace = true  # TypeScript type generation
 livekit-api = { workspace = true, optional = true }
 
 # Bridge protocol — shared types for livekit-bridge IPC (no heavy deps)
-continuum-bridge-protocol = { path = "../livekit-protocol" }
+continuum-bridge-protocol = { workspace = true }
 
 # Bevy 3D engine — headless rendering for VRM avatar video frames
 # One shared Bevy instance renders all 14 avatars via RenderLayers isolation
@@ -304,10 +304,10 @@ metal = { workspace = true }
 # right engine: Metal on Apple Silicon; the CPU profile on an Intel Mac, where ggml-metal device init
 # hangs (#129). No `--features metal` to remember, and no CPU-only build on an M-series by accident.
 [target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
-llama = { path = "../llama", features = ["metal"] }
+llama = { workspace = true, features = ["metal"] }
 
 [target.'cfg(all(target_os = "macos", target_arch = "x86_64"))'.dependencies]
-llama = { path = "../llama", features = ["mac-cpu-only"] }
+llama = { workspace = true, features = ["mac-cpu-only"] }
 
 [features]
 # `metal` is NOT default — earlier comment claimed it was harmless on
@@ -474,35 +474,35 @@ required-features = ["avatar-3d"]
 unexpected_cfgs = "allow"
 
 [dev-dependencies]
-continuum-kernel = { path = "../continuum-kernel", features = ["test-fixtures"] }
-continuum-engine = { path = "../continuum-engine", features = ["test-fixtures"] }
-continuum-serving = { path = "../continuum-serving", features = ["test-fixtures"] }
-continuum-hands = { path = "../continuum-hands", features = ["test-fixtures"] }
-continuum-live = { path = "../continuum-live", features = ["test-fixtures"] }
-continuum-mind = { path = "../continuum-mind", features = ["test-fixtures"] }
-continuum-dreaming = { path = "../continuum-dreaming", features = ["test-fixtures"] }
-continuum-genome = { path = "../continuum-genome", features = ["test-fixtures"] }
-continuum-experience = { path = "../continuum-experience", features = ["test-fixtures"] }
-continuum-academy = { path = "../continuum-academy", features = ["test-fixtures"] }
-continuum-positron = { path = "../continuum-positron", features = ["test-fixtures"] }
+continuum-kernel = { workspace = true, features = ["test-fixtures"] }
+continuum-engine = { workspace = true, features = ["test-fixtures"] }
+continuum-serving = { workspace = true, features = ["test-fixtures"] }
+continuum-hands = { workspace = true, features = ["test-fixtures"] }
+continuum-live = { workspace = true, features = ["test-fixtures"] }
+continuum-mind = { workspace = true, features = ["test-fixtures"] }
+continuum-dreaming = { workspace = true, features = ["test-fixtures"] }
+continuum-genome = { workspace = true, features = ["test-fixtures"] }
+continuum-experience = { workspace = true, features = ["test-fixtures"] }
+continuum-academy = { workspace = true, features = ["test-fixtures"] }
+continuum-positron = { workspace = true, features = ["test-fixtures"] }
 # The hygiene ratchets moved to their own std-only crate so a contributor learns an
 # unwrap count rose in seconds instead of after a 12.4-minute build. Two `#[cfg(test)]`
 # call sites here still use its scanner helpers, so it is a DEV dependency — production
 # builds of continuum-core do not link it and never did.
-source-hygiene = { path = "../source-hygiene" }
+source-hygiene = { workspace = true }
 tokio-test = "0.4"
 tempfile = { workspace = true }                   # Temp directories for code module tests
 
 # Enable continuum-client's test-fixtures (the `mock` transport) in TEST builds
 # only — production links the regular dep above without it. Lets tests drive a
 # real `Connection` over `MockTransport` (e.g. the MCP ConnectionDispatch test).
-continuum-client = { path = "../../client/continuum-client", features = ["test-fixtures"] }
+continuum-client = { workspace = true, features = ["test-fixtures"] }
 
 # Cross-airc integration tests (tests/airc_ipc_roundtrip.rs). The fixture
 # spawns two real Airc peers on LAN loopback. `continuum-client` is now a
 # regular dependency (see [dependencies]) because `InProcessTransport` — the
 # in-core citizen's connection to its own substrate — implements
 # `continuum_client::Transport` in production code, not just tests.
-airc-test-fixtures = { path = "../airc-test-fixtures" }
+airc-test-fixtures = { workspace = true }
 airc-protocol = { workspace = true }
 futures = { workspace = true }

@@ -5,13 +5,13 @@ edition = "2021"
 publish = false
 
 [dependencies]
-continuum-kernel = { path = "../continuum-kernel" }
-continuum-base = { path = "../continuum-base" }
-continuum-host = { path = "../continuum-host" }
-continuum-engine = { path = "../continuum-engine" }
-continuum-mind = { path = "../continuum-mind" }
-continuum-dreaming = { path = "../continuum-dreaming" }
-expert-pager-policy = { path = "../expert-pager-policy" }
+continuum-kernel = { workspace = true }
+continuum-base = { workspace = true }
+continuum-host = { workspace = true }
+continuum-engine = { workspace = true }
+continuum-mind = { workspace = true }
+continuum-dreaming = { workspace = true }
+expert-pager-policy = { workspace = true }
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -31,11 +31,11 @@ tempfile = { workspace = true, optional = true }
 windows-sys = { workspace = true, features = ["Win32_System_ProcessStatus"] }
 
 [dev-dependencies]
-continuum-kernel = { path = "../continuum-kernel", features = ["test-fixtures"] }  # every test build gets the per-process continuum home (card d11d9827)
-continuum-engine = { path = "../continuum-engine", features = ["test-fixtures"] }
-continuum-sage = { path = "../continuum-sage" }
-continuum-mind = { path = "../continuum-mind", features = ["test-fixtures"] }
-continuum-dreaming = { path = "../continuum-dreaming", features = ["test-fixtures"] }
+continuum-kernel = { workspace = true, features = ["test-fixtures"] }  # every test build gets the per-process continuum home (card d11d9827)
+continuum-engine = { workspace = true, features = ["test-fixtures"] }
+continuum-sage = { workspace = true }
+continuum-mind = { workspace = true, features = ["test-fixtures"] }
+continuum-dreaming = { workspace = true, features = ["test-fixtures"] }
 tokio = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }
 axum = { workspace = true }

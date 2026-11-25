@@ -121,6 +121,17 @@ function readWorkspace(root = '.') {
   const strip = text => text.split(/\r?\n/).map(line => line.replace(/#.*$/, '')).join('\n');
   const members = strip(read('Cargo.toml')).match(/^\s*members\s*=\s*\[([^\]]*)\]/m);
   if (!members) throw new Error('Cannot read workspace members from Cargo.toml');
+  // the workspace's own crates, declared once under [workspace.dependencies] by path: a member that
+  // depends on one with `{ workspace = true }` depends on that directory
+  const inherited = new Map();
+  let rootSection = '';
+  for (const line of strip(read('Cargo.toml')).split('\n')) {
+    const header = line.match(/^\s*\[+([^\]]+)\]+/);
+    if (header) { rootSection = header[1].trim(); continue; }
+    if (rootSection !== 'workspace.dependencies') continue;
+    const declared = line.match(/^\s*([A-Za-z0-9_-]+)\s*=\s*\{[^}]*\bpath\s*=\s*"([^"]+)"/);
+    if (declared) inherited.set(declared[1], path.posix.normalize(declared[2]));
+  }
   const crates = [...members[1].matchAll(/"([^"]+)"/g)].map(([, dir]) => {
     let section = ''; let name = null; const deps = new Set(); const bins = []; const examples = []; const features = [];
     for (const line of strip(read(`${dir}/Cargo.toml`)).split('\n')) {
@@ -147,6 +158,8 @@ function readWorkspace(root = '.') {
       for (const [, dep] of dependency ? line.matchAll(/\bpath\s*=\s*"([^"]+)"/g) : []) {
         deps.add(path.posix.normalize(path.posix.join(dir, dep)));
       }
+      const viaWorkspace = dependency && line.match(/^\s*([A-Za-z0-9_-]+)\s*=\s*\{[^}]*\bworkspace\s*=\s*true/);
+      if (viaWorkspace && inherited.has(viaWorkspace[1])) deps.add(inherited.get(viaWorkspace[1]));
     }
     if (!name) throw new Error(`Cannot read the package name of ${dir}`);
     return { name, dir, deps: [...deps], features, bins: bins.filter(b => b.name && b.path), examples: examples.filter(e => e.name) };

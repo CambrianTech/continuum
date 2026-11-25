@@ -15,42 +15,42 @@ build = "../continuum-core/build.rs"
 # which persona fills at boot. The mind re-exports it under its old path.
 
 [dependencies]
-continuum-kernel = { path = "../continuum-kernel" }
-continuum-sage = { path = "../continuum-sage" }
-continuum-engine = { path = "../continuum-engine" }
-continuum-service = { path = "../continuum-service" }  # each resident's turns become her service window (card 1c157668)
-continuum-hands = { path = "../continuum-hands" }
-continuum-live = { path = "../continuum-live" }
-continuum-memory = { path = "../continuum-memory" }
-continuum-perception = { path = "../continuum-perception" }
-continuum-genome = { path = "../continuum-genome" }
-continuum-experience = { path = "../continuum-experience" }
+continuum-kernel = { workspace = true }
+continuum-sage = { workspace = true }
+continuum-engine = { workspace = true }
+continuum-service = { workspace = true }  # each resident's turns become her service window (card 1c157668)
+continuum-hands = { workspace = true }
+continuum-live = { workspace = true }
+continuum-memory = { workspace = true }
+continuum-perception = { workspace = true }
+continuum-genome = { workspace = true }
+continuum-experience = { workspace = true }
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
-continuum-base = { path = "../continuum-base" }
-continuum-host = { path = "../continuum-host" }
-continuum-context = { path = "../continuum-context" }
-continuum-rooms = { path = "../continuum-rooms" }  # a leaf of the cognition tree (COGNITION-CRATE-TREE.md)
-continuum-vitals = { path = "../continuum-vitals" }  # a leaf of the cognition tree (COGNITION-CRATE-TREE.md)
-continuum-prompt = { path = "../continuum-prompt" }  # a leaf of the cognition tree (COGNITION-CRATE-TREE.md)
-continuum-grounding = { path = "../continuum-grounding" }  # a leaf of the cognition tree (COGNITION-CRATE-TREE.md)
-continuum-engram = { path = "../continuum-engram" }  # a leaf of the cognition tree (COGNITION-CRATE-TREE.md)
-continuum-capture = { path = "../continuum-capture" }  # a leaf of the cognition tree (COGNITION-CRATE-TREE.md)
-tool-working-set = { path = "../tool-working-set" }  # the learned tool head: pure policy, no core dependency
+continuum-base = { workspace = true }
+continuum-host = { workspace = true }
+continuum-context = { workspace = true }
+continuum-rooms = { workspace = true }  # a leaf of the cognition tree (COGNITION-CRATE-TREE.md)
+continuum-vitals = { workspace = true }  # a leaf of the cognition tree (COGNITION-CRATE-TREE.md)
+continuum-prompt = { workspace = true }  # a leaf of the cognition tree (COGNITION-CRATE-TREE.md)
+continuum-grounding = { workspace = true }  # a leaf of the cognition tree (COGNITION-CRATE-TREE.md)
+continuum-engram = { workspace = true }  # a leaf of the cognition tree (COGNITION-CRATE-TREE.md)
+continuum-capture = { workspace = true }  # a leaf of the cognition tree (COGNITION-CRATE-TREE.md)
+tool-working-set = { workspace = true }  # the learned tool head: pure policy, no core dependency
 schemars = { workspace = true }
-continuum-airc-protocol = { path = "../continuum-airc-protocol" }
-continuum-positron = { path = "../continuum-positron" }
-continuum-text-analysis = { path = "../continuum-text-analysis" }
-continuum-client = { path = "../../client/continuum-client" }
+continuum-airc-protocol = { workspace = true }
+continuum-positron = { workspace = true }
+continuum-text-analysis = { workspace = true }
+continuum-client = { workspace = true }
 reqwest = { workspace = true, features = ["json", "multipart", "stream"] }
 thiserror.workspace = true
 dashmap = { workspace = true }  # Lock-free concurrent HashMap
 inventory = { workspace = true }
 fs2 = { workspace = true }      # Cross-platform advisory file locks (flock / LockFileEx)
 toml = { workspace = true }
-continuum-cli-lifecycle = { path = "../continuum-cli-lifecycle" }  # the CLI's platform lifecycle; its tests must not link this crate
+continuum-cli-lifecycle = { workspace = true }  # the CLI's platform lifecycle; its tests must not link this crate
 base64 = { workspace = true }
 sha2 = { workspace = true }   # SHA-256 for OAuth 2.0 PKCE code challenges (RFC 7636) + L1-6 contract canonical hash
 airc-core.workspace = true
@@ -75,18 +75,18 @@ image = { workspace = true }
 regex = { workspace = true }
 
 [dev-dependencies]
-continuum-kernel = { path = "../continuum-kernel", features = ["test-fixtures"] }  # every test build of this crate gets the per-process continuum home (card d11d9827)
-continuum-capture = { path = "../continuum-capture", features = ["test-fixtures"] }  # the capture's inline sink and playback fixtures
-continuum-grounding = { path = "../continuum-grounding", features = ["test-fixtures"] }  # the shared room-line builder (room_thread::said)
+continuum-kernel = { workspace = true, features = ["test-fixtures"] }  # every test build of this crate gets the per-process continuum home (card d11d9827)
+continuum-capture = { workspace = true, features = ["test-fixtures"] }  # the capture's inline sink and playback fixtures
+continuum-grounding = { workspace = true, features = ["test-fixtures"] }  # the shared room-line builder (room_thread::said)
 tokio = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }
-continuum-host = { path = "../continuum-host", features = ["test-fixtures"] }
-continuum-client = { path = "../../client/continuum-client", features = ["test-fixtures"] }
-continuum-positron = { path = "../continuum-positron", features = ["test-fixtures"] }
-continuum-genome = { path = "../continuum-genome", features = ["test-fixtures"] }
-continuum-vitals = { path = "../continuum-vitals", features = ["test-fixtures"] }
-continuum-rooms = { path = "../continuum-rooms", features = ["test-fixtures"] }
-continuum-experience = { path = "../continuum-experience", features = ["test-fixtures"] }
+continuum-host = { workspace = true, features = ["test-fixtures"] }
+continuum-client = { workspace = true, features = ["test-fixtures"] }
+continuum-positron = { workspace = true, features = ["test-fixtures"] }
+continuum-genome = { workspace = true, features = ["test-fixtures"] }
+continuum-vitals = { workspace = true, features = ["test-fixtures"] }
+continuum-rooms = { workspace = true, features = ["test-fixtures"] }
+continuum-experience = { workspace = true, features = ["test-fixtures"] }
 
 [features]
 default = []
