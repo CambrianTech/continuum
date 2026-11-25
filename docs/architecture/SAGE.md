@@ -144,14 +144,17 @@ she is off the lane her perception, tools, memory, learning and preparation keep
   each rotation it moves in whichever direction raised measured tokens per second, finds the peak and
   follows it as load, minds, models and machines change. Laws are pluggable (`Control`); a learned law
   is one more implementation.
-- **One mind on the Core at a time; cheap swaps make it seem parallel.** This is what makes it fast.
-  The Core is a CPU core: a mind's native state (KV rows, recurrent state, checkpoints) is her register
-  file. A switch saves the occupant and binds the next (`PersonaEngine` + `pipeline::Roles`, one stream
-  holding the whole context: 6 ms in the `persona_switch` validator, 21-26 ms p50 live). The lane
-  switches at almost every step, so every mind sees the GPU as her own. Never a batch of minds on the
-  Core, never `--parallel`: four parallel decodes ran at about 2 tok/s each against one at a time at
-  full rate (the M5, Nov 2026), and #6258's KV pool of five seats thrashed (4,191 evictions in 15
-  minutes, 2026-11-24). A switch that is not cheap is the defect to fix; switching less is never the fix.
+- **Each step is the fastest plan the measured costs allow: one mind, or a batch of resident minds.**
+  Decode is memory-bound, so one forward pass over several minds reads the weights once. Measured
+  2026-11-24, `llama-batched-bench` on the fork, Qwen2.5 0.5B, aggregate decode tok/s for 1/2/4 minds:
+  194/389/784 at 2k, 208/447/603 at 8k, 156/203/264 at 30k. So batching wins at every depth measured,
+  by less at depth where attention dominates; the 35B's rows are next. A batch needs every member's KV
+  resident at once, so it trades memory for no waits. When minds outnumber the memory, the lane
+  rotates them through residency, and a switch is a cheap swap through the Core's `Roles` (6 ms in the
+  `persona_switch` validator, 21-26 ms live), never a copy at depth: a pointer on unified memory,
+  pinned DMA overlapped with decode on a discrete GPU (THE-LANE-ON-SAGE.md). Never a fixed seat count:
+  #6258 seated five minds from a plan count, stepped one at a time and thrashed (5,855 evictions,
+  turn p50 123 s). The plan is chosen by the cost model, never by a rule either way.
 - **Work behind the scenes compounds it.** Her new context tail (tool results, messages) is prefilled
   while she is in a tool, so her first token on return is near immediate. Shared prefixes (system
   prompt, tool surface) are copied between sequences (`seq_cp`), never prefilled again. Learning runs
@@ -167,6 +170,7 @@ alone (80 vs 57 tok/s), so it drafts while a turn has the Core.
 |---|---|---|
 | A turn at a time (before; `frame.rs`) | 59 tok/s, then up to minutes of waiting (live 2026-11-24: wait p50 12 s, max 277 s) | about 59 tok/s, less swap stalls |
 | Sliced at the next step, cheap swap, under the bound | about 15 tok/s, every wait under the bound | about 50-56 tok/s (the swap's share) |
+| Resident minds batched in one step | 0.5B at 30k: about 66 tok/s each, no wait (measured) | 264 tok/s, 1.7x one mind (0.5B, 30k); the 35B at depth to be measured |
 | One mind alone, with the MTP draft | 80 tok/s | 80 tok/s |
 
 Swap overhead at a 0.5 s bound with four minds decoding at once: 16% at a 26 ms swap, 4% at 6 ms; with

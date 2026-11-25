@@ -20,8 +20,11 @@ recurrent state, checkpoints) is her register file.
   previous retired, so nothing is dropped or read early.
 - **Measured live:** a swap takes 21-26 ms p50 on the M5 (aa734cc01c: max 263 ms; 2026-11-19/20:
   mean ~21 ms). The in-process `persona_switch` validator measures about 6 ms.
-- **One mind decodes at a time.** Never a batch of minds on the Core, and never `--parallel`: four
-  parallel decodes ran at ~2 tok/s each, against one at a time at full rate (the M5, Nov 2026).
+- **A step decodes one mind or a batch of resident minds, whichever the cost model says is faster.**
+  Batched decode in one graph was faster at every depth measured on the 0.5B (aggregate 1/2/4 minds:
+  156/203/264 tok/s at 30k, 194/389/784 at 2k; 2026-11-24). The earlier receipt of four parallel
+  decodes at ~2 tok/s each was not batched decode in one graph, and is not used. A batch needs every
+  member's KV resident; when minds outnumber memory, the lane rotates them and the swap is the cost.
 - **How many Cores a node has is its measured capability:** one on the M5.
 
 Because a swap is that cheap, the Core can switch at almost every step, round robin, and every mind
@@ -82,7 +85,7 @@ Learning keeps its place, between her turns while no turn waits.
 - The driver's own pick (`Driver::pick`): the lane is the one owner of who steps.
 - Any fixed chunk size taken from the batch "because the turn keeps the Core" (`prefill_chunk`).
 
-Nothing is added beside the Core: no pool, no seats, no second stream. The swap itself becomes a transfer (below).
+The Core's streams are the batch width the cost model picks: one when batching does not pay, more when it does (each resident mind in her own stream). When the lane rotates a mind in, her storage is exchanged into a stream as a transfer (below). Never a seat count from a plan.
 
 ## The validator first (seconds, no live residents)
 

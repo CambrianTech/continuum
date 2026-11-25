@@ -384,7 +384,7 @@ The Core is a CPU core:
   - pinned async DMA overlapped with decode on a discrete GPU (Windows has no unified memory);
   - one block write (or mmap) to flash.
 
-Never a copy loop over cells or rows, never a string or JSON encoding of KV or tokens. Never seats, a KV pool or a batch of minds on the Core. A PR here quotes the line of THE-LANE-ON-SAGE.md it implements.
+Never a copy loop over cells or rows, never a string or JSON encoding of KV or tokens. Never a fixed seat count or a pool sized from a plan; whether a step decodes one mind or a batch of resident minds is the cost model's choice (batched decode measured faster at every depth on the 0.5B, 2026-11-24). A PR here quotes the line of THE-LANE-ON-SAGE.md it implements.
 
 **The cost of skipping this** (the M5, 2026-11-24):
 - #6258's five-seat pool: 5,855 evictions and turn p50 123 s, against 25 s.
