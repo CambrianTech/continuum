@@ -279,6 +279,12 @@ The same pattern repeats wherever something finite is shared, so SAGE owns it on
 | A live call | participants, their video and avatars | levels of detail: rendered full, reduced resolution or frame rate, thumbnail, audio only | BigMama (live, media) |
 | Rendering anything | scenes, avatars, textures | LOD rungs, as a game engine streams detail | BigMama |
 
+**The unit starts as the whole mind.** For now a mind is placed whole: her KV, her genome (LoRA genes,
+voice genes among them), her senses and her live presence (voice, avatar render, every modality) count
+toward one unit's value and cost. Finer units come later, each placed on its own once it is: an
+avatar's render quality (photorealistic, reduced, thumbnail), a voice gene, a modality. Her genome and
+her learning stay core mind, so a finer unit never splits a mind from the genes she learned with.
+
 Each instance supplies only what differs: its units, its places, how it measures, and its moves. The
 measurement, budgets, the law, its lifecycle, and the fencing and custody are the `Placer`'s, once.
 
