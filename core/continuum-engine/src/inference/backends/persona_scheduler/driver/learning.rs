@@ -331,12 +331,13 @@ impl Driver<'_, '_> {
         if let Err(unbound) = self.switch_to(seated.mind, false) {
             return refused(format!("she could not be bound to learn: {unbound}"));
         }
-        let held = match self.engine.active_mut() {
-            Some(her) => her.parts().tokens.held.clone(),
+        let mind = mind_of(seated.mind);
+        // her history read where it lies (130k tokens is 520 KB): never cloned to be read
+        let reply = match self.engine.active_mut() {
+            Some(her) => reply_for(mind, &her.parts().tokens.held, seated.rendered),
             None => return refused("she was not bound after the switch".into()),
         };
-        let mind = mind_of(seated.mind);
-        let Some(reply) = reply_for(mind, &held, seated.rendered) else {
+        let Some(reply) = reply else {
             return refused("the lesson has no reply past what she holds".into());
         };
         if reply.tokens.len() > seated.reply_rows.get() as usize {
@@ -345,6 +346,25 @@ impl Driver<'_, '_> {
             }
             return refused(format!("{} reply tokens past the {} the seat was measured for", reply.tokens.len(), seated.reply_rows));
         }
+        let Ok(served) = usize::try_from(reply.n_cached) else {
+            return refused(format!("a served prefix of {} positions", reply.n_cached));
+        };
+        // native learning begins only when her state ends at the served prefix (a hybrid's recurrent
+        // state cannot be cut back, so she is rewound to a checkpoint and prefilled under her genes)
+        if let Err(why) = self.to_served_prefix(served) {
+            return refused(format!("she could not be brought to her served prefix: {why}"));
+        }
+        // Her reply is built from what she holds NOW: on a hybrid the reposition cut her history to the
+        // served prefix, so the reply restores no tail (re-decoding it natively would run under the shadow
+        // and leave her recurrent state past her history); her next turn prefills it under her own genes.
+        // On an attention-only model nothing was cut and the reply is the one built above.
+        let reply = match self.engine.active_mut() {
+            Some(her) => reply_for(mind, &her.parts().tokens.held, seated.rendered),
+            None => return refused("she was not bound after reaching her served prefix".into()),
+        };
+        let Some(reply) = reply else {
+            return refused("the lesson has no reply past her served prefix".into());
+        };
         let learned = match self.engine.attach_shadow(mind, seated.shadow) {
             Ok(()) => match self.engine.learn_active(seated.shadow, &reply, admission, go_on) {
                 Ok(Finished::Learned { steps, loss, .. }) => (StepOutcome::Learned { steps, loss }, None),

@@ -40,4 +40,8 @@ pub trait Execute: Tier {
     /// Put `persona` back at `from`'s position: what she holds past it is cut. Refused (and she is
     /// left as she was) when she is not bound here at `epoch` or the checkpoint is ahead of her.
     fn rewind(&mut self, mind: MindId, from: &Self::Checkpoint) -> Result<(), TierRefusal>;
+
+    /// Empty her sequence: she holds nothing, attention or recurrent, and her next step starts at 0.
+    /// Confirmed against the engine's own memory, never assumed.
+    fn clear(&mut self, mind: MindId) -> Result<(), TierRefusal>;
 }
