@@ -55,6 +55,19 @@ topic; no component holds another.
 - **The only serial work is a queue insert or a state read** (about 10 ms max per step). Expensive work
   runs on the worker that owns it and is published when done; assembling a turn's context is a pass of
   reads of finished frames (gate: every input's frame lag at assembly is 0).
+- **What an algorithm learns is part of its lifecycle, owned once.** Every pluggable law (the Lane's
+  `Control` and `Tuner`, the block layer's `PlacementLaw` and `Forecaster`, any learned policy after
+  them) inherits one lifecycle from SAGE: default, resume, learn, checkpoint, stop.
+  - It starts from its saved last best for the key it was learned on: the node's fingerprint, the
+    model, and the schema of what it reads.
+  - Failing that, it starts from the closest saved key, then from a good default.
+  - It learns online for its own objective.
+  - It checkpoints its current state and its best by that objective, off its worker's hot path, on a
+    frame cadence and at a stop.
+  - A resumed algorithm never relearns what it knew.
+
+  An algorithm declares only its parameters, its state and its objective; saving, keying and
+  resuming are SAGE's, as a component's worker and rest are.
 - **Rest is as important as action.** A component with no new input frame does nothing and publishes
   nothing. Resting frees the Core, memory and the GPU for others.
 - **Need comes from novelty, awareness and appraisal.** A part measures how unknown an input is against

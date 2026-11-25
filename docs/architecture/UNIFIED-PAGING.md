@@ -287,7 +287,9 @@ other state on the node: its parameters, its forecaster, and the best-scoring pa
   version in the header), never JSON. A key from another node with the same fingerprint (two
   identical Macs) may seed this one, under the same schema check.
 
-The Lane's `Tuner` keeps its state the same way.
+This is SAGE's algorithm lifecycle (SAGE.md, "What an algorithm learns is part of its lifecycle"): the
+Streamer's laws, the Lane's `Tuner` and any learned law get default, resume, learn, checkpoint and stop from
+it, once.
 
 What ships with slice 3 is one law, `FractalPager` (the fractal pager law above), plus `Lru` as the
 baseline every other law is compared against. `Lru` is never a production law, as `Fixed` is the
