@@ -29,10 +29,12 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
 use continuum_cli_lifecycle::deploy_tracker::{same_commit, DeployRequest, STRANDED_GRACE_MS};
+use continuum_cli_lifecycle::deploy_claim::{in_flight, DeployClaim};
 
 /// The receipt, beside the request it answered: `<state>/deploy-actuation.json`.
 pub(crate) const ACTUATION_FILE: &str = "deploy-actuation.json";
@@ -43,20 +45,20 @@ pub(crate) const ACTUATION_LOG: &str = "deploy-actuate.log";
 pub(crate) const ACTUATOR_SWITCH_KEY: &str = "CONTINUUM_DEPLOY_ACTUATOR";
 /// The CLI verb the actuator launches — the consumer that turns a request into a reboot.
 pub(crate) const CONSUMER_VERB: &str = "deploy-consume";
-/// Actuations per request before the actuator stops and lets `deploy.stranded` speak.
-/// Mirrors the consumer's own per-tip bound: one for a transient, one to confirm, no
-/// third of a rebuild loop.
-pub(crate) const ACTUATE_MAX_ATTEMPTS: u32 = 3;
-/// The Windows consumer task `continuum install --supervisor` registers (S4U, every ten
-/// minutes). Firing it on demand is how the core actuates without becoming the parent of
-/// a process that will stop the core.
-#[cfg(windows)]
-pub(crate) const DEPLOY_TASK: &str = "ContinuumDeploy";
-#[cfg(windows)]
-const TASK_RUN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
+/// The outcome of deciding whether to actuate — either launch with a given attempt number,
+/// or skip for one of the recorded reasons (no conversion needed; Act never reaches Skip).
+#[derive(Debug)]
+pub(crate) enum Decided {
+    /// Launch the consumer at this attempt number.
+    Act { attempt: u32 },
+    /// One of the skip reasons below — carried through for observability.
+    Skip(ActuateSkipReason),
+}
+
+/// The attempt cap shared between the actuator's decision logic and the consumer's own ledger. Defined here so both the library (deploy_actuator) and binary (deploy_ledger) see a single source of truth — no drift risk.
+pub const CONSUME_MAX_ATTEMPTS: u32 = 3;
 /// What one actuation recorded about itself. Kept as the standing evidence of the last
-/// action so the next tick can refuse to act twice on one request and the next boot can
 /// grade the action against the build it produced.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ActuationReceipt {
@@ -132,19 +134,15 @@ pub(crate) fn external_owner(user_home: &Path, switch: Option<&str>) -> Option<E
     None
 }
 
-/// What this tick does about a wanted deploy, given the last receipt.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ActuateDecision {
-    /// Launch the consumer; this is actuation number `attempt` for the request.
-    Act { attempt: u32 },
-    /// Already launched for this request and the tracker has not called it stranded —
-    /// the deploy is working (or inside its grace). Quiet.
+
+/// The reason one tick skips actuation (the decision to skip comes from outside
+/// [`decide_actuation`]: either an external claim or one of the pure reasons above).
+#[derive(Debug)]
+pub(crate) enum ActuateSkipReason {
+    /// Another deploy-consume build holds the claim on this node — serialise against it.
+    ConcurrentClaim,
     AlreadyActuated { attempt: u32, elapsed_ms: u64 },
-    /// Stranded, but not yet past the bound derived from the last measured deploy — a
-    /// slow tier is not re-actuated blindly into its own handoff window.
     AwaitingBound { attempt: u32, elapsed_ms: u64, bound_ms: u64 },
-    /// [`ACTUATE_MAX_ATTEMPTS`] launches did not land this tip here. Stop; the
-    /// tracker's `deploy.stranded` is the standing receipt and a new tip resets this.
     GaveUp { attempts: u32 },
 }
 
@@ -169,25 +167,25 @@ pub(crate) fn decide_actuation(
     req: &DeployRequest,
     stranded: bool,
     now_ms: u64,
-) -> ActuateDecision {
+) -> Decided {
     let Some(prev) = prev
         .filter(|p| same_commit(&p.tip_sha, &req.tip_sha))
         .filter(|p| p.spawned_ms >= req.requested_ms)
     else {
-        return ActuateDecision::Act { attempt: 1 };
+        return Decided::Act { attempt: 1 };
     };
     let elapsed_ms = now_ms.saturating_sub(prev.spawned_ms);
     if !stranded {
-        return ActuateDecision::AlreadyActuated { attempt: prev.attempt, elapsed_ms };
+        return Decided::Skip(ActuateSkipReason::AlreadyActuated { attempt: prev.attempt, elapsed_ms });
     }
-    if prev.attempt >= ACTUATE_MAX_ATTEMPTS {
-        return ActuateDecision::GaveUp { attempts: prev.attempt };
+    if prev.attempt >= CONSUME_MAX_ATTEMPTS {
+        return Decided::Skip(ActuateSkipReason::GaveUp { attempts: prev.attempt });
     }
     let bound_ms = reactuation_bound_ms(prev.last_deploy_ms);
     if elapsed_ms < bound_ms {
-        return ActuateDecision::AwaitingBound { attempt: prev.attempt, elapsed_ms, bound_ms };
+        return Decided::Skip(ActuateSkipReason::AwaitingBound { attempt: prev.attempt, elapsed_ms, bound_ms });
     }
-    ActuateDecision::Act { attempt: prev.attempt + 1 }
+    Decided::Act { attempt: prev.attempt + 1 }
 }
 
 /// What the last actuation produced, judged at boot against the build now running.
@@ -277,87 +275,37 @@ fn open_log_for_child(path: &Path) -> std::io::Result<std::fs::File> {
     Ok(file)
 }
 
-/// The real spawner.
-pub(crate) struct CliSpawner;
+// Platform-specific callback factories — thin adapters selected at the module boundary so
+// deploy_actuator.rs itself carries no OS branches; all spawn logic lives in continuum-host.
+#[cfg_attr(unix, path = "spawner_callbacks_unix.rs")]
+#[cfg_attr(windows, path = "spawner_callbacks_windows.rs")]
+mod callbacks;
 
-#[cfg(unix)]
-impl DeploySpawner for CliSpawner {
-    fn spawn(&self, plan: &SpawnPlan) -> Result<Spawned, String> {
-        use std::os::unix::process::CommandExt;
-        let log = open_log_for_child(&plan.log).map_err(|e| format!("cannot open {}: {e}", plan.log.display()))?;
-        let err = log.try_clone().map_err(|e| format!("cannot clone the log handle: {e}"))?;
-        // A NEW PROCESS GROUP: the reboot the consumer runs stops the core by signalling
-        // the core's group (the start script's setsid), and the consumer must not be in it.
-        let child = Command::new(&plan.cli)
-            .args(&plan.args)
-            .current_dir(&plan.cwd)
-            .stdin(Stdio::null())
-            .stdout(Stdio::from(log))
-            .stderr(Stdio::from(err))
-            .process_group(0)
-            .spawn()
-            .map_err(|e| format!("cannot spawn {} {}: {e}", plan.cli.display(), plan.args.join(" ")))?;
-        Ok(Spawned {
-            pid: Some(child.id()),
-            mode: format!("{} (new process group)", plan.args.join(" ")),
-            child: Some(child),
-        })
+// Tree ownership for deploy builds: worktree creation, reuse verification and removal.
+mod tree_owner;
+pub(crate) use tree_owner::{GitTreeOwner, TreeOwner};
+#[cfg(any(test, feature = "test-fixtures"))]
+pub(crate) use tree_owner::TestTreeOwner;
+impl From<continuum_host::deploy_spawn::Spawned> for Spawned {
+    fn from(s: continuum_host::deploy_spawn::Spawned) -> Self {
+        Self { pid: s.pid, mode: s.mode, child: s.child }
     }
 }
 
-#[cfg(windows)]
+/// The real spawner — delegates all OS-specific spawning to [`continuum_host::deploy_spawn`].
+pub(crate) struct CliSpawner;
+
 impl DeploySpawner for CliSpawner {
     fn spawn(&self, plan: &SpawnPlan) -> Result<Spawned, String> {
-        use std::os::windows::process::CommandExt;
-        // A disabled task is not permission to bypass maintenance with a child.
-        // Keep the shared permit across both Scheduler and detached spawn paths.
-        let _startup = continuum_cli_lifecycle::supervisor_install::maintenance::StartupPermit::acquire_deploy(&plan.cwd)?;
-        // FIRST the registered consumer task: the scheduler runs it under the S4U
-        // principal, outside this core's job object, and serializes it against its own
-        // ten-minute firing (MultipleInstancesPolicy IgnoreNew) — one consumer at a time
-        // on this box, whoever asked. `continuum install --supervisor` grants the user
-        // RX on the task so this needs no elevation.
-        let run = crate::system_resources::bounded_command::probe(
-            "schtasks",
-            &["/Run", "/TN", DEPLOY_TASK],
-            TASK_RUN_TIMEOUT,
-        );
-        if run.stdout_if_ok().is_some() {
-            return Ok(Spawned { pid: None, mode: format!("schtasks /Run {DEPLOY_TASK}"), child: None });
-        }
-        // No task (or not runnable by this user): spawn the consumer ourselves, breaking
-        // away from any job object first (a child of the core's job dies when the core's
-        // reboot ends that job — card 82af11f5), then without when the job forbids it.
-        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
-        let launch = |flags: u32| -> std::io::Result<std::process::Child> {
-            let log = open_log_for_child(&plan.log)?;
-            let err = log.try_clone()?;
-            Command::new(&plan.cli)
-                .args(&plan.args)
-                .current_dir(&plan.cwd)
-                .stdin(Stdio::null())
-                .stdout(Stdio::from(log))
-                .stderr(Stdio::from(err))
-                .creation_flags(flags)
-                .spawn()
+        let (probe, permit_check) = callbacks::make();
+        let host_plan = continuum_host::deploy_spawn::SpawnPlan {
+            cli: plan.cli.clone(),
+            args: plan.args.clone(),
+            cwd: plan.cwd.clone(),
+            log: plan.log.clone(),
         };
-        let task_outcome = run.outcome();
-        let (child, how) = match launch(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB) {
-            Ok(c) => (c, "breakaway"),
-            Err(e) if e.raw_os_error() == Some(5) => (
-                launch(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW)
-                    .map_err(|e| format!("cannot spawn {} {}: {e}", plan.cli.display(), plan.args.join(" ")))?,
-                "child-of-job (breakaway denied)",
-            ),
-            Err(e) => return Err(format!("cannot spawn {} {}: {e}", plan.cli.display(), plan.args.join(" "))),
-        };
-        Ok(Spawned {
-            pid: Some(child.id()),
-            mode: format!("{} ({how}; task {DEPLOY_TASK} {task_outcome})", plan.args.join(" ")),
-            child: Some(child),
-        })
+        continuum_host::deploy_spawn::spawn_deploy(&host_plan, probe, permit_check)
+            .map(Spawned::from)
     }
 }
 
@@ -392,7 +340,7 @@ pub(crate) enum ActuateOutcome {
     Deferred(ExternalOwner),
     Spawned { attempt: u32, pid: Option<u32>, mode: String, child: Option<std::process::Child> },
     SpawnFailed { attempt: u32, error: String },
-    Skipped(ActuateDecision),
+    Skipped(ActuateSkipReason),
 }
 
 pub(crate) struct DeployActuator {
@@ -406,6 +354,8 @@ pub(crate) struct DeployActuator {
     /// Said once per tip, not every tick: a deferral and a give-up are durable conditions.
     said_deferred: parking_lot::Mutex<Option<String>>,
     said_gave_up: parking_lot::Mutex<Option<String>>,
+    /// Owns the checkout trees used for deploy builds — injected so tests can return temp dirs.
+    tree_owner: Arc<dyn TreeOwner>,
 }
 
 impl DeployActuator {
@@ -419,7 +369,7 @@ impl DeployActuator {
         let switch = std::env::var(ACTUATOR_SWITCH_KEY)
             .ok()
             .or_else(|| continuum_base::config_env::read(ACTUATOR_SWITCH_KEY));
-        Self::with_spawner(user_home, root, switch, Box::new(CliSpawner))
+        Self::with_all(user_home, root, switch, Box::new(CliSpawner))
     }
 
     pub(crate) fn with_spawner(
@@ -427,6 +377,40 @@ impl DeployActuator {
         root: PathBuf,
         switch: Option<String>,
         spawner: Box<dyn DeploySpawner>,
+    ) -> Self {
+        Self::with_all(user_home, root, switch, spawner)
+    }
+
+    /// Full constructor — used by tests to inject a custom tree owner.
+    fn with_all(
+        user_home: PathBuf,
+        root: PathBuf,
+        switch: Option<String>,
+        spawner: Box<dyn DeploySpawner>,
+    ) -> Self {
+        let state_dir = root.join("state");
+        // Build tree_owner before moving values into the struct — GitTreeOwner needs them.
+        let tree_owner: Arc<dyn TreeOwner> = Arc::new(GitTreeOwner::new(root.clone(), user_home.clone()));
+        Self {
+            spawner,
+            user_home,
+            root,
+            state_dir,
+            switch,
+            said_deferred: parking_lot::Mutex::new(None),
+            said_gave_up: parking_lot::Mutex::new(None),
+            tree_owner,
+        }
+    }
+
+    /// Test-only constructor — inject both spawner and tree owner.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    pub(crate) fn with_all_components(
+        user_home: PathBuf,
+        root: PathBuf,
+        switch: Option<String>,
+        spawner: Box<dyn DeploySpawner>,
+        tree_owner: Arc<dyn TreeOwner>,
     ) -> Self {
         let state_dir = root.join("state");
         Self {
@@ -437,6 +421,7 @@ impl DeployActuator {
             switch,
             said_deferred: parking_lot::Mutex::new(None),
             said_gave_up: parking_lot::Mutex::new(None),
+            tree_owner,
         }
     }
 
@@ -447,6 +432,7 @@ impl DeployActuator {
         let cli = locate_cli(&self.user_home);
         cli.is_absolute().then_some(cli)
     }
+
 
     fn receipt_path(&self) -> PathBuf {
         self.state_dir.join(ACTUATION_FILE)
@@ -465,7 +451,7 @@ impl DeployActuator {
             let path = self.receipt_path();
             let tmp = path.with_extension("json.tmp");
             if std::fs::write(&tmp, bytes).is_ok() {
-                let _ = std::fs::rename(&tmp, &path);
+                let _ = continuum_host::durable::replace(&tmp, &path);
             }
         }
     }
@@ -488,41 +474,65 @@ impl DeployActuator {
             }
             return ActuateOutcome::Deferred(owner);
         }
+        // A deploy from another tip holds the claim on this node — serialise against it.
+        if in_flight(&self.root, now_ms).excludes_deploy() {
+            continuum_base::probe!(
+                class = "deploy.actuate.concurrent_claim",
+                tip = req.tip_sha.as_str(),
+                "a deploy is in flight for a different tip; this request waits"
+            );
+            return ActuateOutcome::Skipped(ActuateSkipReason::ConcurrentClaim);
+        }
         let prev = self.receipt();
         let decision = decide_actuation(prev.as_ref(), req, stranded, now_ms);
-        let attempt = match decision.clone() {
-            ActuateDecision::Act { attempt } => attempt,
-            ActuateDecision::GaveUp { attempts } => {
+        let attempt = match &decision {
+            Decided::Act { attempt } => *attempt,
+            Decided::Skip(ActuateSkipReason::GaveUp { attempts }) => {
                 let mut said = self.said_gave_up.lock();
                 if said.as_deref() != Some(req.tip_sha.as_str()) {
                     *said = Some(req.tip_sha.clone());
                     continuum_base::probe!(
                         class = "deploy.actuate.gave_up",
                         tip = req.tip_sha.as_str(),
-                        attempts,
+                        attempts = *attempts,
                         "the consumer was launched this many times for this tip and it is not running — not launching again; a new tip resets this"
                     );
                 }
-                return ActuateOutcome::Skipped(decision);
+                return ActuateOutcome::Skipped(ActuateSkipReason::GaveUp { attempts: *attempts });
             }
-            ActuateDecision::AwaitingBound { attempt, elapsed_ms, bound_ms } => {
+            Decided::Skip(ActuateSkipReason::AwaitingBound { attempt, elapsed_ms, bound_ms }) => {
                 continuum_base::probe!(
                     class = "deploy.actuate.decision",
                     verdict = "awaiting_bound",
                     tip = req.tip_sha.as_str(),
-                    attempt,
-                    elapsed_ms,
-                    bound_ms,
+                    attempt = *attempt as i64,
+                    elapsed_ms = *elapsed_ms as i64,
+                    bound_ms = *bound_ms as i64,
                     "stranded, but inside the bound derived from the last measured deploy — not re-actuated blindly"
                 );
-                return ActuateOutcome::Skipped(decision);
+                return ActuateOutcome::Skipped(ActuateSkipReason::AwaitingBound { attempt: *attempt, elapsed_ms: *elapsed_ms, bound_ms: *bound_ms });
             }
-            ActuateDecision::AlreadyActuated { .. } => return ActuateOutcome::Skipped(decision),
+            Decided::Skip(ActuateSkipReason::AlreadyActuated { attempt, elapsed_ms }) => {
+                return ActuateOutcome::Skipped(ActuateSkipReason::AlreadyActuated { attempt: *attempt, elapsed_ms: *elapsed_ms });
+            }
+            // ConcurrentClaim is already handled above (line 476) — unreachable here, but needed for exhaustiveness.
+            Decided::Skip(ActuateSkipReason::ConcurrentClaim) => {
+                return ActuateOutcome::Skipped(ActuateSkipReason::ConcurrentClaim);
+            }
+        };
+        // Property 2: the deploy owns its build tree — create a detached worktree at
+        // the tip SHA so no other process can move HEAD while we build. A failed worktree
+        // creation is treated as a spawn failure (the request stands; retried next tick).
+        let worktree_path = match self.tree_owner.tree_for(&req.tip_sha).map_err(|e| e.to_string()) {
+            Ok(path) => path,
+            Err(error) => {
+                return ActuateOutcome::SpawnFailed { attempt, error: format!("worktree creation failed: {error}") };
+            }
         };
         let plan = SpawnPlan {
             cli: locate_cli(&self.user_home),
             args: vec![CONSUMER_VERB.to_string()],
-            cwd: self.root.clone(),
+            cwd: worktree_path,
             log: self.root.join("logs").join(ACTUATION_LOG),
         };
         // The previous cycle's measurement rides along so the re-actuation bound is real.
@@ -653,7 +663,14 @@ mod tests {
                 self.0.spawn(plan)
             }
         }
-        let act = DeployActuator::with_spawner(user_home, root, switch.map(str::to_string), Box::new(Shared(spawner.clone())));
+        let tree_owner = std::sync::Arc::new(TestTreeOwner::new());
+        let act = DeployActuator::with_all_components(
+            user_home,
+            root,
+            switch.map(str::to_string),
+            Box::new(Shared(spawner.clone())),
+            tree_owner,
+        );
         (act, spawner)
     }
 
@@ -710,12 +727,12 @@ mod tests {
         let receipt = act.receipt().expect("a spawn writes its receipt");
         assert_eq!((receipt.tip_sha.as_str(), receipt.spawned_ms, receipt.pid, receipt.attempt), (req.tip_sha.as_str(), NOW, Some(7), 1));
         // The next ticks: not stranded → quiet, no second launch.
-        assert!(matches!(act.on_deploy_wanted(&req, false, NOW + 300_000), ActuateOutcome::Skipped(ActuateDecision::AlreadyActuated { attempt: 1, .. })));
+        assert!(matches!(act.on_deploy_wanted(&req, false, NOW + 300_000), ActuateOutcome::Skipped(ActuateSkipReason::AlreadyActuated { attempt: 1, .. })));
         assert_eq!(spawner.plans.lock().len(), 1);
         // Stranded, but inside the bound (no measurement yet = the tracker's grace) → wait.
         assert!(matches!(
             act.on_deploy_wanted(&req, true, NOW + STRANDED_GRACE_MS - 1),
-            ActuateOutcome::Skipped(ActuateDecision::AwaitingBound { attempt: 1, bound_ms, .. }) if bound_ms == STRANDED_GRACE_MS
+            ActuateOutcome::Skipped(ActuateSkipReason::AwaitingBound { attempt: 1, bound_ms, .. }) if bound_ms == STRANDED_GRACE_MS
         ));
         assert_eq!(spawner.plans.lock().len(), 1);
         // Stranded and past the bound → the second actuation.
@@ -732,13 +749,13 @@ mod tests {
         assert_eq!(reactuation_bound_ms(None), STRANDED_GRACE_MS);
         assert!(matches!(
             act.on_deploy_wanted(&later, true, NOW + 10_000_000 + 5_400_000 - 1),
-            ActuateOutcome::Skipped(ActuateDecision::AwaitingBound { bound_ms: 5_400_000, .. })
+            ActuateOutcome::Skipped(ActuateSkipReason::AwaitingBound { bound_ms: 5_400_000, .. })
         ));
         // The cap: three launches of one tip, then GaveUp — said, not looped.
         let t = NOW + 10_000_000 + 5_400_000;
         assert!(matches!(act.on_deploy_wanted(&later, true, t), ActuateOutcome::Spawned { attempt: 2, .. }));
         assert!(matches!(act.on_deploy_wanted(&later, true, t + 5_400_000), ActuateOutcome::Spawned { attempt: 3, .. }));
-        assert!(matches!(act.on_deploy_wanted(&later, true, t + 20_000_000), ActuateOutcome::Skipped(ActuateDecision::GaveUp { attempts: 3 })));
+        assert!(matches!(act.on_deploy_wanted(&later, true, t + 20_000_000), ActuateOutcome::Skipped(ActuateSkipReason::GaveUp { attempts: 3 })));
         let n = spawner.plans.lock().len();
         // A request for the SAME tip written after the receipt (a rollback by hand) is new.
         let again = DeployRequest::new("dddddddddddd", t + 30_000_000);
@@ -747,7 +764,7 @@ mod tests {
         // A failed launch is an attempt too — the same ladder, never a fresh try per tick.
         let (failing, failing_spawner) = actuator(&dir.path().join("f"), None, None);
         assert!(matches!(failing.on_deploy_wanted(&req, false, NOW), ActuateOutcome::SpawnFailed { attempt: 1, .. }));
-        assert!(matches!(failing.on_deploy_wanted(&req, false, NOW + 300_000), ActuateOutcome::Skipped(ActuateDecision::AlreadyActuated { .. })));
+        assert!(matches!(failing.on_deploy_wanted(&req, false, NOW + 300_000), ActuateOutcome::Skipped(ActuateSkipReason::AlreadyActuated { .. })));
         assert_eq!(failing_spawner.plans.lock().len(), 1);
     }
 
@@ -770,5 +787,111 @@ mod tests {
         assert_eq!((r.boot_outcome.as_deref(), r.booted_ms), (Some("stale"), Some(NOW + 1)));
         assert_eq!(act.report_boot_outcome("c2344d758", NOW + 2), BootOutcome::Landed);
         assert_eq!(act.receipt().unwrap().boot_outcome.as_deref(), Some("landed")); // unwrap: the receipt stands
+        assert_eq!(act.receipt().unwrap().boot_outcome.as_deref(), Some("landed")); // unwrap: the receipt stands
+    }
+
+    // what this catches: CONCURRENT CLAIMS — when another deploy-consume holds an active
+    // claim (via the CLI lifecycle's DeployClaim schema), the actuator defers even if
+    // stranded. Uses `in_flight` + `excludes_deploy` from deploy_tracker, which correctly
+    // handles renewal, abandoned-owner, and waiting-marker semantics instead of broken
+    // platform-specific PID probes.
+    #[test]
+    fn concurrent_claim_blocks_actuation() {
+        let dir = tempfile::tempdir().unwrap(); // unwrap: the test's own dir
+        use continuum_cli_lifecycle::deploy_claim::DeployClaim;
+
+        let req_a = DeployRequest::new("aaaaaaaaaa11", NOW);
+        let (act, spawner) = actuator(dir.path(), None, Some(42));
+
+        // No claim file → acts normally.
+        assert!(matches!(act.on_deploy_wanted(&req_a, false, NOW), ActuateOutcome::Spawned { attempt: 1, .. }));
+        assert_eq!(spawner.plans.lock().len(), 1);
+
+        // Write a proper DeployClaim with an alive PID (the test's own process) and recent renewal.
+        let root = dir.path().join("home").join(".continuum"); // same as actuator's self.root
+        std::fs::create_dir_all(root.join("run")).unwrap(); // unwrap: the test's own dir
+        let claim = DeployClaim {
+            pid: std::process::id() as i32,  // alive right now — in_flight(owner_alive) → true
+            started_ms: NOW.saturating_sub(60_000),
+            target_sha: "bbbbbbbbb222".to_string(),
+            renewed_ms: NOW,                  // recent renewal → not expired
+            progress_ms: 0,
+        };
+        continuum_cli_lifecycle::deploy_claim::write(&root, &claim).unwrap(); // unwrap: the test's own file
+
+        // Now a second request for a different tip is blocked by in_flight().excludes_deploy()
+        let req_b = DeployRequest::new("bbbbbbbbb222", NOW + 5_000);
+        assert!(matches!(
+            act.on_deploy_wanted(&req_b, false, NOW + 5_000),
+            ActuateOutcome::Skipped(ActuateSkipReason::ConcurrentClaim)
+        ));
+        assert_eq!(spawner.plans.lock().len(), 1, "concurrent claim prevents a second spawn");
+
+        // Remove the claim → actuation resumes.
+        std::fs::remove_file(root.join("run").join("deploy.claim")).unwrap(); // unwrap: the test's own file
+        assert!(matches!(act.on_deploy_wanted(&req_b, false, NOW + 6_000), ActuateOutcome::Spawned { attempt: 1, .. }));
+        assert_eq!(spawner.plans.lock().len(), 2);
+
+        // A dead-owner claim does NOT block — decide() returns Abandoned,
+        // excludes_deploy is false for Abandoned (the machine must not wedge).
+        let claim_dead = DeployClaim {
+            pid: 999_999_999,                       // definitely not alive
+            started_ms: NOW.saturating_sub(7 * 60 * 60 * 1000), // > CLAIM_HARD_CAP_MS
+            target_sha: "cccccccccc33".to_string(),
+            renewed_ms: 0,                          // never renewed → expired on silent
+            progress_ms: 0,
+        };
+        continuum_cli_lifecycle::deploy_claim::write(&root, &claim_dead).unwrap(); // unwrap: the test's own file
+
+        let req_c = DeployRequest::new("cccccccccc33", NOW + 7_000);
+        assert!(matches!(act.on_deploy_wanted(&req_c, false, NOW + 7_000), ActuateOutcome::Spawned { attempt: 1, .. }));
+        assert_eq!(spawner.plans.lock().len(), 3, "dead-owner claim does not block");
+    }
+    // what this catches: TREE OWNERSHIP — a deploy must own the tree it builds so no
+    // operator, tracker or second consumer can move HEAD under it. The actuator asks its
+    // TreeOwner for each tip's tree and uses that as the spawn cwd.
+    #[test]
+    fn property_2_deploy_own_its_build_tree_via_detached_worktree() {
+        let dir = tempfile::tempdir().unwrap(); // unwrap: the test's own dir
+
+        // Build actuator with TestTreeOwner — no git setup needed; the fixture returns a temp dir.
+        let (act, spawner) = actuator(dir.path(), None, Some(99));
+
+        let tip_a = "aaaaaaaaaa11";
+        let req_a = DeployRequest::new(tip_a, NOW);
+        assert!(matches!(
+            act.on_deploy_wanted(&req_a, false, NOW),
+            ActuateOutcome::Spawned { .. }
+        ));
+
+        // The RecordingSpawner captured the plan — verify cwd is a temp dir,
+        // NOT the original checkout root. That proves Property 2: the deploy owns
+        // its own isolated tree.
+        let plans = spawner.plans.lock();
+        assert_eq!(plans.len(), 1, "exactly one spawn planned");
+        let cwd_a = &plans[0].cwd;
+        assert!(
+            cwd_a.starts_with(dir.path()), // TestTreeOwner returns paths under the test's temp dir
+            "spawn cwd {:?} should be inside a detached worktree, not the original checkout",
+            cwd_a,
+        );
+
+        // A second request for a DIFFERENT tip gets its own tree.
+        let tip_b = "bbbbbbbbb222";
+        let req_b = DeployRequest::new(tip_b, NOW + 10_000);
+        assert!(matches!(
+            act.on_deploy_wanted(&req_b, false, NOW + 10_000),
+            ActuateOutcome::Spawned { attempt: 2, .. }
+        ));
+
+        let plans = spawner.plans.lock();
+        assert_eq!(plans.len(), 2, "second tip gets its own spawn and worktree");
+        // The two trees must be DIFFERENT paths — each deploy owns its own tree.
+        let cwd_a2 = &plans[0].cwd;
+        let cwd_b = &plans[1].cwd;
+        assert_ne!(
+            cwd_a2, cwd_b,
+            "two tips for the same request should get two different worktree paths"
+        );
     }
 }
