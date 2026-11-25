@@ -257,10 +257,42 @@ may win outright.
 recorded outcome. Policies are compared on the simulator fitted from the trace (`slice::sim::fit`,
 built) and then live, inside the envelope, never by pretending the log answers what was not done.
 
-**What changes in `continuum_sage::slice`.** `Control` (told only step and switch times; answers one
-slice) becomes `Policy`: given the situation (every ready mind's views and the running one's), it
-answers an action. `Slicer` keeps the envelope (deadlines, stride, finish-first). `Tuner` becomes
-policy 1. `sim` and `trace` gain the new records.
+**The types: `continuum_sage::decide`, one parent for every decision** (Joel, 2026-11-25: "design your
+extensible network to be ready for the future, for all the use cases we have and beyond"; one
+subclass to start, scaffolds for the rest). Built before the lane is wired, so the lane is its first
+adapter, not its shape:
+- It decides at every lane step, so a decision allocates nothing once its buffers reach their high-water mark: actions are `Copy`
+  slots and bitmasks (never owned keys), the envelope fills a buffer the decider reuses, a policy
+  answers an index, and records live in a preallocated ring, the situation copied in with `clone_from`.
+- `UseCase`: a decision's typed `Situation`, `Action` and `Outcome`, its name, its `envelope`
+  (`Gate::Choose` among the actions it wrote, `Forced`, or `Defer` when nothing may be done now, such
+  as no volume with room; never learned) and its `constraint` (an outcome no policy may trade:
+  `Violation { measured, limit }`).
+- `Policy<U>`: `choose` an index among the admissible actions, `learn` from a closed record at the
+  moment its outcome arrives, and a `PolicyId` (name and parameters' revision) every record carries.
+  `Baseline` (the first admissible action) is generic over every use case: a new use case works with
+  no policy edited.
+- `Measured<T>`: `Unmeasured` or `Value`, never a default standing in for a measurement; `Fraction` is
+  refused out of range, never clamped; `Ewma` and `Window` (kept sorted as samples arrive, so a quantile
+  is one index) are views over a series, declaring what they retain.
+- `Record<U>`: the decision's id, the `InputRevision`s it read (SAGE's own provenance), the compact
+  situation, the policy, the action, and its outcome; one counter stamps each decision and each
+  outcome. `Decider<U>` runs envelope, then policy, then record. `replay` hands another policy the
+  choices and the outcomes in the order the live decider saw them, `learn` included, an outcome only
+  where it chose what was done (Codex on #6278).
+- `Capacity`: `Observed` (a candidate, as of when) or `Committed` (an accepted lease: rate, until when,
+  at what price). The ledger keeps them apart.
+- The use cases: `lane` (Continue, Switch, Batch, Idle; each ready mind's features: urgency, wait and
+  deadline, depth and cold bytes, phase, predicted remainder, step and switch times, prefix hits) is
+  the first real one. `residency` (keep or demote), `placement` (here, or a leased peer only when its
+  lease outlasts the work's measured run plus transfer and queue and its price fits the budget) and
+  `volume` (hot work never on a slower volume with a faster one free; `Defer` when none has room) are
+  scaffolds: their situations, actions, outcomes and envelopes exist, with `Baseline` as their policy
+  until their owners build theirs.
+
+What changes in `continuum_sage::slice`: `Control` (told only step and switch times; answers one
+slice) becomes a `decide::Policy<Lane>`. `Slicer` keeps the envelope (deadlines, stride,
+finish-first). `Tuner` becomes policy 1. `sim` and `trace` gain the new records.
 
 **Gates** (on `persona-lane-bench`, then the 15-minute live read):
 - worst ready-to-step wait inside the bound at 4 minds, switch included;
