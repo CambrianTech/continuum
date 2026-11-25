@@ -1,0 +1,59 @@
+# The user gate (docs/planning/PRODUCT-FOR-USERS.md): the newest canary release, installed on a clean
+# runner as a user gets it, must show a working desktop. Step 1 of the gate; first-task, restart,
+# upgrade, soak and uninstall follow as steps. It runs after each canary publication and nightly, and
+# becomes a required check the first time it passes; until then its failures are the work list.
+name: user-gate
+
+on:
+  workflow_run:
+    workflows: [core-binaries]
+    types: [completed]
+    branches: [canary]
+  schedule:
+    - cron: '17 9 * * *'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'release tag to gate (default: newest canary)'
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    name: user gate (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: macos-arm64, runner: macos-14 }
+          - { platform: windows-x86_64, runner: windows-latest }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Download the release a user installs
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${{ inputs.tag }}"
+          [ -n "$tag" ] || tag="$(gh release list -R "$GITHUB_REPOSITORY" --limit 50 --json tagName -q '[.[] | select(.tagName | startswith("canary-"))][0].tagName')"
+          echo "gating $tag"
+          gh release download "$tag" -R "$GITHUB_REPOSITORY" -p "continuum-core-${{ matrix.platform }}.tar.gz" -D "$RUNNER_TEMP"
+          (cd "$RUNNER_TEMP" && tar -xzf "continuum-core-${{ matrix.platform }}.tar.gz")
+      - name: Install the gate's browser driver
+        run: npm ci --no-audit --no-fund
+      - name: Install, start, and see the desktop
+        shell: bash
+        run: npx tsx scripts/ci/user-gate.ts "$RUNNER_TEMP/continuum-core-${{ matrix.platform }}" user-gate
+      - name: Keep what the user saw
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: user-gate-${{ matrix.platform }}
+          path: user-gate

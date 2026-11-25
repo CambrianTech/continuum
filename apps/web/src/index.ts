@@ -67,6 +67,16 @@ void ChatWidget;
 async function main(): Promise<void> {
   const config = resolveConfig();
 
+  // THE PAGE IS NEVER BLANK. Before any await, the shell is mounted and the page says what it is
+  // doing: `<html data-feed-status="booting">`, then the feed's own statuses (cached, connecting,
+  // live, reconnecting, closed). Observers (the shot harness, perception/observe) wait on this
+  // attribute, never on a clock. Until 2026-11-14 the widget was created only after identity
+  // resolved, so every capture taken while the core was still answering was an empty page.
+  document.documentElement.dataset.feedStatus = 'booting';
+  const widget = document.createElement('chat-widget');
+  const mount = document.getElementById('app') ?? document.body;
+  mount.replaceChildren(widget);
+
   // IDENTITY FIRST ([[one-logical-decision-one-place]]; Joel, 2026-09-01: two
   // joels in the roster because every browser minted its own "human"): the
   // command transport dials UNSCOPED, asks `identity/whoami`, and the session
@@ -88,6 +98,10 @@ async function main(): Promise<void> {
       }
       throw new Error('whoami answered without an id');
     } catch (err) {
+      // The page says so instead of reading "booting" forever: an observer captures a page that
+      // shows the core is not answering, and the feed's own statuses take over once it answers.
+      document.documentElement.dataset.feedStatus = 'unreachable';
+      widget.feedStatus = 'closed';
       console.warn('identity/whoami not ready — retrying in 3s:', err);
       await new Promise((r) => setTimeout(r, 3000));
     }
@@ -99,7 +113,6 @@ async function main(): Promise<void> {
   // to this citizen's substrate and spawns their nav projector on arrival.
   const scopedWsUrl = `${config.wsUrl}${config.wsUrl.includes('?') ? '&' : '?'}me=${senderId}`;
 
-  const widget = document.createElement('chat-widget');
   widget.callUrl = config.callUrl;
   // The version badge's real source: this build's package version, stamped by vite.
   widget.version = `v${__APP_VERSION__}`;
@@ -142,9 +155,6 @@ async function main(): Promise<void> {
     }
     return { url: parsed.url, token: parsed.token };
   };
-  const mount = document.getElementById('app') ?? document.body;
-  mount.replaceChildren(widget);
-
   // The latest snapshot the READ stream has delivered — the SEND path reads its
   // `room_id` so a message always targets the room on screen.
   let latest: ChatState | undefined;
@@ -713,11 +723,6 @@ async function main(): Promise<void> {
     ctx.fill();
     favicon.href = c.toDataURL('image/png');
   };
-  // Stamp the feed status SYNCHRONOUSLY before any await: from this instant the
-  // page always carries `<html data-feed-status>`, so outside observers (shot
-  // harness, e2e) wait on the app's own signal and can never mistake a
-  // still-booting page for a settled one via the generic readyState fallback.
-  document.documentElement.dataset.feedStatus = 'booting';
   setFavicon('connecting');
 
   // READ socket: subscribe to chat state, merge each envelope into the widget.
