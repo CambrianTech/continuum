@@ -10,6 +10,7 @@ continuum-persona-llama = { workspace = true }
 continuum-sage = { workspace = true }
 continuum-process = { workspace = true }
 continuum-blocks = { workspace = true } # the persona scheduler joins its minds' live KV home as an instance under a lease
+bytemuck = { workspace = true } # a mind's token history is written and read as its own bytes, never encoded per token
 tempfile = { workspace = true, optional = true }
 continuum-kernel = { workspace = true }
 continuum-tool-protocol = { workspace = true }
