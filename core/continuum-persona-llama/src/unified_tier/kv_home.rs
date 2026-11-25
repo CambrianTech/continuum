@@ -13,11 +13,12 @@ use continuum_persona_engine::persona::MindId;
 const MAPPING_GRANULE: usize = 64 * 1024;
 
 /// Where the tier keeps each mind's KV storage, chosen by the node.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum KvHome {
-    /// Each mind's KV is a block over her own file in this directory. Whether the device can view it is
+    /// Each mind's KV is a block over her own file in this instance's directory, under its lease (other copies
+    /// of us on the node never map there). Whether the device can view it is
     /// the fork's to say (`storage_bytes` is 0 when it cannot); the tier asks once and keeps the answer.
-    Mapped(PathBuf),
+    Mapped(continuum_blocks::Instance),
     /// The fork's own memory, moved by row copy (a context that is not the Core's shape; examples).
     Native,
     /// In the fork's own device memory (VRAM), viewed like a mapped block: a device that cannot wrap host memory.

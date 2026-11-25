@@ -128,9 +128,10 @@ fn run() -> Result<(), String> {
     let mut ctx = model.new_context(params)?;
     // each mind's KV is a block over her own mapped file (UNIFIED-PAGING.md slice 2), as the engine runs it
     let kv_dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let (kv_home, _) = continuum_blocks::Instance::join(kv_dir.path(), "persona-switch").map_err(|e| e.to_string())?;
     adopted_context_is_refused(&model, &mut ctx)?;
     a_refused_newer_epoch_keeps_her_parked_blocks(&model, &mut ctx)?;
-    let mut engine: PersonaEngine<Mind, UnifiedTier<'_, '_>> = PersonaEngine::new(UnifiedTier::new(&mut ctx, KvHome::Mapped(kv_dir.path().to_path_buf())));
+    let mut engine: PersonaEngine<Mind, UnifiedTier<'_, '_>> = PersonaEngine::new(UnifiedTier::new(&mut ctx, KvHome::Mapped(kv_home)));
     let genes = base_genes();
 
     let mut parked: Vec<Mind> = (0..minds)

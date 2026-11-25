@@ -250,7 +250,7 @@ pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
     // each mind's KV is a block over her own mapped file there; with no home to map into, the fork's own memory
     let home = match &store {
         Ok(store) => match store.live_kv() {
-            Ok(dir) => KvHome::Mapped(dir),
+            Ok(instance) => KvHome::Mapped(instance),
             Err(why) => {
                 log.warn(&format!("minds' KV stays the fork's own memory: {why}"));
                 KvHome::Native

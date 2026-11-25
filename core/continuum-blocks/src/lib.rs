@@ -8,10 +8,12 @@
 //! A block's bytes are the consumer's native layout. Nothing here reads, copies or encodes them.
 
 mod block;
+mod instances;
 mod region;
 mod tier;
 pub mod link;
 
 pub use block::{Block, Pin, Placement};
+pub use instances::{Instance, Reclaimed};
 pub use region::{Backing, Region, RegionRefusal};
 pub use tier::TierKind;

@@ -129,7 +129,8 @@ impl<'c, 'm> UnifiedTier<'c, 'm> {
     /// device can view host memory; the fork's own otherwise (the fork's `storage_bytes` is 0 then, and
     /// the tier keeps that answer for every later mind).
     fn kv_memory(&mut self, mind: MindId, native: &mut PersonaBlocks) -> Result<KvMemory, TierRefusal> {
-        let KvHome::Mapped(dir) = &self.home else { return Ok(KvMemory::Native) };
+        let KvHome::Mapped(instance) = &self.home else { return Ok(KvMemory::Native) };
+        let dir = instance.dir().to_path_buf();
         let bytes = PersonaBlocks::storage_bytes(self.ctx);
         if bytes == 0 {
             continuum_base::probe!(class = "persona.kv_home.native", "this context is not the Core's shape: minds' KV moves by row copy");

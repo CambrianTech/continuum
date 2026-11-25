@@ -3128,6 +3128,7 @@ dependencies = [
  "candle-transformers",
  "continuum-airc-protocol",
  "continuum-base",
+ "continuum-blocks",
  "continuum-cli-lifecycle",
  "continuum-host",
  "continuum-kernel",
