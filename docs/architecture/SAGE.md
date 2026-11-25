@@ -304,6 +304,10 @@ zero."
 - **Required roles.** A unit's value has roles, each of which must be filled. A live persona in a
   call needs her mind stepping, her voice and her presence on screen. A role has grades that fill
   it: her avatar photorealistic, reduced or a thumbnail; her voice gene or a base voice.
+- **Every cost, in one ledger.** A grade costs GPU step time, memory on each tier, render time,
+  link bandwidth, energy and money. Each is measured, and each is priced by its own scarcity into one
+  currency, so one law answers "how many minds awake", "at what render quality" and "here or on a
+  peer" against the same budget.
 - **Each grade has a measured worth and cost.** The worth comes from the activity's state: the
   speaker's video is worth more than a listener's thumbnail.
 - **The unit's worth is zero unless every required role is filled at some grade,** with an
