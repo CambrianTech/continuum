@@ -98,7 +98,14 @@ source that is true now:
 
 Each publishes as frame-numbered state, so a law reads how stale a number is, never just the number.
 A shrinking budget is an input like any other: the Streamer demotes to fit it before anything fails,
-and a law that learned on a quiet machine adapts as the machine fills. The hot tier's drive detection
+and a law that learned on a quiet machine adapts as the machine fills.
+
+**And it grows back.** A budget that grows is an input too. When another process frees memory (someone
+quits a game, a build finishes, our own old core exits after a handoff), the Streamer fills the room
+back in. Blocks move up a tier ahead of their forecast use, more minds stay resident, and the Lane may
+batch wider where the cost model says it pays. It fills in steps, re-measuring between them, so a
+budget that shrinks again finds nothing stranded. We take what the machine offers and give it back
+when the machine needs it, in both directions, continually. The hot tier's drive detection
 moves into `Topology`.
 
 
