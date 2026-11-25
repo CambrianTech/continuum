@@ -20,6 +20,7 @@ members = [
     "core/continuum-gateway",
     "core/continuum-base",
     "core/continuum-sage",
+    "core/continuum-blocks",
     "core/continuum-git",
     "core/continuum-host",
     "core/continuum-saved-state",

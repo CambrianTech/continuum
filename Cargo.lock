@@ -2755,6 +2755,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "continuum-blocks"
+version = "0.1.0"
+dependencies = [
+ "continuum-host",
+ "tempfile",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "continuum-bridge-protocol"
 version = "0.1.0"
 dependencies = [
