@@ -291,3 +291,21 @@ fn a_paged_result_arrives_at_its_page() {
     assert_eq!(event.level, Level::Page);
     assert!(event.text.starts_with("[page 1 of big.rs"), "{}", event.text);
 }
+
+// what this catches (Benchy on the M5, 2026-11-25: every act refused for 50 minutes after a restart):
+// her view already showing her newest act's element (restored at a pointer), so her tail's result was
+// dropped as shown while its call, a new element, was sent alone: a call with no result. An exchange is
+// one unit: the result follows its call and arrives with it.
+#[test]
+fn a_call_never_arrives_without_its_result() {
+    let mut acts = Acts(Vec::new());
+    acts.push("code/read", r#"{"path":"a.rs"}"#, ToolEffect::Observes, &body("a.rs"));
+    let (view, _) = View::start(&crate::cost::Chars, vec!["identity".into()], &[&acts], all_full).unwrap(); // unwrap: one grant per claim cannot mismatch
+    let call = Item::whole(crate::cause::ElementId::from_u128(0xca11), tail_item(&acts, 1).cause(), "act/1/call", "[call code/read a.rs]".to_owned());
+    let mut result = tail_item(&acts, 1);
+    result.cause = crate::cause::Cause::Of(call.id());
+    let judged = view.judge_tail(&Tail(vec![call, result]), &Acts(Vec::new()), |_| Level::Full);
+    assert_eq!(judged.len(), 2, "her call and its result arrive together: {judged:?}");
+    let alone = view.judge_tail(&Tail(vec![tail_item(&acts, 1)]), &Acts(Vec::new()), |_| Level::Full);
+    assert!(alone.is_empty(), "with nothing new linked to it, an element she already shows is not shown again");
+}

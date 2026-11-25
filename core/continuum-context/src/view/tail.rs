@@ -18,7 +18,7 @@
 //! (`View::renders`).
 
 use super::{key, repeat::resolve, Advance, View};
-use crate::cause::ElementId;
+use crate::cause::{Cause, ElementId};
 use crate::epoch::{Block, Observed, SourceId};
 use crate::level::Level;
 use crate::source::{Item, Source};
@@ -88,9 +88,22 @@ impl<T: Block> View<T> {
             |earlier| self.epoch.holds_element_whole(earlier.id()),
             |item| arriving_keys.contains(&item.key) && !self.epoch.holds(&key(&name, &item.key)),
         );
+        let arrived: Vec<(Item<T>, Option<ElementId>)> = items.into_iter().zip(repeats).skip(earlier_n).collect();
+        // Sent already under its own key: never again. Shown already as another source's element:
+        // not again, unless an item it is linked to (one follows the other, as her result follows
+        // her call) is sent now: an exchange is one unit, so a call never arrives without its result
+        // (Benchy on the M5, 2026-11-25: her view held her newest act at a pointer after a restart, her
+        // result was dropped and her call kept, and every act refused the unpaired batch).
+        let sent_before: Vec<bool> = arrived.iter().map(|(item, _)| self.epoch.holds(&key(&name, &item.key))).collect();
+        let shown: Vec<bool> = arrived.iter().map(|(item, _)| self.epoch.holds_element(item.id())).collect();
+        let sent_now = |at: usize| !sent_before[at] && !shown[at];
+        let linked = |a: &Item<T>, b: &Item<T>| a.cause() == Cause::Of(b.id()) || b.cause() == Cause::Of(a.id());
+        let keep: Vec<bool> = (0..arrived.len())
+            .map(|at| !sent_before[at] && (!shown[at] || (0..arrived.len()).any(|other| other != at && sent_now(other) && linked(&arrived[at].0, &arrived[other].0))))
+            .collect();
         let mut judged = Vec::new();
-        for (item, repeat_of) in items.into_iter().zip(repeats).skip(earlier_n) {
-            if self.epoch.holds(&key(&name, &item.key)) || self.epoch.holds_element(item.id()) {
+        for ((item, repeat_of), keep) in arrived.into_iter().zip(keep) {
+            if !keep {
                 continue;
             }
             let level = match repeat_of {
