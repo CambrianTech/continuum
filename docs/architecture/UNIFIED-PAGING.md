@@ -409,6 +409,30 @@ CLAUDE.md's polymorphism pattern), so a node's configuration or a trial picks on
   publishes the new placement only then. Cancelling a transfer waits for its event and leaves the
   block where it was.
 
+## Built for the grid from the first slice
+
+Moving a mind or a block to another node is the same move as moving it to another tier, with a
+network link between them. So that works later with no rework, everything built now keeps these:
+- **Handles are grid-global.** A `PersonaId` is already a UUID. A block's handle is (node, local id),
+  never a pointer or a path. A placement names a node beside its tier.
+- **Another node is a place, and the network is a `Link`.** A transfer to a peer is a
+  `Carry::InFlight` with a fence, as a DMA is. Its rate is measured passively from every transfer,
+  as a drive's is. The law weighs a node's price and its link's rate against a local tier's, with no
+  special case.
+- **Custody leases have two adapters.** On one node, an OS file lock. Across nodes, a grid lease:
+  signed, with an expiry, renewed by its holder. The same `Lease` contract either way, so exactly one
+  holder decodes a mind anywhere on the grid.
+- **A block's bytes travel as they are.** Her KV in its native layout behind a small typed,
+  versioned header (owner, epoch, layout fingerprint, rows). The same bytes go by mapping, file or
+  network, never re-encoded.
+- **Compatibility is checked, never assumed.** Her KV binds on another node only under the same
+  model and the same KV layout fingerprint (`kv_rows`). Otherwise her tokens travel (raw `i32`s) and
+  she is prefilled there, named as a cold start, never bound to KV that is not hers.
+- **Each node's `Topology` publishes a summary to the grid** (capacity, prices, link rates), as
+  frame-numbered state over airc. That is the market every node's law reads.
+- **Trust bounds what travels.** A placement on a node or peer never carries what its trust level
+  does not allow (SAGE.md, "One economy at every scope").
+
 ## Per platform
 
 - **The M5 (unified memory):**
