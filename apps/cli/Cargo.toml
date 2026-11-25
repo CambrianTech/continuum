@@ -15,7 +15,7 @@ path = "src/main.rs"
 
 [dependencies]
 # The shared client lib — this is the whole point.
-continuum-client = { path = "../../client/continuum-client" }
+continuum-client = { workspace = true }
 
 # Airc handle for substrate addressing.
 airc-lib = { workspace = true }

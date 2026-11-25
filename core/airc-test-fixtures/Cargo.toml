@@ -7,7 +7,7 @@ description = "Shared airc test fixtures — TwoAircLoopback, mock peer registri
 [dependencies]
 # Production wire types so fixtures construct envelopes the substrate
 # (server) and the client (client) both recognize.
-continuum-airc-protocol = { path = "../continuum-airc-protocol" }
+continuum-airc-protocol = { workspace = true }
 
 # The actual airc-lib + airc-core types the fixture spawns/wraps.
 airc-lib = { workspace = true }

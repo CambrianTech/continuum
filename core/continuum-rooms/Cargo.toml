@@ -12,11 +12,11 @@ description = "A mind's rooms and cards: card holders, the handoff record, the r
 test-fixtures = []
 
 [dependencies]
-continuum-base = { path = "../continuum-base" }
-continuum-kernel = { path = "../continuum-kernel" }
-continuum-experience = { path = "../continuum-experience" }
-continuum-positron = { path = "../continuum-positron" }
-continuum-cli-lifecycle = { path = "../continuum-cli-lifecycle" }
+continuum-base = { workspace = true }
+continuum-kernel = { workspace = true }
+continuum-experience = { workspace = true }
+continuum-positron = { workspace = true }
+continuum-cli-lifecycle = { workspace = true }
 airc-core.workspace = true
 airc-blobs.workspace = true
 airc-lib.workspace = true

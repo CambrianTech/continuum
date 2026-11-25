@@ -17,7 +17,7 @@ tracing = { workspace = true }
 
 # Shared substrate wire types — keeps client envelopes byte-stable with
 # the server's command_handler. Path-dep within the workspace.
-continuum-airc-protocol = { path = "../../core/continuum-airc-protocol" }
+continuum-airc-protocol = { workspace = true }
 
 # airc transport. `airc-lib` is the high-level handle (Airc::request /
 # await_reply / subscribe). `airc-core` ships the typed primitives
