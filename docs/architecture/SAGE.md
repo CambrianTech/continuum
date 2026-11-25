@@ -288,7 +288,7 @@ pub trait Consumer {
     type Unit;                                   // what it places: a mind, a block, a participant
     fn levels(&self) -> &[Level];                // its places, best first: tiers, LOD rungs, awake to asleep
     fn holds(&self, unit: &Self::Unit) -> Holding;      // what the unit costs at its level now, measured
-    fn value(&self, unit: &Self::Unit) -> Value;        // its priority, from the activity's state
+    fn bill(&self, unit: &Self::Unit) -> Bill;          // its required roles, each with grades: worth, cost, floor
     fn move_to(&mut self, unit: &Self::Unit, level: Level) -> Carry;   // done, or in flight with a fence
 }
 ```
@@ -297,6 +297,35 @@ It replaces the kernel's `ResourcePool` and `PressureBroker` (18 adapters; 27 ca
 `evict_at_least`), whose pools each evict on their own and can only delete. A pool migrating to
 `Consumer` keeps its own moves, and the `Placer` decides which unit moves and how far.
 
+
+**Value is a bill of materials, not a priority number.** Joel, 2026-11-25: "we can release a car with
+many different engines, suspensions and wheels, but we can't have none of something or it's worth
+zero."
+- **Required roles.** A unit's value has roles, each of which must be filled. A live persona in a
+  call needs her mind stepping, her voice and her presence on screen. A role has grades that fill
+  it: her avatar photorealistic, reduced or a thumbnail; her voice gene or a base voice.
+- **Each grade has a measured worth and cost.** The worth comes from the activity's state: the
+  speaker's video is worth more than a listener's thumbnail.
+- **The unit's worth is zero unless every required role is filled at some grade,** with an
+  acceptability floor per role: below it the role is not filled. So a law never "saves" by dropping
+  a role, because that throws away the whole unit. It trades grades within roles, and it drops whole
+  units, coldest first, when the grades left cannot fit.
+- The law's choice is a grade for every role of every unit placed, maximizing total worth under the
+  places' budgets: a choice among bundles, not a sort by priority.
+
+**An economy, so the law has prices to reason with.**
+- Each place has a price that rises with its measured scarcity: a tier nearly full, a GPU nearly
+  saturated, a node's link congested.
+- The law maximizes worth minus price, so a unit moves to wherever it is cheapest to give it the
+  grades it needs.
+- Across the grid, prices are how nodes trade. A node short of room prices high, and a mind leased to
+  a node with room (GENOME-FOUNDRY-SENTINEL.md's artifact economy, the `SubstrateGovernor`'s policy
+  per machine) moves by the same law that places a block on a tier.
+
+**Handles everywhere, so it works across the grid.** Units, roles, grades and placements are named by
+typed handles (`PersonaId`, `BlockId`, a participant's handle), never by local pointers or strings.
+So a `Placer` can place a unit on another node as naturally as on another tier: the handle travels
+and the bytes follow it by the link between them.
 **The unit starts as the whole mind.** For now a mind is placed whole: her KV, her genome (LoRA genes,
 voice genes among them), her senses and her live presence (voice, avatar render, every modality) count
 toward one unit's value and cost. Finer units come later, each placed on its own once it is: an
