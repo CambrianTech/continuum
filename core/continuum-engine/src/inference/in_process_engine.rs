@@ -225,6 +225,7 @@ impl LlamaServerControl for InProcessEngine {
             allocated_tokens: u64::from(geometry.n_ctx),
             max_tokens_per_sequence: u64::from(geometry.n_ctx_seq),
             sequence_capacity: u64::from(geometry.n_seq_max),
+            holding: crate::inference::weight_residency::KvHolding::PerMind,
         })
     }
 
