@@ -259,6 +259,19 @@ Two more seams, where a learned model is most likely to win, each with one imple
   cost model the Lane's `Cost` component owns (THE-LANE-ON-SAGE.md), read from there, never a
   second one.
 
+**No hand tuning: initialized from measurement, then learning for its own throughput.** A law never
+ships with a tuned constant. Its starting point comes from what this node measures:
+- link rates and switch and rebuild times from the cost model;
+- forecast error from the consumer's declared demand;
+- tier budgets from the resource authority.
+
+From there it learns online, on its own objective. The objective is measured throughput (useful
+tokens per second across all minds) under the hard constraints: the wait bound, no misses for
+forecast blocks, and every invariant the Streamer enforces. Every parameter a law exposes is a
+starting value the learning moves, never a setting someone picked. The Lane's `Tuner` (the slice's
+control loop climbing measured throughput against the wall) is the same shape; both laws are judged
+by the same number on the same node.
+
 What ships with slice 3 is one law, `FractalPager` (the fractal pager law above), plus `Lru` as the
 baseline every other law is compared against. `Lru` is never a production law, as `Fixed` is the
 Lane's baseline. Laws are made by name from a registry of factories (`laws::make("fractal")`,

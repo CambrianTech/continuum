@@ -61,6 +61,10 @@ built and simulated.
   1 s"). The deadline guard brings in any mind whose slack is gone.
 - **The slice is the control law's state,** fed by the measured swap cost and step time: it climbs
   aggregate throughput against the bound. No constant, no permit, no seat count.
+- **Nothing is hand-tuned.** The law starts from this node's measured swap, rebuild and step times
+  and learns for its own throughput from there. With the switch at 0.01 ms (the pointer, #6264 and
+  #6269), it is expected to learn to switch at almost every step. That is for it to find, never a
+  number set here (UNIFIED-PAGING.md, "No hand tuning").
 - **A step is sized to fit the slice.** A prefill chunk is as large as fits the measured step budget,
   never "the whole batch because the turn keeps the Core". A 2,048-token chunk is about 3.2 s at
   today's cold rate (8044b75b: 133,210 tokens in 207 s, 23:43Z), so at depth a chunk is smaller.
