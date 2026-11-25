@@ -100,6 +100,7 @@ mod history;
 mod lane;
 mod learning;
 mod basis;
+mod divergence;
 use basis::Basis;
 mod prefix;
 pub(crate) use learning::{Job as LearningJob, Lesson as LearningLesson, Measuring as LearningMeasuring};
@@ -698,16 +699,15 @@ impl Driver<'_, '_> {
         advanced
     }
 
-    /// Where her prefill starts, now that she is bound (`reuse::choose`): what she holds when the
-    /// prompt extends it, her checkpoint when the prompt keeps her view and changes what follows, else
-    /// from zero for the reason named in her probe row. A rewind the engine refuses restarts her.
+    /// Where her prefill starts once bound (`reuse::choose`): what she holds when the prompt extends it, her
+    /// checkpoint when it keeps her view and changes what follows, else zero for her probe row's reason.
     fn resume(&mut self, turn: &mut Turn) -> Result<usize, TurnError> {
         let basis = turn.basis.clone();
         let her = self.engine.active_mut().ok_or(TurnError::NoneActive)?;
         let reuse::Decision { shared, action: decided } = reuse_for(her, &turn.prompt, &basis);
         turn.spent.shared_prefix_tokens = shared;
-        // Prefill will cross this matching prefix again. Take a native checkpoint there
-        // so the next turn can use it if both token history and recurrent lineage match.
+        divergence::probe(self.model, turn.id, &her.parts().tokens.held, &turn.prompt, shared);
+        // Prefill crosses this matching prefix again: checkpoint there, for the next turn's use.
         let can_learn = match decided {
             reuse::Reuse::Rewind { from } => shared > from,
             reuse::Reuse::Restart(reuse::Miss::Diverged | reuse::Miss::NoCheckpoint) => shared > 0,
