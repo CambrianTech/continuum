@@ -157,6 +157,24 @@ own parameters and state; SAGE.md carries the interface, Codex's draft):
 - The design test: **a new use case is added without editing any existing policy, and a new policy
   is tried against recorded history without changing the producer or the executor.**
 
+**Storage placement is a use case too** (Joel, 2026-11-25: "Codex is gonna be slow as shit if his
+runtime is running on the slowest possible drive. SAGE shouldn't be picking that"). Today a drive is
+"cold" by size alone (`detect_drives`: the largest drive that is not the system drive), the storage
+tier is a hand-set `CONTINUUM_STORAGE_PATH`, and only model weights have a hot-tier rule
+(`hot_tier.rs`, written after the 5090 served a 27B from its 16 TB SATA disk for months). Worktrees,
+cargo target dirs, the core binary, the continuum home and the KV block root land wherever they are
+pointed; on 2026-11-25 a SAGE design worktree sat on that same disk.
+- *Observations:* each volume's measured sequential and random read and write rates and sync latency
+  (`capacity/io-probe`, today run only on demand, measured once per volume at boot and then kept
+  current from the IO we already time: the block layer's syncs, renames and page faults, the build's
+  reads), its free space, and each working set's access pattern and size (hot: random reads, syncs,
+  builds; cold: written once, read rarely).
+- *Actions:* place a working set on a volume; move it (a hot set up, a cold duplicate down).
+- *Outcomes:* build and check time, restore time, act time, and the disk-pressure level of each volume.
+- *Envelope:* a hot working set never goes to a volume measured slower than the fastest one with
+  room; when the fast volume is full, the disk-pressure owner frees it by moving cold duplicates
+  down, never by moving hot work onto the slow disk. The cold role is for archives only.
+
 **The observations we already measure: the starting catalog.** Each has one owner that publishes it
 and a receipt that it is measured today; each use case reads the ones it needs.
 
