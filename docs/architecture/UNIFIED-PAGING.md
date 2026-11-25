@@ -153,6 +153,63 @@ The law, once, at every rung:
 - Transfers run on the Streamer's own workers. The engine thread never waits on one: it reads
   `Placement`, and a block not resident when needed is a loud, counted miss.
 
+**The law is pluggable, as the Lane's is.** The Streamer's decisions come from a `PlacementLaw`, the
+same shape as `continuum_sage::slice::Control`. The Streamer around it stays the same: budgets,
+pins, `InFlight`, and the links. So a law can be:
+- swapped live;
+- compared in a simulator on a node's real load;
+- replayed exactly against a captured trace;
+- replaced by a learned law (reinforcement learning, a fitted model) with no change to anything
+  around it.
+
+```rust
+pub trait PlacementLaw<K>: Send {
+    fn name(&self) -> &'static str;
+    /// Named, typed parameters, read and set by name (cv::Algorithm's get/set), so a tuner, a learned
+    /// policy or an operator adjusts a law without knowing its type.
+    fn params(&self) -> Vec<Param>;
+    fn set(&mut self, name: &str, value: f64) -> Result<(), ParamRefusal>;
+    /// Bidirectional: everything the Streamer saw, in order, including what came of the law's own
+    /// decisions (a miss, a move's measured time): the reward signal a learned law trains on.
+    fn observe(&mut self, seen: &Observation<K>);
+    /// The moves it wants now, given each block's placement and each tier's budget.
+    fn plan(&mut self, view: &View<K>) -> Vec<Move<K>>;
+}
+
+pub enum Observation<K> {
+    Demand { key: K, at: Instant, bytes: u64 },       // a consumer's forecast of next use
+    Used { key: K, at: Instant },                     // the block was read
+    Moved { key: K, from: Placement, to: Placement, bytes: u64, took: Duration },
+    Missed { key: K, needed_at: Instant, landed_at: Instant },   // the outcome that scores a law
+    Budget { tier: TierKind, bytes: u64 },            // the resource authority's number
+    Pressure { tier: TierKind, level: Pressure },
+}
+pub enum Move<K> { Promote(K, TierKind), Demote(K), Hold(K) }
+```
+
+Two more seams, where a learned model is most likely to win, each with one implementation now:
+- `Forecaster`: a block's predicted time to next use, from its `Observation` history. The first
+  implementation takes the consumer's declared `Demand` (the Lane knows who steps next) and corrects
+  it by its measured error. A learned forecaster replaces it behind the same trait.
+- `LinkModel`: a move's predicted time, from bytes and the link's measured rates. It is the same
+  cost model the Lane's `Cost` component owns (THE-LANE-ON-SAGE.md), read from there, never a
+  second one.
+
+What ships with slice 3 is one law, `FractalPager` (the fractal pager law above), plus `Lru` as the
+baseline every other law is compared against. `Lru` is never a production law, as `Fixed` is the
+Lane's baseline. Laws are made by name from a registry of factories (`laws::make("fractal")`,
+CLAUDE.md's polymorphism pattern), so a node's configuration or a trial picks one without code.
+
+**Every measurement is easy to take.**
+- Each `Observation` is also emitted on the engine's bus as a stream (`blocks/observed`), so any
+  consumer subscribes without wiring: a probe, a dashboard, a trainer for a learned law.
+- Each tier's and each link's state (bytes resident, bytes moving, measured rate, misses per window)
+  is published as state (`blocks/tiers`, `blocks/links`).
+- A run is a `Trace` (every observation and every plan, timed), as the Lane's is:
+  - replayed under the same law, it reproduces every decision: the regression check;
+  - fitted to a workload, it drives a simulator where any law, learned or not, is scored on misses,
+    bytes moved and wait on the load a real node carried.
+
 **What it replaces, and what stays:**
 - `PressureBroker` and the `ResourcePool` adapters: each tier registers as a `ResourcePool`, so the
   broker keeps working during migration. Its `evict_at_least` becomes "demote this many bytes one
@@ -206,7 +263,7 @@ The law, once, at every rung:
 | 1 | `continuum-blocks`: `TierKind`, `Region` (host or mapped), `Block<K>`, `Pin`; the `Mapping` link and `Exchange` (the pointer switch); `continuum-host::mapped_region`. **Built:** 64 MiB to flash and back byte-identical at the same address; a pinned block never moves; an exchange trades memory by pointer | Fable | link validators on the M5 |
 | 1b | `Topology` and the tiers' budgets, once the resource authority says `resources/free` on the bus (card 9d856843, Cormac's delta 8). The drive's measured write rate checks the Mapping link: 64 MiB demoted at 1.06 GB/s on the M5 with serving beside, below what an SSD gives | Fable | Mapping at >= 80% of the measured drive rate |
 | 2 | The first consumer: the Core's parked minds' KV as `MindKv` blocks. Deletes the fork's private storage reservation (#6264), her separate file write, and `preserve.rs`'s JSON token history (her tokens are a block beside her KV) | Fable | `--test-core` byte-identical through a flash round trip; stop and restore at 130k at the drive's rate |
-| 3 | The `Streamer` with the Lane's `Forecast` as its first `Demand` | Fable | trace replay: zero misses for forecast minds |
+| 3 | The `Streamer` with `PlacementLaw` (`FractalPager`, `Lru` as baseline), `Forecaster`, the law registry, `blocks/observed` and the `Trace`, simulator and replay; the Lane's `Forecast` as its first `Demand` | Fable | replay reproduces every decision; zero misses for forecast minds; `FractalPager` beats `Lru` on a fitted live trace |
 | 4 | Discrete: the `Vram` and `Pinned` tiers, `Dma` and `Staged` links, the CUDA graph check | Codex | the 5090: a swap hidden under decode |
 | 5 | The hot tier as `Weights` blocks; its private copier deleted | Codex (owns the catalog) | model load from flash at the drive's rate |
 | 6 | llama-server page IO onto `Mapping`, or deleted with the HTTP lanes (the inference audit's line 2) | the card 6af87187 owner, with Codex | no `fread` of a page body |
