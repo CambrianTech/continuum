@@ -45,4 +45,9 @@ generation_request_id?: string,
 /**
  * Submodule paths you mean to move.
  */
-submodules?: Array<string>, };
+submodules?: Array<string>, 
+/**
+ * What you ran and saw that proves the change (a capture path, a measurement, a test run and
+ * its result). Signed with the submission; the reviewer reads it beside the diff.
+ */
+evidence_text?: string, };
