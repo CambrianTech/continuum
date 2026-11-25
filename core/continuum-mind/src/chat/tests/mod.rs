@@ -736,14 +736,14 @@
 
                         if collection == crate::chat::types::CHAT_MESSAGES_COLLECTION {
                             // Handle chat_messages operations.
-                            if op_type == Some("ensure") {
+                            if op_type == "ensure" {
                                 let id = id.unwrap_or("");
                                 let mut seen = self.seen_ids.lock().unwrap();
                                 if seen.contains(id) {
                                     return json!({ "success": true, "created": false });
                                 }
                                 seen.insert(id.to_string());
-                            } else if op_type == Some("create") {
+                            } else if op_type == "create" {
                                 // Create always inserts.
                                 if let Some(id) = id {
                                     self.seen_ids.lock().unwrap().insert(id.to_string());
@@ -752,7 +752,7 @@
                             return json!({ "success": true, "created": true });
                         } else if collection == "chat_arrivals" {
                             // Handle arrival append: one result with seq and freshness.
-                            let was_ensure_duplicate = op_type != Some("append")
+                            let was_ensure_duplicate = op_type != "append"
                                 || ops.iter().any(|op2| {
                                     op2.get("collection").and_then(Value::as_str)
                                         == Some(crate::chat::types::CHAT_MESSAGES_COLLECTION)
