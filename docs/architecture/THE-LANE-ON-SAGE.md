@@ -223,6 +223,14 @@ one step straight into the next, like a frame pipeline that double-buffers:
 - prefetch and parking (Prefetch, Parker);
 - embeddings, recall and learning preparation.
 
+Each CPU-side piece is also vectorized, with the platform's own libraries first:
+- BLAS for the matrix work: Accelerate on macOS, MKL or OpenBLAS elsewhere. That covers embeddings
+  and similarity (the revisioned vector corpus in the core CPU workstream).
+- SIMD for the per-element loops (std::simd or the platform intrinsics behind one adapter):
+  detokenizing, stop-sequence matching, sampling's softmax and top-k over the vocabulary.
+- Every hot CPU loop has a measured before and after on the bench; one that does not get faster is
+  not merged.
+
 Each of these runs on its own worker, never on the engine thread. The engine thread only submits
 steps, reads results, and does the swap.
 
