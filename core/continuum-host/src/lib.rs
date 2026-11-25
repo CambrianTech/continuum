@@ -18,6 +18,7 @@ pub mod output_handoff;
 pub mod own_group;
 pub mod positioned;
 pub mod process_class;
+pub mod process_end;
 pub mod process_exit;
 pub mod process_name;
 pub mod process_presence;

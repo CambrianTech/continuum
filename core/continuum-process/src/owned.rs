@@ -7,21 +7,10 @@ use continuum_kernel::system_resources::process_tree::{ProcessIdentity, TreeEnd}
 /// one of these). The shell's execution task polls at it too.
 pub const KILL_POLL: std::time::Duration = std::time::Duration::from_millis(100);
 
-/// `SIGKILL` the pid. Best-effort: a race where it already exited is fine.
-#[cfg(unix)]
+/// Force-end `pid` (on Windows, with its child tree). Best effort: a race where it already exited is
+/// fine. The kill differs by OS, so it is `continuum_host::process_end`'s.
 pub fn kill9(pid: u32) {
-    unsafe {
-        let _ = libc::kill(pid as libc::pid_t, libc::SIGKILL);
-    }
-}
-
-/// Windows: force-terminate the process (and its child tree) via `taskkill`.
-/// There is no SIGKILL; `/F /T` is the nearest equivalent. Best-effort.
-#[cfg(windows)]
-pub fn kill9(pid: u32) {
-    let _ = airc_core::process::background("taskkill")
-        .args(["/F", "/T", "/PID", &pid.to_string()])
-        .output();
+    continuum_host::process_end::kill(pid);
 }
 
 /// The process table's reads (`descendants`, `still_present`) live with the kernel's one reader
@@ -35,92 +24,13 @@ pub fn kill_if_same(who: ProcessIdentity) -> bool {
 
 /// Preserve the native termination result for lifecycle callers. `false` means
 /// the recorded incarnation is no longer present; it never authorizes another PID.
+/// Where the OS has no handle that pins an incarnation, the process table's check is the identity
+/// check (`continuum_host::process_end::end`).
 pub fn signal_if_same(who: ProcessIdentity) -> Result<bool, String> {
-    #[cfg(unix)]
-    if still_present(&[who]).is_empty() {
-        return Ok(false);
-    }
-    #[cfg(unix)]
-    {
-        // SAFETY: the recorded incarnation was checked immediately above.
-        if unsafe { libc::kill(who.pid as libc::pid_t, libc::SIGKILL) } == 0 {
-            Ok(true)
-        } else {
-            Err(format!("SIGKILL pid={} started={}: {}", who.pid, who.start_time, std::io::Error::last_os_error()))
-        }
-    }
-    #[cfg(windows)]
-    {
-        signal_windows_identity(who)
-    }
+    let incarnation = continuum_host::process_end::Incarnation { pid: who.pid, start_time: who.start_time };
+    let present = |at: continuum_host::process_end::Incarnation| !still_present(&[ProcessIdentity { pid: at.pid, start_time: at.start_time }]).is_empty();
+    continuum_host::process_end::end(incarnation, present).map_err(|refused| refused.to_string())
 }
-
-#[cfg(windows)]
-fn signal_windows_identity(who: ProcessIdentity) -> Result<bool, String> {
-    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
-    use windows_sys::Win32::Foundation::{FILETIME, ERROR_INVALID_PARAMETER, WAIT_OBJECT_0};
-    use windows_sys::Win32::System::Threading::{
-        GetProcessTimes, OpenProcess, WaitForSingleObject,
-        PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE, PROCESS_SYNCHRONIZE,
-    };
-    // Pin the incarnation before inspecting or signalling it: taskkill's PID
-    // lookup could otherwise hit a replacement between our check and its call.
-    // SAFETY: scalar PID/access flags only; returned handle is owned below.
-    let raw = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE | PROCESS_SYNCHRONIZE, 0, who.pid) };
-    if raw.is_null() {
-        let error = std::io::Error::last_os_error();
-        if error.raw_os_error() == Some(ERROR_INVALID_PARAMETER as i32) {
-            return Ok(false);
-        }
-        return Err(format!("OpenProcess pid={} started={}: {error}", who.pid, who.start_time));
-    }
-    // SAFETY: OpenProcess returned a new owned handle above.
-    let process = unsafe { OwnedHandle::from_raw_handle(raw) };
-    let mut creation = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
-    let mut exit = creation;
-    let mut kernel = creation;
-    let mut user = creation;
-    // SAFETY: owned live handle and four valid writable FILETIME pointers.
-    if unsafe { GetProcessTimes(process.as_raw_handle(), &mut creation, &mut exit, &mut kernel, &mut user) } == 0 {
-        return Err(format!("GetProcessTimes pid={}: {}", who.pid, std::io::Error::last_os_error()));
-    }
-    let ticks = (u64::from(creation.dwHighDateTime) << 32) | u64::from(creation.dwLowDateTime);
-    let started = (ticks / 10_000_000).checked_sub(11_644_473_600)
-        .ok_or("process creation time precedes the Unix epoch")?;
-    // SAFETY: the owned handle stays open through the nonblocking wait.
-    if started != who.start_time || unsafe { WaitForSingleObject(process.as_raw_handle(), 0) } == WAIT_OBJECT_0 {
-        return Ok(false);
-    }
-    terminate_windows_handle(&process, who)
-}
-
-// The caller has verified creation time while holding this handle. Keep the
-// termination/exit race on that handle, including when signalling fails.
-#[cfg(windows)]
-fn terminate_windows_handle(
-    process: &impl std::os::windows::io::AsRawHandle,
-    who: ProcessIdentity,
-) -> Result<bool, String> {
-    use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
-    use windows_sys::Win32::System::Threading::{TerminateProcess, WaitForSingleObject};
-    // SAFETY: terminate only this held, creation-time-verified incarnation.
-    if unsafe { TerminateProcess(process.as_raw_handle(), 1) } == 0 {
-        let error = std::io::Error::last_os_error();
-        // It can exit between the preflight wait and TerminateProcess. Only a
-        // signalled handle proves that race; a live/failed wait preserves the
-        // original refusal, including genuine access denial. Never re-open a PID.
-        // SAFETY: the same owned incarnation handle remains open through this wait.
-        if unsafe { WaitForSingleObject(process.as_raw_handle(), 0) } == WAIT_OBJECT_0 {
-            return Ok(false);
-        }
-        return Err(format!("TerminateProcess pid={} started={}: {error}", who.pid, who.start_time));
-    }
-    Ok(true)
-}
-
-#[cfg(all(test, windows))]
-#[path = "kill9_windows_tests.rs"]
-mod windows_termination_tests;
 
 
 /// End `child` and its tree: THE one way an owned child is ended (the shell's execution task and
@@ -229,7 +139,7 @@ impl StreamCapture {
     /// What has been read so far and how reading ended, or `Cut("still reading")` mid-read.
     pub fn snapshot(&self) -> Captured {
         let st = self.state.lock().unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: as above
-        Captured { bytes: st.0.clone(), end: st.1.clone().unwrap_or_else(|| CaptureEnd::Cut("still reading".into())) }
+        Captured { bytes: st.0.clone(), end: st.1.clone().unwrap_or_else(|| CaptureEnd::Cut("still reading".into())) } // unwrap_or_else: no end recorded yet is the documented mid-read snapshot
     }
 }
 

@@ -3658,7 +3658,6 @@ dependencies = [
  "continuum-base",
  "continuum-host",
  "continuum-kernel",
- "libc",
  "sysinfo",
  "tempfile",
  "tokio",
