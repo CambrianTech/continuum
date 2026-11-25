@@ -2,9 +2,18 @@
 //! candidate action looks like, and what its outcome physically measured.
 //! hot-path: the lane decides at every Core step.
 //!
-//! Every feature is a time against a wait bound (so about one, whatever the chip), or an indicator.
-//! An unmeasured time is a cost the lane has not seen yet, so it reads as none; the learner's
-//! uncertainty about the action carries what is unknown.
+//! What the lane serves is turns finished soon, under every mind's wait bound. Finishing the mind
+//! with the least work left first (shortest remaining processing time) is what minimizes the mean
+//! time to finish, so the value is the share of the stepped mind's remaining phase finished per
+//! second of the Core, and each action's leading feature is that rate as her history predicts it:
+//! the learner learns how far the prediction holds, and what a switch costs against it. The M5 on
+//! 2026-11-25 (19:24Z, build 82750a4e27) showed why: valued only by the Core's transition time, which
+//! a pointer swap makes about 1 ms, switching looked free and lowered the worst wait, so the learner
+//! rotated minds every step (25 to 378 switches a turn) and turn p50 rose to 117 s.
+//!
+//! Every other feature is a time against a wait bound (so about one, whatever the chip), or an
+//! indicator. An unmeasured time is a cost the lane has not seen yet, so it reads as none; the
+//! learner's uncertainty about the action carries what is unknown.
 
 use std::fmt::Debug;
 use std::time::Duration;
@@ -14,14 +23,23 @@ use super::lane::{Action, Lane, Mind, Outcome, Phase, Situation, SLOTS};
 
 /// The features: bias; continuing, with her step, the most pressed waiter's pressure, and whether she
 /// prefills; switching, with the target's switch cost, wait, step and prefill, and the pressure left
-/// on the others; batching.
-pub const FEATURES: usize = 12;
+/// on the others; batching; then the predicted finishing rate of the mind continuing, and of the mind
+/// switched in.
+pub const FEATURES: usize = 14;
 
-/// The targets: the share of the Core's time that served a mind rather than a transition (maximized;
-/// tokens per second would not do, since a prefill token costs a small fraction of a decode step, so
-/// it would reward switching to whoever prefills), and the worst wait against its bound (kept at or
-/// under one).
+/// The targets: the share of the stepped mind's remaining phase finished per second of the Core
+/// (maximized), and the worst wait against its bound (kept at or under one).
 pub const TARGETS: usize = 2;
+
+/// Her remaining phase finished per second, as her history predicts it: one over her remaining time
+/// (her remaining tokens, at least the one this step moves, at her measured time a token). Unmeasured
+/// when either is.
+fn finishing<K>(mind: &Mind<K>) -> f64 {
+    match (mind.remaining.value(), mind.step.value()) {
+        (Some(left), Some(step)) if step > Duration::ZERO => 1.0 / (step.as_secs_f64() * left.max(1) as f64),
+        _ => 0.0, // an unpredicted remainder: no rate claimed; the learner's width carries it
+    }
+}
 
 fn against(time: Duration, bound: Duration) -> f64 {
     time.as_secs_f64() / bound.as_secs_f64()
@@ -52,6 +70,7 @@ impl<K: Copy + Debug + PartialEq + Send + 'static> Featured<FEATURES, TARGETS> f
                     x[2] = against(measured(running.step), waiter.deadline);
                     x[3] = pressure(waiter);
                     x[4] = prefilling(running);
+                    x[12] = finishing(running);
                 }
             }
             Action::Switch(slot) => {
@@ -61,6 +80,7 @@ impl<K: Copy + Debug + PartialEq + Send + 'static> Featured<FEATURES, TARGETS> f
                     x[7] = pressure(target);
                     x[8] = against(measured(target.step), target.deadline);
                     x[9] = prefilling(target);
+                    x[13] = finishing(target);
                     x[10] = ready.iter().enumerate().filter(|(other, _)| *other != usize::from(slot)).map(|(_, mind)| pressure(mind)).fold(0.0, f64::max);
                 }
             }
@@ -72,6 +92,7 @@ impl<K: Copy + Debug + PartialEq + Send + 'static> Featured<FEATURES, TARGETS> f
 
     fn measured(outcome: &Outcome) -> Option<[f64; TARGETS]> {
         let engine = outcome.engine.as_secs_f64();
-        (engine > 0.0).then(|| [1.0 - outcome.switching.as_secs_f64().min(engine) / engine, against(outcome.worst_wait, outcome.worst_deadline)])
+        let served = outcome.served.value()?;
+        (engine > 0.0).then(|| [served / engine, against(outcome.worst_wait, outcome.worst_deadline)])
     }
 }

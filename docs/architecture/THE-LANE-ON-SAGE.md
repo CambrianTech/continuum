@@ -527,14 +527,20 @@ every depth measured. The 35B's rows need serving down.
   several targets, forgetting toward its prior over `memory` observations, so it never winds up) under
   `decide::LinearUcb`, a constrained upper-confidence bandit over any use case that implements
   `Featured` (features of a candidate action, physical targets of an outcome). The lane implements
-  it in `cases::lane_features`: 12 features (times against the wait bound, phase indicators) and two
-  targets, the share of Core time that served a mind rather than a transition (maximized) and the
-  worst wait against its bound (kept at or under one by its pessimistic prediction). No weight trades
-  one against the other, and the exploration width is one standard error in the target's own units
-  (Codex's alternative: predict physical outcomes, never a fixed penalty). It remembers what the lane
-  keeps for replay (`lane::DECISIONS`) and saves its Gram matrix and moments like any algorithm.
-  Tokens per second was its first value target and lost: a prefill token costs a fraction of a decode
-  step, so it rewarded switching to whoever prefilled.
+  it in `cases::lane_features`: 14 features (times against the wait bound, phase indicators, and each
+  candidate's predicted finishing rate, one over her remaining time) and two targets: the share of the
+  stepped mind's remaining phase finished per second of the Core (maximized, so the mind with the
+  least work left is finished first, which minimizes mean time to finish) and the worst wait against
+  its bound (kept at or under one by its pessimistic prediction). No weight trades one against the
+  other, and the exploration width is one standard error in the target's own units (Codex's
+  alternative: predict physical outcomes, never a fixed penalty). It remembers what the lane keeps for
+  replay (`lane::DECISIONS`) and saves its Gram matrix and moments like any algorithm.
+- Two value targets lost first. Tokens per second, in simulation: a prefill token costs a fraction of
+  a decode step, so it rewarded switching to whoever prefilled. The Core's share not spent on
+  transitions, live on the M5 (2026-11-25 19:24 to 19:33Z, build 82750a4e27): a switch by pointer is
+  about 1 ms, so switching looked free and lowered the worst wait, and the learner rotated minds every
+  step (25 to 378 switches a turn). Waits fell (wait p50 2.6 s, max 5.8 s, against 5.3 s and 49 s on
+  the whole-turn rule at 19:00 to 19:15Z), but turn p50 rose to 117 s, against 17 s.
 
 Simulated, `the_stock_linear_learner_learns_the_lane_and_keeps_the_bound` (four minds, turns of 512
 to 4,096 prompt and 50 to 400 decoded tokens, a 2 s tool call between turns, 5 ms a switch, 300 s
@@ -543,13 +549,12 @@ of Core, the same turns for each):
 | | tok/s of Core | worst wait / bound | turn p50 | turns |
 |---|---|---|---|---|
 | need-first | 357.4 | 1.13 | 26.3 s | 41 |
-| cost-model | 357.1 | 1.08 | 26.9 s | 41 |
-| linear-ucb | 357.0 | 1.03 | 27.2 s | 41 |
+| cost-model | 357.0 | 1.08 | 27.4 s | 41 |
+| linear-ucb | 356.1 | 1.04 | 15.3 s | 41 |
 
-The learner's prediction error on its chosen actions falls from 0.0074 to 0.0003 of the Core between
-its first and last tenth of 10,918 choices (Codex: grade a learner by chronological prediction error on
-what it chose, never by scoring unchosen actions from a log). The simulated Core is oversubscribed,
-so turn latency is mostly queueing; the live read decides.
+The learner's relative prediction error on its chosen actions falls from 0.014 to 0.001 between its
+first and last tenth of 10,714 choices (Codex: grade a learner by chronological prediction error on
+what it chose, never by scoring unchosen actions from a log).
 
 Measured on the M5, 2026-11-25, qwen2.5-0.5b, serving live beside it (load average 10),
 `a_short_turn_never_waits_out_another_minds_long_one`, alternating runs:

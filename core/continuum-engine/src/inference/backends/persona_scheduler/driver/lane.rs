@@ -53,8 +53,9 @@ pub(super) struct Lanes {
     /// Ready slot `i` is turn `slots[i]`; the running mind's turn is `running`.
     slots: Vec<usize>,
     running: Option<usize>,
-    /// The last decision and when it was made, closed with its outcome at the next decision.
-    open: Option<(DecisionId, Instant)>,
+    /// The last decision, when it was made, and the tokens the mind it stepped had left in her phase
+    /// then, closed with its outcome at the next decision.
+    open: Option<(DecisionId, Instant, Measured<u64>)>,
     /// Tokens the Core moved since the open decision: its outcome's throughput, the reward a learner reads.
     moved: u64,
     /// Of the time since the open decision, what bringing a mind in took: its outcome's transition time.
@@ -167,9 +168,10 @@ impl Driver<'_, '_> {
         }
         // the last step's outcome: its engine time and the longest wait any ready mind has now, against
         // that mind's own bound
-        if let Some((id, at)) = lanes.open.take() {
+        if let Some((id, at, left)) = lanes.open.take() {
             let (worst_wait, worst_deadline) = situation.ready.iter().max_by_key(|mind| mind.waited).map_or((Duration::ZERO, Duration::MAX), |mind| (mind.waited, mind.deadline)); // map_or: no ready mind means no wait against any bound
-            let outcome = lane::Outcome { tokens: Measured::Value(std::mem::take(&mut lanes.moved)), engine: now.saturating_duration_since(at), worst_wait, worst_deadline, switching: std::mem::take(&mut lanes.switching) };
+            let moved = std::mem::take(&mut lanes.moved);
+            let outcome = lane::Outcome { tokens: Measured::Value(moved), engine: now.saturating_duration_since(at), worst_wait, worst_deadline, switching: std::mem::take(&mut lanes.switching), served: lane::served(moved, left) };
             let _ = lanes.decider.outcome(id, outcome);
         }
         let (id, action) = match lanes.decider.decide(&lanes.situation, &[]) {
@@ -181,7 +183,12 @@ impl Driver<'_, '_> {
                 return lanes.slots.first().copied().or(lanes.running);
             }
         };
-        lanes.open = Some((id, now));
+        let stepped = match action {
+            lane::Action::Continue => lanes.situation.running.as_ref(),
+            lane::Action::Switch(slot) => lanes.situation.ready.get(usize::from(slot)),
+            lane::Action::Batch(_) | lane::Action::Idle => None,
+        };
+        lanes.open = Some((id, now, stepped.map_or(Measured::Unmeasured, |mind| mind.remaining))); // map_or: a batch or idle steps no one mind
         match action {
             lane::Action::Continue => lanes.running,
             lane::Action::Switch(slot) => lanes.slots.get(usize::from(slot)).copied(),

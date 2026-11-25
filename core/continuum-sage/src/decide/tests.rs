@@ -164,7 +164,7 @@ fn the_lane_forces_an_overdue_mind_and_offers_batches_only_as_wide_as_the_core()
     assert_eq!(envelope::<Lane<u8>>(&alone).0, Gate::Forced(lane::Action::Idle));
 
     let mut decider: Decider<Lane<u8>> = Decider::new(Box::new(Baseline), capacity(4));
-    let step = lane::Outcome { tokens: Measured::Value(1), engine: Duration::from_millis(26), worst_wait: Duration::from_millis(20), worst_deadline: Duration::from_secs(1), switching: Duration::ZERO };
+    let step = lane::Outcome { tokens: Measured::Value(1), engine: Duration::from_millis(26), worst_wait: Duration::from_millis(20), worst_deadline: Duration::from_secs(1), switching: Duration::ZERO, served: Measured::Unmeasured };
     for _ in 0..16 {
         let Decided::Act(id, lane::Action::Continue) = decider.decide(&open, &read(1)) else { panic!("test: the baseline continues") };
         assert!(decider.outcome(id, step).is_some(), "each step's outcome closes its record");
@@ -345,7 +345,7 @@ fn the_cost_models_margin_is_a_control_loop_both_ways_and_survives_a_restart() {
     let contended = lane::Situation { running: Some(mind(1, 0)), ready: vec![mind(2, 100)], batch_width: 1 };
     let read = |decider: &mut Decider<Lane<u8>>, situation: &lane::Situation<u8>, waited_ms: u64| {
         let Decided::Act(id, _) = decider.decide(situation, &[]) else { panic!("test: the lane acts") };
-        let outcome = lane::Outcome { tokens: Measured::Unmeasured, engine: Duration::from_millis(26), worst_wait: Duration::from_millis(waited_ms), worst_deadline: Duration::from_secs(1), switching: Duration::ZERO };
+        let outcome = lane::Outcome { tokens: Measured::Unmeasured, engine: Duration::from_millis(26), worst_wait: Duration::from_millis(waited_ms), worst_deadline: Duration::from_secs(1), switching: Duration::ZERO, served: Measured::Unmeasured };
         decider.outcome(id, outcome);
     };
     let start = margin(&decider);
@@ -428,8 +428,8 @@ fn simulate(policy: Box<dyn Policy<Lane<u8>>>, seconds: u64) -> (f64, f64, u128,
             phase: if prompt > 0 { Phase::Prefill { remaining: prompt } } else { Phase::Decode },
             kv_bytes: Measured::Unmeasured,
             cold_bytes: Measured::Unmeasured,
-            remaining: Measured::Value(if prompt > 0 { prompt.div_ceil(CHUNK) } else { left }),
-            step: Measured::Value(if prompt > 0 { prefill_token * CHUNK as u32 } else { decode }),
+            remaining: Measured::Value(if prompt > 0 { prompt } else { left }),
+            step: Measured::Value(if prompt > 0 { prefill_token } else { decode }),
             switch_in: Measured::Value(switch),
             prefix_hit: Measured::Unmeasured,
         }),
@@ -457,7 +457,7 @@ fn simulate(policy: Box<dyn Policy<Lane<u8>>>, seconds: u64) -> (f64, f64, u128,
         };
         let Some(who) = stepped else {
             let wake = minds.iter().filter_map(|state| if let State::Thinking(until) = state { Some(*until) } else { None }).min().unwrap_or(now + decode); // unwrap_or: the simulation's own clock
-            decider.outcome(id, lane::Outcome { tokens: Measured::Unmeasured, engine: Duration::ZERO, worst_wait: Duration::ZERO, worst_deadline: bound, switching: Duration::ZERO });
+            decider.outcome(id, lane::Outcome { tokens: Measured::Unmeasured, engine: Duration::ZERO, worst_wait: Duration::ZERO, worst_deadline: bound, switching: Duration::ZERO, served: Measured::Unmeasured });
             now = wake.max(now + Duration::from_micros(1));
             continue;
         };
@@ -472,6 +472,7 @@ fn simulate(policy: Box<dyn Policy<Lane<u8>>>, seconds: u64) -> (f64, f64, u128,
             running = Some(who);
         }
         let State::Ready { prompt, decode: left, began, .. } = &mut minds[who] else { panic!("test: a stepped mind is ready") };
+        let left_before = if *prompt > 0 { *prompt } else { *left };
         let moved = if *prompt > 0 { let chunk = (*prompt).min(CHUNK); *prompt -= chunk; engine += prefill_token * chunk as u32; chunk } else { *left -= 1; engine += decode; 1 };
         let finished = *prompt == 0 && *left == 0;
         let began = *began;
@@ -486,7 +487,7 @@ fn simulate(policy: Box<dyn Policy<Lane<u8>>>, seconds: u64) -> (f64, f64, u128,
         let waits = minds.iter().enumerate().filter(|(other, _)| Some(*other) != running).filter_map(|(_, state)| if let State::Ready { since, .. } = state { Some(now - *since) } else { None });
         let longest = waits.max().unwrap_or(Duration::ZERO); // unwrap_or: nobody waiting
         worst = worst.max(longest.as_secs_f64() / bound.as_secs_f64());
-        decider.outcome(id, lane::Outcome { tokens: Measured::Value(moved), engine, worst_wait: longest, worst_deadline: bound, switching });
+        decider.outcome(id, lane::Outcome { tokens: Measured::Value(moved), engine, worst_wait: longest, worst_deadline: bound, switching, served: lane::served(moved, Measured::Value(left_before)) });
     }
     latencies.sort();
     let median = latencies.get(latencies.len() / 2).map_or(0, Duration::as_millis);
@@ -507,13 +508,13 @@ fn the_stock_linear_learner_learns_the_lane_and_keeps_the_bound() {
     assert!(worst <= 1.1, "the envelope keeps every wait near its bound: {worst}");
     // chronological prediction error of the chosen actions' throughput, early against late
     let errors: Vec<f64> = decider.records().filter_map(|record| match (record.verdict, record.outcome) {
-        (Verdict::Chosen { expected: Some(expected), .. }, Some(lane::Outcome { tokens: Measured::Value(_), engine, switching, .. })) if engine > Duration::ZERO => Some((1.0 - switching.as_secs_f64() / engine.as_secs_f64() - expected).abs()),
+        (Verdict::Chosen { expected: Some(expected), .. }, Some(lane::Outcome { engine, served: Measured::Value(served), .. })) if engine > Duration::ZERO => Some((served / engine.as_secs_f64() - expected).abs() / (served / engine.as_secs_f64()).max(f64::MIN_POSITIVE)),
         _ => None,
     }).collect();
     let tenth = errors.len() / 10;
     let mean = |slice: &[f64]| slice.iter().sum::<f64>() / slice.len() as f64;
     let (early, late) = (mean(&errors[..tenth]), mean(&errors[errors.len() - tenth..]));
-    println!("linear-ucb prediction error: first tenth {early:.4}, last tenth {late:.4} of the Core over {} choices", errors.len());
+    println!("linear-ucb prediction error: first tenth {early:.3}, last tenth {late:.3} relative over {} choices", errors.len());
     assert!(late < early, "it learns what its actions move: {early} -> {late}");
 
     // a restart resumes what it learned: the same choice and expectation in the same situation

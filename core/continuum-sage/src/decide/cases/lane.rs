@@ -86,6 +86,18 @@ pub struct Outcome {
     /// Of `engine`, the time spent bringing a mind in (zero when no one was): the Core's transition
     /// time, which serves no mind.
     pub switching: Duration,
+    /// The share of the stepped mind's remaining phase this decision finished ([`served`]):
+    /// `Unmeasured` when no one mind stepped or her remainder was not predicted.
+    pub served: Measured<f64>,
+}
+
+/// The share of her remaining phase a decision finished: `moved` of the `left` tokens she had when
+/// it was made (at most all of it; a remainder predicted short is finished, not exceeded).
+pub fn served(moved: u64, left: Measured<u64>) -> Measured<f64> {
+    match left {
+        Measured::Value(left) if left > 0 => Measured::Value(moved.min(left) as f64 / left as f64),
+        _ => Measured::Unmeasured,
+    }
 }
 
 /// The lane as a use case, over any `Copy` mind key.
