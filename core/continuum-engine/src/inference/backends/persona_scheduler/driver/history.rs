@@ -108,6 +108,10 @@ impl From<Vec<i32>> for History {
 }
 
 impl History {
+    /// Her deepest checkpoint at or below `end`, the furthest she can be rewound without passing it.
+    pub(super) fn deepest_at_or_below(&self, end: usize) -> Option<usize> {
+        self.kept.iter().flatten().map(|kept| kept.end).filter(|&at| at <= end).max()
+    }
     pub(super) fn deepest(&self) -> Option<usize> {
         self.kept.iter().flatten().map(|s| s.end).max()
     }

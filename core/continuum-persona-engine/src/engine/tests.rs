@@ -90,6 +90,9 @@ impl Execute for Recording {
     fn rewind(&mut self, mind: MindId, from: &Option<u32>) -> Result<(), TierRefusal> {
         from.map(|_| ()).ok_or(TierRefusal { tier: "recording", mind, reason: "nothing taken", native: Native::NotAsked })
     }
+    fn clear(&mut self, _mind: MindId) -> Result<(), TierRefusal> {
+        Ok(())
+    }
 }
 
 /// Land the most recent entry of `log`.
