@@ -262,7 +262,7 @@ fn lane_algorithms_are_created_by_name_with_typed_params_and_saved_state() {
 
     let mut cost = registry.create("cost-model").expect("test: registered"); // expect: the test's own precondition
     assert_eq!(cost.params(), &["margin"]);
-    assert_eq!(cost.param("margin"), Some(Param::Real(0.5)));
+    assert_eq!(cost.param("margin"), Some(Param::Real(super::cases::lane_cost::STARTING_MARGIN)), "nothing set or saved: the named starting guess");
     assert!(matches!(cost.set_param("margin", Param::Real(1.5)), Err(Refused::Value { .. })), "refused out of range, never clamped");
     assert!(matches!(cost.set_param("depth", Param::Real(0.1)), Err(Refused::Unknown("depth"))));
     cost.set_param("margin", Param::Real(0.25)).expect("test: in range"); // expect: the test's own precondition
@@ -313,6 +313,7 @@ fn the_lane_history_fills_what_the_executor_observed_and_nothing_else() {
 fn the_cost_model_continues_while_steps_fit_and_brings_in_the_tightest_waiter() {
     let registry = lane::algorithms::<u8>().expect("test: distinct names register"); // expect: the test's own precondition
     let mut cost = registry.create("cost-model").expect("test: registered"); // expect: the test's own precondition
+    cost.set_param("margin", Param::Real(0.5)).expect("test: the margin this scenario is written at"); // expect: the test's own precondition
     let mut decide = |situation: &lane::Situation<u8>| {
         let (gate, admissible) = envelope::<Lane<u8>>(situation);
         assert_eq!(gate, Gate::Choose);
@@ -334,7 +335,9 @@ fn the_cost_model_continues_while_steps_fit_and_brings_in_the_tightest_waiter() 
 #[test]
 fn the_cost_models_margin_is_a_control_loop_both_ways_and_survives_a_restart() {
     let registry = lane::algorithms::<u8>().expect("test: distinct names register"); // expect: the test's own precondition
-    let mut decider = Decider::new(registry.create("cost-model").expect("test: registered"), capacity(16)); // expect: the test's own precondition
+    let mut policy = registry.create("cost-model").expect("test: registered"); // expect: the test's own precondition
+    policy.set_param("margin", Param::Real(0.5)).expect("test: room to rise and fall"); // expect: the test's own precondition
+    let mut decider = Decider::new(policy, capacity(16));
     let margin = |decider: &Decider<Lane<u8>>| f64::from_bits(decider.policy().parameters);
     let contended = lane::Situation { running: Some(mind(1, 0)), ready: vec![mind(2, 100)], batch_width: 1 };
     let read = |decider: &mut Decider<Lane<u8>>, situation: &lane::Situation<u8>, waited_ms: u64| {
@@ -365,5 +368,5 @@ fn the_cost_models_margin_is_a_control_loop_both_ways_and_survives_a_restart() {
     assert_eq!(margin(&restarted), breached, "a restart resumes the learned margin");
     let mut fresh = Decider::new(registry.create("cost-model").expect("test: registered"), capacity(16)); // expect: the test's own precondition
     fresh.load(&[]).expect("test: nothing saved loads as the start"); // expect: the test's own precondition
-    assert_eq!(margin(&fresh), start, "nothing saved: the starting value");
+    assert_eq!(margin(&fresh), super::cases::lane_cost::STARTING_MARGIN, "nothing saved: the named starting guess");
 }

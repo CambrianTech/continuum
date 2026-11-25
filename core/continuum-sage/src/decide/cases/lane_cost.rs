@@ -48,10 +48,21 @@ const SHRINK: f64 = 0.5;
 /// The learned state's bytes: margin, step, last direction.
 const STATE: usize = 17;
 
+/// The share of the slack a node with nothing learned starts from. The check already budgets the
+/// waiter's measured switch cost and the running mind's measured step time, so the one risk it leaves
+/// unbudgeted is a step running longer than her mean: the best guess spends nearly all the slack and
+/// keeps a tenth for that overrun. An inference, not a measurement: the loop corrects it within a few
+/// readings, and the saved state replaces it after the first stop.
+pub const STARTING_MARGIN: f64 = 0.9;
+
+/// The first step is the headroom the starting margin kept: one breach reading spends exactly what
+/// was guessed for overrun, and agreement grows it from there.
+const STARTING_STEP: f64 = 1.0 - STARTING_MARGIN;
+
 impl Default for CostModel {
-    /// The starting state when nothing was saved: half the slack, a tenth of it per step.
+    /// The starting state when nothing was saved.
     fn default() -> Self {
-        Self { margin: 0.5, step: 0.1, last: Direction::None } // cold: the starting state; learning and load move it
+        Self { margin: STARTING_MARGIN, step: STARTING_STEP, last: Direction::None } // cold: the starting state; learning and load move it
     }
 }
 
