@@ -683,6 +683,74 @@
         assert!(legacy.media.is_empty());
     }
 
+    // Operator self-peer: exactly one persist per send_with_wire(CallerSpeaks).
+    // The reviewer (Codex, 2026-11-25) sent back PR #6273 saying:
+    // "both rows in each pair came from the send path: persist() ran twice,
+    // 18 ms and 3 ms apart." This test reproduces the operator self-peer path
+    // (CallerSpeaks wire) and COUNTS data/batch calls targeting chat_messages.
+    // If more than one Create-for-chat_messages fires, we found the double-persist.
+    #[tokio::test]
+    pub(super) async fn caller_speaks_creates_exactly_one_message_row() {
+        let batch_count = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let count_clone = batch_count.clone();
+
+        let data = StubDataModule::new(move |command, params| {
+            if command == "data/batch" {
+                // Record every batch call so we can inspect what was written.
+                count_clone.lock().unwrap().push(params);
+            }
+            Ok(batch_ok())
+        });
+
+        let chat = chat_with_stubs(vec![Arc::new(data)]);
+        let mut params = sample_send_params();
+        // Ensure no media so the envelope leg is never triggered.
+        params.media.clear();
+
+        // CallerSpeaks is what the operator self-peer path uses:
+        // persist() runs once, publish_as_sender handles the airc say,
+        // and broadcast_envelope is SKIPPED (that's why we chose this wire).
+        let result = chat
+            .send_with_wire(params.clone(), crate::chat::WireLeg::CallerSpeaks)
+            .await
+            .expect("caller speaks must succeed");
+
+        assert!(
+            !result.message_id.is_nil(),
+            "message_id must be a real UUID"
+        );
+        // For CallerSpeaks, event_id is None because we didn't broadcast.
+        assert!(
+            result.event_id.is_none(),
+            "CallerSpeaks must not set event_id (no broadcast)"
+        );
+
+        // Now verify: exactly ONE data/batch call targeting chat_messages with Create.
+        let calls = batch_count.lock().unwrap();
+        let message_create_calls: Vec<&Value> = calls.iter().filter(|batch| {
+            if let Some(ops) = batch.get("operations").and_then(|v| v.as_array()) {
+                ops.iter().any(|op| {
+                    op.get("collection")
+                        .and_then(Value::as_str)
+                        == Some(crate::chat::types::CHAT_MESSAGES_COLLECTION)
+                        && op.get("operationType")
+                            .and_then(Value::as_str)
+                            == Some("create")
+                })
+            } else {
+                false
+            }
+        }).collect();
+
+        // THE ASSERTION: exactly one row created for chat_messages.
+        // If this fails with "assertion failed" or wrong count, persist() ran more than once.
+        assert_eq!(
+            message_create_calls.len(), 1,
+            "send_with_wire(CallerSpeaks) must create exactly ONE chat_messages row; found {} calls\nFull batch calls: {:#?}",
+            message_create_calls.len(),
+            *calls
+        );
+    }
 mod paging;
 mod part_2;
 mod restart;
