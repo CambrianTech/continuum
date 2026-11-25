@@ -372,6 +372,24 @@ frame counter, not a clock; rest is as important as action. SAGE.md lists what s
 what it measured.
 
 
+## 🛑 STOP — If You Are About To Touch The Engine, The Lane, A Swap, KV Or Paging
+
+**Required first read:** [docs/architecture/THE-LANE-ON-SAGE.md](docs/architecture/THE-LANE-ON-SAGE.md) and SAGE.md, "The lane".
+
+The Core is a CPU core:
+- One mind is on it at a time. Her KV rows and recurrent state are her register file.
+- The SAGE lane preempts at every step, under a 1 s wait bound.
+- **A swap is a transfer:**
+  - a pointer on unified memory (zero bytes moved);
+  - pinned async DMA overlapped with decode on a discrete GPU (Windows has no unified memory);
+  - one block write (or mmap) to flash.
+
+Never a copy loop over cells or rows, never a string or JSON encoding of KV or tokens. Never seats, a KV pool or a batch of minds on the Core. A PR here quotes the line of THE-LANE-ON-SAGE.md it implements.
+
+**The cost of skipping this** (the M5, 2026-11-24):
+- #6258's five-seat pool: 5,855 evictions and turn p50 123 s, against 25 s.
+- The whole-turn rule it replaced: wait p50 12 s, max 277 s.
+
 ## 🛑 STOP — If You Are About To Add a Monitor, Broker, Pool, Region, Or Any Concurrent Concern
 
 **Required first read** before adding ANY new tokio task, watch channel, pressure source, resource pool, brain region, or background tick — or before touching any file under `core/continuum-core/src/{runtime,paging,system_resources}/`:
