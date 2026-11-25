@@ -14,6 +14,8 @@ use airc_ipc::{codec::read_frame, AttachRequest, AttachStart, DaemonClient, IpcC
 use airc_lib::decode_wire_event;
 use tracing::warn;
 
+use uuid::Uuid;
+
 use crate::routing::airc_realtime::AircRealtimeEnvelope;
 use crate::cognition::conversation::room_event::chat_transcript_message;
 use crate::routing::airc_realtime_wire::{bus_event_from_envelope, envelope_from_event};
@@ -378,8 +380,8 @@ pub async fn publish_transcript_event(
     // someone other than its transport author reaches perception, the store and the projection only
     // when this core's publication obligation proves it; otherwise it is refused here, said, and
     // dropped, never relabeled.
-    let delegated = match attribution_gate(event, lines).await? {
-        Gate::Pass { delegated } => delegated,
+    let (delegated, validated_message_id) = match attribution_gate(event, lines).await? {
+        Gate::Pass { delegated, validated_message_id } => (delegated, validated_message_id),
         Gate::Refused => return Ok(()),
     };
     // THE STORE FIRST, ONCE (Slice P; Codex on #5696): a room line is imported, awaited, before
@@ -389,7 +391,7 @@ pub async fn publish_transcript_event(
     // a line imported but not yet fed when the core died is not re-fed on replay.
     let decoded = envelope_from_event(event);
     let chat_line = match &decoded {
-        Ok(None) => posted_from_message(event),
+                Ok(None) => posted_from_message(event, validated_message_id),
         Ok(Some(envelope)) => posted_from_envelope(envelope, event).map(|mut line| {
             line.retires_publication = delegated;
             line
@@ -550,7 +552,7 @@ fn posted_from_envelope(
 
 /// Whether a line may be consumed, decided by attribution.
 enum Gate {
-    Pass { delegated: bool },
+    Pass { delegated: bool, validated_message_id: Option<Uuid> },
     Refused,
 }
 
@@ -563,11 +565,18 @@ async fn attribution_gate(event: &airc_core::TranscriptEvent, lines: &dyn LineIm
     use crate::routing::airc_realtime_wire::SenderClaim;
     let claim = claimed_sender(event);
     if claim == SenderClaim::Absent || claim == SenderClaim::Named(event.peer_id) {
-        return Ok(Gate::Pass { delegated: false });
+        // No delegation claim. Only trust HEADER_CONTINUUM_EVENT_ID for known senders
+        // (operator/agent runtime), whose publish_as_sender sets it; reject unvalidated
+        // headers from foreign peers to keep row identity anchored to verified ownership.
+        let validated_message_id =
+            if is_known_sender(&event.peer_id) { claimed_message(event) } else { None };
+        return Ok(Gate::Pass { delegated: false, validated_message_id });
     }
-    let obligation = match claimed_message(event) {
-        Some(id) => lines.publication(id).await?,
-        None => None,
+    // Validate HEADER_CONTINUUM_EVENT_ID against publication record; the validated
+    // id is passed downstream to posted_from_message so it can safely override message_id.
+    let (obligation, validated_message_id) = match claimed_message(event) {
+        Some(id) => (lines.publication(id).await?, Some(id)),
+        None => (None, None),
     };
     // The line as received, from the one chat_transcript decoder (its claimed sender, its text and
     // media); a line that does not decode matches no publication.
@@ -579,8 +588,8 @@ async fn attribution_gate(event: &airc_core::TranscriptEvent, lines: &dyn LineIm
         _ => None,
     };
     match attribute(event.peer_id, claim, event.room_id, obligation.as_ref(), received) {
-        Attribution::Author(_) => Ok(Gate::Pass { delegated: false }),
-        Attribution::Delegated { .. } => Ok(Gate::Pass { delegated: true }),
+        Attribution::Author(_) => Ok(Gate::Pass { delegated: false, validated_message_id }),
+        Attribution::Delegated { .. } => Ok(Gate::Pass { delegated: true, validated_message_id }),
         Attribution::Refused { claimed, reason } => {
             continuum_base::probe!(
                 class = "airc.inbound.delegation_refused",
@@ -655,16 +664,19 @@ fn capacity_offer_from_envelope(
 /// → same id across replay + peers). When one is present (the operator
 /// self-peer path), it overrides so loopback dedupes against the row
 /// `persist()` already created.
-fn posted_from_message(event: &airc_core::TranscriptEvent) -> Option<PostedLine> {
+fn posted_from_message(
+    event: &airc_core::TranscriptEvent,
+    validated_message_id: Option<Uuid>,
+) -> Option<PostedLine> {
     if event.kind != TranscriptKind::Message {
         return None;
     }
     let content = event.body.as_ref()?.as_text()?;
     let mut line = posted_line(event, content.to_string())?;
-    // If the outbound path published with a custom event_id header (the
-    // self-peer duplicate-row guard), reuse that id so loopback dedupes
-    // against the row `persist()` already created.
-    if let Some(id) = crate::routing::airc_realtime_wire::claimed_message(event) {
+    // Only override message_id when attribution_gate validated HEADER_CONTINUUM_EVENT_ID —
+    // either via publication lookup (delegation path) or by matching a known runtime
+    // (self-peer publish_as_sender). Keeps row identity anchored to verified ownership.
+    if let Some(id) = validated_message_id {
         line.message_id = id;
     }
     Some(line)
@@ -720,3 +732,16 @@ fn kanban_changed_from_event(
 
 #[cfg(test)]
 mod tests;
+
+/// Check whether `peer_id` matches one of our known runtimes (operator or agent).
+/// Used to validate that HEADER_CONTINUUM_EVENT_ID came from our own publish_as_sender
+/// path rather than an unvalidated foreign event.
+fn is_known_sender(peer_id: &airc_core::PeerId) -> bool {
+    if let Some(rt) = crate::persona::operator_peer::operator_runtime() {
+        if rt.airc().peer_id() == *peer_id { return true; }
+    }
+    if let Some(rt) = crate::persona::operator_peer::agent_runtime() {
+        if rt.airc().peer_id() == *peer_id { return true; }
+    }
+    false
+}
