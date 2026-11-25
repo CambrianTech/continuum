@@ -509,11 +509,21 @@ network link between them. So that works later with no rework, everything built 
     (`<persona>.<generation>.tok`, one write of the bytes she holds, never an encoding).
   - The manifest names each mind's three files, generation and token count. It no longer carries her
     tokens (the 5.3 MB of JSON on the M5).
-  - **The clean mark is where her file is.** The restart first renames her `.kv` from the manifest's
-    path into its own instance directory, before any byte of it can change. Then it maps it, checks
-    its length against her record, attaches it as her storage and reads her record's cells. No row
-    is read until a page is touched. Once her file has left the manifest's path, a crash leaves her
-    cold and named: only a file that a completed stop put at that path restores.
+  - **Custody is per mind** (Codex, 2026-11-25). A core takes her custody lock
+    (`<persona>.custody` in the preserved directory, an OS lock like an instance's lease) before
+    it touches her files, and holds it from her restore through her stop's sync, unmap and rename.
+    So two cores contending for one mind (a parallel copy, or a handoff) never both move her file:
+    the second is refused while the first holds her.
+  - **The clean mark is where her file is.** Under her custody, the restart first checks everything it
+    can without moving anything: her record's generation (the manifest's), identity, layout and
+    storage bytes, her `.kv`'s exact length and her `.tok`'s exact length (four bytes per token,
+    the manifest's count). Only then does it rename her `.kv` from the manifest's path into its own
+    instance directory, before any byte of it can change. Then it maps it, attaches it as her
+    storage and reads her record's cells. No row is read until a page is touched. Once her file has
+    left the manifest's path, a crash leaves her cold and named: only a file that a completed stop
+    put at that path restores.
+  - The manifest is published only once every mind's three files are durable (each synced, then the
+    directory synced).
   - Where her storage is the fork's own memory (a device that cannot wrap host memory, until slice
     4), her record carries her rows, as the file does today. The record says which.
 
@@ -537,8 +547,19 @@ stream's own KV allocation then serves only a mind without storage; its size at 
   restores her (custody by rename, above).
 - A crash while she runs, or during a stop before its manifest, leaves her cold and named, as today
   when a stop does not finish. A torn file is never bound.
-- An old manifest (format 2, rows inside each file and tokens as JSON) is not translated. Its minds
-  start cold once and are named in the log; their files are reclaimed with the generation.
+- An old manifest (format 2: rows inside each record, tokens as JSON) is migrated, never dropped,
+  because a named cold start loses her continuity (Codex). An old record is exactly an `in_record`
+  record, the same read a device without attachable storage uses. So the restart copies her rows into
+  her new mapped storage once, the manifest upgrade carries her tokens until that stop, and the
+  stop writes the new format. The upgrade is deleted once no node holds a format-2 manifest.
+
+**Gates added by the second half** (Codex):
+- two cores contending for one mind's custody, on each side of each rename: one holds her, the
+  other is refused, and nothing is lost;
+- a handoff in the new format with next-token continuity: her first token after the restore is
+  byte-identical to a control that never stopped;
+- Windows: a rename while another mapping of her file is still held fails with its error carried
+  to the stop's report, and leaves the manifest's last generation whole.
 
 **Deleted:**
 - the fork's private storage reservation;
