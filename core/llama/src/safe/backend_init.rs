@@ -640,6 +640,13 @@ impl Model {
         let vocab = unsafe { sys::llama_model_get_vocab(self.ptr.as_ptr()) };
         unsafe { sys::llama_vocab_is_eog(vocab, token) }
     }
+
+    /// Whether `token` is a control token (`<|im_end|>` and its kind): [`Self::token_to_piece`]
+    /// renders it as no text, so a caller watching for it watches its id.
+    pub fn is_control_token(&self, token: i32) -> bool {
+        let vocab = unsafe { sys::llama_model_get_vocab(self.ptr.as_ptr()) };
+        unsafe { sys::llama_vocab_is_control(vocab, token) }
+    }
 }
 
 impl Model {
