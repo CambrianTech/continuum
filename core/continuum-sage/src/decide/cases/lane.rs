@@ -83,6 +83,9 @@ pub struct Outcome {
     /// The longest any ready mind waited in the window, against her deadline.
     pub worst_wait: Duration,
     pub worst_deadline: Duration,
+    /// Of `engine`, the time spent bringing a mind in (zero when no one was): the Core's transition
+    /// time, which serves no mind.
+    pub switching: Duration,
 }
 
 /// The lane as a use case, over any `Copy` mind key.
@@ -174,11 +177,21 @@ impl<K: Copy + Debug + PartialEq + Send + 'static> Policy<Lane<K>> for NeedFirst
 /// lane's history.
 pub const SERVING: &str = "cost-model";
 
-/// The lane's algorithms by name: the baseline, need-first, and the cost model over the lane's
-/// history. A caller (the Core's driver) creates the one its configuration names.
+/// How many decisions the lane keeps for replay, and how many a learner remembers: one per step, so
+/// at 26 ms a step about three and a half minutes, what replay can check a learner against.
+pub const DECISIONS: std::num::NonZeroUsize = match std::num::NonZeroUsize::new(8_192) {
+    Some(decisions) => decisions,
+    None => std::num::NonZeroUsize::MIN,
+};
+
+/// The lane's algorithms by name: the baseline, need-first, the cost model over the lane's history,
+/// and the stock linear UCB over the lane's features. A caller (the Core's driver) creates the one
+/// its configuration names.
 pub fn algorithms<K: Copy + Debug + PartialEq + Send + 'static>() -> Result<super::super::Algorithms<Lane<K>>, super::super::Unknown> {
+    use super::lane_features::{FEATURES, TARGETS};
     super::super::Algorithms::default()
         .register("baseline", || Box::new(super::super::Baseline))? // cold: the registry is built once, when the lane is
         .register("need-first", || Box::new(NeedFirst))? // cold: the registry is built once, when the lane is
-        .register("cost-model", || Box::new(super::lane_cost::CostModel::default())) // cold: the registry is built once, when the lane is
+        .register("cost-model", || Box::new(super::lane_cost::CostModel::default()))? // cold: the registry is built once, when the lane is
+        .register(super::super::linear_ucb::NAME, || Box::new(super::super::LinearUcb::<Lane<K>, FEATURES, TARGETS>::new(DECISIONS))) // cold: the registry is built once, when the lane is
 }

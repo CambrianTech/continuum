@@ -20,15 +20,19 @@
 mod algorithms;
 mod capacity;
 pub mod cases;
+mod linear_ucb;
 mod measured;
 mod policy;
 mod record;
 mod replay;
+mod ridge;
 mod use_case;
 
 pub use capacity::{Capacity, Lease, Price};
 pub use measured::{Ewma, Fraction, Measured, Window};
 pub use algorithms::{Algorithms, Factory, Unknown};
+pub use linear_ucb::{Featured, LinearUcb};
+pub use ridge::{Predicted, Ridge};
 pub use policy::{Baseline, Choice, Param, Policy, PolicyId, Refused};
 pub use record::{DecisionId, Decided, Decider, Record, Verdict};
 pub use replay::{replay, Replayed};

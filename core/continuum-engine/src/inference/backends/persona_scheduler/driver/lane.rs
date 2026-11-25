@@ -6,7 +6,6 @@
 //! (the M5, 2026-11-25 17:02Z: Benchy 38 asked, 0 completed, four minds on one Core).
 //! hot-path: the lane decides at every Core step.
 
-use std::num::NonZeroUsize;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -17,12 +16,6 @@ use continuum_sage::decide::{DecisionId, Decided, Decider, Fraction, Measured, U
 use continuum_saved_state::{OwnedFile, Rebuildable, Retention, SavedState, Store};
 
 use super::{Driver, Phase, Turn};
-
-/// Decisions kept for replay, one per step: at 26 ms a step, about three and a half minutes.
-const RECORDS: NonZeroUsize = match NonZeroUsize::new(8_192) {
-    Some(records) => records,
-    None => NonZeroUsize::MIN,
-};
 
 /// What the lane's algorithm learned, kept across restarts through the one saved-state contract
 /// (SAVED-STATE.md): its own bytes, valid only for the algorithm and the served model that wrote them,
@@ -64,6 +57,8 @@ pub(super) struct Lanes {
     open: Option<(DecisionId, Instant)>,
     /// Tokens the Core moved since the open decision: its outcome's throughput, the reward a learner reads.
     moved: u64,
+    /// Of the time since the open decision, what bringing a mind in took: its outcome's transition time.
+    switching: Duration,
     /// Where what the algorithm learned is kept, once the node's home is known, and under what.
     learned: Option<(Store<LearnedLane>, uuid::Uuid, LaneContract)>,
     algorithm: &'static str,
@@ -74,13 +69,14 @@ impl Lanes {
     pub(super) fn new(algorithm: &'static str) -> Result<Self, Unknown> {
         let policy = lane::algorithms::<PersonaId>()?.create(algorithm)?;
         Ok(Self {
-            decider: Decider::new(policy, RECORDS), // cold: the lane is built once, with the driver
+            decider: Decider::new(policy, lane::DECISIONS), // cold: the lane is built once, with the driver
             history: LaneHistory::new(Views::default()),
             situation: lane::Situation { running: None, ready: Vec::with_capacity(SLOTS), batch_width: 1 }, // cold: built once; refilled in place
             slots: Vec::with_capacity(SLOTS), // cold: built once; refilled in place
             running: None,
             open: None,
             moved: 0,
+            switching: Duration::ZERO,
             learned: None,
             algorithm,
         })
@@ -111,8 +107,10 @@ impl Lanes {
 
     /// What the driver measured, as the lane's executor.
     pub(super) fn observe(&mut self, observation: Observation<PersonaId>) {
-        if let Observation::Stepped { tokens, .. } = observation {
-            self.moved += tokens;
+        match observation {
+            Observation::Stepped { tokens, .. } => self.moved += tokens,
+            Observation::SwitchedIn { took, .. } => self.switching += took,
+            _ => {}
         }
         self.history.observe(observation);
     }
@@ -171,7 +169,7 @@ impl Driver<'_, '_> {
         // that mind's own bound
         if let Some((id, at)) = lanes.open.take() {
             let (worst_wait, worst_deadline) = situation.ready.iter().max_by_key(|mind| mind.waited).map_or((Duration::ZERO, Duration::MAX), |mind| (mind.waited, mind.deadline)); // map_or: no ready mind means no wait against any bound
-            let outcome = lane::Outcome { tokens: Measured::Value(std::mem::take(&mut lanes.moved)), engine: now.saturating_duration_since(at), worst_wait, worst_deadline };
+            let outcome = lane::Outcome { tokens: Measured::Value(std::mem::take(&mut lanes.moved)), engine: now.saturating_duration_since(at), worst_wait, worst_deadline, switching: std::mem::take(&mut lanes.switching) };
             let _ = lanes.decider.outcome(id, outcome);
         }
         let (id, action) = match lanes.decider.decide(&lanes.situation, &[]) {

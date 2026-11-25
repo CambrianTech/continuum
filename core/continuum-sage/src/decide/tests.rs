@@ -164,7 +164,7 @@ fn the_lane_forces_an_overdue_mind_and_offers_batches_only_as_wide_as_the_core()
     assert_eq!(envelope::<Lane<u8>>(&alone).0, Gate::Forced(lane::Action::Idle));
 
     let mut decider: Decider<Lane<u8>> = Decider::new(Box::new(Baseline), capacity(4));
-    let step = lane::Outcome { tokens: Measured::Value(1), engine: Duration::from_millis(26), worst_wait: Duration::from_millis(20), worst_deadline: Duration::from_secs(1) };
+    let step = lane::Outcome { tokens: Measured::Value(1), engine: Duration::from_millis(26), worst_wait: Duration::from_millis(20), worst_deadline: Duration::from_secs(1), switching: Duration::ZERO };
     for _ in 0..16 {
         let Decided::Act(id, lane::Action::Continue) = decider.decide(&open, &read(1)) else { panic!("test: the baseline continues") };
         assert!(decider.outcome(id, step).is_some(), "each step's outcome closes its record");
@@ -256,7 +256,7 @@ fn need_first_switches_to_a_more_urgent_mind_and_otherwise_continues() {
 #[test]
 fn lane_algorithms_are_created_by_name_with_typed_params_and_saved_state() {
     let registry = lane::algorithms::<u8>().expect("test: distinct names register"); // expect: the test's own precondition
-    assert_eq!(registry.names().collect::<Vec<_>>(), vec!["baseline", "need-first", "cost-model"]);
+    assert_eq!(registry.names().collect::<Vec<_>>(), vec!["baseline", "need-first", "cost-model", "linear-ucb"]);
     assert!(matches!(registry.create("no-such-algorithm"), Err(Unknown { use_case: "lane", name: "no-such-algorithm" })));
     assert!(lane::algorithms::<u8>().and_then(|r| r.register("cost-model", || Box::new(Baseline))).is_err(), "a name means one algorithm");
 
@@ -345,7 +345,7 @@ fn the_cost_models_margin_is_a_control_loop_both_ways_and_survives_a_restart() {
     let contended = lane::Situation { running: Some(mind(1, 0)), ready: vec![mind(2, 100)], batch_width: 1 };
     let read = |decider: &mut Decider<Lane<u8>>, situation: &lane::Situation<u8>, waited_ms: u64| {
         let Decided::Act(id, _) = decider.decide(situation, &[]) else { panic!("test: the lane acts") };
-        let outcome = lane::Outcome { tokens: Measured::Unmeasured, engine: Duration::from_millis(26), worst_wait: Duration::from_millis(waited_ms), worst_deadline: Duration::from_secs(1) };
+        let outcome = lane::Outcome { tokens: Measured::Unmeasured, engine: Duration::from_millis(26), worst_wait: Duration::from_millis(waited_ms), worst_deadline: Duration::from_secs(1), switching: Duration::ZERO };
         decider.outcome(id, outcome);
     };
     let start = margin(&decider);
@@ -392,4 +392,141 @@ fn the_cost_models_margin_is_seeded_from_the_first_measurements_it_needs() {
     let slack = waiter.deadline - waiter.waited - waiter.switch_in.value().unwrap_or_default(); // unwrap_or_default: the helper measures it
     let expected = (slack - Duration::from_millis(26)).as_secs_f64() / slack.as_secs_f64();
     assert_eq!(cost.param("margin"), Some(Param::Real(expected)), "one measured step of headroom in the waiter's slack");
+}
+
+/// A Core serving four minds, simulated: each turn prefills its prompt in chunks (0.2 ms a token),
+/// then decodes one token a step (26 ms), then her tool call runs off the Core for two seconds before
+/// her next turn. Bringing a mind in costs 5 ms. Turn sizes come from a fixed generator, so every
+/// algorithm faces the same work. Answers tokens per second of Core time, the worst wait against the
+/// bound, the median turn latency in ms, and turns finished.
+fn simulate(policy: Box<dyn Policy<Lane<u8>>>, seconds: u64) -> (f64, f64, u128, usize, Decider<Lane<u8>>) {
+    const CHUNK: u64 = 256;
+    let prefill_token = Duration::from_micros(200);
+    let decode = Duration::from_millis(26);
+    let switch = Duration::from_millis(5);
+    let think = Duration::from_secs(2);
+    let mut seed: u64 = 0x5eed;
+    let mut next = |below: u64| {
+        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        (seed >> 33) % below
+    };
+    // (ready since, prompt left, decode left, turn began) or thinking until
+    #[derive(Clone, Copy)]
+    enum State { Ready { since: Duration, prompt: u64, decode: u64, began: Duration }, Thinking(Duration) }
+    let mut minds: Vec<State> = (0..4).map(|_| State::Thinking(Duration::ZERO)).collect();
+    let mut decider = Decider::new(policy, capacity(1 << 16));
+    let (mut now, mut busy, mut tokens, mut worst) = (Duration::ZERO, Duration::ZERO, 0u64, 0.0f64);
+    let mut latencies = Vec::new();
+    let mut running: Option<usize> = None;
+    let bound = Duration::from_secs(1);
+    let as_mind = |id: usize, state: &State, now: Duration| match *state {
+        State::Ready { since, prompt, decode: left, .. } => Some(Mind {
+            mind: id as u8,
+            urgency: Urgency::Want,
+            waited: now.saturating_sub(since),
+            deadline: bound,
+            phase: if prompt > 0 { Phase::Prefill { remaining: prompt } } else { Phase::Decode },
+            kv_bytes: Measured::Unmeasured,
+            cold_bytes: Measured::Unmeasured,
+            remaining: Measured::Value(if prompt > 0 { prompt.div_ceil(CHUNK) } else { left }),
+            step: Measured::Value(if prompt > 0 { prefill_token * CHUNK as u32 } else { decode }),
+            switch_in: Measured::Value(switch),
+            prefix_hit: Measured::Unmeasured,
+        }),
+        State::Thinking(_) => None,
+    };
+    while now < Duration::from_secs(seconds) {
+        for state in minds.iter_mut() {
+            if let State::Thinking(until) = *state {
+                if until <= now {
+                    *state = State::Ready { since: now, prompt: 512 + next(3_584), decode: 50 + next(350), began: now };
+                }
+            }
+        }
+        let mut slots = Vec::new();
+        let mut situation = lane::Situation { running: None, ready: Vec::new(), batch_width: 1 };
+        for (id, state) in minds.iter().enumerate() {
+            let Some(mind) = as_mind(id, state, now) else { continue };
+            if running == Some(id) { situation.running = Some(Mind { waited: Duration::ZERO, ..mind }) } else { situation.ready.push(mind); slots.push(id) }
+        }
+        let Decided::Act(id, action) = decider.decide(&situation, &[]) else { panic!("test: the lane acts") };
+        let stepped = match action {
+            lane::Action::Continue => running,
+            lane::Action::Switch(slot) => slots.get(usize::from(slot)).copied(),
+            lane::Action::Batch(_) | lane::Action::Idle => None,
+        };
+        let Some(who) = stepped else {
+            let wake = minds.iter().filter_map(|state| if let State::Thinking(until) = state { Some(*until) } else { None }).min().unwrap_or(now + decode); // unwrap_or: the simulation's own clock
+            decider.outcome(id, lane::Outcome { tokens: Measured::Unmeasured, engine: Duration::ZERO, worst_wait: Duration::ZERO, worst_deadline: bound, switching: Duration::ZERO });
+            now = wake.max(now + Duration::from_micros(1));
+            continue;
+        };
+        let mut engine = Duration::ZERO;
+        let mut switching = Duration::ZERO;
+        if running != Some(who) {
+            if let Some(previous) = running {
+                if let State::Ready { since, .. } = &mut minds[previous] { *since = now }
+            }
+            engine += switch;
+            switching = switch;
+            running = Some(who);
+        }
+        let State::Ready { prompt, decode: left, began, .. } = &mut minds[who] else { panic!("test: a stepped mind is ready") };
+        let moved = if *prompt > 0 { let chunk = (*prompt).min(CHUNK); *prompt -= chunk; engine += prefill_token * chunk as u32; chunk } else { *left -= 1; engine += decode; 1 };
+        let finished = *prompt == 0 && *left == 0;
+        let began = *began;
+        now += engine;
+        busy += engine;
+        tokens += moved;
+        if finished {
+            latencies.push(now - began);
+            minds[who] = State::Thinking(now + think);
+            running = None;
+        }
+        let waits = minds.iter().enumerate().filter(|(other, _)| Some(*other) != running).filter_map(|(_, state)| if let State::Ready { since, .. } = state { Some(now - *since) } else { None });
+        let longest = waits.max().unwrap_or(Duration::ZERO); // unwrap_or: nobody waiting
+        worst = worst.max(longest.as_secs_f64() / bound.as_secs_f64());
+        decider.outcome(id, lane::Outcome { tokens: Measured::Value(moved), engine, worst_wait: longest, worst_deadline: bound, switching });
+    }
+    latencies.sort();
+    let median = latencies.get(latencies.len() / 2).map_or(0, Duration::as_millis);
+    (tokens as f64 / busy.as_secs_f64(), worst, median, latencies.len(), decider)
+}
+
+// what this catches: the stock learner failing to learn the lane (its predictions of what an action
+// moves do not improve with experience) or trading the wait bound away; and it reports how each lane
+// algorithm does on the same simulated Core, the comparison that picks which one serves.
+#[test]
+fn the_stock_linear_learner_learns_the_lane_and_keeps_the_bound() {
+    let registry = lane::algorithms::<u8>().expect("test: distinct names register"); // expect: the test's own precondition
+    for name in ["need-first", "cost-model", "linear-ucb"] {
+        let (rate, worst, median, turns, _) = simulate(registry.create(name).expect("test: registered"), 300); // expect: the test's own precondition
+        println!("{name:>11}: {rate:7.1} tok/s of Core, worst wait {worst:.2} of the bound, turn p50 {median} ms, {turns} turns");
+    }
+    let (_, worst, _, _, decider) = simulate(registry.create("linear-ucb").expect("test: registered"), 300); // expect: the test's own precondition
+    assert!(worst <= 1.1, "the envelope keeps every wait near its bound: {worst}");
+    // chronological prediction error of the chosen actions' throughput, early against late
+    let errors: Vec<f64> = decider.records().filter_map(|record| match (record.verdict, record.outcome) {
+        (Verdict::Chosen { expected: Some(expected), .. }, Some(lane::Outcome { tokens: Measured::Value(_), engine, switching, .. })) if engine > Duration::ZERO => Some((1.0 - switching.as_secs_f64() / engine.as_secs_f64() - expected).abs()),
+        _ => None,
+    }).collect();
+    let tenth = errors.len() / 10;
+    let mean = |slice: &[f64]| slice.iter().sum::<f64>() / slice.len() as f64;
+    let (early, late) = (mean(&errors[..tenth]), mean(&errors[errors.len() - tenth..]));
+    println!("linear-ucb prediction error: first tenth {early:.4}, last tenth {late:.4} of the Core over {} choices", errors.len());
+    assert!(late < early, "it learns what its actions move: {early} -> {late}");
+
+    // a restart resumes what it learned: the same choice and expectation in the same situation
+    let mut saved = Vec::new();
+    decider.save(&mut saved);
+    let mut restarted = registry.create("linear-ucb").expect("test: registered"); // expect: the test's own precondition
+    restarted.load(&saved).expect("test: its own state loads"); // expect: the test's own precondition
+    assert!(restarted.load(&saved[1..]).is_err(), "a truncated state is refused whole");
+    let mut learned = registry.create("linear-ucb").expect("test: registered"); // expect: the test's own precondition
+    learned.load(&saved).expect("test: its own state loads"); // expect: the test's own precondition
+    let contended = lane::Situation { running: Some(mind(1, 0)), ready: vec![mind(2, 400), mind(3, 700)], batch_width: 1 };
+    let (_, admissible) = envelope::<Lane<u8>>(&contended);
+    let fresh = registry.create("linear-ucb").expect("test: registered").choose(&contended, &admissible); // expect: the test's own precondition
+    assert_eq!(restarted.choose(&contended, &admissible), learned.choose(&contended, &admissible));
+    assert_ne!(learned.choose(&contended, &admissible).expected, fresh.expected, "what was learned differs from the unlearned start");
 }

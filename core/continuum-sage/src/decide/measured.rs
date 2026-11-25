@@ -33,6 +33,11 @@ impl Fraction {
     /// One quarter: an EWMA weight that remembers about the last four samples.
     pub const QUARTER: Self = Self(0.25);
 
+    /// One over `n`: an EWMA weight that remembers about the last `n` samples.
+    pub fn reciprocal(n: std::num::NonZeroUsize) -> Self {
+        Self(1.0 / n.get() as f64)
+    }
+
     /// In [0, 1]; `None` otherwise (and for NaN).
     pub fn of(value: f64) -> Option<Self> {
         (0.0..=1.0).contains(&value).then_some(Self(value))
