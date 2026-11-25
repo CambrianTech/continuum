@@ -112,6 +112,19 @@ impl PersonaBlocks {
     /// Bind blocks that have never been saved (no owner stamp yet) as sequence `seq`: a new mind whose
     /// storage is her own decodes straight into it from her first token. Blocks that carry an owner go
     /// through [`Self::bind`], whose owner check this never bypasses.
+    /// Whether her KV storage can be memory the caller owns (the KV device wraps host memory).
+    pub fn storage_viewable(ctx: &mut Context<'_>) -> bool {
+        // SAFETY: `ctx` is a live context; the fork only reads its layout and device.
+        unsafe { sys::llama_persona_storage_viewable(ctx.as_ptr()) }
+    }
+
+    /// Her KV storage in the fork's own device memory (VRAM), hers for life and viewed like attached
+    /// storage, where the device cannot wrap host memory. `out_of_memory` when it does not fit.
+    pub fn reserve_storage(&mut self, ctx: &mut Context<'_>) -> Result<(), PersonaRefusal> {
+        // SAFETY: both pointers are live; the fork allocates her storage or refuses whole.
+        status(unsafe { sys::llama_persona_storage_reserve(ctx.as_ptr(), self.ptr.as_ptr()) })
+    }
+
     pub fn bind_fresh(&mut self, ctx: &mut Context<'_>, seq: i32) -> Result<(), BindRefusal> {
         if let Some(held) = self.owner() {
             return Err(BindRefusal::NotFresh { held });

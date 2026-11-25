@@ -18,20 +18,24 @@ pub enum KvHome {
     /// Each mind's KV is a block over her own file in this directory. Whether the device can view it is
     /// the fork's to say (`storage_bytes` is 0 when it cannot); the tier asks once and keeps the answer.
     Mapped(PathBuf),
-    /// The fork's own memory, moved by row copy.
+    /// The fork's own memory, moved by row copy (a context that is not the Core's shape; examples).
     Native,
+    /// In the fork's own device memory (VRAM), viewed like a mapped block: a device that cannot wrap host memory.
+    Device,
 }
 
 /// A mind's KV memory, held beside her fork blocks and dropped after them.
 pub(super) enum KvMemory {
     Native,
+    /// In the fork's own device memory (VRAM), viewed like a mapped block: a device that cannot wrap host memory.
+    Device,
     Mapped { block: Option<Block<MindId>>, path: PathBuf },
 }
 
 impl KvMemory {
     /// Whether she has storage of her own the stream can view.
     pub(super) fn held(&self) -> bool {
-        matches!(self, Self::Mapped { .. })
+        matches!(self, Self::Mapped { .. } | Self::Device)
     }
 
     /// A block over `path`, `bytes` rounded to whole pages, for `mind`.

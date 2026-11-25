@@ -132,9 +132,20 @@ impl<'c, 'm> UnifiedTier<'c, 'm> {
         let KvHome::Mapped(dir) = &self.home else { return Ok(KvMemory::Native) };
         let bytes = PersonaBlocks::storage_bytes(self.ctx);
         if bytes == 0 {
-            continuum_base::probe!(class = "persona.kv_home.native", "this node's device cannot view host memory: minds' KV stays the fork's own");
+            continuum_base::probe!(class = "persona.kv_home.native", "this context is not the Core's shape: minds' KV moves by row copy");
             self.home = KvHome::Native;
             return Ok(KvMemory::Native);
+        }
+        if !PersonaBlocks::storage_viewable(self.ctx) {
+            // a device that cannot wrap host memory (CUDA): her storage in the fork's own device memory, viewed the
+            // same way; where it does not fit she moves by row copy until room is made (the Placer's decision)
+            return Ok(match native.reserve_storage(self.ctx) {
+                Ok(()) => KvMemory::Device,
+                Err(refusal) => {
+                    continuum_base::probe!(class = "persona.kv_home.no_device_room", persona = %mind.persona.0, why = %refusal, bytes = bytes as u64, "her KV storage did not fit in device memory: she moves by row copy");
+                    KvMemory::Native
+                }
+            });
         }
         let path = dir.join(format!("{}.{}.kv", mind.persona.0, mind.epoch.0));
         let (memory, at, len) = KvMemory::mapped(mind, path, bytes).map_err(|_| refused(mind, "her KV file could not be mapped"))?;
