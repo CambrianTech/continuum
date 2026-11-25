@@ -144,36 +144,34 @@ she is off the lane her perception, tools, memory, learning and preparation keep
   each rotation it moves in whichever direction raised measured tokens per second, finds the peak and
   follows it as load, minds, models and machines change. Laws are pluggable (`Control`); a learned law
   is one more implementation.
-- **The lane picks a batch, not a mind.** Decode is memory-bound: one step reads the weights once
-  whether it serves one sequence or four. Every mind whose KV is resident decodes in the same step, up
-  to what the memory budget measures; the slicer only rotates minds in and out of residency when there
-  are more minds than KV room. One mind per step is the special case of tight memory.
+- **One mind on the Core at a time; cheap swaps make it seem parallel.** This is what makes it fast.
+  The Core is a CPU core: a mind's native state (KV rows, recurrent state, checkpoints) is her register
+  file. A switch saves the occupant and binds the next (`PersonaEngine` + `pipeline::Roles`, one stream
+  holding the whole context: 6 ms in the `persona_switch` validator, 21-26 ms p50 live). The lane
+  switches at almost every step, so every mind sees the GPU as her own. Never a batch of minds on the
+  Core, never `--parallel`: four parallel decodes ran at about 2 tok/s each against one at a time at
+  full rate (the M5, Nov 2026), and #6258's KV pool of five seats thrashed (4,191 evictions in 15
+  minutes, 2026-11-24). A switch that is not cheap is the defect to fix; switching less is never the fix.
 - **Work behind the scenes compounds it.** Her new context tail (tool results, messages) is prefilled
   while she is in a tool, so her first token on return is near immediate. Shared prefixes (system
   prompt, tool surface) are copied between sequences (`seq_cp`), never prefilled again. Learning runs
   as chunked tiles between decode steps (live `/learn` as the fork's reverse walk, Cormac).
 
-**What it can reach** (four minds, the M5, Qwen3.6-35B-A3B Q4_K_M). Anchors measured
-(CONTINUUM-ENGINE 4.1b, 2026-10-28, short prompts, `llama-batched-bench`): decode 59 tok/s for one
-stream, 45 per stream / 90 aggregate for two, 31 / 124 for four: about 2.1x at four, because on this MoE
-model each sequence routes to its own experts. The MTP draft wins alone (80 vs 57 tok/s) and loses
-under concurrency (91 vs 122 aggregate at four), so it drafts only while a turn decodes alone. Prefill
-about 304 tok/s at 64k depth; persona swap p50 about 6 ms (`persona_switch` validator) and 26 ms on the
-live Core (aa734cc01c, below). At depth every number is lower (decode 59/(1+d/64k) alone); the batched
-ratio at depth is to be measured. The rest is arithmetic on the short-prompt numbers:
+**What it can reach** (four minds, the M5, Qwen3.6-35B-A3B Q4_K_M). Measured: decode 59 tok/s for one
+mind (CONTINUUM-ENGINE 4.1b, 2026-10-28, short prompts); persona swap p50 about 6 ms (`persona_switch`
+validator) and 26 ms on the live Core (aa734cc01c, below). At depth every number is lower (decode
+59/(1+d/64k) alone), and the swap at depth is measured before any bound is promised. The MTP draft wins
+alone (80 vs 57 tok/s), so it drafts while a turn has the Core.
 
 | How the lane runs | Each mind sees | All four |
 |---|---|---|
-| A turn at a time (before) | 59 tok/s, then minutes of waiting | about 59 tok/s, less swap stalls |
-| Sliced, fast swap, 0.5 s bound | about 15 tok/s, every wait under 0.5 s | about 50-56 tok/s (switch overhead) |
-| Resident minds batched in one step | about 31 tok/s, no wait | about 124 tok/s |
+| A turn at a time (before; `frame.rs`) | 59 tok/s, then up to minutes of waiting (live 2026-11-24: wait p50 12 s, max 277 s) | about 59 tok/s, less swap stalls |
+| Sliced at the next step, cheap swap, under the bound | about 15 tok/s, every wait under the bound | about 50-56 tok/s (the swap's share) |
 | One mind alone, with the MTP draft | 80 tok/s | 80 tok/s |
 
-(Corrected 2026-11-22: an earlier version of this table claimed about 3.3x from batching and 150-200
-tok/s with MTP under batching; the measured gain is 2.1x and MTP loses under concurrency.)
-
-Switch overhead at a 0.5 s bound with four minds decoding at once: 16% at a 26 ms switch, 4% at 6 ms;
-with two minds, 5% and 1%. The fast swap is what makes a sub-second bound nearly free.
+Swap overhead at a 0.5 s bound with four minds decoding at once: 16% at a 26 ms swap, 4% at 6 ms; with
+two minds, 5% and 1%. The cheap swap is what makes a sub-second bound nearly free, so making the swap
+cheaper is the lever.
 
 **It learns on every machine, live.** Each node's loop adapts to its own hardware; each node records a
 rolling lane trace stamped with its fingerprint (chip, VRAM or unified memory, RAM, flash speed, OS).
@@ -186,7 +184,7 @@ box with 64 GB RAM, and later a MacBook Air M2.
 **Built** (`fable/slice-governor`, on SAGE): the slicer, lane, control loop, trace and simulator
 (6d03d03fab, 9ebb941056, d949797d70). In simulation (three residents, 20 ms steps, 26 ms switch, 1 s
 bound, 300 s) the loop made 46.3 steps/s with the worst wait 978 ms, against 24.5 steps/s switching
-every step. **Next:** the batch pick; the live decode loop drives the lane with the in-process swap
+every step. **Next** (`THE-LANE-ON-SAGE.md`): the live decode loop drives the lane with the in-process swap
 and a rolling trace; the permit becomes per slice; the old paths are deleted. The receipt is each
 mind's worst token gap with N minds against one mind alone.
 
