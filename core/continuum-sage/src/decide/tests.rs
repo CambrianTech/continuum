@@ -570,3 +570,20 @@ fn a_crowd_nearing_the_bound_is_served_before_anyone_passes_it() {
     let spread = lane::Situation { running: Some(running), ready: vec![mind(2, 900), mind(3, 600), mind(4, 300)], batch_width: 1 };
     assert_eq!(envelope::<Lane<u8>>(&spread).0, Gate::Choose, "waiters far apart leave the choice to the policy");
 }
+
+// what this catches (the M5, 2026-11-25 21:09 to 21:19Z: dream consolidation at Content took 62% of the
+// Core from residents at Want): a policy offered background work beside a mind's act, which a
+// finish-the-least-left-first objective serves first. Only the most urgent class is offered; less
+// urgent work steps when none of it is ready, or when its bound forces it.
+#[test]
+fn a_less_urgent_mind_steps_only_when_no_more_urgent_one_is_ready_or_her_bound_forces_her() {
+    let dream = |id: u8, waited_ms: u64| Mind { urgency: Urgency::Content, ..mind(id, waited_ms) };
+    let resident = mind(2, 100); // Want
+    let outranked = lane::Situation { running: Some(dream(1, 0)), ready: vec![dream(3, 100), resident], batch_width: 1 };
+    let (gate, offered) = envelope::<Lane<u8>>(&outranked);
+    assert_eq!((gate, offered), (Gate::Choose, vec![lane::Action::Switch(1)]), "a running dream yields to her act; another dream is not offered");
+    let serving = lane::Situation { running: Some(mind(1, 0)), ready: vec![dream(3, 500)], batch_width: 1 };
+    assert_eq!(envelope::<Lane<u8>>(&serving).0, Gate::Forced(lane::Action::Continue), "her act keeps the Core over a dream");
+    let aged = lane::Situation { running: Some(mind(1, 0)), ready: vec![dream(3, 990)], batch_width: 1 };
+    assert_eq!(envelope::<Lane<u8>>(&aged).0, Gate::Forced(lane::Action::Switch(0)), "a dream at her bound still steps: no mind starves");
+}

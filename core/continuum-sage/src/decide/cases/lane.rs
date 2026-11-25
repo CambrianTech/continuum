@@ -150,24 +150,36 @@ impl<K: Copy + Debug + PartialEq + Send + 'static> UseCase for Lane<K> {
         if let Some((slot, _)) = overdue {
             return Gate::Forced(Action::Switch(slot as Slot));
         }
+        // Priority classes, the bound as aging (CLAUDE.md goal 9): a policy chooses only among the most
+        // urgent minds present; a less urgent one steps when none is ready, or when her bound forces
+        // her above. A policy's objective (finish the least work left first) would otherwise serve
+        // short background work ahead of a mind's act (the M5, 2026-11-25 21:09 to 21:19Z: dream
+        // consolidation at Content took 62% of the Core from residents at Want).
+        let top = ready.iter().map(|mind| mind.urgency).chain(situation.running.iter().map(|running| running.urgency)).max();
+        let in_class = |mind: &Mind<K>| Some(mind.urgency) == top;
+        let switches = ready.iter().enumerate().filter(|(_, mind)| in_class(mind)).map(|(slot, _)| Action::Switch(slot as Slot));
         let Some(running) = &situation.running else {
             if ready.is_empty() {
                 return Gate::Forced(Action::Idle);
             }
-            admissible.extend((0..ready.len()).map(|slot| Action::Switch(slot as Slot)));
+            admissible.extend(switches);
             return Gate::Choose;
         };
         // Finish first: her measured remainder costs less than bringing anyone in.
         let cheapest_switch = ready.iter().filter_map(|mind| mind.switch_in.value()).min();
         let finishing = matches!((running.remaining.value(), running.step.value(), cheapest_switch), (Some(left), Some(step), Some(switch)) if step.mul_f64(left as f64) < switch);
-        if finishing || ready.is_empty() {
+        let outranked = !in_class(running);
+        if (finishing && !outranked) || ready.is_empty() || !ready.iter().any(in_class) {
             return Gate::Forced(Action::Continue);
         }
-        admissible.push(Action::Continue);
-        admissible.extend((0..ready.len()).map(|slot| Action::Switch(slot as Slot)));
-        // the running mind and the first `others` ready minds: the lowest `others` bits (1..=SLOTS)
+        if !outranked {
+            admissible.push(Action::Continue);
+        }
+        admissible.extend(switches);
+        // the running mind and the first `others` ready minds (the lowest `others` bits, 1..=SLOTS),
+        // when all of them are of the top class
         let others = (situation.batch_width as usize).saturating_sub(1).min(ready.len());
-        if others > 0 {
+        if others > 0 && !outranked && ready[..others].iter().all(in_class) {
             admissible.push(Action::Batch(!0 >> (SLOTS - others)));
         }
         Gate::Choose
