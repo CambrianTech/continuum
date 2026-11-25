@@ -333,6 +333,21 @@ avatar's render quality (photorealistic, reduced, thumbnail), a voice gene, a mo
 her learning stay core mind, so a finer unit never splits a mind from the genes she learned with.
 
 
+**Spend, preferences and time are inputs to the law, set by the owner and by the mind.**
+- **A desired spend.** The owner sets a budget: per day, per activity, a ceiling, or none. A law
+  maximizes worth minus price within it, and never buys past it.
+- **Preferences the owner sets, and preferences the mind sets for herself within them.** How much
+  outside help to use: our own nodes only, our grid, open peers, or a cloud provider. Which roles may
+  be bought, and which must stay local (her genome and private state stay inside the trust she is
+  given). How much quality she will trade for cost.
+- **Time is a price too.** Work with a deadline that allows it can wait for capacity that is cheaper
+  later: off-peak hours, a node that will be idle, a peer's quiet time. A mind's dreaming and training
+  are the obvious cases. A unit's bill carries its deadline, and the law weighs waiting against
+  buying now.
+- **It trades in the markets.** A node with spare capacity offers it, priced by the same law. A mind
+  or a node buys where it is cheapest to fill its roles, and sells what it is not using. Receipts
+  settle both sides, at every scope.
+
 **One economy at every scope: the node, the grid, and open peers across the web.** The same `Placer`,
 bill of materials and prices work at three scopes. Only trust and settlement differ:
 
