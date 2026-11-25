@@ -650,14 +650,24 @@ fn capacity_offer_from_envelope(
 /// authoritative `peer_id`, and the projection resolves name / kind /
 /// integrations downstream from the roster (presence cards). Identity
 /// is a presence fact, never a message fact — see
-/// `airc-to-positron-chat-projection`. airc's `event_id` IS the stable
-/// `message_id` (same event → same id across replay + peers).
+/// `airc-to-positron-chat-projection`. When no custom event-id header is
+/// present, airc's own `event_id` IS the stable `message_id` (same event
+/// → same id across replay + peers). When one is present (the operator
+/// self-peer path), it overrides so loopback dedupes against the row
+/// `persist()` already created.
 fn posted_from_message(event: &airc_core::TranscriptEvent) -> Option<PostedLine> {
     if event.kind != TranscriptKind::Message {
         return None;
     }
     let content = event.body.as_ref()?.as_text()?;
-    posted_line(event, content.to_string())
+    let mut line = posted_line(event, content.to_string())?;
+    // If the outbound path published with a custom event_id header (the
+    // self-peer duplicate-row guard), reuse that id so loopback dedupes
+    // against the row `persist()` already created.
+    if let Some(id) = crate::routing::airc_realtime_wire::claimed_message(event) {
+        line.message_id = id;
+    }
+    Some(line)
 }
 
 /// Project a `WallPostPublished` transcript event into the `wall:changed`

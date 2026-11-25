@@ -280,6 +280,30 @@ pub async fn publish_text_in_room(
     .map(|receipt| receipt.event_id)
 }
 
+/// Publish plain text into `room_id` under a caller-supplied `event_id`, so the inbound attach seam
+/// reuses that id on loopback instead of generating a fresh one (the duplicate-chat-row guard).
+pub async fn publish_text_in_room_with_event_id(
+    airc: &airc_lib::Airc,
+    room_id: Uuid,
+    text: &str,
+    event_id: uuid::Uuid,
+) -> Result<EventId, AircError> {
+    let headers = {
+        use continuum_kernel::routing::airc_realtime_wire::HEADER_CONTINUUM_EVENT_ID;
+        let mut h = airc_core::Headers::new();
+        h.insert(HEADER_CONTINUUM_EVENT_ID.to_string(), event_id.to_string());
+        h
+    };
+    airc.publish(
+        publish_target_for(room_id),
+        airc_protocol::FrameKind::Message,
+        airc_core::Body::text(text),
+        headers,
+    )
+    .await
+    .map(|receipt| receipt.event_id)
+}
+
 /// A node's telemetry line into a room: an Event frame (never the conversational Message plane)
 /// carrying [`continuum_airc_protocol::NODE_TELEMETRY_BODY_HINT`], so inbound classification routes
 /// it away from every mind's perception by its header alone. Operators still read it in the room.

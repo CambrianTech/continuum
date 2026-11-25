@@ -207,8 +207,8 @@ async fn publish_as_sender(
     params: &ChatSendParams,
 ) -> Result<(), String> {
     if params.media.is_empty() {
-        return crate::persona::airc_citizen::publish_text_in_room(
-            airc, params.room_id, &params.text,
+        return crate::persona::airc_citizen::publish_text_in_room_with_event_id(
+            airc, params.room_id, &params.text, message_id,
         ).await.map(|_| ()).map_err(|e| e.to_string());
     }
     let envelope: crate::routing::airc_realtime::AircRealtimeEnvelope = serde_json::from_value(
