@@ -62,6 +62,7 @@ macro_rules! deserialize_params {
 }
 
 mod max_concurrent_queries;
+mod citizen_store;
 pub use max_concurrent_queries::*;
 mod data_state;
 mod data_state_2;

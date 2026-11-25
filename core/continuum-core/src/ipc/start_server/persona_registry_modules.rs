@@ -35,6 +35,8 @@ pub(super) fn register_persona_registry_modules(
         }
     }
     let continuum_root = crate::paths::continuum_root();
+    // What minds that are not citizens left behind is reclaimed before any mind is hosted.
+    runtime.register(Arc::new(crate::modules::mind_homes::MindHomesModule::new(continuum_root.clone())));
     let daemon_socket_for_rag_inspect = daemon_socket.clone();
     let registry = crate::persona::PersonaAircRuntimeRegistry::new();
     // Publish the live roster process-globally so host-independent callers — the
