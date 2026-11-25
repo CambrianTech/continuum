@@ -414,3 +414,59 @@ pub fn utf8_text_env(cmd: &mut TokioCommand) {
     cmd.env("PYTHONUTF8", "1").env("PYTHONIOENCODING", "utf-8");
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// What this catches (card f25f4141): the core applies config.env to its own
+    /// process on boot, so every child inherits secrets unless we strip them.
+    /// This test sets HF_TOKEN in our env, builds a command spec like a citizen
+    /// shell would get, and asserts that HF_TOKEN is removed from the spawned
+    /// process's environment while the parent still has it.
+    #[test]
+    fn citizen_shell_env_strips_secret_keys() {
+        std::env::set_var("HF_TOKEN", "hf_test_abc123");
+        std::env::set_var("GH_TOKEN", "gho_test_xyz789");
+
+        let mut cmd = TokioCommand::new("sh").arg("-c").arg("env");
+
+        for key in continuum_base::config_env::secret_keys() {
+            cmd.env_remove(key);
+        }
+
+        let mut child = cmd.spawn().expect("spawn env dump");
+        let output = child.wait_with_output().expect("read output");
+
+        unsafe { std::env::remove_var("HF_TOKEN") };
+        unsafe { std::env::remove_var("GH_TOKEN") };
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+
+        assert!(
+            !stdout.contains("HF_TOKEN="),
+            "child env leaked HF_TOKEN: {}",
+            stdout,
+        );
+        assert!(
+            !stdout.contains("GH_TOKEN="),
+            "child env leaked GH_TOKEN: {}",
+            stdout,
+        );
+
+        assert_eq!(
+            std::env::var("HF_TOKEN").unwrap_or_default(),
+            "hf_test_abc123",
+            "parent must retain HF_TOKEN after stripping from child",
+        );
+    }
+
+    /// What this catches: secret_keys() returns at least HF_TOKEN, so any future
+    /// removal of a key from the list is immediately visible when the test fails.
+    #[test]
+    fn secret_keys_contains_hf_token_and_gh_token() {
+        let keys = continuum_base::config_env::secret_keys();
+        assert!(keys.contains(&"HF_TOKEN"), "secret_keys must include HF_TOKEN");
+        assert!(keys.contains(&"GH_TOKEN"), "secret_keys must include GH_TOKEN");
+    }
+}

@@ -39,6 +39,60 @@ pub(super) enum SmokeCap {
     EngineBound,
 }
 
+/// Where a smoke probe may target: the endpoint that failed.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub(super) enum SmokeEndpoint {
+    Slots,
+    Tokenize,
+    ChatCompletions,
+}
+
+impl std::fmt::Display for SmokeEndpoint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SmokeEndpoint::Slots => write!(f, "/slots"),
+            SmokeEndpoint::Tokenize => write!(f, "/tokenize"),
+            SmokeEndpoint::ChatCompletions => write!(f, "/chat/completions"),
+        }
+    }
+}
+
+/// Failure modes for smoke probes: why a reader returned `None` instead of data.
+///
+/// Each variant carries typed diagnostic data so the caller can distinguish between
+/// transport errors (the request never reached the server), status-code failures
+/// (the server replied with an error HTTP code), and schema problems (the response
+/// was valid JSON but missing or mis-shaped fields). Display produces a single-line
+/// description suitable for log output; Debug gives full struct details.
+#[derive(Debug, thiserror::Error)]
+pub(super) enum SmokeFailure {
+    /// The transport failed: timeout, DNS resolution, connection refused, etc.
+    #[error("{endpoint}: transport error: {source}")]
+    Transport {
+        endpoint: SmokeEndpoint,
+        #[source]
+        source: reqwest::Error,
+    },
+    /// The server responded with a non-success status code.
+    #[error("{endpoint}: HTTP {status}")]
+    Status { endpoint: SmokeEndpoint, status: u16 },
+    /// The response was valid but missing or mis-shaped the expected fields.
+    #[error("{endpoint}: schema error: {source}")]
+    Schema {
+        endpoint: SmokeEndpoint,
+        #[source]
+        source: reqwest::Error,
+    },
+    /// The `/chat/completions` response carried no `usage.completion_tokens`
+    /// — not "produced 0 tokens", but "the server did not tell us". A schema
+    /// omission that signals a wedge rather than an HTTP error.
+    #[error("{endpoint}: response carries no token count")]
+    NoCompletionTokens { endpoint: SmokeEndpoint },
+    /// A required field was missing from a valid JSON response (e.g., tokenize returned no `"tokens"` array).
+    #[error("{endpoint}: missing field {field}")]
+    MissingField { endpoint: SmokeEndpoint, field: &'static str },
+}
+
 /// Does `text` contain a run of three consecutive ascending integers (`… 4 5 6 …`)?
 ///
 /// The decode smoke-probe's assertion. Deliberately tolerant of formatting — separators,
@@ -153,25 +207,43 @@ pub(super) fn scratch_slot_for(v1_url: &str) -> Option<u32> {
     }
 }
 
+/// HTTP GET `/slots` from the engine, returning typed failure instead of `None`. A lane that
+/// cannot read its own slots cannot be smoke-probed; knowing *why* (transport, status,
+/// schema) is essential on BigMama where wedges cycle every ~8 min.
+pub(super) async fn smoke_slots(client: &reqwest::Client, root: &str) -> Result<serde_json::Value, SmokeFailure> {
+    let resp = client
+        .get(format!("{root}/slots"))
+        .timeout(PROBE_TIMEOUT)
+        .send()
+        .await
+        .map_err(|e| SmokeFailure::Transport { endpoint: SmokeEndpoint::Slots, source: e })?;
+    if !resp.status().is_success() {
+        return Err(SmokeFailure::Status { endpoint: SmokeEndpoint::Slots, status: resp.status().as_u16() });
+    }
+    resp.json::<serde_json::Value>().await.map_err(|e| {
+        SmokeFailure::Schema { endpoint: SmokeEndpoint::Slots, source: e }
+    })
+}
+
 /// The engine's own token count of [`smoke_answer`]: the quick attempt's cap. POSTs the
 /// served model's `/tokenize` (an HTTP-thread call: no slot, no decode, so the control-plane
-/// timeout). `None` when the transport, status or schema failed: a lane that cannot
-/// tokenize cannot be proven.
-pub(super) async fn smoke_answer_tokens(client: &reqwest::Client, root: &str) -> Option<u64> {
-    let resp = match client
+/// timeout). Err when transport, status or schema failed.
+pub(super) async fn smoke_answer_tokens(client: &reqwest::Client, root: &str) -> Result<u64, SmokeFailure> {
+    let resp = client
         .post(format!("{root}/tokenize"))
         .timeout(PROBE_TIMEOUT)
         .json(&serde_json::json!({ "content": smoke_answer() }))
         .send()
         .await
-    {
-        Ok(resp) if resp.status().is_success() => resp,
-        _ => return None,
-    };
-    let Ok(v) = resp.json::<serde_json::Value>().await else {
-        return None;
-    };
+        .map_err(|e| SmokeFailure::Transport { endpoint: SmokeEndpoint::Tokenize, source: e })?;
+    if !resp.status().is_success() {
+        return Err(SmokeFailure::Status { endpoint: SmokeEndpoint::Tokenize, status: resp.status().as_u16() });
+    }
+    let v = resp.json::<serde_json::Value>().await.map_err(|e| {
+        SmokeFailure::Schema { endpoint: SmokeEndpoint::Tokenize, source: e }
+    })?;
     token_count_of(&v)
+        .ok_or_else(|| SmokeFailure::MissingField { endpoint: SmokeEndpoint::Tokenize, field: "tokens" })
 }
 
 /// PURE: the token count in a `/tokenize` response (`{"tokens": [..]}`). An empty list is
@@ -210,30 +282,28 @@ pub(super) fn smoke_body(cap: SmokeCap, scratch: Option<u32>) -> serde_json::Val
 }
 
 /// One smoke-decode HTTP attempt: POST the count-to-ten prompt at `cap`,
-/// return `(completion_tokens, visible_content, reasoning_len)` — or `None` when
-/// the transport/status/schema failed (each case logged where it is detected).
-/// Free fn (client + url in) so [`decode_smoke_ok`]'s policy stays a readable
-/// verdict match instead of interleaved I/O.
+/// return `(completion_tokens, visible_content, reasoning_len)` — or a typed
+/// `SmokeFailure` when transport/status/schema failed.
 pub(super) async fn smoke_attempt(
     client: &reqwest::Client,
     v1_url: &str,
     cap: SmokeCap,
-) -> Option<(u64, String, usize)> {
+) -> Result<(u64, String, usize), SmokeFailure> {
     let url = format!("{v1_url}/chat/completions");
     let body = smoke_body(cap, scratch_slot_for(v1_url));
-    let resp = match client
+    let resp = client
         .post(&url)
         .timeout(DECODE_SMOKE_TIMEOUT)
         .json(&body)
         .send()
         .await
-    {
-        Ok(resp) if resp.status().is_success() => resp,
-        _ => return None,
-    };
-    let Ok(v) = resp.json::<serde_json::Value>().await else {
-        return None;
-    };
+        .map_err(|e| SmokeFailure::Transport { endpoint: SmokeEndpoint::ChatCompletions, source: e })?;
+    if !resp.status().is_success() {
+        return Err(SmokeFailure::Status { endpoint: SmokeEndpoint::ChatCompletions, status: resp.status().as_u16() });
+    }
+    let v = resp.json::<serde_json::Value>().await.map_err(|e| {
+        SmokeFailure::Schema { endpoint: SmokeEndpoint::ChatCompletions, source: e }
+    })?;
     // A missing/!u64 `usage.completion_tokens` is NOT "produced 0 tokens" — it is
     // "this server did not tell us". Both fail the smoke test, but only one of them
     // is a wedge; say which, or a schema change reads forever as a dead lane.
@@ -242,11 +312,7 @@ pub(super) async fn smoke_attempt(
         .and_then(|u| u.get("completion_tokens"))
         .and_then(|t| t.as_u64())
     else {
-        tracing::warn!(target: "continuum_core::inference::llama_server", "smoke decode: response carried no usage.completion_tokens — cannot \
-             confirm the compute path (treating as NOT proven, but this is a \
-             missing field, not a measured zero)"
-        );
-        return None;
+        return Err(SmokeFailure::NoCompletionTokens { endpoint: SmokeEndpoint::ChatCompletions });
     };
     // The VISIBLE answer channel. Missing is treated as empty here (not None):
     // paired with a non-empty reasoning channel that shape is the think-starved
@@ -263,16 +329,30 @@ pub(super) async fn smoke_attempt(
         .and_then(|c| c.as_str())
         .map(str::len)
         .unwrap_or(0); // absent reasoning channel = no reasoning spent
-    Some((out_tokens, visible, reasoning_len))
+    Ok((out_tokens, visible, reasoning_len))
 }
 
-/// One attempt at `cap`, judged: `None` when the attempt itself failed (transport, status,
-/// schema), else the verdict of what it decoded.
+/// One attempt at `cap`, judged: `Err` when the attempt itself failed (transport, status,
+/// schema), else `Ok` with the verdict of what it decoded.
 pub(super) async fn smoke_attempt_verdict(
     client: &reqwest::Client,
     v1_url: &str,
     cap: SmokeCap,
-) -> Option<SmokeVerdict> {
+) -> Result<SmokeVerdict, SmokeFailure> {
     let (out_tokens, visible, reasoning_len) = smoke_attempt(client, v1_url, cap).await?;
-    Some(smoke_verdict(cap, out_tokens, &visible, reasoning_len))
+    Ok(smoke_verdict(cap, out_tokens, &visible, reasoning_len))
+}
+
+impl SmokeFailure {
+    /// Extract the endpoint from any SmokeFailure variant.
+    pub(super) fn endpoint(&self) -> SmokeEndpoint {
+        match self {
+            Self::Transport { endpoint, .. }
+            | Self::Status { endpoint, .. }
+            | Self::Schema { endpoint, .. }
+            => *endpoint,
+            Self::NoCompletionTokens { endpoint } => *endpoint,
+            Self::MissingField { endpoint, .. } => *endpoint,
+        }
+    }
 }

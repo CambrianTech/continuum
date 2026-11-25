@@ -75,6 +75,8 @@ else
 
     # Fetch latest release version
     echo -e "${YELLOW}Fetching latest LiveKit server release...${NC}"
+    # pipefail-audit: curl | grep | sed pipeline — grep may match nothing on GitHub error/rate-limit body
+    # Fix (aad30dee): || true prevents set -e from killing script before fallback on line 80
     LATEST_VERSION=$(curl -sL https://api.github.com/repos/livekit/livekit/releases/latest | grep '"tag_name"' | sed -E 's/.*"v([^"]+)".*/\1/')
 
     if [ -z "$LATEST_VERSION" ]; then
