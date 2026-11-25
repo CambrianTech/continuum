@@ -23,6 +23,8 @@ pub enum Decided<A> {
     Act(DecisionId, A),
     /// Nothing may be done now; ask again when the observations change.
     Defer(DecisionId, Deferred),
+    /// Every record slot holds an open decision: nothing is decided until `open`'s outcome arrives.
+    Full { open: DecisionId },
 }
 
 /// What was decided, from what, by which policy, and what followed. It names the owner-published
@@ -105,6 +107,13 @@ impl<U: UseCase> Decider<U> {
     /// Decide in `situation`, which was built from the revisions in `read`.
     pub fn decide(&mut self, situation: &U::Situation, read: &[InputRevision]) -> Decided<U::Action> {
         let id = DecisionId(self.next);
+        // The slot this decision would reuse still holds an open one: never overwrite it (its late
+        // outcome would vanish before its constraint is checked and the policy learns). Nothing is
+        // decided until that outcome arrives (Codex on #6278).
+        let reused = &self.ring[self.slot(id)];
+        if reused.closed.is_none() && reused.action().is_some() {
+            return Decided::Full { open: reused.id };
+        }
         self.next += 1;
         self.clock += 1;
         self.admissible.clear();
@@ -128,9 +137,6 @@ impl<U: UseCase> Decider<U> {
         };
         let at = self.slot(id);
         let slot = &mut self.ring[at];
-        if slot.closed.is_none() && slot.action().is_some() {
-            continuum_base::probe!(class = "sage.decide.overwritten", use_case = U::NAME, id = slot.id.0, "a decision still open was overwritten: its outcome came later than the record window");
-        }
         slot.id = id;
         slot.issued = self.clock;
         slot.closed = None;

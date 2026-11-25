@@ -83,6 +83,20 @@ fn a_new_use_case_runs_unedited_under_the_baseline() {
     assert_eq!(decider.records().map(|r| r.id).collect::<Vec<_>>(), vec![calm, hot], "records in the order decided");
 }
 
+// what this catches (Codex on #6278): the record ring overwriting an open decision on wrap, so its late
+// outcome vanishes before its constraint is checked and the policy learns. With one slot: A is open, B
+// is refused as Full until A's outcome arrives, A is graded and learned once, then B decides.
+#[test]
+fn an_open_decision_is_never_overwritten_and_its_late_outcome_is_still_graded() {
+    let mut decider: Decider<Thermostat> = Decider::new(Box::new(Warmer::default()), capacity(1));
+    let Decided::Act(a, _) = decider.decide(&70.0, &read(1)) else { panic!("test: a acts") };
+    assert_eq!(decider.decide(&71.0, &read(2)), Decided::Full { open: a }, "the only slot holds an open decision");
+    let graded = decider.outcome(a, 101.0).expect("test: a's late outcome closes it"); // expect: the test's own precondition
+    assert_eq!(graded.violation.map(|v| v.constraint), Some("boiling"), "its constraint is still checked");
+    assert!(matches!(decider.decide(&71.0, &read(2)), Decided::Act(..)), "the slot is free once a closed");
+    assert!(decider.outcome(a, 70.0).is_none(), "a is graded once");
+}
+
 // what this catches (Codex on #6278): replay that hands a learning policy outcomes in completion order
 // as if they were issue order, or never calls learn, so a stateful policy differs from live even on the
 // same actions. A and B overlap: A is decided, then B; B's outcome arrives before A's. Live, the policy
@@ -150,30 +164,35 @@ fn the_lane_forces_an_overdue_mind_and_offers_batches_only_as_wide_as_the_core()
     assert_eq!(envelope::<Lane<u8>>(&alone).0, Gate::Forced(lane::Action::Idle));
 
     let mut decider: Decider<Lane<u8>> = Decider::new(Box::new(Baseline), capacity(4));
+    let step = lane::Outcome { tokens: 1, engine: Duration::from_millis(26), worst_wait: Duration::from_millis(20), worst_deadline: Duration::from_secs(1) };
     for _ in 0..16 {
-        assert!(matches!(decider.decide(&open, &read(1)), Decided::Act(_, lane::Action::Continue)));
+        let Decided::Act(id, lane::Action::Continue) = decider.decide(&open, &read(1)) else { panic!("test: the baseline continues") };
+        assert!(decider.outcome(id, step).is_some(), "each step's outcome closes its record");
     }
     assert_eq!(decider.records().count(), 4, "the ring keeps what it declared");
 }
 
 // what this catches (Codex on #6278): observed capacity treated as a plan; a lease that ends before the
-// work does, or whose price passes the budget, admitting the work; unmeasured work admitted to a peer.
+// work does, whose price passes the budget, or whose guaranteed rate cannot finish the work in its term
+// (a zero rate; 1 unit/s for 100 units), admitting the work; unmeasured work admitted to a peer.
 #[test]
 fn placement_admits_a_peer_only_under_a_lease_that_carries_the_work_within_budget() {
     let now = Instant::now();
     let measured = |seconds| Measured::Value(Duration::from_secs(seconds));
-    let lease = |until_s, per_unit| Capacity::Committed(Lease { rate: 30.0, until: now + Duration::from_secs(until_s), price: Price { per_unit } });
+    let lease = |rate, until_s, per_unit| Capacity::Committed(Lease { rate, until: now + Duration::from_secs(until_s), price: Price { per_unit } });
     let peer = |id, capacity| placement::Holder { id, capacity, transfer: measured(2), queue: measured(1) };
     let holders = vec![
         peer(1, Capacity::Observed { rate: Measured::Value(40.0), as_of: now }),
-        peer(2, lease(60, 0.2)),
-        peer(3, lease(10, 0.2)),
-        peer(4, lease(60, 5.0)),
+        peer(2, lease(30.0, 60, 0.05)),
+        peer(3, lease(30.0, 7, 0.05)),
+        peer(4, lease(30.0, 60, 5.0)),
+        peer(5, lease(0.0, 60, 0.05)),
+        peer(6, lease(1.0, 60, 0.05)),
     ];
-    let work = placement::Work { units: 10.0, predicted: measured(20), budget: 10.0 };
-    let situation = placement::Situation { now, work, moves: 1 << 20, warm_here: false, here: lease(600, 0.0), holders: holders.clone() };
+    let work = placement::Work { units: 100.0, predicted: measured(5), budget: 10.0 };
+    let situation = placement::Situation { now, work, moves: 1 << 20, warm_here: false, here: lease(30.0, 600, 0.0), holders: holders.clone() };
     let (_, offered) = envelope::<placement::Placement>(&situation);
-    assert_eq!(offered, vec![placement::Action::Here, placement::Action::On(1)], "only the lease that outlasts the run and fits the budget");
+    assert_eq!(offered, vec![placement::Action::Here, placement::Action::On(1)], "only the lease whose rate finishes the work in its term within budget");
     let unknown = placement::Situation { work: placement::Work { predicted: Measured::Unmeasured, ..work }, holders, ..situation };
     assert_eq!(envelope::<placement::Placement>(&unknown).1, vec![placement::Action::Here], "an unmeasured run cannot be shown to fit");
 }

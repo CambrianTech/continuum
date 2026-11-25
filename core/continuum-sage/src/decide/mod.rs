@@ -8,7 +8,7 @@
 //! [`crate::dataflow::InputRevision`]), never copies of owner payloads, so another policy can be
 //! replayed on exactly what was known, in the order it became known.
 //!
-//! It decides at every lane step, so a decision allocates nothing in steady state: actions are `Copy`
+//! It decides at every lane step, so a decision allocates nothing once its buffers reach their high-water mark: actions are `Copy`
 //! indices and masks, the envelope fills a reused buffer, records live in a preallocated ring.
 //!
 //! The design test: a new use case is added without editing any existing policy, and a new policy is

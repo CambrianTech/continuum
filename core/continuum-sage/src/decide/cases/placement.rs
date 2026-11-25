@@ -60,10 +60,16 @@ pub struct Outcome {
 /// whole predicted run (plus its transfer and queue), and priced within what may be spent. Observed
 /// capacity is never enough; neither is a lease that ends mid-run or costs past the budget.
 fn carries(lease: &Lease, holder: &Holder, work: &Work, now: Instant) -> bool {
-    let run = match (work.predicted.value(), holder.transfer.value(), holder.queue.value()) {
-        (Some(run), Some(transfer), Some(queue)) => run + transfer + queue,
-        _ => return false, // an unmeasured term cannot be shown to fit
+    let (Some(predicted), Some(transfer), Some(queue)) = (work.predicted.value(), holder.transfer.value(), holder.queue.value()) else {
+        return false; // an unmeasured term cannot be shown to fit
     };
+    // The lease's guaranteed rate bounds how long the work takes there, whatever was predicted: a
+    // zero or non-finite rate carries nothing (Codex on #6278).
+    let Ok(guaranteed) = Duration::try_from_secs_f64(work.units / lease.rate) else { return false };
+    if !(lease.rate.is_finite() && lease.rate > 0.0) {
+        return false;
+    }
+    let run = predicted.max(guaranteed) + transfer + queue;
     now + run <= lease.until && lease.price.per_unit * work.units <= work.budget
 }
 

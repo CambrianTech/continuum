@@ -2,7 +2,7 @@
 //! keeps the Core is an outcome of these choices, never a parameter: a deep mind whose pages went cold
 //! costs more to bring in, and a policy that sees her features finds that out.
 //!
-//! It decides at every step, so it allocates nothing in steady state: actions name ready minds by
+//! It decides at every step, so it allocates nothing past its buffers' high-water mark: actions name ready minds by
 //! slot (their index in `ready`) and a batch by a bitmask of slots; a mind's key is `Copy`.
 
 use std::fmt::Debug;

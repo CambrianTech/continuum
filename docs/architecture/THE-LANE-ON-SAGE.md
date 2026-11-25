@@ -261,7 +261,7 @@ built) and then live, inside the envelope, never by pretending the log answers w
 extensible network to be ready for the future, for all the use cases we have and beyond"; one
 subclass to start, scaffolds for the rest). Built before the lane is wired, so the lane is its first
 adapter, not its shape:
-- It decides at every lane step, so a decision allocates nothing in steady state: actions are `Copy`
+- It decides at every lane step, so a decision allocates nothing once its buffers reach their high-water mark: actions are `Copy`
   slots and bitmasks (never owned keys), the envelope fills a buffer the decider reuses, a policy
   answers an index, and records live in a preallocated ring, the situation copied in with `clone_from`.
 - `UseCase`: a decision's typed `Situation`, `Action` and `Outcome`, its name, its `envelope`

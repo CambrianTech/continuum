@@ -31,7 +31,7 @@ pub trait UseCase: 'static {
     }
 
     /// Copy `from` into a record's slot, reusing the slot's buffers (a `Vec`'s `clone_from`), so a
-    /// steady-state decision allocates nothing.
+    /// decision allocates nothing once the slot has held a situation this large.
     fn retain(slot: &mut Self::Situation, from: &Self::Situation);
 
     /// An empty situation for a record slot not yet used.
