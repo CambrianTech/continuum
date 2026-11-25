@@ -31,6 +31,7 @@
 //! A touched file keeps its old sites ([`HeldOnly::SweptByCrate`]) and may add none.
 
 pub mod contract_shape;
+pub mod hot_path;
 pub mod items;
 pub mod state_as_flags;
 pub mod string_identities;

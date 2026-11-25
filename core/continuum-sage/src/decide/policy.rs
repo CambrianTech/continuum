@@ -1,4 +1,5 @@
 //! What chooses: a policy over one use case, and the baseline every use case gets for free.
+//! hot-path: the lane decides at every Core step (THE-LANE-ON-SAGE.md, "The types").
 
 use super::record::Record;
 use super::use_case::UseCase;

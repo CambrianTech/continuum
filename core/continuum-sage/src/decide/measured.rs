@@ -1,4 +1,5 @@
 //! Views over a measured series: what a policy reads instead of a constant.
+//! hot-path: the lane decides at every Core step (THE-LANE-ON-SAGE.md, "The types").
 
 use std::collections::VecDeque;
 
@@ -82,7 +83,7 @@ pub struct Window {
 
 impl Window {
     pub fn new(capacity: std::num::NonZeroUsize) -> Self {
-        Self { capacity, samples: VecDeque::with_capacity(capacity.get()), sorted: Vec::with_capacity(capacity.get()) }
+        Self { capacity, samples: VecDeque::with_capacity(capacity.get()), sorted: Vec::with_capacity(capacity.get()) } // cold: a view is built once; observing reuses its buffers
     }
 
     pub fn observe(&mut self, sample: f64) {

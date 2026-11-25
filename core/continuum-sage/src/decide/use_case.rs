@@ -1,4 +1,5 @@
 //! What a decision is: its situation, its actions, its outcome, its envelope and its constraints.
+//! hot-path: the lane decides at every Core step (THE-LANE-ON-SAGE.md, "The types").
 //! A decision runs every few milliseconds on the lane, so nothing here allocates in steady state: the
 //! envelope fills a buffer the decider owns and reuses, and a policy answers an index into it.
 

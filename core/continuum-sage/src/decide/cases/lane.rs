@@ -1,4 +1,5 @@
 //! The lane: who takes the Core's next step (THE-LANE-ON-SAGE.md, "When to switch"). How long a mind
+//! hot-path: the lane decides at every Core step (THE-LANE-ON-SAGE.md, "The types").
 //! keeps the Core is an outcome of these choices, never a parameter: a deep mind whose pages went cold
 //! costs more to bring in, and a policy that sees her features finds that out.
 //!
@@ -138,6 +139,6 @@ impl<K: Copy + Debug + PartialEq + Send + 'static> UseCase for Lane<K> {
     }
 
     fn empty() -> Situation<K> {
-        Situation { running: None, ready: Vec::new(), batch_width: 1 }
+        Situation { running: None, ready: Vec::new(), batch_width: 1 } // cold: an empty slot is built once, at the decider's construction
     }
 }

@@ -22,12 +22,14 @@ pub mod cases;
 mod measured;
 mod policy;
 mod record;
+mod replay;
 mod use_case;
 
 pub use capacity::{Capacity, Lease, Price};
 pub use measured::{Ewma, Fraction, Measured, Window};
 pub use policy::{Baseline, Choice, Policy, PolicyId};
-pub use record::{replay, DecisionId, Decided, Decider, Record, Replayed, Verdict};
+pub use record::{DecisionId, Decided, Decider, Record, Verdict};
+pub use replay::{replay, Replayed};
 pub use use_case::{Deferred, Gate, UseCase, Violation};
 
 #[cfg(test)]

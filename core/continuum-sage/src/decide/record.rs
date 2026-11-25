@@ -1,4 +1,5 @@
 //! The decision's record, the decider that writes it, and the replay that compares policies on it.
+//! hot-path: the lane decides at every Core step (THE-LANE-ON-SAGE.md, "The types").
 //!
 //! The decider allocates once: a ring of record slots, found by `id % capacity`, and one buffer of
 //! admissible actions, both reused at every decision. One counter stamps every decision and every
@@ -71,7 +72,7 @@ impl<A: Copy> Verdict<A> {
 
 impl<U: UseCase> Record<U> {
     fn vacant() -> Self {
-        Self { id: DecisionId(0), issued: 0, closed: None, read: Vec::new(), situation: U::empty(), policy: PolicyId { name: "", parameters: 0 }, verdict: Verdict::Vacant, outcome: None, violation: None }
+        Self { id: DecisionId(0), issued: 0, closed: None, read: Vec::new(), situation: U::empty(), policy: PolicyId { name: "", parameters: 0 }, verdict: Verdict::Vacant, outcome: None, violation: None } // cold: a ring slot is built once, at the decider's construction
     }
 
     /// The action taken, when one was.
@@ -93,7 +94,7 @@ pub struct Decider<U: UseCase> {
 impl<U: UseCase> Decider<U> {
     /// `capacity`: how many records it keeps, declared (a view's window, charged like any memory).
     pub fn new(policy: Box<dyn Policy<U>>, capacity: NonZeroUsize) -> Self {
-        Self { policy, admissible: Vec::new(), ring: (0..capacity.get()).map(|_| Record::vacant()).collect(), next: 0, clock: 0 }
+        Self { policy, admissible: Vec::new(), ring: (0..capacity.get()).map(|_| Record::vacant()).collect(), next: 0, clock: 0 } // cold: the decider is built once; its buffers are reused at every decision
     }
 
     pub fn policy(&self) -> PolicyId {
@@ -180,48 +181,3 @@ impl<U: UseCase> Decider<U> {
     }
 }
 
-/// One recorded decision, replayed against another policy.
-#[derive(Debug, Clone, Copy)]
-pub struct Replayed<U: UseCase> {
-    pub id: DecisionId,
-    pub recorded: Option<U::Action>,
-    pub chosen: Option<U::Action>,
-    /// The recorded outcome, only where the replayed policy chose what was done: an action not taken
-    /// has no observed outcome, and replay never pretends it does.
-    pub outcome: Option<U::Outcome>,
-}
-
-/// Replay `records` (in the order they were decided) against `policy`. Choices and outcomes are
-/// handed to it in the order the live decider saw them: a decision when it was issued, an outcome when
-/// it arrived, and only for an action the replayed policy also chose, so a policy that learns sees the
-/// same sequence it would have seen live. The producer and the executor are not involved.
-pub fn replay<'r, U: UseCase>(records: impl IntoIterator<Item = &'r Record<U>>, policy: &mut dyn Policy<U>) -> Vec<Replayed<U>> {
-    let records: Vec<&Record<U>> = records.into_iter().collect();
-    let mut events: Vec<(u64, bool, usize)> = Vec::with_capacity(records.len() * 2);
-    for (index, record) in records.iter().enumerate() {
-        events.push((record.issued, false, index));
-        if let Some(closed) = record.closed {
-            events.push((closed, true, index));
-        }
-    }
-    events.sort_unstable();
-    let mut admissible = Vec::new();
-    let mut replayed: Vec<Replayed<U>> = records.iter().map(|record| Replayed { id: record.id, recorded: record.action(), chosen: None, outcome: None }).collect();
-    for (_, is_outcome, index) in events {
-        let record = records[index];
-        if is_outcome {
-            if replayed[index].chosen == record.action() {
-                replayed[index].outcome = record.outcome;
-                policy.learn(record);
-            }
-            continue;
-        }
-        admissible.clear();
-        replayed[index].chosen = match U::envelope(&record.situation, &mut admissible) {
-            Gate::Forced(action) => Some(action),
-            Gate::Defer(_) => None,
-            Gate::Choose => admissible.get(policy.choose(&record.situation, &admissible).index).or(admissible.first()).copied(),
-        };
-    }
-    replayed
-}
