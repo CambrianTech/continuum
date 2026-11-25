@@ -184,15 +184,13 @@ impl ChatModule {
     /// which is wrong — half of the write did. The `warning` field is
     /// the right shape: degraded success.
     ///
-    /// # Idempotency (known gap, deferred)
+    /// # Idempotency
     ///
-    /// A retried `chat/send` (network glitch on the caller side)
-    /// currently produces two stored messages. This matches today's
-    /// TS behavior and is out of scope for the first migration.
-    /// Future PR can add a `client_dedup_id` param + a TTL'd map in
-    /// the chat module; the substrate is ready for it (`HandleRef`
-    /// could be the dedup id) but the design conversation is its
-    /// own scope.
+    /// When `params.dedup_id` is set, the store checks a TTL'd map (30 s)
+    /// before persisting. A matching entry within the window causes this call
+    /// to return success with the original message id — no duplicate row is
+    /// written. Callers that retry on transient errors should generate a
+    /// monotonic `dedup_id` per user action so retries are silently absorbed.
     pub async fn send(&self, params: ChatSendParams) -> Result<ChatSendResult, String> {
         self.send_with_wire(params, WireLeg::Envelope).await
     }
@@ -210,7 +208,27 @@ impl ChatModule {
         params: ChatSendParams,
         wire: WireLeg,
     ) -> Result<ChatSendResult, String> {
+        // Client-side dedup check (before any DB write).
+        if let Some(ref dedup_id) = params.dedup_id {
+            if let Some(existing_id) = self.executor_slot.check_dedup(dedup_id) {
+                continuum_base::probe!(
+                    class = "chat.send.dedup_hit",
+                    dedup_id = %dedup_id,
+                    original_message_id = %existing_id.to_string(),
+                    "duplicate send absorbed by client-side dedup"
+                );
+                return Ok(ChatSendResult {
+                    message_id: existing_id,
+                    event_id: None,
+                    warning: Some("retried send — line already stored".to_string()),
+                });
+            }
+        }
         let (message_id, now_ms) = self.persist(&params, wire == WireLeg::Envelope).await?;
+        // Record dedup entry after successful persist.
+        if let Some(ref dedup_id) = params.dedup_id {
+            self.executor_slot.record_dedup(dedup_id.clone(), message_id);
+        }
         match wire {
             WireLeg::Envelope => self.broadcast_envelope(message_id, &params, now_ms).await,
             WireLeg::CallerSpeaks => Ok(ChatSendResult {

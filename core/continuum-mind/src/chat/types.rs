@@ -148,8 +148,14 @@ pub struct ChatSendParams {
     #[serde(default)]
     #[ts(optional, type = "string")]
     pub reply_to_id: Option<Uuid>,
-}
 
+    /// Client-supplied deduplication id. When present, the store checks for
+    /// a recent message with the same id (within TTL_WINDOW) and returns
+    /// success without writing a duplicate row if found.
+    #[serde(default)]
+    #[ts(optional, type = "string | null")]
+    pub dedup_id: Option<String>,
+}
 impl ChatSendParams {
     /// This send as the chat-transcript line its envelope carries.
     pub fn transcript_line(&self) -> crate::cognition::conversation::room_event::ChatTranscriptLine<'_> {

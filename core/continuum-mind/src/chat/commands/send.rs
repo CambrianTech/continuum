@@ -45,6 +45,16 @@ pub struct ChatSendWireParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "string")]
     pub reply_to_id: Option<Uuid>,
+
+    /// Client-side deduplication id. If present and a message with this id
+    /// was stored within the TTL window (default 30 s), the second call is
+    /// treated as a retry and returns success without writing a duplicate row.
+    /// The client generates a monotonic id per user action; the server matches
+    /// only on exact id, not on content similarity. Omit to disable dedup
+    /// (backward-compatible with all existing callers).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "string | null")]
+    pub dedup_id: Option<String>,
 }
 
 crate::action_command! {
@@ -114,6 +124,7 @@ crate::action_command! {
             text: p.text.clone(),
             reply_to_id: p.reply_to_id,
             media: Vec::new(),
+            dedup_id: p.dedup_id,
         };
         let wire = if runtime.is_some() {
             crate::chat::WireLeg::CallerSpeaks

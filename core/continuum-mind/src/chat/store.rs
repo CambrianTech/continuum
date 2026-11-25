@@ -9,16 +9,27 @@ use super::orm_entities::CHAT_ORM_COLLECTIONS;
 use crate::orm::types::BatchOperation;
 use crate::runtime::{command_executor::CommandExecutor, LateBound};
 use serde_json::{json, Value};
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
 use uuid::Uuid;
+
+/// Client-side dedup window: 30 seconds. A retry arriving after this
+/// interval is treated as a fresh send (the client should generate a
+/// new monotonic id for each distinct user action).
+pub const DEDUP_TTL_MS: u64 = 30_000;
 
 /// What every chat module built over one executor shares: the executor, installed once late at
 /// boot (the first install wins and is never replaced, so `collections_ready` always describes the
-/// store of the executor that holds the slot), and whether that store's chat collections exist yet
-/// (ensured once, on first use; a failure retries).
+/// store of the executor that holds the slot), whether that store's chat collections exist yet
+/// (ensured once, on first use; a failure retries), and a TTL'd dedup map for client retry
+/// protection (`client_dedup_id`).
 pub struct ChatSlot {
     executor: LateBound<CommandExecutor>,
     collections_ready: tokio::sync::OnceCell<()>,
+    /// Maps `dedup_id` → `(message_id, stored_at_ms)`. Entries older than
+    /// `DEDUP_TTL_MS` are pruned on every access. Guarded by RwLock so
+    /// concurrent sends can check-and-insert atomically.
+    dedup_map: Arc<RwLock<HashMap<String, (Uuid, u64)>>>,
 }
 
 impl ChatSlot {
@@ -26,6 +37,7 @@ impl ChatSlot {
         Self {
             executor: LateBound::new("chat::executor"),
             collections_ready: tokio::sync::OnceCell::new(),
+            dedup_map: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -34,6 +46,34 @@ impl ChatSlot {
         let slot = Self::new();
         slot.executor.install(executor);
         slot
+    }
+
+    /// Check whether a dedup_id was seen within the TTL window. Returns
+    /// Some(message_id) if found (the send is a retry → caller should
+    /// return success without persisting again). Prunes stale entries.
+    pub fn check_dedup(&self, dedup_id: &str) -> Option<Uuid> {
+        let now_ms = continuum_base::time::EpochMs::now().millis();
+        let mut map = self.dedup_map.write().ok()?;
+        // Prune stale entries
+        let stale: Vec<_> = map
+            .iter()
+            .filter(|(_, (_, ts))| now_ms.saturating_sub(*ts) > DEDUP_TTL_MS)
+            .map(|(k, _)| k.clone())
+            .collect();
+        for k in &stale {
+            map.remove(k);
+        }
+        // Check current entry
+        map.get(dedup_id).map(|(mid, _)| *mid)
+    }
+
+    /// Record a dedup entry after successful persist.
+    pub fn record_dedup(&self, dedup_id: String, message_id: Uuid) {
+        let now_ms = continuum_base::time::EpochMs::now().millis();
+        let mut map = self.dedup_map.write().ok();
+        if let Some(map) = &mut map {
+            map.insert(dedup_id, (message_id, now_ms));
+        }
     }
 
     /// Install the executor. The same executor again is a no-op; a DIFFERENT one is refused (Codex
