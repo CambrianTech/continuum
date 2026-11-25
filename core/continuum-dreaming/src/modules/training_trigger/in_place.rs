@@ -26,11 +26,11 @@ use crate::genome::learner::{
     policy::{learn_policy, LearnPolicy},
     seat::Authority,
 };
-use crate::inference::engine_residency::{EngineIncarnation, Liveness};
+use crate::inference::engine_residency::{EngineIncarnation, Liveness, process_start_s};
 use crate::inference::llama_server::{CheckpointAnswer, FreshShadow, LearnOutcome, LearningEngine, LedgerAnswer, RestoreCheckpoint, RestoreOutcome};
 use crate::inference::slots::LearnSlot;
 use continuum_base::probe;
-use continuum_host::process_exit;
+use continuum_host::process_exit::{self, ArmRefusal, ExitObserved};
 use std::collections::HashMap;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -760,23 +760,6 @@ async fn stop(held: &mut EngineLearning, key: &BucketKey) -> (Released, Option<s
     }
 }
 
-/// Stop `mind` until the engine confirms it (its shadow unloaded and released, bound to the
-/// incarnation), or until that engine's process is verifiably dead.
-async fn fence(mind: MindLearner, engine: EngineIncarnation) -> Option<std::path::PathBuf> {
-    let shadow = std::path::PathBuf::from(mind.shadow_path());
-    let mut every = tokio::time::interval(std::time::Duration::from_secs(1));
-    let mut mind = mind;
-    loop {
-        match mind.stop().await {
-            Ok(()) => return Some(shadow),
-            Err((unconfirmed, _why)) => mind = unconfirmed,
-        }
-        if engine.liveness() == Liveness::Dead {
-            return Some(shadow); // the engine that held it is gone; custody keeps what the mind leased
-        }
-        every.tick().await;
-    }
-}
 
 /// Every pending submission whose base `served_model` names, grouped by bucket, oldest first. Pages
 /// the whole pending journal, so rows for other bases never hide eligible ones behind them.
@@ -844,3 +827,32 @@ pub(crate) fn snapshot_due(generation: &super::durable::LearnCheckpoint) -> bool
 
 #[cfg(test)]
 mod tests;
+/// Stop `mind` until the engine confirms it (its shadow unloaded and released, bound to the
+/// incarnation), or until that engine's process is verifiably dead.
+async fn fence(mut mind: MindLearner, engine: EngineIncarnation) -> Option<std::path::PathBuf> {
+    let shadow = std::path::PathBuf::from(mind.shadow_path());
+    loop {
+        match mind.stop().await {
+            Ok(()) => return Some(shadow),
+            Err((unconfirmed, _why)) => mind = unconfirmed,
+        }
+
+        // Engine still alive after stop attempt — arm its exit watch and wait for it.
+        let is_engine = || process_start_s(engine.pid) == Some(engine.started_s);
+        match process_exit::arm(engine.pid, is_engine) {
+            Ok(armed) => match armed.exited().await {
+                ExitObserved::Exited => return Some(shadow),
+                // Watch disrupted; retry stop + re-arm.
+                ExitObserved::Unobservable(_) => continue,
+            },
+            Err(ArmRefusal::AlreadyExited | ArmRefusal::NotThatProcess) => return Some(shadow),
+            Err(ArmRefusal::Unobservable(_)) => {
+                // Can't arm a kernel watch — poll liveness until death.
+                while engine.liveness() != Liveness::Dead {
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                }
+                return Some(shadow);
+            },
+        }
+    }
+}
