@@ -317,8 +317,11 @@ fn the_cost_model_continues_while_steps_fit_and_brings_in_the_tightest_waiter() 
     cost.set_param("margin", Param::Real(0.5)).expect("test: the margin this scenario is written at"); // expect: the test's own precondition
     let mut decide = |situation: &lane::Situation<u8>| {
         let (gate, admissible) = envelope::<Lane<u8>>(situation);
-        assert_eq!(gate, Gate::Choose);
-        admissible[cost.choose(situation, &admissible).index]
+        match gate {
+            Gate::Choose => admissible[cost.choose(situation, &admissible).index],
+            Gate::Forced(action) => action, // the envelope decided before the policy was asked
+            Gate::Defer(why) => panic!("test: the lane never defers, deferred on {why:?}"),
+        }
     };
     let running = mind(1, 0); // 26 ms a step
     let fresh = lane::Situation { running: Some(running), ready: vec![mind(2, 100)], batch_width: 1, background_owed: false };
@@ -327,7 +330,7 @@ fn the_cost_model_continues_while_steps_fit_and_brings_in_the_tightest_waiter() 
     assert_eq!(decide(&near), lane::Action::Switch(1), "40 ms of slack, half kept: the tightest is brought in");
     let cold = lane::Mind { switch_in: Measured::Value(Duration::from_millis(880)), ..mind(4, 100) };
     let costly = lane::Situation { running: Some(running), ready: vec![mind(2, 100), cold], batch_width: 1, background_owed: false };
-    assert_eq!(decide(&costly), lane::Action::Switch(1), "her 880 ms switch leaves 20 ms of slack: she is brought in now");
+    assert_eq!(decide(&costly), lane::Action::Switch(1), "her 880 ms switch leaves 20 ms of slack: she is brought in now (the envelope, before the policy is asked)");
 }
 
 // what this catches: a margin fixed at its starting value (a constant dressed as an algorithm), a loop

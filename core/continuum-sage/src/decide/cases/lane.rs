@@ -110,16 +110,34 @@ pub struct Outcome {
     pub served: Measured<f64>,
 }
 
+/// How long the next step may take and still leave every bounded waiter (other than `stepping`) her
+/// turn inside her bound: waiters are reached one a step, so a waiter with `k` ahead of her (less slack,
+/// or as little and earlier) is reached after `k` turns, each as long as the longest waiter's measured
+/// step and switch. Her room is her slack less those turns; the queue's room is the least of them.
+/// `None` when no bounded mind waits. Counting only one step ahead, or the running mind's time a token
+/// for a step, let a crowd overrun by a step apiece (the M5, 2026-11-25 21:45 to 21:55Z: 1,005 act
+/// violations at p50 1.02 of the bound).
+pub fn room<K: PartialEq>(situation: &Situation<K>, stepping: Option<&K>) -> Option<Duration> {
+    let waiting = || situation.running.iter().chain(situation.ready.iter().take(SLOTS)).filter(move |mind| stepping != Some(&mind.mind)).filter_map(|mind| mind.slack().map(|left| (mind, left)));
+    let turn = waiting().map(|(mind, _)| mind.step.value().unwrap_or(Duration::ZERO) + mind.switch_in.value().unwrap_or(Duration::ZERO)).max()?; // unwrap_or: an unmeasured step or switch is a cost not yet seen
+    waiting()
+        .enumerate()
+        .map(|(at, (_, left))| {
+            let ahead = waiting().enumerate().filter(|&(other_at, (_, other))| (other, other_at) < (left, at)).count() as u32;
+            left.saturating_sub(turn * ahead)
+        })
+        .min()
+}
+
 /// How many tokens one step of `stepped` may move, at most `most` (the engine's batch). A step cannot
 /// be preempted, so the bound every other mind is promised is kept only if the step ends inside the
-/// tightest one's slack: that slack (her bound, less her wait, less her measured switch cost) at the
+/// queue's room (`room`: every waiter's slack less the turns ahead of her) at the
 /// stepped mind's measured time a token. With no one else ready, or her time a token not yet measured
 /// (her first step, which measures it), the whole batch. At least one token, so she always advances.
 /// The M5, 2026-11-25 19:40 to 19:50Z: prefill chunks a whole batch long left other minds 7 to 9 s
 /// without a step under a 1 s bound.
 pub fn step_tokens<K: PartialEq>(situation: &Situation<K>, stepped: &Mind<K>, most: u64) -> u64 {
-    let others = situation.running.iter().chain(situation.ready.iter()).filter(|mind| mind.mind != stepped.mind);
-    let slack = others.filter_map(Mind::slack).min();
+    let slack = room(situation, Some(&stepped.mind));
     match (slack, stepped.step.value()) {
         (Some(slack), Some(per_token)) if per_token > Duration::ZERO => ((slack.as_secs_f64() / per_token.as_secs_f64()) as u64).clamp(1, most.max(1)),
         _ => most.max(1),
@@ -159,15 +177,9 @@ impl<K: Copy + Debug + PartialEq + Send + 'static> UseCase for Lane<K> {
         // nearing the bound together each looked safe and overran by a step apiece (the M5, 2026-11-25
         // 20:54 to 21:04Z: 929 violations, p50 1.02 of the bound, twelve resident turns at once).
         let next = situation.running.as_ref().and_then(|running| running.step.value()).unwrap_or(Duration::ZERO); // unwrap_or: an unmeasured step is a cost not yet seen
-        // Only minds with a per-item bound crowd it; background work has none.
-        let slack = |mind: &Mind<K>| mind.deadline.map(|bound| bound.saturating_sub(mind.waited));
-        let bounded = || ready.iter().enumerate().filter_map(|(at, mind)| slack(mind).map(|left| (at, left)));
-        let crowded = bounded().any(|(at, left)| {
-            // ahead of her: less slack, or as little and earlier in the ready order
-            let ahead = bounded().filter(|&(other_at, other)| (other, other_at) < (left, at)).count() as u32;
-            left <= next * (ahead + 1)
-        });
-        let overdue = bounded().filter(|_| crowded).min_by_key(|&(_, left)| left);
+        // Only minds with a per-item bound crowd it (`room`); background work has none.
+        let crowded = room(situation, situation.running.as_ref().map(|running| &running.mind)).is_some_and(|room| room <= next);
+        let overdue = ready.iter().enumerate().filter(|_| crowded).filter_map(|(slot, mind)| mind.slack().map(|left| (slot, left))).min_by_key(|&(_, left)| left);
         if let Some((slot, _)) = overdue {
             return Gate::Forced(Action::Switch(slot as Slot));
         }
