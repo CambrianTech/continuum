@@ -273,6 +273,22 @@ starting value the learning moves, never a setting someone picked. The Lane's `T
 control loop climbing measured throughput against the wall) is the same shape; both laws are judged
 by the same number on the same node.
 
+**What a law learned is kept, so it never relearns.** A law's state is saved and restored like any
+other state on the node: its parameters, its forecaster, and the best-scoring parameters it has found.
+- **Keyed by what it was learned on:** the node's fingerprint (devices, memory, each volume with its
+  measured rates), the model, and the schema version of its `View`.
+- **At start** a law loads its last best for that key. It falls back to the good default only for a
+  key it has never seen (a new model, a new drive), and then to the closest key it has (the same
+  node with another model), because what transfers is most of what it knew.
+- **It keeps two states:** the current one it is exploring from, and the last best by measured
+  throughput. It returns to the best when exploring loses. Saving is off the engine thread, on a
+  frame cadence, and at a stop.
+- **Stored as typed binary** (its parameters and the forecaster's tables as raw arrays, the schema
+  version in the header), never JSON. A key from another node with the same fingerprint (two
+  identical Macs) may seed this one, under the same schema check.
+
+The Lane's `Tuner` keeps its state the same way.
+
 What ships with slice 3 is one law, `FractalPager` (the fractal pager law above), plus `Lru` as the
 baseline every other law is compared against. `Lru` is never a production law, as `Fixed` is the
 Lane's baseline. Laws are made by name from a registry of factories (`laws::make("fractal")`,
