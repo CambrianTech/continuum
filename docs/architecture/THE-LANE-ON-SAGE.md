@@ -261,26 +261,34 @@ built) and then live, inside the envelope, never by pretending the log answers w
 extensible network to be ready for the future, for all the use cases we have and beyond"; one
 subclass to start, scaffolds for the rest). Built before the lane is wired, so the lane is its first
 adapter, not its shape:
+- It decides at every lane step, so a decision allocates nothing in steady state: actions are `Copy`
+  slots and bitmasks (never owned keys), the envelope fills a buffer the decider reuses, a policy
+  answers an index, and records live in a preallocated ring, the situation copied in with `clone_from`.
 - `UseCase`: a decision's typed `Situation`, `Action` and `Outcome`, its name, its `envelope`
-  (admissible actions, or one forced action; never learned) and its `constraint` (an outcome no
-  policy may trade: `Violation`).
-- `Policy<U>`: `choose` among the admissible actions, `learn` from a closed record, and a `PolicyId`
-  (name and parameters' revision) every record carries. `Baseline` (the first admissible action) is
-  generic over every use case: a new use case works with no policy edited.
-- `Measured<T>`: `Unmeasured` or `Value`, never a default standing in for a measurement; `Ewma` and
-  `Window` are views over a series, declaring what they retain.
-- `Record<U>`: the decision's id, the `InputRevision`s it read (SAGE's own provenance: revisions,
-  never copied values), the policy, the action, and its outcome once the executor reports it.
-  `Decider<U>` runs envelope, then policy, then record; `replay` hands recorded situations to another
-  policy and reports its choices beside the recorded ones, an outcome only where it chose the same.
+  (`Gate::Choose` among the actions it wrote, `Forced`, or `Defer` when nothing may be done now, such
+  as no volume with room; never learned) and its `constraint` (an outcome no policy may trade:
+  `Violation { measured, limit }`).
+- `Policy<U>`: `choose` an index among the admissible actions, `learn` from a closed record at the
+  moment its outcome arrives, and a `PolicyId` (name and parameters' revision) every record carries.
+  `Baseline` (the first admissible action) is generic over every use case: a new use case works with
+  no policy edited.
+- `Measured<T>`: `Unmeasured` or `Value`, never a default standing in for a measurement; `Fraction` is
+  refused out of range, never clamped; `Ewma` and `Window` (kept sorted as samples arrive, so a quantile
+  is one index) are views over a series, declaring what they retain.
+- `Record<U>`: the decision's id, the `InputRevision`s it read (SAGE's own provenance), the compact
+  situation, the policy, the action, and its outcome; one counter stamps each decision and each
+  outcome. `Decider<U>` runs envelope, then policy, then record. `replay` hands another policy the
+  choices and the outcomes in the order the live decider saw them, `learn` included, an outcome only
+  where it chose what was done (Codex on #6278).
 - `Capacity`: `Observed` (a candidate, as of when) or `Committed` (an accepted lease: rate, until when,
   at what price). The ledger keeps them apart.
 - The use cases: `lane` (Continue, Switch, Batch, Idle; each ready mind's features: urgency, wait and
   deadline, depth and cold bytes, phase, predicted remainder, step and switch times, prefix hits) is
-  the first real one. `residency` (keep, demote, evict), `placement` (here, a machine I own, a leased
-  peer, priced with transfer, restore, queueing and price) and `volume` (which drive holds a working
-  set) are scaffolds: their situations, actions, outcomes and envelopes exist, with `Baseline` as
-  their policy until their owners build theirs.
+  the first real one. `residency` (keep or demote), `placement` (here, or a leased peer only when its
+  lease outlasts the work's measured run plus transfer and queue and its price fits the budget) and
+  `volume` (hot work never on a slower volume with a faster one free; `Defer` when none has room) are
+  scaffolds: their situations, actions, outcomes and envelopes exist, with `Baseline` as their policy
+  until their owners build theirs.
 
 What changes in `continuum_sage::slice`: `Control` (told only step and switch times; answers one
 slice) becomes a `decide::Policy<Lane>`. `Slicer` keeps the envelope (deadlines, stride,

@@ -1,11 +1,15 @@
 //! One parent for every decision (THE-LANE-ON-SAGE.md, "When to switch" and "The types").
 //!
 //! A decision is a use case: a typed situation, the actions available in it, and the measured outcome
-//! of the one taken. The use case owns its envelope (what no policy may override) and its constraints
-//! (outcomes no policy may trade). A policy chooses inside the envelope, from views of history; the
-//! resource's owner executes the choice and reports what happened, which closes the record. Records
-//! name the revisions a decision read (SAGE's [`crate::dataflow::InputRevision`]), never copies of the
-//! values, so another policy can be replayed on exactly what was known at each choice.
+//! of the one taken. The use case owns its envelope (what no policy may override, deferring included)
+//! and its constraints (outcomes no policy may trade). A policy chooses inside the envelope by index;
+//! the resource's owner executes the choice and reports what happened, which closes the record and is
+//! what the policy learns from at that moment. Records name the revisions a decision read (SAGE's
+//! [`crate::dataflow::InputRevision`]), never copies of owner payloads, so another policy can be
+//! replayed on exactly what was known, in the order it became known.
+//!
+//! It decides at every lane step, so a decision allocates nothing in steady state: actions are `Copy`
+//! indices and masks, the envelope fills a reused buffer, records live in a preallocated ring.
 //!
 //! The design test: a new use case is added without editing any existing policy, and a new policy is
 //! tried against recorded history without changing the producer or the executor (`tests.rs`).
@@ -23,8 +27,8 @@ mod use_case;
 pub use capacity::{Capacity, Lease, Price};
 pub use measured::{Ewma, Fraction, Measured, Window};
 pub use policy::{Baseline, Choice, Policy, PolicyId};
-pub use record::{replay, DecisionId, Decider, Record, Replayed};
-pub use use_case::{Envelope, NonEmpty, UseCase, Violation};
+pub use record::{replay, DecisionId, Decided, Decider, Record, Replayed, Verdict};
+pub use use_case::{Deferred, Gate, UseCase, Violation};
 
 #[cfg(test)]
 mod tests;

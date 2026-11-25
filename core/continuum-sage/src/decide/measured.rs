@@ -73,19 +73,29 @@ impl Ewma {
 #[derive(Debug, Clone)]
 pub struct Window {
     capacity: std::num::NonZeroUsize,
+    /// In arrival order, to know which sample leaves next.
     samples: VecDeque<f64>,
+    /// The same samples kept sorted as they arrive and leave (a binary search and one shift each), so
+    /// a quantile is one index: no copy, no sort, no allocation after the window fills.
+    sorted: Vec<f64>,
 }
 
 impl Window {
     pub fn new(capacity: std::num::NonZeroUsize) -> Self {
-        Self { capacity, samples: VecDeque::with_capacity(capacity.get()) }
+        Self { capacity, samples: VecDeque::with_capacity(capacity.get()), sorted: Vec::with_capacity(capacity.get()) }
     }
 
     pub fn observe(&mut self, sample: f64) {
         if self.samples.len() == self.capacity.get() {
-            self.samples.pop_front();
+            if let Some(leaving) = self.samples.pop_front() {
+                if let Ok(at) = self.sorted.binary_search_by(|kept| kept.total_cmp(&leaving)) {
+                    self.sorted.remove(at);
+                }
+            }
         }
         self.samples.push_back(sample);
+        let at = self.sorted.partition_point(|kept| kept.total_cmp(&sample).is_lt());
+        self.sorted.insert(at, sample);
     }
 
     /// What it retains, declared: a view says how much history it keeps (THE-LANE-ON-SAGE.md).
@@ -95,10 +105,8 @@ impl Window {
 
     /// The `q` quantile of what it holds, by nearest rank; `Unmeasured` before any sample.
     pub fn quantile(&self, q: Fraction) -> Measured<f64> {
-        let mut sorted: Vec<f64> = self.samples.iter().copied().collect();
-        sorted.sort_by(f64::total_cmp);
-        let last = sorted.len().saturating_sub(1);
+        let last = self.sorted.len().saturating_sub(1);
         let rank = (q.get() * last as f64).round() as usize;
-        sorted.get(rank).map_or(Measured::Unmeasured, |&value| Measured::Value(value))
+        self.sorted.get(rank).map_or(Measured::Unmeasured, |&value| Measured::Value(value))
     }
 }

@@ -1,16 +1,27 @@
 //! The lane: who takes the Core's next step (THE-LANE-ON-SAGE.md, "When to switch"). How long a mind
 //! keeps the Core is an outcome of these choices, never a parameter: a deep mind whose pages went cold
 //! costs more to bring in, and a policy that sees her features finds that out.
+//!
+//! It decides at every step, so it allocates nothing in steady state: actions name ready minds by
+//! slot (their index in `ready`) and a batch by a bitmask of slots; a mind's key is `Copy`.
 
 use std::fmt::Debug;
-use std::hash::Hash;
 use std::marker::PhantomData;
 use std::time::Duration;
 
 use crate::component::Urgency;
 
 use super::super::measured::Measured;
-use super::super::use_case::{NonEmpty, Envelope, UseCase, Violation};
+use super::super::use_case::{Gate, UseCase, Violation};
+
+/// A ready mind's index in [`Situation::ready`]. Only the first [`SLOTS`] ready minds are offered.
+pub type Slot = u8;
+
+/// A batch's members: bit `i` is ready slot `i`.
+pub type Mask = u64;
+
+/// How many ready minds a decision can name: one per bit of a [`Mask`], a fact of the type.
+pub const SLOTS: usize = Mask::BITS as usize;
 
 /// Where her turn stands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,7 +33,7 @@ pub enum Phase {
 
 /// One mind as a lane policy sees her: what the algorithm might need, each from its owner, each
 /// explicit when not yet measured. A learned policy may read more; these are the start.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Mind<K> {
     pub mind: K,
     pub urgency: Urgency,
@@ -52,18 +63,18 @@ pub struct Situation<K> {
     pub batch_width: u32,
 }
 
-/// The lane's actions.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Action<K> {
+/// The lane's actions: slots and masks, never owned keys.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Action {
     Continue,
-    Switch(K),
-    /// One step for several minds in their own streams.
-    Batch(Vec<K>),
+    Switch(Slot),
+    /// One step for the running mind and the ready minds whose bits are set.
+    Batch(Mask),
     Idle,
 }
 
 /// What a decision window measured.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Outcome {
     pub tokens: u64,
     pub engine: Duration,
@@ -72,41 +83,44 @@ pub struct Outcome {
     pub worst_deadline: Duration,
 }
 
-/// The lane as a use case, over any mind key.
+/// The lane as a use case, over any `Copy` mind key.
+#[derive(Debug, Clone, Copy)]
 pub struct Lane<K>(PhantomData<K>);
 
-impl<K: Clone + Debug + PartialEq + Eq + Hash + Send + 'static> UseCase for Lane<K> {
+impl<K: Copy + Debug + PartialEq + Send + 'static> UseCase for Lane<K> {
     type Situation = Situation<K>;
-    type Action = Action<K>;
+    type Action = Action;
     type Outcome = Outcome;
     const NAME: &'static str = "lane";
 
-    fn envelope(situation: &Situation<K>) -> Envelope<Action<K>> {
+    fn envelope(situation: &Situation<K>, admissible: &mut Vec<Action>) -> Gate<Action> {
+        let ready = &situation.ready[..situation.ready.len().min(SLOTS)];
         // A mind past her deadline goes next: the most overdue, whatever any policy prefers.
-        let overdue = situation.ready.iter().filter(|mind| mind.waited >= mind.deadline).max_by_key(|mind| mind.waited.saturating_sub(mind.deadline));
-        if let Some(mind) = overdue {
-            return Envelope::Forced(Action::Switch(mind.mind.clone()));
+        let overdue = ready.iter().enumerate().filter(|(_, mind)| mind.waited >= mind.deadline).max_by_key(|(_, mind)| mind.waited.saturating_sub(mind.deadline));
+        if let Some((slot, _)) = overdue {
+            return Gate::Forced(Action::Switch(slot as Slot));
         }
         let Some(running) = &situation.running else {
-            return match situation.ready.first() {
-                Some(first) => Envelope::Admissible(NonEmpty::new(Action::Switch(first.mind.clone()), situation.ready.iter().skip(1).map(|mind| Action::Switch(mind.mind.clone())))),
-                None => Envelope::Forced(Action::Idle),
-            };
+            if ready.is_empty() {
+                return Gate::Forced(Action::Idle);
+            }
+            admissible.extend((0..ready.len()).map(|slot| Action::Switch(slot as Slot)));
+            return Gate::Choose;
         };
         // Finish first: her measured remainder costs less than bringing anyone in.
-        let finishing = matches!((running.remaining.value(), running.step.value()), (Some(left), Some(step)) if {
-            let cheapest_switch = situation.ready.iter().filter_map(|mind| mind.switch_in.value()).min();
-            cheapest_switch.is_some_and(|switch| step * left < switch)
-        });
-        if finishing || situation.ready.is_empty() {
-            return Envelope::Forced(Action::Continue);
+        let cheapest_switch = ready.iter().filter_map(|mind| mind.switch_in.value()).min();
+        let finishing = matches!((running.remaining.value(), running.step.value(), cheapest_switch), (Some(left), Some(step), Some(switch)) if step * left < switch);
+        if finishing || ready.is_empty() {
+            return Gate::Forced(Action::Continue);
         }
-        let switches = situation.ready.iter().map(|mind| Action::Switch(mind.mind.clone()));
-        let batch = (situation.batch_width > 1).then(|| {
-            let width = situation.batch_width as usize;
-            Action::Batch(std::iter::once(&running.mind).chain(situation.ready.iter().map(|mind| &mind.mind)).take(width).cloned().collect())
-        });
-        Envelope::Admissible(NonEmpty::new(Action::Continue, switches.chain(batch)))
+        admissible.push(Action::Continue);
+        admissible.extend((0..ready.len()).map(|slot| Action::Switch(slot as Slot)));
+        // the running mind and the first `others` ready minds: the lowest `others` bits (1..=SLOTS)
+        let others = (situation.batch_width as usize).saturating_sub(1).min(ready.len());
+        if others > 0 {
+            admissible.push(Action::Batch(!0 >> (SLOTS - others)));
+        }
+        Gate::Choose
     }
 
     fn constraint(outcome: &Outcome) -> Option<Violation> {
@@ -115,5 +129,15 @@ impl<K: Clone + Debug + PartialEq + Eq + Hash + Send + 'static> UseCase for Lane
             measured: outcome.worst_wait.as_secs_f64(),
             limit: outcome.worst_deadline.as_secs_f64(),
         })
+    }
+
+    fn retain(slot: &mut Situation<K>, from: &Situation<K>) {
+        slot.running = from.running;
+        slot.ready.clone_from(&from.ready);
+        slot.batch_width = from.batch_width;
+    }
+
+    fn empty() -> Situation<K> {
+        Situation { running: None, ready: Vec::new(), batch_width: 1 }
     }
 }

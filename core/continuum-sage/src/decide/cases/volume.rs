@@ -3,14 +3,14 @@
 //! each kind with its own semantics; unknown stays explicit.
 
 use super::super::measured::Measured;
-use super::super::use_case::{NonEmpty, Envelope, UseCase};
+use super::super::use_case::{Deferred, Gate, UseCase};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct VolumeId(pub u32);
+/// A volume's index in [`Situation::volumes`].
+pub type Slot = u16;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Volume {
-    pub id: VolumeId,
+    pub id: u32,
     pub free_bytes: u64,
     /// Achieved bytes per second for this working set's access pattern (random reads, syncs, builds).
     pub rate: Measured<f64>,
@@ -21,16 +21,15 @@ pub struct Situation {
     pub bytes: u64,
     /// Hot: read and synced while work runs (a worktree, a cargo target, KV files). Cold: an archive.
     pub hot: bool,
-    /// Never empty, by type: a node with no volume has nowhere to place anything and asks no decision.
-    pub volumes: NonEmpty<Volume>,
+    pub volumes: Vec<Volume>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
-    On(VolumeId),
+    On(Slot),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Outcome {
     /// The work's measured time on the volume chosen (a build, a restore).
     pub seconds: f64,
@@ -46,20 +45,32 @@ impl UseCase for Placement {
 
     /// A hot set never goes to a volume measured slower than the fastest one with room; a volume not yet
     /// measured is a candidate (its rate becomes known by use). A cold set may go anywhere with room.
-    fn envelope(situation: &Situation) -> Envelope<Action> {
-        let room: Vec<&Volume> = situation.volumes.iter().filter(|volume| volume.free_bytes >= situation.bytes).collect();
-        let fastest = room.iter().filter_map(|volume| volume.rate.value()).fold(None, |best: Option<f64>, rate| Some(best.map_or(rate, |best| best.max(rate))));
-        let mut fit = room.iter().filter(|volume| !situation.hot || match (volume.rate.value(), fastest) {
-            (Some(rate), Some(fastest)) => rate >= fastest,
-            _ => true,
-        });
-        // With no volume that has room, the one with the most free is forced: the disk-pressure owner frees it.
-        match fit.next() {
-            Some(first) => Envelope::Admissible(NonEmpty::new(Action::On(first.id), fit.map(|volume| Action::On(volume.id)))),
-            None => {
-                let most_free = situation.volumes.iter().fold(situation.volumes.first(), |best, volume| if volume.free_bytes > best.free_bytes { volume } else { best });
-                Envelope::Forced(Action::On(most_free.id))
+    /// With no volume that has room, the decision defers: the disk-pressure owner reclaims, and it is
+    /// asked again on fresh observations. A full volume is never chosen.
+    fn envelope(situation: &Situation, admissible: &mut Vec<Action>) -> Gate<Action> {
+        let named = &situation.volumes[..situation.volumes.len().min(usize::from(Slot::MAX))];
+        let room = |volume: &&Volume| volume.free_bytes >= situation.bytes;
+        let fastest = named.iter().filter(room).filter_map(|volume| volume.rate.value()).reduce(f64::max);
+        for (slot, volume) in named.iter().enumerate() {
+            let fast_enough = !situation.hot || matches!((volume.rate.value(), fastest), (Some(rate), Some(fastest)) if rate >= fastest) || volume.rate.value().is_none();
+            if room(&volume) && fast_enough {
+                admissible.push(Action::On(slot as Slot));
             }
         }
+        if admissible.is_empty() {
+            let roomiest = named.iter().map(|volume| volume.free_bytes).max().unwrap_or(0); // unwrap_or: no volume at all has no free bytes
+            return Gate::Defer(Deferred { condition: "free bytes on the roomiest volume", have: roomiest as f64, need: situation.bytes as f64 });
+        }
+        Gate::Choose
+    }
+
+    fn retain(slot: &mut Situation, from: &Situation) {
+        slot.bytes = from.bytes;
+        slot.hot = from.hot;
+        slot.volumes.clone_from(&from.volumes);
+    }
+
+    fn empty() -> Situation {
+        Situation { bytes: 0, hot: false, volumes: Vec::new() }
     }
 }

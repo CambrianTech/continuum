@@ -1,22 +1,27 @@
 //! What a decision is: its situation, its actions, its outcome, its envelope and its constraints.
+//! A decision runs every few milliseconds on the lane, so nothing here allocates in steady state: the
+//! envelope fills a buffer the decider owns and reuses, and a policy answers an index into it.
 
 use std::fmt::Debug;
 
 /// One kind of decision. Its types are its own; nothing here knows what a lane, a drive or a peer is.
 pub trait UseCase: 'static {
-    /// What a policy sees at a decision: built by the use case's owner from owner-published state.
-    type Situation: Clone + Debug + Send;
-    /// One action available at a decision.
-    type Action: Clone + Debug + PartialEq + Send;
+    /// What a policy sees at a decision: built by the use case's owner from owner-published state,
+    /// handed by reference, copied into a record slot with [`UseCase::retain`] (reusing its buffers).
+    type Situation: Debug + Send;
+    /// One action available at a decision: small and `Copy` (indices and masks, never owned data).
+    type Action: Copy + Debug + PartialEq + Send;
     /// What the executor measured after the action was taken.
-    type Outcome: Clone + Debug + Send;
+    type Outcome: Copy + Debug + Send;
 
     /// Its name, as records and probes label it.
     const NAME: &'static str;
 
-    /// The never-learned bound on every policy: the actions admissible now, or the one action the
-    /// situation forces (a mind past her deadline is stepped next, whatever any policy prefers).
-    fn envelope(situation: &Self::Situation) -> Envelope<Self::Action>;
+    /// The never-learned bound on every policy. Fill `admissible` (cleared by the caller) and answer
+    /// [`Gate::Choose`], or answer the one action the situation forces, or [`Gate::Defer`] when no
+    /// action may be taken now (no volume has room: the pressure owner reclaims, then the decision is
+    /// asked again on fresh observations).
+    fn envelope(situation: &Self::Situation, admissible: &mut Vec<Self::Action>) -> Gate<Self::Action>;
 
     /// An outcome no policy may trade against its objective (continuity after a move; the codec's law),
     /// named when it was broken. `None`: the outcome kept every constraint.
@@ -24,45 +29,32 @@ pub trait UseCase: 'static {
         let _ = outcome;
         None
     }
+
+    /// Copy `from` into a record's slot, reusing the slot's buffers (a `Vec`'s `clone_from`), so a
+    /// steady-state decision allocates nothing.
+    fn retain(slot: &mut Self::Situation, from: &Self::Situation);
+
+    /// An empty situation for a record slot not yet used.
+    fn empty() -> Self::Situation;
 }
 
-/// What the envelope allows at one decision.
-#[derive(Debug, Clone, PartialEq)]
-pub enum Envelope<A> {
-    /// Any of these; a policy chooses among them.
-    Admissible(NonEmpty<A>),
+/// What the envelope decided before any policy is asked.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Gate<A> {
+    /// A policy chooses among the actions the envelope wrote (never none: the gate is `Defer` then).
+    Choose,
     /// Only this.
     Forced(A),
+    /// Nothing may be done now; the decision is asked again when its observations change.
+    Defer(Deferred),
 }
 
-/// At least one, by construction: admissible actions (a use case with nothing to do offers its own
-/// idle action, so a policy is never handed an empty choice), or a situation's subjects where an empty
-/// set means no decision is asked at all.
-#[derive(Debug, Clone, PartialEq)]
-pub struct NonEmpty<T> {
-    first: T,
-    rest: Vec<T>,
-}
-
-impl<T> NonEmpty<T> {
-    pub fn new(first: T, rest: impl IntoIterator<Item = T>) -> Self {
-        Self { first, rest: rest.into_iter().collect() }
-    }
-
-    pub fn first(&self) -> &T {
-        &self.first
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = &T> {
-        std::iter::once(&self.first).chain(&self.rest)
-    }
-
-    pub fn contains(&self, item: &T) -> bool
-    where
-        T: PartialEq,
-    {
-        self.iter().any(|candidate| candidate == item)
-    }
+/// Why a decision was deferred: which condition, measured against what it needs.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Deferred {
+    pub condition: &'static str,
+    pub have: f64,
+    pub need: f64,
 }
 
 /// A constraint an outcome broke: which, what was measured and the limit it passed.

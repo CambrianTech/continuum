@@ -1,7 +1,7 @@
 //! What chooses: a policy over one use case, and the baseline every use case gets for free.
 
 use super::record::Record;
-use super::use_case::{NonEmpty, UseCase};
+use super::use_case::UseCase;
 
 /// Which policy decided, and the revision of its parameters (a learned policy's checkpoint; a fixed
 /// one's 0), so a record says exactly what made each choice.
@@ -11,11 +11,11 @@ pub struct PolicyId {
     pub parameters: u64,
 }
 
-/// A policy's answer: the action, and the value it expected of it when it has a model of value, so a
-/// later outcome can grade the prediction.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Choice<A> {
-    pub action: A,
+/// A policy's answer: the index of its action among the admissible ones (never a copy of it), and
+/// the value it expected, when it has a model of value, so a later outcome can grade the prediction.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Choice {
+    pub index: usize,
     pub expected: Option<f64>,
 }
 
@@ -24,12 +24,12 @@ pub struct Choice<A> {
 pub trait Policy<U: UseCase>: Send {
     fn id(&self) -> PolicyId;
 
-    /// Choose one of `admissible` (the envelope already removed what is not allowed). A choice
-    /// outside it is refused by the decider and the envelope's first action is taken instead, named.
-    fn choose(&mut self, situation: &U::Situation, admissible: &NonEmpty<U::Action>) -> Choice<U::Action>;
+    /// Choose among `admissible` (never empty). An index past its end is refused by the decider, which
+    /// takes the first and names the refusal.
+    fn choose(&mut self, situation: &U::Situation, admissible: &[U::Action]) -> Choice;
 
-    /// Learn from a closed record: the situation's revisions, the action and its measured outcome.
-    /// A policy that does not learn ignores it.
+    /// Learn from a closed record, at the moment its outcome became known. A policy that does not
+    /// learn ignores it.
     fn learn(&mut self, record: &Record<U>) {
         let _ = record;
     }
@@ -46,7 +46,7 @@ impl<U: UseCase> Policy<U> for Baseline {
         PolicyId { name: "baseline", parameters: 0 }
     }
 
-    fn choose(&mut self, _: &U::Situation, admissible: &NonEmpty<U::Action>) -> Choice<U::Action> {
-        Choice { action: admissible.first().clone(), expected: None }
+    fn choose(&mut self, _: &U::Situation, _: &[U::Action]) -> Choice {
+        Choice { index: 0, expected: None }
     }
 }
