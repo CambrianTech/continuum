@@ -50,7 +50,7 @@ fn measured(time: crate::decide::Measured<Duration>) -> Duration {
 }
 
 fn pressure<K>(mind: &Mind<K>) -> f64 {
-    against(mind.waited, mind.deadline)
+    against(mind.waited, mind.scale())
 }
 
 fn prefilling<K>(mind: &Mind<K>) -> f64 {
@@ -67,7 +67,7 @@ impl<K: Copy + Debug + PartialEq + Send + 'static> Featured<FEATURES, TARGETS> f
             Action::Continue => {
                 x[1] = 1.0;
                 if let (Some(running), Some(waiter)) = (&situation.running, pressed) {
-                    x[2] = against(measured(running.step), waiter.deadline);
+                    x[2] = against(measured(running.step), waiter.scale());
                     x[3] = pressure(waiter);
                     x[4] = prefilling(running);
                     x[12] = finishing(running);
@@ -76,9 +76,9 @@ impl<K: Copy + Debug + PartialEq + Send + 'static> Featured<FEATURES, TARGETS> f
             Action::Switch(slot) => {
                 if let Some(target) = ready.get(usize::from(slot)) {
                     x[5] = 1.0;
-                    x[6] = against(measured(target.switch_in), target.deadline);
+                    x[6] = against(measured(target.switch_in), target.scale());
                     x[7] = pressure(target);
-                    x[8] = against(measured(target.step), target.deadline);
+                    x[8] = against(measured(target.step), target.scale());
                     x[9] = prefilling(target);
                     x[13] = finishing(target);
                     x[10] = ready.iter().enumerate().filter(|(other, _)| *other != usize::from(slot)).map(|(_, mind)| pressure(mind)).fold(0.0, f64::max);

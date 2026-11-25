@@ -130,7 +130,7 @@ fn mind(id: u8, waited_ms: u64) -> Mind<u8> {
         mind: id,
         urgency: Urgency::Want,
         waited: Duration::from_millis(waited_ms),
-        deadline: Duration::from_secs(1),
+        deadline: Some(Duration::from_secs(1)),
         phase: Phase::Decode,
         kv_bytes: Measured::Value(60 << 20),
         cold_bytes: Measured::Value(0),
@@ -152,15 +152,15 @@ fn envelope<U: UseCase>(situation: &U::Situation) -> (Gate<U::Action>, Vec<U::Ac
 // (actions are slots and masks, so the record ring and the buffer are reused).
 #[test]
 fn the_lane_forces_an_overdue_mind_and_offers_batches_only_as_wide_as_the_core() {
-    let overdue = lane::Situation { running: Some(mind(1, 0)), ready: vec![mind(2, 400), mind(3, 1_200)], batch_width: 1 };
+    let overdue = lane::Situation { running: Some(mind(1, 0)), ready: vec![mind(2, 400), mind(3, 1_200)], batch_width: 1, background_owed: false };
     assert_eq!(envelope::<Lane<u8>>(&overdue).0, Gate::Forced(lane::Action::Switch(1)));
 
-    let open = lane::Situation { running: Some(mind(1, 0)), ready: vec![mind(2, 10), mind(3, 20)], batch_width: 2 };
+    let open = lane::Situation { running: Some(mind(1, 0)), ready: vec![mind(2, 10), mind(3, 20)], batch_width: 2, background_owed: false };
     let (gate, offered) = envelope::<Lane<u8>>(&open);
     assert_eq!(gate, Gate::Choose);
     assert_eq!(offered, vec![lane::Action::Continue, lane::Action::Switch(0), lane::Action::Switch(1), lane::Action::Batch(0b1)]);
 
-    let alone = lane::Situation::<u8> { running: None, ready: vec![], batch_width: 1 };
+    let alone = lane::Situation::<u8> { running: None, ready: vec![], batch_width: 1, background_owed: false };
     assert_eq!(envelope::<Lane<u8>>(&alone).0, Gate::Forced(lane::Action::Idle));
 
     let mut decider: Decider<Lane<u8>> = Decider::new(Box::new(Baseline), capacity(4));
@@ -242,11 +242,11 @@ fn need_first_switches_to_a_more_urgent_mind_and_otherwise_continues() {
         assert_eq!(gate, Gate::Choose, "nobody is overdue");
         admissible[Policy::<Lane<u8>>::choose(&mut policy, situation, &admissible).index]
     };
-    let addressed = lane::Situation { running: Some(mind(1, 0)), ready: vec![mind(2, 300), urgent(3, 10)], batch_width: 1 };
+    let addressed = lane::Situation { running: Some(mind(1, 0)), ready: vec![mind(2, 300), urgent(3, 10)], batch_width: 1, background_owed: false };
     assert_eq!(decide(&addressed), lane::Action::Switch(1), "the addressed mind takes the next step");
-    let equal = lane::Situation { running: Some(mind(1, 0)), ready: vec![mind(2, 300)], batch_width: 1 };
+    let equal = lane::Situation { running: Some(mind(1, 0)), ready: vec![mind(2, 300)], batch_width: 1, background_owed: false };
     assert_eq!(decide(&equal), lane::Action::Continue, "at equal need the running mind continues until a bound forces otherwise");
-    let idle = lane::Situation { running: None, ready: vec![mind(2, 100), urgent(3, 10), mind(4, 900)], batch_width: 1 };
+    let idle = lane::Situation { running: None, ready: vec![mind(2, 100), urgent(3, 10), mind(4, 900)], batch_width: 1, background_owed: false };
     assert_eq!(decide(&idle), lane::Action::Switch(1), "with nobody running, the most urgent starts");
 }
 
@@ -280,7 +280,7 @@ fn lane_algorithms_are_created_by_name_with_typed_params_and_saved_state() {
 #[test]
 fn the_lane_history_fills_what_the_executor_observed_and_nothing_else() {
     use super::cases::lane_history::{LaneHistory, Observation, Views};
-    let views = Views { smoothing: Fraction::positive(1.0).expect("test: a weight"), turns: capacity(4) }; // expect: the test's own precondition
+    let views = Views { smoothing: Fraction::positive(1.0).expect("test: a weight"), turns: capacity(4), ..Views::default() }; // expect: the test's own precondition
     let mut history = LaneHistory::new(views);
     for decoded in [100, 300, 200] {
         history.observe(Observation::TurnEnded { mind: 1u8, decoded });
@@ -300,7 +300,7 @@ fn the_lane_history_fills_what_the_executor_observed_and_nothing_else() {
     assert_eq!(her.remaining, Measured::Value(189), "the median turn (200) less the 11 she decoded");
     let mut stranger = lane::Mind { step: Measured::Unmeasured, ..mind(7, 0) };
     history.fill(&mut stranger, median);
-    assert_eq!((stranger.step, stranger.remaining), (Measured::Value(Duration::from_micros(31_600)), Measured::Unmeasured), "an unseen mind steps at this Core's rate for the model; her remainder stays unmeasured");
+    assert_eq!((stranger.step, stranger.remaining), (Measured::Value(Duration::from_micros(31_600)), Measured::Value(200)), "an unseen mind (a one-off) steps at this Core's rate and is predicted at its typical turn, so her remainder is counted");
     history.observe(Observation::Left { mind: 1 });
     let mut gone = lane::Mind { switch_in: Measured::Unmeasured, ..mind(1, 0) };
     history.fill(&mut gone, median);
@@ -321,12 +321,12 @@ fn the_cost_model_continues_while_steps_fit_and_brings_in_the_tightest_waiter() 
         admissible[cost.choose(situation, &admissible).index]
     };
     let running = mind(1, 0); // 26 ms a step
-    let fresh = lane::Situation { running: Some(running), ready: vec![mind(2, 100)], batch_width: 1 };
+    let fresh = lane::Situation { running: Some(running), ready: vec![mind(2, 100)], batch_width: 1, background_owed: false };
     assert_eq!(decide(&fresh), lane::Action::Continue, "900 ms of slack: her next 26 ms step fits");
-    let near = lane::Situation { running: Some(running), ready: vec![mind(2, 100), mind(3, 960)], batch_width: 1 };
+    let near = lane::Situation { running: Some(running), ready: vec![mind(2, 100), mind(3, 960)], batch_width: 1, background_owed: false };
     assert_eq!(decide(&near), lane::Action::Switch(1), "40 ms of slack, half kept: the tightest is brought in");
     let cold = lane::Mind { switch_in: Measured::Value(Duration::from_millis(880)), ..mind(4, 100) };
-    let costly = lane::Situation { running: Some(running), ready: vec![mind(2, 100), cold], batch_width: 1 };
+    let costly = lane::Situation { running: Some(running), ready: vec![mind(2, 100), cold], batch_width: 1, background_owed: false };
     assert_eq!(decide(&costly), lane::Action::Switch(1), "her 880 ms switch leaves 20 ms of slack: she is brought in now");
 }
 
@@ -343,7 +343,7 @@ fn the_cost_models_margin_is_a_control_loop_both_ways_and_survives_a_restart() {
         Some(Param::Real(margin)) => margin,
         other => panic!("test: a seeded margin, found {other:?}"),
     };
-    let contended = lane::Situation { running: Some(mind(1, 0)), ready: vec![mind(2, 100)], batch_width: 1 };
+    let contended = lane::Situation { running: Some(mind(1, 0)), ready: vec![mind(2, 100)], batch_width: 1, background_owed: false };
     let read = |decider: &mut Decider<Lane<u8>>, situation: &lane::Situation<u8>, waited_ms: u64| {
         let Decided::Act(id, _) = decider.decide(situation, &[]) else { panic!("test: the lane acts") };
         let outcome = lane::Outcome { tokens: Measured::Unmeasured, engine: Duration::from_millis(26), worst_wait: Duration::from_millis(waited_ms), worst_deadline: Duration::from_secs(1), switching: Duration::ZERO, served: Measured::Unmeasured };
@@ -360,7 +360,7 @@ fn the_cost_models_margin_is_a_control_loop_both_ways_and_survives_a_restart() {
     let calm = margin(&decider);
     assert!(calm > twice, "every waiter inside her bound: the margin rises ({twice} -> {calm})");
     let breached = calm;
-    let alone = lane::Situation { running: Some(mind(1, 0)), ready: vec![], batch_width: 1 };
+    let alone = lane::Situation { running: Some(mind(1, 0)), ready: vec![], batch_width: 1, background_owed: false };
     read(&mut decider, &alone, 0);
     assert_eq!(margin(&decider), breached, "no one waiting is no reading");
 
@@ -382,15 +382,15 @@ fn the_cost_models_margin_is_a_control_loop_both_ways_and_survives_a_restart() {
 fn the_cost_models_margin_is_seeded_from_the_first_measurements_it_needs() {
     let registry = lane::algorithms::<u8>().expect("test: distinct names register"); // expect: the test's own precondition
     let mut cost = registry.create("cost-model").expect("test: registered"); // expect: the test's own precondition
-    let unmeasured = lane::Situation { running: Some(lane::Mind { step: Measured::Unmeasured, ..mind(1, 0) }), ready: vec![mind(2, 100)], batch_width: 1 };
+    let unmeasured = lane::Situation { running: Some(lane::Mind { step: Measured::Unmeasured, ..mind(1, 0) }), ready: vec![mind(2, 100)], batch_width: 1, background_owed: false };
     let (_, admissible) = envelope::<Lane<u8>>(&unmeasured);
     assert_eq!(admissible[cost.choose(&unmeasured, &admissible).index], lane::Action::Switch(0), "no measured step: nothing to seed from, the waiter comes in");
     assert_eq!(cost.param("margin"), None);
-    let measured = lane::Situation { running: Some(mind(1, 0)), ready: vec![mind(2, 100)], batch_width: 1 };
+    let measured = lane::Situation { running: Some(mind(1, 0)), ready: vec![mind(2, 100)], batch_width: 1, background_owed: false };
     let (_, admissible) = envelope::<Lane<u8>>(&measured);
     assert_eq!(admissible[cost.choose(&measured, &admissible).index], lane::Action::Continue, "seeded: her 26 ms step fits");
     let waiter = mind(2, 100);
-    let slack = waiter.deadline - waiter.waited - waiter.switch_in.value().unwrap_or_default(); // unwrap_or_default: the helper measures it
+    let slack = waiter.slack().expect("test: the helper's mind has a bound"); // expect: the test's own precondition
     let expected = (slack - Duration::from_millis(26)).as_secs_f64() / slack.as_secs_f64();
     assert_eq!(cost.param("margin"), Some(Param::Real(expected)), "one measured step of headroom in the waiter's slack");
 }
@@ -425,7 +425,7 @@ fn simulate(policy: Box<dyn Policy<Lane<u8>>>, seconds: u64) -> (f64, f64, u128,
             mind: id as u8,
             urgency: Urgency::Want,
             waited: now.saturating_sub(since),
-            deadline: bound,
+            deadline: Some(bound),
             phase: if prompt > 0 { Phase::Prefill { remaining: prompt } } else { Phase::Decode },
             kv_bytes: Measured::Unmeasured,
             cold_bytes: Measured::Unmeasured,
@@ -445,7 +445,7 @@ fn simulate(policy: Box<dyn Policy<Lane<u8>>>, seconds: u64) -> (f64, f64, u128,
             }
         }
         let mut slots = Vec::new();
-        let mut situation = lane::Situation { running: None, ready: Vec::new(), batch_width: 1 };
+        let mut situation = lane::Situation { running: None, ready: Vec::new(), batch_width: 1, background_owed: false };
         for (id, state) in minds.iter().enumerate() {
             let Some(mind) = as_mind(id, state, now) else { continue };
             if running == Some(id) { situation.running = Some(Mind { waited: Duration::ZERO, ..mind }) } else { situation.ready.push(mind); slots.push(id) }
@@ -532,7 +532,7 @@ fn the_stock_linear_learner_learns_the_lane_and_keeps_the_bound() {
     assert!(restarted.load(&saved[1..]).is_err(), "a truncated state is refused whole");
     let mut learned = registry.create("linear-ucb").expect("test: registered"); // expect: the test's own precondition
     learned.load(&saved).expect("test: its own state loads"); // expect: the test's own precondition
-    let contended = lane::Situation { running: Some(mind(1, 0)), ready: vec![mind(2, 400), mind(3, 700)], batch_width: 1 };
+    let contended = lane::Situation { running: Some(mind(1, 0)), ready: vec![mind(2, 400), mind(3, 700)], batch_width: 1, background_owed: false };
     let (_, admissible) = envelope::<Lane<u8>>(&contended);
     let fresh = registry.create("linear-ucb").expect("test: registered").choose(&contended, &admissible); // expect: the test's own precondition
     assert_eq!(restarted.choose(&contended, &admissible), learned.choose(&contended, &admissible));
@@ -546,11 +546,11 @@ fn the_stock_linear_learner_learns_the_lane_and_keeps_the_bound() {
 fn a_step_is_no_longer_than_the_tightest_other_minds_slack() {
     let prefilling = Mind { phase: Phase::Prefill { remaining: 30_000 }, step: Measured::Value(Duration::from_micros(200)), ..mind(1, 0) };
     let waiter = mind(2, 900); // 100 ms of bound left, less her 10 us switch
-    let contended = lane::Situation { running: Some(prefilling), ready: vec![waiter], batch_width: 1 };
+    let contended = lane::Situation { running: Some(prefilling), ready: vec![waiter], batch_width: 1, background_owed: false };
     assert_eq!(lane::step_tokens(&contended, &prefilling, 4_096), 499, "her slack at 0.2 ms a token");
-    let alone = lane::Situation { running: Some(prefilling), ready: vec![], batch_width: 1 };
+    let alone = lane::Situation { running: Some(prefilling), ready: vec![], batch_width: 1, background_owed: false };
     assert_eq!(lane::step_tokens(&alone, &prefilling, 4_096), 4_096, "no one else waits: the whole batch");
-    let overdue = lane::Situation { running: Some(prefilling), ready: vec![mind(2, 1_500)], batch_width: 1 };
+    let overdue = lane::Situation { running: Some(prefilling), ready: vec![mind(2, 1_500)], batch_width: 1, background_owed: false };
     assert_eq!(lane::step_tokens(&overdue, &prefilling, 4_096), 1, "no slack left: one token, so she still advances");
     let unmeasured = Mind { step: Measured::Unmeasured, ..prefilling };
     assert_eq!(lane::step_tokens(&contended, &unmeasured, 4_096), 4_096, "her first step measures her rate");
@@ -565,9 +565,9 @@ fn a_crowd_nearing_the_bound_is_served_before_anyone_passes_it() {
     let running = mind(1, 0); // 26 ms a step
     // three waiters with 50, 55 and 60 ms of bound left: each alone fits one more step, but the third
     // is reached only after three (78 ms)
-    let crowd = lane::Situation { running: Some(running), ready: vec![mind(2, 950), mind(3, 945), mind(4, 940)], batch_width: 1 };
+    let crowd = lane::Situation { running: Some(running), ready: vec![mind(2, 950), mind(3, 945), mind(4, 940)], batch_width: 1, background_owed: false };
     assert_eq!(envelope::<Lane<u8>>(&crowd).0, Gate::Forced(lane::Action::Switch(0)), "the most pressed goes now");
-    let spread = lane::Situation { running: Some(running), ready: vec![mind(2, 900), mind(3, 600), mind(4, 300)], batch_width: 1 };
+    let spread = lane::Situation { running: Some(running), ready: vec![mind(2, 900), mind(3, 600), mind(4, 300)], batch_width: 1, background_owed: false };
     assert_eq!(envelope::<Lane<u8>>(&spread).0, Gate::Choose, "waiters far apart leave the choice to the policy");
 }
 
@@ -579,11 +579,31 @@ fn a_crowd_nearing_the_bound_is_served_before_anyone_passes_it() {
 fn a_less_urgent_mind_steps_only_when_no_more_urgent_one_is_ready_or_her_bound_forces_her() {
     let dream = |id: u8, waited_ms: u64| Mind { urgency: Urgency::Content, ..mind(id, waited_ms) };
     let resident = mind(2, 100); // Want
-    let outranked = lane::Situation { running: Some(dream(1, 0)), ready: vec![dream(3, 100), resident], batch_width: 1 };
+    let outranked = lane::Situation { running: Some(dream(1, 0)), ready: vec![dream(3, 100), resident], batch_width: 1, background_owed: false };
     let (gate, offered) = envelope::<Lane<u8>>(&outranked);
     assert_eq!((gate, offered), (Gate::Choose, vec![lane::Action::Switch(1)]), "a running dream yields to her act; another dream is not offered");
-    let serving = lane::Situation { running: Some(mind(1, 0)), ready: vec![dream(3, 500)], batch_width: 1 };
+    let serving = lane::Situation { running: Some(mind(1, 0)), ready: vec![dream(3, 500)], batch_width: 1, background_owed: false };
     assert_eq!(envelope::<Lane<u8>>(&serving).0, Gate::Forced(lane::Action::Continue), "her act keeps the Core over a dream");
-    let aged = lane::Situation { running: Some(mind(1, 0)), ready: vec![dream(3, 990)], batch_width: 1 };
+    let aged = lane::Situation { running: Some(mind(1, 0)), ready: vec![dream(3, 990)], batch_width: 1, background_owed: false };
     assert_eq!(envelope::<Lane<u8>>(&aged).0, Gate::Forced(lane::Action::Switch(0)), "a dream at her bound still steps: no mind starves");
+}
+
+// what this catches (the M5, 2026-11-25 21:24 to 21:34Z: twenty dreams each held to a 1 s bound,
+// 2,509 violations): background work held to a per-item wait instead of its class's queue staying in
+// check. It steps in slack; when what arrives outruns what it is served, it is owed steps above acts
+// that still have room; and acts near their own bound still come first.
+#[test]
+fn background_work_keeps_its_queue_in_check_instead_of_a_wait_bound() {
+    use super::cases::lane_history::{LaneHistory, Views};
+    let mut history = LaneHistory::<u8>::new(Views::default());
+    assert!(history.background(Duration::from_secs(10), Duration::ZERO), "work arrived and none was served: owed");
+    let mut steady = LaneHistory::<u8>::new(Views::default());
+    assert!(!steady.background(Duration::ZERO, Duration::ZERO), "nothing waiting: nothing owed");
+    let dream = Mind { urgency: Urgency::Content, deadline: Urgency::Content.wait_bound(), ..mind(3, 30_000) };
+    let quiet = lane::Situation { running: Some(mind(1, 0)), ready: vec![dream], batch_width: 1, background_owed: false };
+    assert_eq!(envelope::<Lane<u8>>(&quiet).0, Gate::Forced(lane::Action::Continue), "a dream waits as long as its queue keeps up: no per-item bound");
+    let owed = lane::Situation { background_owed: true, ..quiet.clone() };
+    assert_eq!(envelope::<Lane<u8>>(&owed).0, Gate::Forced(lane::Action::Switch(0)), "its queue would grow: it takes the step");
+    let pressed = lane::Situation { ready: vec![dream, mind(2, 990)], background_owed: true, ..quiet };
+    assert_eq!(envelope::<Lane<u8>>(&pressed).0, Gate::Forced(lane::Action::Switch(1)), "an act at her bound still comes first");
 }

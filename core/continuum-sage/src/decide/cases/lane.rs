@@ -41,8 +41,10 @@ pub struct Mind<K> {
     pub urgency: Urgency,
     /// Ready and waiting for the Core this long.
     pub waited: Duration,
-    /// Her wait bound at this urgency: past it, the envelope steps her next.
-    pub deadline: Duration,
+    /// Her wait bound at this urgency (`Urgency::wait_bound`): before the next step would carry her past
+    /// it, the envelope steps her. `None` for background work, whose guarantee is its class's queue
+    /// staying in check (`Situation::background_owed`).
+    pub deadline: Option<Duration>,
     pub phase: Phase,
     /// Her KV's depth in bytes, and how much of it is not resident (the block layer knows exactly).
     pub kv_bytes: Measured<u64>,
@@ -56,6 +58,20 @@ pub struct Mind<K> {
     pub prefix_hit: Measured<f64>,
 }
 
+impl<K> Mind<K> {
+    /// What is left of her bound once her wait and her measured switch cost are spent (an unmeasured
+    /// switch is a cost not yet seen); `None` when she has no per-item bound (background work).
+    pub fn slack(&self) -> Option<Duration> {
+        self.deadline.map(|bound| bound.saturating_sub(self.waited).saturating_sub(self.switch_in.value().unwrap_or(Duration::ZERO))) // unwrap_or: an unmeasured switch is a cost not yet seen
+    }
+
+    /// The time her features are measured against: her bound, or for background work the bound acts
+    /// are held to, so every mind's times are on one scale.
+    pub fn scale(&self) -> Duration {
+        self.deadline.unwrap_or_else(Urgency::act_bound)
+    }
+}
+
 /// The Core at a step boundary: who holds it, and who is ready.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Situation<K> {
@@ -63,6 +79,9 @@ pub struct Situation<K> {
     pub ready: Vec<Mind<K>>,
     /// The widest batch the Core can step now (1: no batching).
     pub batch_width: u32,
+    /// The background class (minds with no per-item bound) is owed a step: its served rate has fallen
+    /// behind its arrival rate, so its queue would grow (`lane_history::LaneHistory::background`).
+    pub background_owed: bool,
 }
 
 /// The lane's actions: slots and masks, never owned keys.
@@ -100,7 +119,7 @@ pub struct Outcome {
 /// without a step under a 1 s bound.
 pub fn step_tokens<K: PartialEq>(situation: &Situation<K>, stepped: &Mind<K>, most: u64) -> u64 {
     let others = situation.running.iter().chain(situation.ready.iter()).filter(|mind| mind.mind != stepped.mind);
-    let slack = others.map(|mind| mind.deadline.saturating_sub(mind.waited).saturating_sub(mind.switch_in.value().unwrap_or(Duration::ZERO))).min(); // unwrap_or: an unmeasured switch is a cost not yet seen
+    let slack = others.filter_map(Mind::slack).min();
     match (slack, stepped.step.value()) {
         (Some(slack), Some(per_token)) if per_token > Duration::ZERO => ((slack.as_secs_f64() / per_token.as_secs_f64()) as u64).clamp(1, most.max(1)),
         _ => most.max(1),
@@ -140,15 +159,27 @@ impl<K: Copy + Debug + PartialEq + Send + 'static> UseCase for Lane<K> {
         // nearing the bound together each looked safe and overran by a step apiece (the M5, 2026-11-25
         // 20:54 to 21:04Z: 929 violations, p50 1.02 of the bound, twelve resident turns at once).
         let next = situation.running.as_ref().and_then(|running| running.step.value()).unwrap_or(Duration::ZERO); // unwrap_or: an unmeasured step is a cost not yet seen
-        let slack = |mind: &Mind<K>| mind.deadline.saturating_sub(mind.waited);
-        let crowded = ready.iter().enumerate().any(|(at, mind)| {
+        // Only minds with a per-item bound crowd it; background work has none.
+        let slack = |mind: &Mind<K>| mind.deadline.map(|bound| bound.saturating_sub(mind.waited));
+        let bounded = || ready.iter().enumerate().filter_map(|(at, mind)| slack(mind).map(|left| (at, left)));
+        let crowded = bounded().any(|(at, left)| {
             // ahead of her: less slack, or as little and earlier in the ready order
-            let ahead = ready.iter().enumerate().filter(|(other_at, other)| (slack(other), *other_at) < (slack(mind), at)).count() as u32;
-            slack(mind) <= next * (ahead + 1)
+            let ahead = bounded().filter(|&(other_at, other)| (other, other_at) < (left, at)).count() as u32;
+            left <= next * (ahead + 1)
         });
-        let overdue = ready.iter().enumerate().filter(|_| crowded).min_by_key(|(_, mind)| slack(mind));
+        let overdue = bounded().filter(|_| crowded).min_by_key(|&(_, left)| left);
         if let Some((slot, _)) = overdue {
             return Gate::Forced(Action::Switch(slot as Slot));
+        }
+        // Background work's guarantee: when its class is owed (served behind arrival, its queue would
+        // grow), it takes this step, the one running it continuing or its longest waiter brought in.
+        if situation.background_owed {
+            if situation.running.as_ref().is_some_and(|running| running.deadline.is_none()) {
+                return Gate::Forced(Action::Continue);
+            }
+            if let Some((slot, _)) = ready.iter().enumerate().filter(|(_, mind)| mind.deadline.is_none()).max_by_key(|(_, mind)| mind.waited) {
+                return Gate::Forced(Action::Switch(slot as Slot));
+            }
         }
         // Priority classes, the bound as aging (CLAUDE.md goal 9): a policy chooses only among the most
         // urgent minds present; a less urgent one steps when none is ready, or when her bound forces
@@ -197,10 +228,11 @@ impl<K: Copy + Debug + PartialEq + Send + 'static> UseCase for Lane<K> {
         slot.running = from.running;
         slot.ready.clone_from(&from.ready);
         slot.batch_width = from.batch_width;
+        slot.background_owed = from.background_owed;
     }
 
     fn empty() -> Situation<K> {
-        Situation { running: None, ready: Vec::new(), batch_width: 1 } // cold: an empty slot is built once, at the decider's construction
+        Situation { running: None, ready: Vec::new(), batch_width: 1, background_owed: false } // cold: an empty slot is built once, at the decider's construction
     }
 }
 

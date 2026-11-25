@@ -46,6 +46,15 @@ impl Rebuildable for LearnedLane {}
 
 /// The lane's state, owned by the driver: the algorithm's decider, the history it reads, and the
 /// situation and slot map refilled in place at every step (no allocation past their high-water mark).
+/// The decision awaiting its outcome: its id, when it was made, the tokens the mind it stepped had
+/// left in her phase then, and whether that mind was background work.
+struct Open {
+    id: DecisionId,
+    at: Instant,
+    left: Measured<u64>,
+    background: bool,
+}
+
 pub(super) struct Lanes {
     decider: Decider<Lane<PersonaId>>,
     history: LaneHistory<PersonaId>,
@@ -53,9 +62,8 @@ pub(super) struct Lanes {
     /// Ready slot `i` is turn `slots[i]`; the running mind's turn is `running`.
     slots: Vec<usize>,
     running: Option<usize>,
-    /// The last decision, when it was made, and the tokens the mind it stepped had left in her phase
-    /// then, closed with its outcome at the next decision.
-    open: Option<(DecisionId, Instant, Measured<u64>)>,
+    /// The last decision, closed with its outcome at the next decision.
+    open: Option<Open>,
     /// Tokens the Core moved since the open decision: its outcome's throughput, the reward a learner reads.
     moved: u64,
     /// Of the time since the open decision, what bringing a mind in took: its outcome's transition time.
@@ -75,7 +83,7 @@ impl Lanes {
         Ok(Self {
             decider: Decider::new(policy, lane::DECISIONS), // cold: the lane is built once, with the driver
             history: LaneHistory::new(Views::default()),
-            situation: lane::Situation { running: None, ready: Vec::with_capacity(SLOTS), batch_width: 1 }, // cold: built once; refilled in place
+            situation: lane::Situation { running: None, ready: Vec::with_capacity(SLOTS), batch_width: 1, background_owed: false }, // cold: built once; refilled in place
             slots: Vec::with_capacity(SLOTS), // cold: built once; refilled in place
             running: None,
             open: None,
@@ -177,14 +185,23 @@ impl Driver<'_, '_> {
                 lanes.slots.push(index);
             }
         }
-        // the last step's outcome: its engine time and the longest wait any ready mind has now, against
-        // that mind's own bound
-        if let Some((id, at, left)) = lanes.open.take() {
-            let (worst_wait, worst_deadline) = situation.ready.iter().max_by_key(|mind| mind.waited).map_or((Duration::ZERO, Duration::MAX), |mind| (mind.waited, mind.deadline)); // map_or: no ready mind means no wait against any bound
+        // the last step's outcome: its engine time and the longest wait any bounded mind has now,
+        // against her own bound; and the background class's account (its backlog now, and the Core
+        // time it got under that decision)
+        let mut served_background = Duration::ZERO;
+        if let Some(Open { id, at, left, background }) = lanes.open.take() {
+            let worst = situation.ready.iter().filter_map(|mind| mind.deadline.map(|bound| (mind.waited, bound))).max_by_key(|&(waited, _)| waited);
+            let (worst_wait, worst_deadline) = worst.unwrap_or((Duration::ZERO, Duration::MAX)); // unwrap_or: no bounded mind waiting is no wait against any bound
             let moved = std::mem::take(&mut lanes.moved);
-            let outcome = lane::Outcome { tokens: Measured::Value(moved), engine: now.saturating_duration_since(at), worst_wait, worst_deadline, switching: std::mem::take(&mut lanes.switching), served: lane::served(moved, left) };
+            let engine = now.saturating_duration_since(at);
+            if background {
+                served_background = engine;
+            }
+            let outcome = lane::Outcome { tokens: Measured::Value(moved), engine, worst_wait, worst_deadline, switching: std::mem::take(&mut lanes.switching), served: lane::served(moved, left) };
             let _ = lanes.decider.outcome(id, outcome);
         }
+        let backlog = situation.running.iter().chain(situation.ready.iter()).filter(|mind| mind.deadline.is_none()).filter_map(|mind| mind.remaining.value().zip(mind.step.value()).map(|(left, step)| step.mul_f64(left as f64))).sum();
+        situation.background_owed = lanes.history.background(backlog, served_background);
         let (id, action) = match lanes.decider.decide(&lanes.situation, &[]) {
             Decided::Act(id, action) => (id, action),
             // the lane never defers, and every decision is closed at the next one, so neither occurs;
@@ -199,7 +216,7 @@ impl Driver<'_, '_> {
             lane::Action::Switch(slot) => lanes.situation.ready.get(usize::from(slot)),
             lane::Action::Batch(_) | lane::Action::Idle => None,
         };
-        lanes.open = Some((id, now, stepped.map_or(Measured::Unmeasured, |mind| mind.remaining))); // map_or: a batch or idle steps no one mind
+        lanes.open = Some(Open { id, at: now, left: stepped.map_or(Measured::Unmeasured, |mind| mind.remaining), background: stepped.is_some_and(|mind| mind.deadline.is_none()) }); // map_or: a batch or idle steps no one mind
         if let Some(mind) = stepped {
             lanes.tokens = lane::step_tokens(&lanes.situation, mind, most);
         }

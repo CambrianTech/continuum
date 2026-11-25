@@ -37,6 +37,9 @@ pub struct Views {
     pub smoothing: Fraction,
     /// How many of her finished turns her turn-length prediction remembers.
     pub turns: NonZeroUsize,
+    /// The weight of the newest decision in the background class's arrival and served rates: a rate,
+    /// so over many decisions (the lane's replay window, `lane::DECISIONS`, by default).
+    pub rates: Fraction,
 }
 
 /// Sixteen finished turns: a working session's worth, so a prediction follows her current activity.
@@ -49,8 +52,16 @@ impl Default for Views {
     /// The starting views: a quarter weight (about the last four steps) and her last sixteen turns.
     /// The lane's owner may set others; a learned algorithm reads the same history either way.
     fn default() -> Self {
-        Self { smoothing: Fraction::QUARTER, turns: TURNS }
+        Self { smoothing: Fraction::QUARTER, turns: TURNS, rates: Fraction::reciprocal(super::lane::DECISIONS) }
     }
+}
+
+/// The background class's account.
+#[derive(Debug, Clone, Copy)]
+struct Background {
+    backlog: Duration,
+    arrived: Ewma,
+    served: Ewma,
 }
 
 /// One mind's track.
@@ -88,11 +99,18 @@ pub struct LaneHistory<K> {
     /// this Core measured, never by a whole batch (the M5, 2026-11-25 20:39 to 20:49Z: minds whose rate
     /// went unmeasured were stepped a whole batch at a time, 7.9 s waits under a 1 s bound).
     core: [Ewma; 2],
+    /// The background class: its backlog at the last decision, and its arrival and served rates (Core
+    /// seconds a decision), so its guarantee (its queue in check) is a measured comparison.
+    background: Background,
+    /// Decoded tokens per finished turn on this Core, every mind's: a mind with no finished turn of her
+    /// own (a one-off: a dream, a warmup) is predicted from it, so her remainder is counted.
+    turns: Window,
 }
 
 impl<K: Copy + PartialEq> LaneHistory<K> {
     pub fn new(views: Views) -> Self {
-        Self { views, tracks: Vec::new(), core: [Ewma::new(views.smoothing); 2] } // cold: built once, with the lane
+        let rate = || Ewma::new(views.rates);
+        Self { views, tracks: Vec::new(), core: [Ewma::new(views.smoothing); 2], background: Background { backlog: Duration::ZERO, arrived: rate(), served: rate() }, turns: Window::new(views.turns) } // cold: built once, with the lane
     }
 
     fn track(&mut self, mind: K) -> &mut Track<K> {
@@ -106,6 +124,21 @@ impl<K: Copy + PartialEq> LaneHistory<K> {
             }
         };
         &mut self.tracks[at]
+    }
+
+    /// One decision's account of the background class (minds with no per-item bound): `backlog`, the
+    /// Core time its ready minds' remaining work is predicted to take now, and `served`, the Core time
+    /// it got since the last decision. What arrived is what the backlog grew by plus what was served.
+    /// Owed when the served rate has fallen behind the arrival rate: its queue would grow, so it takes
+    /// steps; otherwise it runs only when no act is ready (Joel, 2026-11-25: learning through the day
+    /// at the rate that keeps its queue in check, dreaming in the quiet).
+    pub fn background(&mut self, backlog: Duration, served: Duration) -> bool {
+        let account = &mut self.background;
+        let arrived = backlog.as_secs_f64() - account.backlog.as_secs_f64() + served.as_secs_f64();
+        account.backlog = backlog;
+        account.arrived.observe(arrived);
+        account.served.observe(served.as_secs_f64());
+        matches!((account.served.mean(), account.arrived.mean()), (Measured::Value(served), Measured::Value(arrived)) if served < arrived)
     }
 
     pub fn observe(&mut self, observation: Observation<K>) {
@@ -135,6 +168,7 @@ impl<K: Copy + PartialEq> LaneHistory<K> {
             }
             Observation::SwitchedIn { mind, took } => self.track(mind).switch_in.observe(took.as_secs_f64()),
             Observation::TurnEnded { mind, decoded } => {
+                self.turns.observe(decoded as f64);
                 let track = self.track(mind);
                 track.turn_tokens.observe(decoded as f64);
                 track.decoded = 0;
@@ -163,18 +197,25 @@ impl<K: Copy + PartialEq> LaneHistory<K> {
     /// less what she has decoded in this one). Unseen stays `Unmeasured`.
     pub fn fill(&self, mind: &mut Mind<K>, typical: Fraction) {
         let seconds = |measured: Measured<f64>| measured.value().and_then(|s| Duration::try_from_secs_f64(s).ok()).map_or(Measured::Unmeasured, Measured::Value);
-        // her rate in her phase, or this Core's for the model until hers is measured
+        // her rate in her phase and her typical turn, or this Core's until hers are measured
         let phase = usize::from(matches!(mind.phase, Phase::Decode));
         let core = self.core[phase].mean();
-        let Some(track) = self.tracks.iter().find(|track| track.mind == mind.mind) else {
-            mind.step = seconds(core);
-            return;
-        };
-        let own = if phase == 0 { track.prefill.mean() } else { track.decode.mean() };
+        let track = self.tracks.iter().find(|track| track.mind == mind.mind);
+        let own = track.map_or(Measured::Unmeasured, |track| if phase == 0 { track.prefill.mean() } else { track.decode.mean() }); // map_or: no track is nothing measured of her
         let rate = match own {
             Measured::Value(_) => own,
             Measured::Unmeasured => core,
         };
+        let turn = match track.map(|track| track.turn_tokens.quantile(typical)) {
+            Some(Measured::Value(turn)) => Measured::Value(turn),
+            _ => self.turns.quantile(typical),
+        };
+        let decoded = track.map_or(0, |track| track.decoded); // map_or: no track has decoded nothing
+        (mind.step, mind.remaining) = match mind.phase {
+            Phase::Prefill { remaining } => (seconds(rate), Measured::Value(remaining)),
+            Phase::Decode => (seconds(rate), turn.value().map_or(Measured::Unmeasured, |turn| Measured::Value((turn as u64).saturating_sub(decoded)))),
+        };
+        let Some(track) = track else { return };
         // her bind and the rebuild her next step pays after it; a part not yet seen adds nothing yet
         mind.switch_in = match (track.switch_in.mean(), track.rebuild.mean()) {
             (Measured::Value(bind), Measured::Value(rebuild)) => seconds(Measured::Value(bind + rebuild)),
@@ -184,9 +225,5 @@ impl<K: Copy + PartialEq> LaneHistory<K> {
         mind.prefix_hit = track.prefix_hit.mean();
         mind.kv_bytes = track.kv_bytes;
         mind.cold_bytes = track.cold_bytes;
-        (mind.step, mind.remaining) = match mind.phase {
-            Phase::Prefill { remaining } => (seconds(rate), Measured::Value(remaining)),
-            Phase::Decode => (seconds(rate), track.turn_tokens.quantile(typical).value().map_or(Measured::Unmeasured, |turn| Measured::Value((turn as u64).saturating_sub(track.decoded)))),
-        };
     }
 }

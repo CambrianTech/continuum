@@ -24,7 +24,7 @@ use std::time::Duration;
 
 use super::super::policy::{Choice, Param, Policy, PolicyId, Refused};
 use super::super::record::Record;
-use super::lane::{Action, Lane, Mind, Situation, Slot, SLOTS};
+use super::lane::{Action, Lane, Situation, Slot, SLOTS};
 
 /// The cost model: unseeded until its first contended decision with a measured step, or its saved
 /// state, gives it a margin.
@@ -63,12 +63,6 @@ const SHRINK: f64 = 0.5;
 
 /// The learned state's bytes: margin, step, last direction.
 const STATE: usize = 17;
-
-/// A waiter's slack: her bound less her wait, less her measured switch cost (one not yet measured is a
-/// cost this run has not seen, so none is subtracted).
-fn slack<K>(mind: &Mind<K>) -> Duration {
-    mind.deadline.saturating_sub(mind.waited).saturating_sub(mind.switch_in.value().unwrap_or(Duration::ZERO)) // unwrap_or: an unmeasured switch is a cost not yet seen
-}
 
 /// A margin in (0, 1], refused otherwise (and NaN), never clamped.
 fn valid(margin: f64) -> Result<f64, Refused> {
@@ -109,15 +103,15 @@ impl<K: Copy + Debug + PartialEq + Send + 'static> Policy<Lane<K>> for CostModel
 
     fn choose(&mut self, situation: &Situation<K>, admissible: &[Action]) -> Choice {
         let ready = &situation.ready[..situation.ready.len().min(SLOTS)];
-        let tightest = ready.iter().enumerate().min_by_key(|(_, mind)| slack(mind));
+        // the tightest bounded waiter (background work has no bound to fit)
+        let tightest = ready.iter().enumerate().filter_map(|(slot, mind)| mind.slack().map(|room| (slot, room))).min_by_key(|&(_, room)| room);
         // a more urgent waiter than the running mind (with none running, the most urgent of all)
         let urgent = ready.iter().enumerate().filter(|(_, mind)| situation.running.is_none_or(|running| mind.urgency > running.urgency)).max_by_key(|(_, mind)| mind.urgency);
         let wanted = match (&situation.running, urgent, tightest) {
             (_, Some((slot, _)), _) => Action::Switch(slot as Slot),
             (None, None, _) => Action::Idle,
             (Some(_), None, None) => Action::Continue,
-            (Some(running), None, Some((slot, waiter))) => {
-                let room = slack(waiter);
+            (Some(running), None, Some((slot, room))) => {
                 let next_step = running.step.value();
                 if self.learned.is_none() {
                     self.learned = next_step.and_then(|step| Learned::seeded(room, step));
