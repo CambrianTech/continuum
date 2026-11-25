@@ -62,6 +62,8 @@ pub(super) struct Lanes {
     running: Option<usize>,
     /// The last decision and when it was made, closed with its outcome at the next decision.
     open: Option<(DecisionId, Instant)>,
+    /// Tokens the Core moved since the open decision: its outcome's throughput, the reward a learner reads.
+    moved: u64,
     /// Where what the algorithm learned is kept, once the node's home is known, and under what.
     learned: Option<(Store<LearnedLane>, uuid::Uuid, LaneContract)>,
     algorithm: &'static str,
@@ -78,6 +80,7 @@ impl Lanes {
             slots: Vec::with_capacity(SLOTS), // cold: built once; refilled in place
             running: None,
             open: None,
+            moved: 0,
             learned: None,
             algorithm,
         })
@@ -108,6 +111,9 @@ impl Lanes {
 
     /// What the driver measured, as the lane's executor.
     pub(super) fn observe(&mut self, observation: Observation<PersonaId>) {
+        if let Observation::Stepped { tokens, .. } = observation {
+            self.moved += tokens;
+        }
         self.history.observe(observation);
     }
 }
@@ -165,7 +171,7 @@ impl Driver<'_, '_> {
         // that mind's own bound
         if let Some((id, at)) = lanes.open.take() {
             let (worst_wait, worst_deadline) = situation.ready.iter().max_by_key(|mind| mind.waited).map_or((Duration::ZERO, Duration::MAX), |mind| (mind.waited, mind.deadline)); // map_or: no ready mind means no wait against any bound
-            let outcome = lane::Outcome { tokens: Measured::Unmeasured, engine: now.saturating_duration_since(at), worst_wait, worst_deadline };
+            let outcome = lane::Outcome { tokens: Measured::Value(std::mem::take(&mut lanes.moved)), engine: now.saturating_duration_since(at), worst_wait, worst_deadline };
             let _ = lanes.decider.outcome(id, outcome);
         }
         let (id, action) = match lanes.decider.decide(&lanes.situation, &[]) {
