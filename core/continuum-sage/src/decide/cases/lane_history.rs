@@ -57,9 +57,13 @@ impl Default for Views {
 #[derive(Debug, Clone)]
 struct Track<K> {
     mind: K,
-    /// Seconds per token, by phase: a prefill token costs a small fraction of a decode step.
+    /// Seconds per token, by phase, over every step she took (a switched one too, so a mind that is
+    /// always switched in still has a rate, the rebuild in it: a conservative one to size her steps
+    /// by): a prefill token costs a small fraction of a decode step.
     prefill: Ewma,
     decode: Ewma,
+    /// The same over her steps that followed no switch: what a switched step is compared with.
+    plain: [Ewma; 2],
     switch_in: Ewma,
     /// What a switched step took beyond her plain steps at the same count of tokens: the rest of a
     /// switch's cost (the M5, 2026-11-25: binds 0.28 ms, the graph rebuild after them 5.6 ms a step).
@@ -79,11 +83,16 @@ struct Track<K> {
 pub struct LaneHistory<K> {
     views: Views,
     tracks: Vec<Track<K>>,
+    /// Seconds per token on this Core, by phase (prefill, decode), over every mind's steps: the served
+    /// model's rate, which a mind not yet measured is filled with, so her first step is sized by what
+    /// this Core measured, never by a whole batch (the M5, 2026-11-25 20:39 to 20:49Z: minds whose rate
+    /// went unmeasured were stepped a whole batch at a time, 7.9 s waits under a 1 s bound).
+    core: [Ewma; 2],
 }
 
 impl<K: Copy + PartialEq> LaneHistory<K> {
     pub fn new(views: Views) -> Self {
-        Self { views, tracks: Vec::new() } // cold: built once, with the lane
+        Self { views, tracks: Vec::new(), core: [Ewma::new(views.smoothing); 2] } // cold: built once, with the lane
     }
 
     fn track(&mut self, mind: K) -> &mut Track<K> {
@@ -92,7 +101,7 @@ impl<K: Copy + PartialEq> LaneHistory<K> {
             Some(at) => at,
             None => {
                 let ewma = || Ewma::new(views.smoothing);
-                self.tracks.push(Track { mind, prefill: ewma(), decode: ewma(), switch_in: ewma(), rebuild: ewma(), prefix_hit: ewma(), turn_tokens: Window::new(views.turns), decoded: 0, kv_bytes: Measured::Unmeasured, cold_bytes: Measured::Unmeasured });
+                self.tracks.push(Track { mind, prefill: ewma(), decode: ewma(), plain: [ewma(), ewma()], switch_in: ewma(), rebuild: ewma(), prefix_hit: ewma(), turn_tokens: Window::new(views.turns), decoded: 0, kv_bytes: Measured::Unmeasured, cold_bytes: Measured::Unmeasured });
                 self.tracks.len() - 1
             }
         };
@@ -102,6 +111,10 @@ impl<K: Copy + PartialEq> LaneHistory<K> {
     pub fn observe(&mut self, observation: Observation<K>) {
         match observation {
             Observation::Stepped { mind, took, tokens, prefill, switched } => {
+                let phase = usize::from(!prefill);
+                if tokens > 0 {
+                    self.core[phase].observe(took.as_secs_f64() / tokens as f64);
+                }
                 let track = self.track(mind);
                 if !prefill {
                     track.decoded += tokens;
@@ -109,13 +122,14 @@ impl<K: Copy + PartialEq> LaneHistory<K> {
                 if tokens == 0 {
                     return;
                 }
-                let plain = if prefill { &mut track.prefill } else { &mut track.decode };
+                let per_token = took.as_secs_f64() / tokens as f64;
+                (if prefill { &mut track.prefill } else { &mut track.decode }).observe(per_token);
                 // A switched step is not one of her plain steps: what it took beyond them, at her plain
                 // time a token, is the switch's rebuild. Before a plain step is measured there is
                 // nothing to compare it with, so it waits for one.
-                match (switched, plain.mean()) {
-                    (false, _) => plain.observe(took.as_secs_f64() / tokens as f64),
-                    (true, Measured::Value(per_token)) => track.rebuild.observe((took.as_secs_f64() - per_token * tokens as f64).max(0.0)),
+                match (switched, track.plain[phase].mean()) {
+                    (false, _) => track.plain[phase].observe(per_token),
+                    (true, Measured::Value(plain)) => track.rebuild.observe((took.as_secs_f64() - plain * tokens as f64).max(0.0)),
                     (true, Measured::Unmeasured) => {}
                 }
             }
@@ -148,8 +162,19 @@ impl<K: Copy + PartialEq> LaneHistory<K> {
     /// mind's prefill; a decoding mind's typical turn, the `typical` quantile of her finished turns,
     /// less what she has decoded in this one). Unseen stays `Unmeasured`.
     pub fn fill(&self, mind: &mut Mind<K>, typical: Fraction) {
-        let Some(track) = self.tracks.iter().find(|track| track.mind == mind.mind) else { return };
         let seconds = |measured: Measured<f64>| measured.value().and_then(|s| Duration::try_from_secs_f64(s).ok()).map_or(Measured::Unmeasured, Measured::Value);
+        // her rate in her phase, or this Core's for the model until hers is measured
+        let phase = usize::from(matches!(mind.phase, Phase::Decode));
+        let core = self.core[phase].mean();
+        let Some(track) = self.tracks.iter().find(|track| track.mind == mind.mind) else {
+            mind.step = seconds(core);
+            return;
+        };
+        let own = if phase == 0 { track.prefill.mean() } else { track.decode.mean() };
+        let rate = match own {
+            Measured::Value(_) => own,
+            Measured::Unmeasured => core,
+        };
         // her bind and the rebuild her next step pays after it; a part not yet seen adds nothing yet
         mind.switch_in = match (track.switch_in.mean(), track.rebuild.mean()) {
             (Measured::Value(bind), Measured::Value(rebuild)) => seconds(Measured::Value(bind + rebuild)),
@@ -160,8 +185,8 @@ impl<K: Copy + PartialEq> LaneHistory<K> {
         mind.kv_bytes = track.kv_bytes;
         mind.cold_bytes = track.cold_bytes;
         (mind.step, mind.remaining) = match mind.phase {
-            Phase::Prefill { remaining } => (seconds(track.prefill.mean()), Measured::Value(remaining)),
-            Phase::Decode => (seconds(track.decode.mean()), track.turn_tokens.quantile(typical).value().map_or(Measured::Unmeasured, |turn| Measured::Value((turn as u64).saturating_sub(track.decoded)))),
+            Phase::Prefill { remaining } => (seconds(rate), Measured::Value(remaining)),
+            Phase::Decode => (seconds(rate), track.turn_tokens.quantile(typical).value().map_or(Measured::Unmeasured, |turn| Measured::Value((turn as u64).saturating_sub(track.decoded)))),
         };
     }
 }

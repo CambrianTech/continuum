@@ -294,17 +294,17 @@ fn the_lane_history_fills_what_the_executor_observed_and_nothing_else() {
     let mut her = mind(1, 0);
     her.step = Measured::Unmeasured;
     history.fill(&mut her, median);
-    assert_eq!(her.step, Measured::Value(Duration::from_millis(26)), "per token");
+    assert_eq!(her.step, Measured::Value(Duration::from_micros(31_600)), "per token, over every step she took (a weight of one: the latest), the switched one too");
     assert_eq!(her.switch_in, Measured::Value(Duration::from_micros(5_610)), "her bind and the 5.6 ms her switched step took beyond her plain one");
     assert_eq!((her.prefix_hit, her.kv_bytes), (Measured::Value(0.9), Measured::Value(64 << 20)));
     assert_eq!(her.remaining, Measured::Value(189), "the median turn (200) less the 11 she decoded");
     let mut stranger = lane::Mind { step: Measured::Unmeasured, ..mind(7, 0) };
     history.fill(&mut stranger, median);
-    assert_eq!((stranger.step, stranger.remaining), (Measured::Unmeasured, Measured::Unmeasured), "unseen stays unmeasured");
+    assert_eq!((stranger.step, stranger.remaining), (Measured::Value(Duration::from_micros(31_600)), Measured::Unmeasured), "an unseen mind steps at this Core's rate for the model; her remainder stays unmeasured");
     history.observe(Observation::Left { mind: 1 });
-    let mut gone = lane::Mind { step: Measured::Unmeasured, ..mind(1, 0) };
+    let mut gone = lane::Mind { switch_in: Measured::Unmeasured, ..mind(1, 0) };
     history.fill(&mut gone, median);
-    assert_eq!(gone.step, Measured::Unmeasured, "a mind that left keeps no track");
+    assert_eq!(gone.switch_in, Measured::Unmeasured, "a mind that left keeps no track");
 }
 
 // what this catches: a cost model that switches on a fixed count instead of costs: a running mind whose
