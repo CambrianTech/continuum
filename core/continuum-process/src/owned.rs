@@ -1,6 +1,3 @@
-// Only the Windows paths below reach the parent's items (parse_tasklist_image_name).
-#[cfg(windows)]
-use super::*;
 use continuum_kernel::system_resources::disk_reporters::Kept;
 use continuum_kernel::system_resources::process_tree::{ProcessIdentity, TreeEnd};
 
@@ -687,44 +684,11 @@ pub fn recheck(survivors: &[ProcessIdentity]) -> Vec<ProcessIdentity> {
     still_present(survivors)
 }
 
-/// The command name (basename) of `pid` via `ps -p <pid> -o comm=`. `None` if the
-/// pid is gone or `ps` is unavailable — callers treat `None` as "unverifiable" and
-/// refuse to kill.
-#[cfg(not(windows))]
+/// The command name (basename) of `pid`, read from the kernel by the host's one owner
+/// (`continuum_host::process_name`): never a spawned `ps` or `tasklist`. `None` if the pid is
+/// gone or the kernel will not say: callers treat `None` as "unverifiable" and refuse to kill.
+/// On every OS, Windows included: a `None` for every pid once left the whole reap and verify
+/// subsystem inert there (BigMama, 2026-09-05).
 pub fn command_name(pid: u32) -> Option<String> {
-    let out = std::process::Command::new("ps")
-        .args(["-p", &pid.to_string(), "-o", "comm="])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&out.stdout);
-    let line = text.trim();
-    if line.is_empty() {
-        return None;
-    }
-    // `comm` can be a full path on Linux — take the basename so the
-    // "llama-server" match is on the binary name, not its install dir.
-    Some(line.rsplit('/').next().unwrap_or(line).to_string())
-}
-
-/// Windows has no `ps`. Without this arm `command_name` returned `None` for EVERY
-/// pid on Windows, which the doctrine above turns into "unverifiable — refuse to
-/// kill". Combined with the same gap in [`pid_listening_on_port`], the whole
-/// reap/verify subsystem was inert on Windows: the core could not identify even
-/// its OWN llama-server child, so any unclean teardown left the port held by a
-/// holder it could not name and serving stayed wedged permanently. Measured on
-/// BigMama 2026-09-05 (four spawn/refuse cycles, `held by None` while netstat
-/// showed the pid plainly). [[silently-unwired-capability]]
-#[cfg(windows)]
-pub fn command_name(pid: u32) -> Option<String> {
-    let out = airc_core::process::background("tasklist")
-        .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    parse_tasklist_image_name(&String::from_utf8_lossy(&out.stdout))
+    continuum_host::process_name::command_name(pid)
 }

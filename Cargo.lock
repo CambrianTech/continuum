@@ -3656,6 +3656,7 @@ version = "0.1.0"
 dependencies = [
  "airc-core",
  "continuum-base",
+ "continuum-host",
  "continuum-kernel",
  "libc",
  "sysinfo",

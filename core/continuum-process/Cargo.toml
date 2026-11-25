@@ -5,6 +5,7 @@ edition = "2021"
 publish = false
 
 [dependencies]
+continuum-host = { workspace = true } # process_name: a pid's command name read from the kernel
 continuum-base = { workspace = true }
 tracing.workspace = true
 continuum-kernel = { workspace = true }
