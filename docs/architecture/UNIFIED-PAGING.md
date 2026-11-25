@@ -162,6 +162,17 @@ The law, once, at every rung:
 - `residency::Tier` stays the Core's view of one mind's move. Its blocks become `BlockRef`s, and
   `UnifiedTier` asks the block layer for her storage instead of the fork reserving it privately.
 
+**Corrected by building slice 1 (2026-11-25):**
+- **A block's key is the consumer's own type** (`Block<K>`), not a `BlockKind` enum. An enum naming
+  `PersonaId` or `ModelId` would make the floor crate depend on the crates above it. The kinds in the
+  table above are the keys consumers bring.
+- **A link carries one block to a placement** (`Link<K>::carry(&mut Block<K>, Placement)`); it does
+  not copy one region into another. A mapped block demoted to `Flash` and promoted back keeps its
+  region and address; only the OS's pages move. The pointer switch is `Exchange`, two blocks trading
+  regions.
+- **The completion is the block layer's own.** `residency::Fence` lives above it, in
+  `continuum-persona-engine`, which adapts to it rather than the floor depending upward.
+
 ## Per platform
 
 - **The M5 (unified memory):**
@@ -192,7 +203,8 @@ The law, once, at every rung:
 
 | # | Slice | Owner | Gate |
 |---|---|---|---|
-| 1 | `continuum-blocks`: `TierKind`, `Region`, `Block`, `Pin`, `InFlight`; the `Unified` and `Ram` tiers; `Retag` and `Mapping` links; `Topology` | Fable | link validators on the M5 |
+| 1 | `continuum-blocks`: `TierKind`, `Region` (host or mapped), `Block<K>`, `Pin`; the `Mapping` link and `Exchange` (the pointer switch); `continuum-host::mapped_region`. **Built:** 64 MiB to flash and back byte-identical at the same address; a pinned block never moves; an exchange trades memory by pointer | Fable | link validators on the M5 |
+| 1b | `Topology` and the tiers' budgets, once the resource authority says `resources/free` on the bus (card 9d856843, Cormac's delta 8). The drive's measured write rate checks the Mapping link: 64 MiB demoted at 1.06 GB/s on the M5 with serving beside, below what an SSD gives | Fable | Mapping at >= 80% of the measured drive rate |
 | 2 | The first consumer: the Core's parked minds' KV as `MindKv` blocks. Deletes the fork's private storage reservation (#6264), her separate file write, and `preserve.rs`'s JSON token history (her tokens are a block beside her KV) | Fable | `--test-core` byte-identical through a flash round trip; stop and restore at 130k at the drive's rate |
 | 3 | The `Streamer` with the Lane's `Forecast` as its first `Demand` | Fable | trace replay: zero misses for forecast minds |
 | 4 | Discrete: the `Vram` and `Pinned` tiers, `Dma` and `Staged` links, the CUDA graph check | Codex | the 5090: a swap hidden under decode |
