@@ -260,7 +260,8 @@ Two more seams, where a learned model is most likely to win, each with one imple
   second one.
 
 **No hand tuning: initialized from measurement, then learning for its own throughput.** A law never
-ships with a tuned constant. Its starting point comes from what this node measures:
+ships with a tuned constant. It starts from a good default where nothing is measured yet (first boot, a
+new model, a new drive), and from what this node measures as soon as it has it:
 - link rates and switch and rebuild times from the cost model;
 - forecast error from the consumer's declared demand;
 - tier budgets from the resource authority.
