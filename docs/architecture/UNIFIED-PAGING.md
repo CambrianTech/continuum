@@ -223,7 +223,9 @@ pub struct Transfer { fence: Box<dyn residency::Fence> }   // the fence type tha
 | `DirectIo` | any host tier and `Cold` | one unbuffered sequential stream (`F_NOCACHE`, `O_DIRECT`, `FILE_FLAG_NO_BUFFERING`) on an IO worker, aligned to the drive |
 | `Staged` | `Vram` and `Flash` or `Cold` | `Mapping` or `DirectIo` into pinned memory, then `Dma`: two links as one transfer |
 
-**`Streamer`: the one SAGE component that places blocks (RAGE's streaming system).**
+**`Streamer`: the one SAGE component that places blocks (RAGE's streaming system).** It is the first
+instance of SAGE's `Placer` (SAGE.md, "Ebb and flow: one placement pattern at every scale"). Who is
+awake on a node and who runs where on the grid are the same pattern, with minds as the units.
 
 | Hears | Says | Need |
 |---|---|---|

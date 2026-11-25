@@ -242,6 +242,39 @@ Lessons the reads taught: a change that only moves work can still move a cost (d
 every resident her cache); a state reader skips frames, so a test waits on frame numbers, never on a value
 it may have coalesced past; iteration time is the goal: build and deploy as often as possible, by judgment.
 
+## Ebb and flow: one placement pattern at every scale
+
+Joel, 2026-11-25: "Awakens and sleeps persona as it goes up and down, the resources exist ... within
+the entire grid as the capacity changes. We also know how many it's worth keeping up and decide who is
+up ... we do everything by this same ebb flow architecture."
+
+The same pattern repeats wherever something finite is shared, so SAGE owns it once as a `Placer`:
+- **Capacity is measured continually,** never only at start. Other processes, other copies of us, and
+  other nodes take and give back room; a growing budget is filled in steps, a shrinking one emptied
+  before anything fails.
+- **Demand is forecast** by whoever knows it: the Lane knows who steps next, a room knows who is
+  addressed.
+- **Each unit is worth something,** measured: a mind's need and how often she is used, against what
+  keeping her up costs.
+- **A pluggable law places units** where they are worth the most within each place's budget, learning
+  for its own objective. It inherits the algorithm lifecycle above: default, resume, learn,
+  checkpoint, stop.
+- **When room shrinks the coldest goes down a level, and when room appears the most valuable comes
+  up.** Never a fixed count of anything: how many it is worth keeping up is the law's answer for the
+  capacity there is now.
+- **Every move is fenced, and custody is leased,** so a unit is in one place at a time and nothing is
+  lost when a place goes away.
+
+| Instance | Units | Places, best first | Owner |
+|---|---|---|---|
+| The block layer's `Streamer` (UNIFIED-PAGING.md) | blocks: minds' KV, weights, experts, genes | VRAM, pinned or unified, flash, cold, per volume | Fable, Codex |
+| Who is awake on a node | minds | stepping on the Core, resident, parked to flash, asleep | Fable |
+| Who runs where on the grid | minds (leased in and out across nodes) | each node, by its measured capacity and its link to the mind's room | Codex (grid) |
+| What models are hot | models | VRAM or unified, flash, cold (the hot tier) | Codex |
+
+Each instance supplies only what differs: its units, its places, how it measures, and its moves. The
+measurement, budgets, the law, its lifecycle, and the fencing and custody are the `Placer`'s, once.
+
 ## Memory is one cache hierarchy, detected per machine
 
 Joel, 2026-11-22: "VRAM, ram, flash, cold disk and any number or size. It's a cache problem and essential
