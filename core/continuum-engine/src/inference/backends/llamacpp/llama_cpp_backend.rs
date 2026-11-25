@@ -582,9 +582,20 @@ impl LlamaCppBackend {
             "a turn was handed to the scheduler"
         );
 
-        Ok(TurnAnswer { events: response_rx, started: gen_start, prompt_chars: prompt_len_chars, stops: stop_sequences.iter().map(|s| s.to_string()).collect() })
+        let model = Arc::clone(&self.model);
+        Ok(TurnAnswer {
+            events: response_rx,
+            started: gen_start,
+            prompt_chars: prompt_len_chars,
+            stops: stop_sequences.iter().map(|s| s.to_string()).collect(),
+            decode: Arc::new(move |ids| model.detokenize(ids)),
+            max_tokens,
+        })
     }
 }
+
+/// Turns an answer's token ids into its text, once, when it ends: the model's own detokenizer.
+pub(crate) type Decode = Arc<dyn Fn(&[i32]) -> Result<String, llama::RenderRefused> + Send + Sync>;
 
 /// Dropping a turn drops its receiver even when the native driver is busy.
 pub struct TurnAnswer {
@@ -592,6 +603,21 @@ pub struct TurnAnswer {
     started: Instant,
     prompt_chars: usize,
     stops: Vec<String>,
+    decode: Decode,
+    /// The most tokens the answer can hold: its id buffer is sized to this once.
+    max_tokens: usize,
+}
+
+/// The answer's text from its `ids`, decoded once, with any trailing stop sequence trimmed (Emit
+/// streams a stop's tokens before the answer ends).
+fn answer_text(ids: &[i32], decode: &Decode, stops: &[String]) -> Result<String, llama::RenderRefused> {
+    let mut text = decode(ids)?;
+    for stop in stops {
+        if text.ends_with(stop.as_str()) {
+            text.truncate(text.len() - stop.len());
+        }
+    }
+    Ok(text)
 }
 
 /// What the model wrote, with what the engine measured of writing it.
@@ -603,12 +629,10 @@ pub struct Answer {
 
 impl TurnAnswer {
     pub async fn collect(mut self) -> Result<Answer, InferenceError> {
-        let mut output = String::new();
+        let mut ids: Vec<i32> = Vec::with_capacity(self.max_tokens);
         loop {
             match self.events.recv().await {
-                Some(TokenEvent::Token(piece)) => {
-                    output.push_str(&piece);
-                }
+                Some(TokenEvent::Token(token)) => ids.push(token),
                 Some(TokenEvent::Done(facts)) => {
                     let elapsed = self.started.elapsed();
                     runtime::logger("llamacpp").info(&format!(
@@ -619,14 +643,8 @@ impl TurnAnswer {
                         facts.elapsed.as_millis(),
                         self.prompt_chars
                     ));
-                    // Trim trailing stop sequence(s) — scheduler emits them
-                    // before signaling Done.
-                    for s in &self.stops {
-                        if output.ends_with(s.as_str()) {
-                            output.truncate(output.len() - s.len());
-                        }
-                    }
-                    return Ok(Answer { text: output, facts });
+                    let text = answer_text(&ids, &self.decode, &self.stops).map_err(|refused| InferenceError::Protocol(refused.to_string()))?;
+                    return Ok(Answer { text, facts });
                 }
                 Some(TokenEvent::Exceeded(exceeded)) => {
                     // The Core's own numbers outrank any window cached from a plan: her caller
@@ -665,11 +683,52 @@ mod tests {
         let (refusal, events) = tokio::sync::mpsc::unbounded_channel();
         let exceeded = crate::inference::backends::persona_scheduler::Exceeded { prompt_tokens: 24_202, capacity: 24_320 };
         assert!(refusal.send(TokenEvent::Exceeded(exceeded)).is_ok());
-        let answer = TurnAnswer { events, started: Instant::now(), prompt_chars: 0, stops: Vec::new() };
+        let answer = TurnAnswer { events, started: Instant::now(), prompt_chars: 0, stops: Vec::new(), decode: fake_decode(), max_tokens: 0 };
         let refused = answer.collect().await;
         assert!(
             matches!(refused, Err(InferenceError::ContextExceeded { requested: 24_202, available: 24_320 })),
             "{refused:?}"
         );
+    }
+
+    /// A decoder that spells each id as one ASCII letter (`0` = 'a'), and refuses id -1.
+    fn fake_decode() -> Decode {
+        Arc::new(|ids| {
+            ids.iter()
+                .map(|id| u8::try_from(*id).ok().map(|byte| char::from(b'a' + byte % 26)).ok_or(llama::RenderRefused { needed: *id }))
+                .collect()
+        })
+    }
+
+    // what this catches: an answer decoded piece by piece instead of once (a multi-byte character
+    // split across tokens lost), or a stop's own text left at the end of the answer. collect hands
+    // every id to one decode call, in order, and trims a trailing stop.
+    #[tokio::test]
+    async fn an_answer_is_decoded_once_from_its_ids_and_its_trailing_stop_trimmed() {
+        let (tell, events) = tokio::sync::mpsc::unbounded_channel();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = Arc::clone(&calls);
+        let inner = fake_decode();
+        let decode: Decode = Arc::new(move |ids| {
+            counted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            inner(ids)
+        });
+        for id in [7, 4, 11, 11, 14, 25, 25] {
+            assert!(tell.send(TokenEvent::Token(id)).is_ok());
+        }
+        let zero = std::time::Duration::ZERO;
+        let facts = TurnFacts { prompt_tokens: 0, reused_tokens: 0, generated: 7, prefill: zero, decode: zero, elapsed: zero, end: crate::inference::backends::persona_scheduler::TurnEnd::Stopped };
+        assert!(tell.send(TokenEvent::Done(facts)).is_ok());
+        let answer = TurnAnswer { events, started: Instant::now(), prompt_chars: 0, stops: vec!["zz".into()], decode, max_tokens: 16 };
+        let answer = answer.collect().await.expect("test: the answer ends");
+        assert_eq!(answer.text, "hello", "decoded from every id, its trailing stop trimmed");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 1, "one decode for the whole answer");
+    }
+
+    // what this catches: a decode the model refuses turned into empty text, a silent wrong answer.
+    // It reaches the caller as an error.
+    #[test]
+    fn an_answer_the_model_will_not_decode_is_an_error_not_empty_text() {
+        assert!(answer_text(&[0, -1], &fake_decode(), &[]).is_err());
     }
 }

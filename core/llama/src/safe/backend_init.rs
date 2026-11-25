@@ -185,6 +185,26 @@ unsafe impl Send for Model {}
 
 unsafe impl Sync for Model {}
 
+/// Native code would not render tokens as text: it still asked for `needed` bytes after being
+/// given exactly what it asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("native code refused to render tokens as text (asked for {needed} bytes)")]
+pub struct RenderRefused {
+    pub needed: i32,
+}
+
+/// The bytes native code wrote into `buf` for one render: `first` is its answer to `buf` as given;
+/// a negative answer names the length it needs, so `buf` grows to that once and `render` runs
+/// again.
+fn rendered(first: i32, buf: &mut Vec<u8>, render: impl Fn(&mut Vec<u8>) -> i32) -> Result<usize, RenderRefused> {
+    if let Ok(written) = usize::try_from(first) {
+        return Ok(written);
+    }
+    buf.resize(first.unsigned_abs() as usize, 0);
+    let second = render(buf);
+    usize::try_from(second).map_err(|_| RenderRefused { needed: second })
+}
+
 /// One message in a chat sequence: role + content. Input to `render_chat`.
 #[derive(Debug, Clone)]
 pub struct ChatMsg {
@@ -642,10 +662,45 @@ impl Model {
         String::from_utf8_lossy(&buf).into_owned()
     }
 
+    /// `token`'s piece as bytes, rendered into `buf`, which the caller owns and reuses. `buf` grows
+    /// only to the longest piece seen, so a caller rendering every token allocates only then. A
+    /// control token's piece is empty (rendered without special text).
+    pub fn piece_into<'b>(&self, token: i32, buf: &'b mut Vec<u8>) -> Result<&'b [u8], RenderRefused> {
+        let vocab = unsafe { sys::llama_model_get_vocab(self.ptr.as_ptr()) };
+        let render = |buf: &mut Vec<u8>| unsafe {
+            sys::llama_token_to_piece(vocab, token, buf.as_mut_ptr() as *mut c_char, buf.len().min(i32::MAX as usize) as i32, 0, false)
+        };
+        let written = rendered(render(buf), buf, render)?;
+        Ok(&buf[..written])
+    }
+
+    /// `tokens` as text, rendered in one native call (special tokens rendered as no text, as
+    /// [`Self::piece_into`] renders them). A whole answer is decoded once, never piece by piece:
+    /// a multi-byte character split across tokens stays whole.
+    pub fn detokenize(&self, tokens: &[i32]) -> Result<String, RenderRefused> {
+        let vocab = unsafe { sys::llama_model_get_vocab(self.ptr.as_ptr()) };
+        let count = i32::try_from(tokens.len()).map_err(|_| RenderRefused { needed: i32::MAX })?;
+        let render = |text: &mut Vec<u8>| unsafe {
+            sys::llama_detokenize(vocab, tokens.as_ptr(), count, text.as_mut_ptr() as *mut c_char, text.len().min(i32::MAX as usize) as i32, false, false)
+        };
+        // most pieces are a few bytes; native code says how many more it needs if not
+        let mut text = vec![0u8; tokens.len().saturating_mul(4)];
+        let written = rendered(render(&mut text), &mut text, render)?;
+        text.truncate(written);
+        Ok(String::from_utf8_lossy(&text).into_owned())
+    }
+
     /// Check if token is end-of-generation.
     pub fn is_eog_token(&self, token: i32) -> bool {
         let vocab = unsafe { sys::llama_model_get_vocab(self.ptr.as_ptr()) };
         unsafe { sys::llama_vocab_is_eog(vocab, token) }
+    }
+
+    /// Whether `token` is a control token (`<|im_end|>` and its kind): [`Self::token_to_piece`]
+    /// renders it as no text, so a caller watching for it watches its id.
+    pub fn is_control_token(&self, token: i32) -> bool {
+        let vocab = unsafe { sys::llama_model_get_vocab(self.ptr.as_ptr()) };
+        unsafe { sys::llama_vocab_is_control(vocab, token) }
     }
 }
 
