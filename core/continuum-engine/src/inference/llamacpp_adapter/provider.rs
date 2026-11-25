@@ -35,7 +35,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
         };
         let output_window = match self.generation {
             GenerationSupport::EmbeddingOnly => 0,
-            GenerationSupport::Enabled { context, .. } => context,
+            GenerationSupport::Enabled { context } => context,
         };
         AdapterCapabilities::builder()
             .capabilities(capabilities)

@@ -60,26 +60,14 @@ impl<K: Copy + Eq + Hash + Ord + Send + Sync + 'static> Lane<K> {
 
     /// Seat a mind: from now on the lane reads her state at its step boundaries.
     pub fn seat(&mut self, mind: K, need: Reader<Need>, decoding: Reader<Decoding>) {
-        // her new readers replace any she had; what the slicer learned of her stays
-        self.seats.retain(|seat| seat.mind != mind);
+        self.unseat(&mind);
         self.seats.push(Seat { mind, need, decoding, need_seen: None, decoding_seen: None });
     }
 
-    /// She left the lane for good (a one-off whose turn ended, a mind moved to another node): her seat
-    /// and everything the slicer learned of her go.
+    /// She left the lane (paged out of this engine, moved to another node).
     pub fn unseat(&mut self, mind: &K) {
         self.seats.retain(|seat| &seat.mind != mind);
-        self.slicer.forget(mind);
-    }
-
-    /// How many minds are seated: the ones that may step.
-    pub fn seated(&self) -> usize {
-        self.seats.len()
-    }
-
-    /// How many minds the slicer tracks.
-    pub fn tracked(&self) -> usize {
-        self.slicer.tracked()
+        self.slicer.done(mind);
     }
 
     /// The decision at this step boundary, from every seated mind's current state.
