@@ -59,11 +59,12 @@ built and simulated.
   nobody starves.
 - **The wait bound is the guarantee:** 1 s (Joel, 2026-11-24: "Any over 2 s are wrong. Probably over
   1 s"). The deadline guard brings in any mind whose slack is gone.
-- **The slice is the control law's state,** fed by the measured swap cost and step time: it climbs
-  aggregate throughput against the bound. No constant, no permit, no seat count.
-- **Nothing is hand-tuned.** The law starts from this node's measured swap, rebuild and step times
-  and learns for its own throughput from there. With the switch at 0.01 ms (the pointer, #6264 and
-  #6269), it is expected to learn to switch at almost every step. That is for it to find, never a
+- **When to switch is a learned policy, never a quantum** (next section). No constant, no permit, no
+  seat count, and no single global slice: how long a mind keeps the Core falls out of what continuing
+  and switching are each worth for her, at this step, on this machine.
+- **Nothing is hand-tuned.** The policy starts from this node's measured swap, rebuild and step times
+  and learns for its own throughput from there. Whether that comes out at every step, every 20, or
+  differently for a deep cold mind and a shallow warm one is for it to find, never a
   number set here (UNIFIED-PAGING.md, "No hand tuning").
 - **A step is sized to fit the slice.** A prefill chunk is as large as fits the measured step budget,
   never "the whole batch because the turn keeps the Core". A 2,048-token chunk is about 3.2 s at
@@ -72,11 +73,208 @@ built and simulated.
 In SAGE's own simulator (three residents, 20 ms steps, 26 ms switch, 1 s bound, 300 s), the lane made
 46.3 steps/s with the worst wait at 978 ms, against 24.5 steps/s switching every step (SAGE.md).
 
+## When to switch: a policy with history, not a quantum (Joel, 2026-11-25)
+
+Joel: "It doesn't do every other token or inference unless that was found to be highest throughput.
+Maybe it's every 5 inferences or 20 ... It's math and algorithm. You can't go dumb on it." And: "Maybe
+it learns that larger KV caches are worth sticking longer ... That's why sophistication and
+extensibility of that algorithm, and that it carries a history to learn or work from, along with
+extensible history itself, because it matters to each algorithm what metrics and data it needs."
+
+**What a dumb algorithm is, so we never build one:** any rule whose output is a count or a time set
+in advance: switch every k steps, a slice of s ms, k learned per machine but the same for every mind.
+That covers the global extremum-seeking slice in `continuum_sage::slice::tuner` too: it is
+adaptive, but it answers one number for all minds from step and switch times alone. It stays, as
+one policy among the ones compared, never as the design.
+
+**What Apple does, read** (`xnu/doc/scheduler/sched_clutch_edge.md`, 2026-11-25). The XNU Clutch/Edge
+scheduler separates mechanism from policy in three levels: root buckets chosen earliest-deadline-first
+with a worst-case execution latency per class (FG 0, IN 37.5 ms, DF 75 ms, UT 150 ms, BG 250 ms) and
+warp budgets; thread groups ordered by an interactivity score from their recent blocked time against
+CPU time (the FreeBSD ULE idea); threads by decaying priority. Edge places a thread by an EWMA
+scheduling latency (higher-QoS load × average execution latency) against a per-edge migration weight,
+and CLPC feeds each thread group's history (utilization, runnable time) into its preferred cluster.
+Its quantum, though, is a fixed table per class (FG 10 ms ... BG 2 ms): the adaptivity is all around
+the quantum. Ours can be the decision itself, because we know things a kernel cannot: the exact cost
+of each switch (measured at every one), each mind's exact residency (our block layer), her own
+history of turn lengths, and batching as an action (a CPU core cannot run two threads in one
+instruction; our Core can step two minds in one batch).
+
+**The decision.** At every step boundary the lane chooses one action from an extensible set:
+`Continue`, `Switch(mind)`, `Batch(minds)` (one step for several minds in their own streams, where the
+cost model finds batching pays; `llama-batched-bench` above says it does at every depth measured),
+`Idle`. A mind's run length is an outcome of these choices, never a parameter.
+
+**Mechanism and policy, separated as XNU does.**
+- *The envelope* (mechanism, never learned, never overridden): no ready mind waits past her deadline
+  (the wait bound per urgency, earliest deadline first: an addressed mind's deadline is shortest);
+  stride shares by need, so nobody starves; a mind whose predicted remainder is under one switch
+  finishes first. A policy chooses only inside it, so a policy that explores or is simply wrong can
+  cost throughput but never a mind's wait.
+- *The policy* (a trait, several implementations, swapped live, compared on replay): proposes the
+  action of highest expected value.
+
+**What any policy is estimating.** Over the next decision window:
+- continuing: her progress per engine-second in her phase (a prefill chunk moves hundreds of tokens
+  per step; a decode step moves one), and what is left of her turn (predicted from her own turn-length
+  history in this activity);
+- switching to B: B's progress, plus the waiting it relieves (each waiting mind's need × a penalty
+  that steepens as her wait nears her deadline), less the switch's cost;
+- batching: the measured aggregate rate at that width and depth, less the per-mind rate it dilutes.
+
+The switch's cost is measured, per pair and per node, never assumed: the pointer move (0.01 ms on the
+M5 now, 2026-11-25), the graph rebuild for her next token (+0.1-1 ms measured above), the pages of
+hers that are cold (her non-resident bytes, which the block layer knows exactly, at this node's
+measured fault rate), the warmth A loses (her step time after a switch against before), and on a
+discrete GPU any DMA not hidden under decode. So a deep mind whose pages went cold costs more to bring
+in and is worth keeping longer once in, and a shallow warm one is cheap to rotate: Joel's "larger KV
+caches worth sticking longer", arrived at from the costs, not written as a rule.
+
+**One interface for every decision; the lane is one use case** (Joel and Codex, 2026-11-25: the
+algorithm and the history are both extensible, as OpenCV's algorithms share one interface with their
+own parameters and state; SAGE.md carries the interface, Codex's draft):
+- A *use case* declares its typed observations, the actions available at a decision, and the measured
+  outcome of each. The lane: observations below; actions Continue, Switch, Batch, Idle; outcome the
+  need-weighted progress and every wait over the next window.
+- A *policy* reads a *view* of the history and scores the available actions. Policy and view vary
+  independently: an EWMA, a windowed distribution, a per-pair matrix, a per-activity histogram are
+  views; a cost model, a bandit, a learned model are policies.
+- The *executor* is the resource's existing owner (the Core worker here; the block layer for
+  residency; the renderer for a grade; the grid for placement). It carries out the choice and records
+  what happened. A policy never keeps a private log.
+- A *decision record* names the exact owner-published revisions it read, the policy's checkpoint or
+  initial parameters (SAGE.md, Codex's draft d7350d6a), the action taken and the outcome that followed. Replay hands another policy exactly the information available at that
+  choice and nothing later; an unchosen action has no recorded outcome.
+- The revisions read are recorded as (owner, handle, revision), binary, never the values: replay reads
+  the values from the owners' own history. Copying the inputs into every record would grow history by
+  the whole read set at every decision, and the lane decides every few milliseconds.
+- Each view declares the window it needs; an owner keeps its history to the widest window declared
+  plus what replay asks for, priced in the ledger like any memory. No unbounded log.
+- A use case may mark an outcome as a constraint, never a reward term: next-token continuity after a
+  move and the codec's law (the head never changes, the newest is never clipped) are gates no policy
+  trades against throughput.
+- Every action is priced against the one scarcity ledger (memory, Core time, bandwidth, the drive).
+- The design test: **a new use case is added without editing any existing policy, and a new policy
+  is tried against recorded history without changing the producer or the executor.**
+
+**Storage placement is a use case too** (Joel, 2026-11-25: "Codex is gonna be slow as shit if his
+runtime is running on the slowest possible drive. SAGE shouldn't be picking that"). Today a drive is
+"cold" by size alone (`detect_drives`: the largest drive that is not the system drive), the storage
+tier is a hand-set `CONTINUUM_STORAGE_PATH`, and only model weights have a hot-tier rule
+(`hot_tier.rs`, written after the 5090 served a 27B from its 16 TB SATA disk for months). Worktrees,
+cargo target dirs, the core binary, the continuum home and the KV block root land wherever they are
+pointed; on 2026-11-25 a SAGE design worktree sat on that same disk.
+- *Observations:* each volume's actual service rates (read, write, sync), its contention and its
+  available capacity, observed continuously by the runtime's resource owner from the IO we already
+  time (the block layer's syncs, renames and page faults, builds, scratch writes), each kind with its
+  own measurement semantics (`capacity/io-probe` is an uncached read benchmark, not a build's write
+  rate). A change in either direction publishes a revision, other processes and other copies of us
+  included (SAGE.md, "other processes"); unknown or stale stays explicit. Install, start and build read
+  the freshest frames; none runs a placement survey. Also each working set's access pattern and size
+  (hot: random reads, syncs, builds; cold: written once, read rarely).
+- *Actions:* place a working set on a volume; move it (a hot set up, a cold duplicate down).
+- *Outcomes:* build and check time, restore time, act time, and the disk-pressure level of each volume.
+- *Envelope:* a hot working set never goes to a volume measured slower than the fastest one with
+  room; when the fast volume is full, the disk-pressure owner frees it by moving cold duplicates
+  down, never by moving hot work onto the slow disk. The cold role is for archives only.
+- *Where hands touch it:* a path given by hand (`continuum reboot --prebuilt <exe>`, a cargo target
+  dir, a worktree) is held to the same envelope. Its volume is measured, and if a faster volume has
+  room the command refuses, naming both volumes and their measured rates. An override is explicit and
+  recorded. Owner: Codex (lifecycle and installer), #6276.
+- *The algorithm adapts to achieved performance, never to a named cause.* Completion rates, latency
+  and headroom are observed as they worsen or recover (heat, a competing process, our own last
+  decision), and the generic policy follows them without knowing why. A cause such as temperature is
+  an optional typed feature a learned policy may read where it exists; nothing requires a thermal
+  probe.
+- *Every policy re-evaluates on a relevant revision,* not on a timer. Gate: a competing copy of
+  Continuum takes and releases a volume's bandwidth mid-run, and placement follows both ways without a
+  restart.
+
+**One cost model at every level: this machine, my grid, another's grid** (Joel and Codex,
+2026-11-25). Each machine continually adjusts to the work it can handle; a grid places work across
+its machines from those observations; another person's grid makes its own decisions, and the two
+negotiate over the P2P mesh for capacity, its term and its price. The comparison is the same at every
+level: finish here, move to another machine I own, or move to a leased peer, each priced with
+transfer, restore, queueing, lost warmth and price. Someone starts a game or a Premiere export, or a
+second Continuum, at any moment: the next job may be cheaper elsewhere. When the export ends, this
+machine takes new work again, while jobs already warm elsewhere finish there.
+- *Observed capacity is not committed capacity.* A remote GPU that looks idle is a candidate, never a
+  plan. An accepted lease tells the scheduler what it can count on and until when; an offer expires.
+  The ledger keeps the two apart, and a decision records which one it relied on.
+- The order is the order of the work: the lane and local volumes first, my own machines (the LAN)
+  next, the wider P2P mesh after; one interface, one ledger, the same envelope.
+
+**The observations we already measure: the starting catalog.** Each has one owner that publishes it
+and a receipt that it is measured today; each use case reads the ones it needs.
+
+| Observation | Owner (publishes) | Measured today | Read by |
+|---|---|---|---|
+| switch time, per pair of minds | Core worker | `persona_switch` (0.01 ms, 35B, 2026-11-25) | lane |
+| graph rebuild for her next token | Core worker | `test-persona-blocks --test-core` (+0.1-1 ms) | lane |
+| step time by phase, depth, batch width | Core worker | `persona_switch`, `llama-batched-bench` | lane, batching |
+| aggregate tok/s by batch width and depth | Core worker | `llama-batched-bench` (194/389/784 at 2k) | lane's `Batch` |
+| wait from ready to stepped, by urgency | lane | `frame.rs` `wait_ms` rows (p50 12.1 s, 2026-11-24) | every use case's envelope |
+| time in tools against time on the Core, per act | her turn | act probes | lane (interactivity) |
+| turn length, per mind and activity | her turn | act and turn probes | lane (finish-first, remainder) |
+| first token after a tool result | her turn | submit-to-first-token probe | lane, prefill during tools |
+| prefix reused per act | context codec | node health ("prefix reuse 63%", BigMama 13:36Z) | residency, codec |
+| re-processed against appended tokens per act | context codec | CONTINUUM-ENGINE governing law (Aris 12:1, 10-27) | codec |
+| resident and cold bytes, per mind | block layer | `MappedRegion` demote/promote | lane (switch cost), residency |
+| restore time, by part (map, attach, record, rename) | block layer | `persona_handoff` (3.4 ms at 1k; 6.8-9.7 ms at 30k) | residency, stop |
+| hand-over time, bytes moved, record bytes | block layer, preserve | `persona_handoff` (record 18 KB) | residency, stop |
+| next-token continuity after a move | block layer | `persona_handoff` against its control (32/32) | residency (a correctness outcome: a gate, never traded) |
+| evictions | residency | #6258's 4,191 in 15 minutes | residency |
+| drive read and write rate, fault rate | node | the block layer's syncs and faults | residency, lane |
+| memory and VRAM free | node, the ledger | the pressure monitor | residency, placement |
+| frame time and observed quality grade | renderer | render probes | rendering |
+| link throughput and queue delay | grid | airc and grid probes | peer placement |
+| acts per hour, tool calls per hour, median act | the node | the CLAUDE.md gates | the outcome every use case answers to |
+
+**Published policies are candidates, scored on our outcomes.** Apple's KVP (learned per-token
+eviction) and EpiCache (episodes, per-layer budgets) answer a different decision from the lane's:
+which of one mind's tokens to keep under a budget. In Continuum that decision belongs to the context
+codec and to residency, and it is bound by the codec's law: the head never changes, nothing already
+sent moves, the newest is never clipped. Evicting tokens inside a live prefix breaks exact prefix
+reuse and next-token continuity, the two outcomes we measure best. So they enter as candidate policies
+where they can be fair: for a parked mind's cold state (what stays resident and what goes to flash)
+and for the codec's collapse at an epoch start. Each is scored against the baseline of an exact warm
+prefix, on matched resident traces, by reuse, continuity, act time and memory held. The exact prefix
+may win outright.
+
+**The policies, compared before any reaches a resident:**
+0. `Fixed` and today's whole-turn rule: the baselines, never production.
+1. The global extremum-seeking slice (`tuner`, built): adaptive but blind to who she is.
+2. *The cost model:* the expected-value rule above, every term an online estimate from history. No
+   learning beyond estimation, yet run lengths already differ by mind.
+3. *A contextual bandit* over the action, its features the views above (her depth, cold bytes, phase,
+   predicted remainder, urgency, interactivity, step time, device), its reward the need-weighted
+   tokens per engine-second over the next window, less a steep penalty for any wait near a deadline.
+   Exploration stays inside the envelope (control both ways, CLAUDE.md).
+4. *A learned model* trained offline on every node's recorded history (the grid pools it), served
+   through the same trait.
+
+**Counterfactuals.** A replay observes only the action that was taken; an unchosen action has no
+recorded outcome. Policies are compared on the simulator fitted from the trace (`slice::sim::fit`,
+built) and then live, inside the envelope, never by pretending the log answers what was not done.
+
+**What changes in `continuum_sage::slice`.** `Control` (told only step and switch times; answers one
+slice) becomes `Policy`: given the situation (every ready mind's views and the running one's), it
+answers an action. `Slicer` keeps the envelope (deadlines, stride, finish-first). `Tuner` becomes
+policy 1. `sim` and `trace` gain the new records.
+
+**Gates** (on `persona-lane-bench`, then the 15-minute live read):
+- worst ready-to-step wait inside the bound at 4 minds, switch included;
+- aggregate need-weighted tok/s at or above every baseline's, on the same trace;
+- on a mixed load (deep cold minds beside shallow warm ones) the run lengths differ by mind, and the
+  difference raises throughput over policy 1's single slice; if it does not, policy 1 stays and the
+  data says why;
+- the same binary on the M5 and the IntelMac settles on different behaviour with nothing set by hand.
+
 ## The parts (SAGE components on the engine's bus)
 
 | Part | Owns | Hears | Says |
 |---|---|---|---|
-| **Lane** (`continuum_sage::slice::Lane`, exists) | who steps next, the bound, the control law | each mind's `Need`, `Decoding`; `Stepped` | `Turn` (who holds the Core) |
+| **Lane** (`continuum_sage::slice::Lane`, exists) | who steps next: the envelope, the policy, and the history both read | each mind's `Need`, `Decoding`; `Stepped`, `Switched` | `Turn` (who holds the Core) |
 | **Core worker** (the engine thread: the one serial piece) | the context; one step for the mind the lane named; the swap through `Roles` when it is another mind | `Turn`, submissions | tokens to Emit; `Stepped` (step and swap times); each mind's `Decoding` |
 | **Her turn** (state per mind, not a part) | waiting, prefilling from `pos`, decoding; her sampler and checkpoints | her requests | her `Need` |
 | **Emit, Record** (exist, off the engine thread) | text, stop sequences, the caller; probe rows | tokens, facts | answers, rows |
