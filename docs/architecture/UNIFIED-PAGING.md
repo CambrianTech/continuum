@@ -282,6 +282,12 @@ CLAUDE.md's polymorphism pattern), so a node's configuration or a trial picks on
   regions.
 - **The completion is the block layer's own.** `residency::Fence` lives above it, in
   `continuum-persona-engine`, which adapts to it rather than the floor depending upward.
+- **A carry may still be in flight** (Codex, on the 5090, 2026-11-25). A synchronous `carry` returning
+  `Moved` cannot represent an outstanding DMA. `carry` returns `Carry::Done(Moved)` for a move that has
+  landed (`Mapping`, `Exchange`), or `Carry::InFlight(Transfer)` for one that has not (`Dma`, `Staged`).
+  A `Transfer` holds both regions and the block's pins until its event signals, and the Streamer
+  publishes the new placement only then. Cancelling a transfer waits for its event and leaves the
+  block where it was.
 
 ## Per platform
 

@@ -15,7 +15,7 @@ libc = { workspace = true } # mapped_region: mmap, msync, madvise; host_memory: 
 landlock = { workspace = true } # sandbox: the Linux adapter confines a child to its allow-list
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { workspace = true, features = ["Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_System_Memory"] } # process_class: IDLE_PRIORITY_CLASS; mapped_region: file mappings, flush, prefetch
+windows-sys = { workspace = true, features = ["Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_System_Memory", "Win32_Security"] } # process_class: IDLE_PRIORITY_CLASS; mapped_region: file mappings, flush, prefetch
 
 [features]
 # Fault injection for tests in this crate and its dependents; never in a release.
