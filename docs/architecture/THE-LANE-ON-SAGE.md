@@ -190,6 +190,20 @@ pointed; on 2026-11-25 a SAGE design worktree sat on that same disk.
   Continuum takes and releases a volume's bandwidth mid-run, and placement follows both ways without a
   restart.
 
+**One cost model at every level: this machine, my grid, another's grid** (Joel and Codex,
+2026-11-25). Each machine continually adjusts to the work it can handle; a grid places work across
+its machines from those observations; another person's grid makes its own decisions, and the two
+negotiate over the P2P mesh for capacity, its term and its price. The comparison is the same at every
+level: finish here, move to another machine I own, or move to a leased peer, each priced with
+transfer, restore, queueing, lost warmth and price. Someone starts a game or a Premiere export, or a
+second Continuum, at any moment: the next job may be cheaper elsewhere. When the export ends, this
+machine takes new work again, while jobs already warm elsewhere finish there.
+- *Observed capacity is not committed capacity.* A remote GPU that looks idle is a candidate, never a
+  plan. An accepted lease tells the scheduler what it can count on and until when; an offer expires.
+  The ledger keeps the two apart, and a decision records which one it relied on.
+- The order is the order of the work: the lane and local volumes first, my own machines (the LAN)
+  next, the wider P2P mesh after; one interface, one ledger, the same envelope.
+
 **The observations we already measure: the starting catalog.** Each has one owner that publishes it
 and a receipt that it is measured today; each use case reads the ones it needs.
 
