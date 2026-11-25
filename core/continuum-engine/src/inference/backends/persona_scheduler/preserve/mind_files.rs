@@ -44,6 +44,15 @@ pub(in crate::inference::backends::persona_scheduler) enum HandOverError {
     Blocks(#[from] HandOverRefusal),
 }
 
+/// One mind as a stop hands her over: her identity, her blocks and her history, which travel together.
+pub(in crate::inference::backends::persona_scheduler) struct Leaving<'a> {
+    pub persona: uuid::Uuid,
+    pub epoch: u64,
+    pub basis: String,
+    pub blocks: Blocks,
+    pub held: &'a [i32],
+}
+
 impl Preserved {
     /// Hold `persona`'s custody for the rest of this process: an OS lock beside her files, taken without
     /// waiting, so a core that finds it held leaves her files alone. Held already is held.
@@ -82,7 +91,8 @@ impl Preserved {
 
     /// Hand one mind over in `generation`: her history, then her blocks (record durable, KV file synced,
     /// unmapped and renamed), all under her custody. Returns her manifest entry, published with the stop's.
-    pub(in crate::inference::backends::persona_scheduler) fn hand_over(&mut self, persona: uuid::Uuid, epoch: u64, basis: String, blocks: Blocks, held: &[i32], generation: Generation) -> Result<PreservedMind, HandOverError> {
+    pub(in crate::inference::backends::persona_scheduler) fn hand_over(&mut self, her: Leaving<'_>, generation: Generation) -> Result<PreservedMind, HandOverError> {
+        let Leaving { persona, epoch, basis, blocks, held } = her;
         self.take_custody(persona).map_err(HandOverError::Custody)?;
         let tokens = generation.tokens(persona);
         let bytes: Vec<u8> = held.iter().flat_map(|token| token.to_ne_bytes()).collect();

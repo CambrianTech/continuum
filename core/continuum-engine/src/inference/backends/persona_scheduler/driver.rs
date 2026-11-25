@@ -576,9 +576,9 @@ impl Driver<'_, '_> {
             self.retire_previous()?;
         }
         let her = self.parked.remove(&id).ok_or(PreserveError::NotReturned)?;
-        let epoch = her.epoch().0;
-        let parts = her.into_parts();
-        Ok(store.hand_over(id.0, epoch, parts.genome.genes, parts.blocks, &parts.tokens.held, generation)?)
+        let (epoch, parts) = (her.epoch().0, her.into_parts());
+        let leaving = preserve::Leaving { persona: id.0, epoch, basis: parts.genome.genes, blocks: parts.blocks, held: &parts.tokens.held };
+        Ok(store.hand_over(leaving, generation)?)
     }
 
     /// Take a submission into the frame loop: its token ids and its sampler, both built on her own

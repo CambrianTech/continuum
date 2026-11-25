@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use continuum_saved_state::{OwnedFile, Retention, SaveError, SavedState, Singleton, Store};
 
 mod mind_files;
-pub(super) use mind_files::HandOverError;
+pub(super) use mind_files::{HandOverError, Leaving};
 
 /// Why preserved minds cannot be opened or published. Each leaves the last complete generation
 /// standing.
