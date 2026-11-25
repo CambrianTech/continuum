@@ -181,6 +181,11 @@ pointed; on 2026-11-25 a SAGE design worktree sat on that same disk.
   dir, a worktree) is held to the same envelope. Its volume is measured, and if a faster volume has
   room the command refuses, naming both volumes and their measured rates. An override is explicit and
   recorded. Owner: Codex (lifecycle and installer), #6276.
+- *The algorithm adapts to achieved performance, never to a named cause.* Completion rates, latency
+  and headroom are observed as they worsen or recover (heat, a competing process, our own last
+  decision), and the generic policy follows them without knowing why. A cause such as temperature is
+  an optional typed feature a learned policy may read where it exists; nothing requires a thermal
+  probe.
 - *Every policy re-evaluates on a relevant revision,* not on a timer. Gate: a competing copy of
   Continuum takes and releases a volume's bandwidth mid-run, and placement follows both ways without a
   restart.
