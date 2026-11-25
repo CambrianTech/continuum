@@ -101,6 +101,11 @@ impl<U: UseCase> Decider<U> {
         self.policy.id()
     }
 
+    /// One of the policy's parameters by name, as it stands now.
+    pub fn param(&self, name: &str) -> Option<super::Param> {
+        self.policy.param(name)
+    }
+
     /// The policy's learned state, appended to `into`, for its owner's saved state.
     pub fn save(&self, into: &mut Vec<u8>) {
         self.policy.save(into);

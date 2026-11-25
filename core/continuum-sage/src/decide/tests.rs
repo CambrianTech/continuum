@@ -262,7 +262,7 @@ fn lane_algorithms_are_created_by_name_with_typed_params_and_saved_state() {
 
     let mut cost = registry.create("cost-model").expect("test: registered"); // expect: the test's own precondition
     assert_eq!(cost.params(), &["margin"]);
-    assert_eq!(cost.param("margin"), Some(Param::Real(super::cases::lane_cost::STARTING_MARGIN)), "nothing set or saved: the named starting guess");
+    assert_eq!(cost.param("margin"), None, "nothing set, saved or measured: no margin yet, never a constant");
     assert!(matches!(cost.set_param("margin", Param::Real(1.5)), Err(Refused::Value { .. })), "refused out of range, never clamped");
     assert!(matches!(cost.set_param("depth", Param::Real(0.1)), Err(Refused::Unknown("depth"))));
     cost.set_param("margin", Param::Real(0.25)).expect("test: in range"); // expect: the test's own precondition
@@ -336,9 +336,12 @@ fn the_cost_model_continues_while_steps_fit_and_brings_in_the_tightest_waiter() 
 fn the_cost_models_margin_is_a_control_loop_both_ways_and_survives_a_restart() {
     let registry = lane::algorithms::<u8>().expect("test: distinct names register"); // expect: the test's own precondition
     let mut policy = registry.create("cost-model").expect("test: registered"); // expect: the test's own precondition
-    policy.set_param("margin", Param::Real(0.5)).expect("test: room to rise and fall"); // expect: the test's own precondition
+    policy.set_param("margin", Param::Real(0.9)).expect("test: a seeded margin"); // expect: the test's own precondition
     let mut decider = Decider::new(policy, capacity(16));
-    let margin = |decider: &Decider<Lane<u8>>| f64::from_bits(decider.policy().parameters);
+    let margin = |decider: &Decider<Lane<u8>>| match decider.param("margin") {
+        Some(Param::Real(margin)) => margin,
+        other => panic!("test: a seeded margin, found {other:?}"),
+    };
     let contended = lane::Situation { running: Some(mind(1, 0)), ready: vec![mind(2, 100)], batch_width: 1 };
     let read = |decider: &mut Decider<Lane<u8>>, situation: &lane::Situation<u8>, waited_ms: u64| {
         let Decided::Act(id, _) = decider.decide(situation, &[]) else { panic!("test: the lane acts") };
@@ -346,17 +349,16 @@ fn the_cost_models_margin_is_a_control_loop_both_ways_and_survives_a_restart() {
         decider.outcome(id, outcome);
     };
     let start = margin(&decider);
-    read(&mut decider, &contended, 200);
+    read(&mut decider, &contended, 1_200);
+    let once = margin(&decider);
+    assert!(once < start, "a wait past her bound: the margin falls ({start} -> {once})");
+    read(&mut decider, &contended, 1_200);
+    let twice = margin(&decider);
+    assert!(twice / once < once / start, "agreeing readings grow the step: it falls faster");
     read(&mut decider, &contended, 200);
     let calm = margin(&decider);
-    assert!(calm > start, "every waiter inside her bound: the margin rises ({start} -> {calm})");
-    let first_rise = calm / start;
-    read(&mut decider, &contended, 200);
-    assert!(margin(&decider) / calm > first_rise.sqrt(), "agreeing readings grow the step");
-    let before_breach = margin(&decider);
-    read(&mut decider, &contended, 1_200);
-    let breached = margin(&decider);
-    assert!(breached < before_breach, "a wait past her bound: the margin falls ({before_breach} -> {breached})");
+    assert!(calm > twice, "every waiter inside her bound: the margin rises ({twice} -> {calm})");
+    let breached = calm;
     let alone = lane::Situation { running: Some(mind(1, 0)), ready: vec![], batch_width: 1 };
     read(&mut decider, &alone, 0);
     assert_eq!(margin(&decider), breached, "no one waiting is no reading");
@@ -368,5 +370,26 @@ fn the_cost_models_margin_is_a_control_loop_both_ways_and_survives_a_restart() {
     assert_eq!(margin(&restarted), breached, "a restart resumes the learned margin");
     let mut fresh = Decider::new(registry.create("cost-model").expect("test: registered"), capacity(16)); // expect: the test's own precondition
     fresh.load(&[]).expect("test: nothing saved loads as the start"); // expect: the test's own precondition
-    assert_eq!(margin(&fresh), super::cases::lane_cost::STARTING_MARGIN, "nothing saved: the named starting guess");
+    assert_eq!(fresh.param("margin"), None, "nothing saved: unseeded, never a constant");
+}
+
+// what this catches: a margin that starts from a constant instead of the node's own measurements: the
+// first contended decision seeds it from the waiter's slack and the running mind's measured step
+// (one step of headroom), and a running mind with no measured step cannot seed, so the waiter is
+// brought in.
+#[test]
+fn the_cost_models_margin_is_seeded_from_the_first_measurements_it_needs() {
+    let registry = lane::algorithms::<u8>().expect("test: distinct names register"); // expect: the test's own precondition
+    let mut cost = registry.create("cost-model").expect("test: registered"); // expect: the test's own precondition
+    let unmeasured = lane::Situation { running: Some(lane::Mind { step: Measured::Unmeasured, ..mind(1, 0) }), ready: vec![mind(2, 100)], batch_width: 1 };
+    let (_, admissible) = envelope::<Lane<u8>>(&unmeasured);
+    assert_eq!(admissible[cost.choose(&unmeasured, &admissible).index], lane::Action::Switch(0), "no measured step: nothing to seed from, the waiter comes in");
+    assert_eq!(cost.param("margin"), None);
+    let measured = lane::Situation { running: Some(mind(1, 0)), ready: vec![mind(2, 100)], batch_width: 1 };
+    let (_, admissible) = envelope::<Lane<u8>>(&measured);
+    assert_eq!(admissible[cost.choose(&measured, &admissible).index], lane::Action::Continue, "seeded: her 26 ms step fits");
+    let waiter = mind(2, 100);
+    let slack = waiter.deadline - waiter.waited - waiter.switch_in.value().unwrap_or_default(); // unwrap_or_default: the helper measures it
+    let expected = (slack - Duration::from_millis(26)).as_secs_f64() / slack.as_secs_f64();
+    assert_eq!(cost.param("margin"), Some(Param::Real(expected)), "one measured step of headroom in the waiter's slack");
 }

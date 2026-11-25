@@ -276,7 +276,7 @@ pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
         }
     };
     let mut lane = lane;
-    lane.resume(store.dir());
+    lane.resume(store.dir(), &config.model);
     let mut tier = UnifiedTier::new(&mut ctx, KvHome::Mapped(instance));
     let parked = resume(&mut tier, &mut store, &config.model, &log);
     log.info(&format!("persona scheduler ready: {geometry:?} (one mind decodes at a time; {} minds resumed)", parked.len()));

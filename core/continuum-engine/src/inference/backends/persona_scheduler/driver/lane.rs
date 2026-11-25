@@ -14,7 +14,7 @@ use continuum_persona_engine::persona::PersonaId;
 use continuum_sage::decide::cases::lane::{self, Lane, Mind, SLOTS};
 use continuum_sage::decide::cases::lane_history::{LaneHistory, Observation, Views};
 use continuum_sage::decide::{DecisionId, Decided, Decider, Fraction, Measured, Unknown};
-use continuum_saved_state::{OwnedFile, Rebuildable, Retention, SavedState, Singleton, Store};
+use continuum_saved_state::{OwnedFile, Rebuildable, Retention, SavedState, Store};
 
 use super::{Driver, Phase, Turn};
 
@@ -25,22 +25,25 @@ const RECORDS: NonZeroUsize = match NonZeroUsize::new(8_192) {
 };
 
 /// What the lane's algorithm learned, kept across restarts through the one saved-state contract
-/// (SAVED-STATE.md): its own bytes, valid only for the algorithm that wrote them. Rebuildable: a
-/// node with nothing saved, or another algorithm's state, starts from the algorithm's starting value
-/// and learns again.
+/// (SAVED-STATE.md): its own bytes, valid only for the algorithm and the served model that wrote them,
+/// so what it learned belongs to that model's class. Rebuildable: a
+/// node with nothing saved, or another algorithm's or model's state, starts unlearned (the algorithm seeds
+/// itself from its first measurements) and learns again.
 pub(super) struct LearnedLane;
 
-/// The facts a learned state holds under: the algorithm that learned it.
+/// The facts a learned state holds under: the algorithm that learned it, on which model.
 #[derive(serde::Serialize)]
 pub(super) struct LaneContract {
     algorithm: &'static str,
+    model: String,
 }
 
 impl SavedState for LearnedLane {
     const KIND: &'static str = "lane-learned";
     const FORMAT: u32 = 1;
-    const RETENTION: Retention = Retention::PerKey { bound: "one per node: the serving lane's algorithm" };
-    type Key = Singleton;
+    const RETENTION: Retention = Retention::PerKey { bound: "one per model this node has served" };
+    /// The served model's class: a v5 uuid of its name, so each model keeps what was learned on it.
+    type Key = uuid::Uuid;
     type Contract = LaneContract;
     type Value = Vec<u8>;
     type Medium = OwnedFile;
@@ -60,8 +63,8 @@ pub(super) struct Lanes {
     /// The last decision and when it was made, closed with its outcome at the next decision.
     open: Option<(DecisionId, Instant)>,
     /// Where what the algorithm learned is kept, once the node's home is known, and under what.
-    learned: Option<Store<LearnedLane>>,
-    contract: LaneContract,
+    learned: Option<(Store<LearnedLane>, uuid::Uuid, LaneContract)>,
+    algorithm: &'static str,
 }
 
 impl Lanes {
@@ -76,29 +79,31 @@ impl Lanes {
             running: None,
             open: None,
             learned: None,
-            contract: LaneContract { algorithm },
+            algorithm,
         })
     }
 
-    /// Resume what the algorithm learned on this node before, kept in `home`. Nothing saved, or
-    /// another algorithm's state, starts from its starting value (the store has probed what it
+    /// Resume what the algorithm learned on this node for `model`, kept in `home`. Nothing saved, or
+    /// another algorithm's or model's state, starts unlearned (the store has probed what it
     /// found); bytes the algorithm refuses are probed and it starts there too.
-    pub(super) fn resume(&mut self, home: &Path) {
-        let store = Store::<LearnedLane>::at(home.to_path_buf()); // cold: once, at start
-        let saved = store.load_rebuildable(&Singleton, &self.contract);
+    pub(super) fn resume(&mut self, home: &Path, model: &str) {
+        let store = Store::<LearnedLane>::at(home.join(LearnedLane::KIND)); // cold: once, at start
+        let class = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, model.as_bytes());
+        let contract = LaneContract { algorithm: self.algorithm, model: model.to_owned() }; // cold: once, at start
+        let saved = store.load_rebuildable(&class, &contract);
         if let Err(refused) = self.decider.load(&saved) {
-            continuum_base::probe!(class = "persona.lane.learned_refused", algorithm = self.contract.algorithm, refused = ?refused, "the lane's saved state was refused; it learns again from its start");
+            continuum_base::probe!(class = "persona.lane.learned_refused", algorithm = self.algorithm, refused = ?refused, "the lane's saved state was refused; it learns again from its start");
         }
-        self.learned = Some(store);
+        self.learned = Some((store, class, contract));
     }
 
     /// Keep what the algorithm has learned, at the stop. A failed save is probed by the store and the
     /// next stop saves afresh.
     pub(super) fn save(&self) {
-        let Some(store) = &self.learned else { return };
+        let Some((store, class, contract)) = &self.learned else { return };
         let mut state = Vec::new(); // cold: once, at the stop
         self.decider.save(&mut state);
-        store.save_rebuildable(&Singleton, &self.contract, &state);
+        store.save_rebuildable(class, contract, &state);
     }
 
     /// What the driver measured, as the lane's executor.
@@ -186,11 +191,12 @@ mod tests {
     use super::*;
 
     // what this catches: the lane's learned state not keeping the saved-state contract (absent, matched,
-    // another algorithm's state, corrupt), so a restart would resume a wrong algorithm's bytes.
+    // another model's state, corrupt), so a restart would resume what was learned on another model.
     #[test]
     fn the_learned_lane_keeps_every_saved_state_outcome() {
         let dir = tempfile::tempdir().expect("test: a temp dir"); // expect: the test's own precondition
-        let other = LaneContract { algorithm: "need-first" };
-        continuum_saved_state::round_trip::every_outcome::<LearnedLane>(dir.path(), Singleton, LaneContract { algorithm: "cost-model" }, Some(other), vec![1, 2, 3]);
+        let live = LaneContract { algorithm: "cost-model", model: "qwen3.6-35b-a3b".to_owned() };
+        let other = LaneContract { algorithm: "cost-model", model: "qwen2.5-0.5b".to_owned() };
+        continuum_saved_state::round_trip::every_outcome::<LearnedLane>(dir.path(), uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, live.model.as_bytes()), live, Some(other), vec![1, 2, 3]);
     }
 }

@@ -517,10 +517,12 @@ every depth measured. The 35B's rows need serving down.
 - The margin is a control loop both ways (Rprop): a closed decision with a mind waiting reads down
   when a wait passed its bound, up when every waiter stayed inside hers; the step grows while
   readings agree and halves when they flip, and never grows while the margin is pinned at the whole
-  slack. It starts at `STARTING_MARGIN` (0.9: the check already budgets the measured step and switch
-  costs, so only a step overrunning its mean is unbudgeted; a tenth is kept for it, and the first
-  step is that tenth), or from `lane-learned.json` (a Rebuildable saved-state kind keyed by the
-  algorithm, beside the preserved minds), and is saved at every stop.
+  slack. It is never a constant: a node resumes what it learned on the served model (a Rebuildable
+  saved-state kind, `lane-learned/<v5 uuid of the model>.json`, contract = algorithm and model, saved
+  at every stop). With nothing learned for that model it is seeded by a procedure at the first
+  contended decision with a measured step: one of the running mind's measured steps kept as headroom,
+  `(slack - step) / slack`, the first step being that headroom. Unseeded, it switches, which keeps
+  the bound.
 
 Measured on the M5, 2026-11-25, qwen2.5-0.5b, serving live beside it (load average 10),
 `a_short_turn_never_waits_out_another_minds_long_one`, alternating runs:
