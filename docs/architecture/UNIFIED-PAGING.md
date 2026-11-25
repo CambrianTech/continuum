@@ -67,6 +67,17 @@ pub trait Tier: Send + Sync {                      // one adapter per kind holds
 }
 ```
 
+**Tiers are per volume, any number of them, ordered by measured rate.** A node's stack is its devices
+plus every volume it can map, each measured, never assumed from its kind:
+- Windows (the 5090): VRAM, pinned RAM, an NVMe volume (`Flash`), and often a spinning SATA disk
+  (`Cold`).
+- A Mac: unified memory, the internal flash, and any external volume over Thunderbolt or USB, which
+  may be an SSD (`Flash`, slower than the internal one) or a hard disk (`Cold`).
+
+Two `Flash` volumes are two tiers, ranked by their measured read and write rates. A volume that
+appears or disappears (an external drive plugged in or out) is a `Topology` change. A block on a
+volume that disappears is lost from that tier and counted, never assumed still there.
+
 `Topology`, a SAGE component, measures the stack at boot (each GPU and its memory, RAM, each drive's
 `DriveKind` and its measured read and write rates), publishes it as state, and wakes on memory
 pressure. The hot tier's drive detection moves into it.
@@ -171,7 +182,7 @@ pub trait PlacementLaw<K>: Send {
     fn set(&mut self, name: &str, value: f64) -> Result<(), ParamRefusal>;
     /// Bidirectional: everything the Streamer saw, in order, including what came of the law's own
     /// decisions (a miss, a move's measured time): the reward signal a learned law trains on.
-    fn observe(&mut self, seen: &Observation<K>);
+    fn observe(&mut self, seen: &Observation<K>);   // the Forecaster sees the same stream: both seams learn
     /// The moves it wants now, given each block's placement and each tier's budget.
     fn plan(&mut self, view: &View<K>) -> Vec<(DecisionId, Move<K>)>;
 }
