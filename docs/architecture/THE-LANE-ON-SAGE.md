@@ -198,6 +198,66 @@ identical shapes, with graph reuse on. After each switch, compare next-token log
 state with isolated controls. Report the end-to-end ready-to-step wait, including fences and
 recapture.
 
+## Use every core: the GPU never waits on the CPU
+
+The M5 has 18 CPU cores (6 performance, 12 efficiency) and a 20-core GPU (`sysctl hw.perflevel*`,
+`system_profiler`). The only serial work in the system is the GPU's step. Everything else runs
+beside it on the CPU, as SAGE components on their own workers. That is why SAGE exists: no concern
+waits for another, so all of them can be busy at once.
+
+**Receipt that it is wasted today:** `persona.engine.occupancy` on the M5 (canary 645541ab6,
+2026-11-25 01:34Z) read `busy_permille 558`. The GPU was busy 56% of a 40 s window, with its longest
+idle gap at 1.8 s, while turns were waiting.
+
+**The rule.** The next step's inputs are ready before the current step lands, so the GPU goes from
+one step straight into the next, like a frame pipeline that double-buffers:
+- the next mind's swap (a pointer), her tokens, and her graph, built while the current step runs;
+- tokenizing her new tail (tool results, messages);
+- detokenizing, stop sequences and the caller (Emit);
+- probe rows (Record);
+- prompt assembly for each mind (her context codec);
+- prefetch and parking (Prefetch, Parker);
+- embeddings, recall and learning preparation.
+
+Each of these runs on its own worker, never on the engine thread. The engine thread only submits
+steps, reads results, and does the swap.
+
+**The gate:** `busy_permille >= 950` while any turn waits, measured live. A 1.8 s idle gap with turns
+waiting is a defect with an owner, never a tuning knob.
+
+## Built and measured
+
+**The pointer switch** (#6264; fork `0df7f9a3e`, `src/llama-persona-storage.cpp`):
+- On the Core (one stream) each mind's KV lives in storage of her own, the stream's exact shape,
+  reserved by her first save. A mind never parked costs nothing.
+- A save or bind exchanges the stream's layer tensors with hers (data, buffer, extra), repoints the
+  stream views, and swaps buffer ownership with the data, so freeing a parked mind frees only memory
+  nobody reads.
+- The context drops its built graphs after a move. A data clear zeroes what the stream reads, never
+  a parked mind's storage.
+- Her file streams from her storage and reads back into it, in the same format, so old files still
+  read.
+
+Measured on the M5, 2026-11-25, with live serving sharing the GPU:
+
+| | Copy (before) | Pointer (now) |
+|---|---|---|
+| Switch, 0.5B, at 2k / 8k / 30k (`test-persona-blocks --test-core`, A/B/A byte-identical to isolated controls) | 1.5 / 5.9 / 22.8 ms | 0.008-0.016 ms |
+| Switch through the Rust engine, 4 minds (`persona_switch`) | 2.0 / 6.5 / 26 ms | 0.01 ms; sustained = decode |
+| The hybrid (qwen35moe) at 8k | | 0.018 ms |
+| The graph rebuilt after a switch (her next token) | | +0.1-1 ms, once |
+| Her file at 30k (369 MB) | | written in 32 ms, read in 40 ms |
+
+**Memory:** the 35B holds about 6.8 KB of KV per token (8044b75b's file: 941 MB for 139k tokens), so
+about 1.8 GB per parked mind at the 262k window.
+
+**Open:** CUDA graph replay with a repointed tensor (Codex, `ggml_cuda_graph_update_required`). The
+5090 runs the same one-stream Core and does not deploy this until his `--test-core` run passes there.
+
+**Batched decode against switching** (`llama-batched-bench`, the fork, Qwen2.5 0.5B, aggregate decode
+tok/s for 1/2/4 minds): 194/389/784 at 2k, 208/447/603 at 8k, 156/203/264 at 30k. Batching wins at
+every depth measured. The 35B's rows need serving down.
+
 ## The order, one PR each, merged before the next
 
 | # | Slice | Gate (validator, then the 15-minute live read) |
