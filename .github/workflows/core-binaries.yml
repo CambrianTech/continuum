@@ -408,6 +408,12 @@ jobs:
           for bin in continuum-core-server continuum continuum-mcp forge-custodian; do
             cp "$target_dir/release/$bin$exe" "$stage/"
           done
+          # The release carries its desktop: the core serves `desktop/` beside itself (http/desktop.rs),
+          # so a user who installs this package gets the UI with no build and no setting.
+          npm ci --no-audit --no-fund
+          npm run build -w @continuum/web
+          test -f apps/web/dist/index.html
+          cp -R apps/web/dist "$stage/desktop"
           runtime_libs=""
           if [ "$RUNNER_OS" = Windows ]; then
             set +u; source tools/scripts/lib/windows-build-env.sh; set -u   # dumpbin and CUDA_PATH (no nounset, as in the Build step)
