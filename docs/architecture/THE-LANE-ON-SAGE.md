@@ -174,6 +174,10 @@ pointed; on 2026-11-25 a SAGE design worktree sat on that same disk.
 - *Envelope:* a hot working set never goes to a volume measured slower than the fastest one with
   room; when the fast volume is full, the disk-pressure owner frees it by moving cold duplicates
   down, never by moving hot work onto the slow disk. The cold role is for archives only.
+- *Where hands touch it:* a path given by hand (`continuum reboot --prebuilt <exe>`, a cargo target
+  dir, a worktree) is held to the same envelope. Its volume is measured, and if a faster volume has
+  room the command refuses, naming both volumes and their measured rates. An override is explicit and
+  recorded. Owner: Codex (lifecycle and installer), from the 5090 on 2026-11-25.
 
 **The observations we already measure: the starting catalog.** Each has one owner that publishes it
 and a receipt that it is measured today; each use case reads the ones it needs.
