@@ -11,7 +11,7 @@ use std::time::Instant;
 use continuum_persona_engine::engine::{DecodeError, HandoffError, PersonaEngine, RetireError, StageError};
 use continuum_persona_engine::persona::{Epoch, Footprint, Held, MindId, PersonaId, PersonaParts, PersonaUnit};
 use continuum_persona_engine::residency::TierRefusal;
-use continuum_persona_llama::{Blocks, Genes, KvHome, Step, UnifiedTier, STREAMS};
+use continuum_persona_llama::{Blocks, Genes, KvHome, Step, Tokens, UnifiedTier, STREAMS};
 use llama::{ContextParams, FlashAttn, LoraAdapter, Model, Pos};
 use uuid::Uuid;
 
@@ -384,7 +384,7 @@ struct Turn {
     req: GenerationRequest,
     id: PersonaId,
     one_off: bool,
-    prompt: Vec<i32>,
+    prompt: std::sync::Arc<[i32]>,
     basis: Basis,
     genes: Genes,
     phase: Phase,
@@ -627,7 +627,7 @@ impl Driver<'_, '_> {
             one_off,
             at: transition::At::Admitted { queue_depth: turns.len() + 1, urgency: req.urgency, prompt_tokens: prompt.len(), since_submit_ms: record::whole_ms(req.submitted.elapsed()) },
         };
-        turns.push(Turn { req, id, one_off, prompt, basis, genes, phase: Phase::Waiting, submitted, ready_since: submitted, spent: Spent::default(), boundaries: Boundaries { view: boundary, learned: None }, answer, cancel });
+        turns.push(Turn { req, id, one_off, prompt: prompt.into(), basis, genes, phase: Phase::Waiting, submitted, ready_since: submitted, spent: Spent::default(), boundaries: Boundaries { view: boundary, learned: None }, answer, cancel });
         self.record.send(record::Fact::Transition(admitted));
     }
 
@@ -780,7 +780,7 @@ impl Driver<'_, '_> {
         let last = end == turn.prompt.len();
         let from = Pos::try_from(pos).map_err(|_| TurnError::TooLong)?;
         let len = chunk.len();
-        self.engine.submit(Step { tokens: chunk.to_vec(), from, logits_at_end: last, genes: Arc::clone(&turn.genes) })?;
+        self.engine.submit(Step { tokens: Tokens::Span { of: Arc::clone(&turn.prompt), from: pos, to: end }, from, logits_at_end: last, genes: Arc::clone(&turn.genes) })?;
         if !last {
             self.engine.settle()?;
             self.record(|her| her.tokens.held.extend_from_slice(chunk))?;
@@ -823,7 +823,7 @@ impl Driver<'_, '_> {
         }
         let forward = Instant::now();
         let reused_before = self.engine.tier().graphs_reused();
-        self.engine.submit(Step { tokens: vec![token], from: pos, logits_at_end: true, genes: Arc::clone(&turn.genes) })?;
+        self.engine.submit(Step { tokens: Tokens::One(token), from: pos, logits_at_end: true, genes: Arc::clone(&turn.genes) })?;
         turn.spent.forward += forward.elapsed();
         turn.spent.graphs_reused += self.engine.tier().graphs_reused().saturating_sub(reused_before);
         self.record(|her| her.tokens.held.push(token))?;

@@ -135,11 +135,14 @@ pub struct UnifiedTier<'c, 'm> {
     /// Where each mind's KV storage lives; `Native` from the first mind on whose device cannot view
     /// host memory.
     home: KvHome,
+    /// The one decode batch, sized to the engine's batch at construction and cleared each step.
+    batch: Batch,
 }
 
 impl<'c, 'm> UnifiedTier<'c, 'm> {
     pub fn new(ctx: &'c mut Context<'m>, home: KvHome) -> Self {
-        Self { ctx, streams: [None; STREAMS], last_rebind: None, in_flight: None, applied_genes: None, home }
+        let batch = Batch::allocated(i32::try_from(ctx.n_batch()).unwrap_or(i32::MAX), 1); // unwrap_or: a batch past i32 is the most llama can address
+        Self { ctx, streams: [None; STREAMS], last_rebind: None, in_flight: None, applied_genes: None, home, batch }
     }
 
     /// Her KV memory: a block over her own file, attached so the stream views it, where this node's
@@ -327,12 +330,36 @@ impl Tier for UnifiedTier<'_, '_> {
 /// one if `logits_at_end`. It names no sequence: the tier decodes on the stream she is bound to.
 #[derive(Clone)]
 pub struct Step {
-    pub tokens: Vec<i32>,
+    pub tokens: Tokens,
     pub from: Pos,
     pub logits_at_end: bool,
     /// The gene set she decodes under. The tier applies it only when it differs from the set
     /// already on the context, and only for her: no step is decoded under another mind's genes.
     pub genes: Genes,
+}
+
+/// The tokens of a step, named, never copied: the one token she just sampled, or a span of her
+/// prompt, which is shared once at admission (a chunk is a range of it, never a `to_vec`; a decoded
+/// token was a fresh `vec!` every step).
+#[derive(Clone)]
+pub enum Tokens {
+    One(i32),
+    Span { of: Arc<[i32]>, from: usize, to: usize },
+}
+
+impl Tokens {
+    /// A span over its own copy of `tokens`: for a caller holding no shared prompt (an example, a
+    /// replay); the serving path names spans of her shared prompt instead.
+    pub fn copied(tokens: &[i32]) -> Self {
+        Self::Span { of: Arc::from(tokens), from: 0, to: tokens.len() }
+    }
+
+    pub fn as_slice(&self) -> &[i32] {
+        match self {
+            Self::One(token) => std::slice::from_ref(token),
+            Self::Span { of, from, to } => of.get(*from..*to).unwrap_or(&[]), // unwrap_or: a span past her prompt names nothing, refused below as an empty step
+        }
+    }
 }
 
 /// A gene set: adapter handles and their scales, shared so steps name it without copying. Empty is
@@ -378,14 +405,20 @@ impl Execute for UnifiedTier<'_, '_> {
             applied.map_err(|message| TierRefusal { tier: TIER, mind, reason: "the engine refused her genes", native: Native::Reported(message.into()) })?;
             self.applied_genes = Some(Arc::clone(&step.genes));
         }
-        let last = step.tokens.len().checked_sub(1).ok_or_else(|| refused(mind, "an empty step"))?;
-        let count = i32::try_from(step.tokens.len()).map_err(|_| refused(mind, "a step longer than a batch can hold"))?;
-        let mut batch = Batch::allocated(count, 1);
-        for (i, &token) in step.tokens.iter().enumerate() {
+        let tokens = step.tokens.as_slice();
+        let last = tokens.len().checked_sub(1).ok_or_else(|| refused(mind, "an empty step"))?;
+        let count = i32::try_from(tokens.len()).map_err(|_| refused(mind, "a step longer than a batch can hold"))?;
+        if u32::try_from(count).map_or(true, |count| count > self.ctx.n_batch()) {
+            return Err(refused(mind, "a step longer than the engine's batch"));
+        }
+        // one batch, sized to the engine's and refilled each step: never allocated per step
+        let batch = &mut self.batch;
+        batch.clear();
+        for (i, &token) in tokens.iter().enumerate() {
             let pos = step.from.advanced(i).map_err(|_| refused(mind, "a step past what a sequence can address"))?;
             batch.push(token, pos, &[stream.seq()], step.logits_at_end && i == last);
         }
-        self.ctx.decode(&batch).map_err(|message| {
+        self.ctx.decode(&self.batch).map_err(|message| {
             // The refusal says what the engine held when it refused (the M5, 2026-11-21: a cold
             // 26-36k replay prefill refused with no KV slot ~31 s in; the cause is not yet known).
             let occupied: Vec<(usize, Option<MindId>, Option<Pos>)> =
