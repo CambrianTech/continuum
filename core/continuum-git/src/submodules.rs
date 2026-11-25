@@ -176,4 +176,32 @@ mod tests {
         align(&bare, &runner(&bare)).expect("align with nothing present");
         assert!(!bare.join("vendor/engine/.git").exists(), "no clone started");
     }
+
+    #[test]
+    fn deploy_fetch_does_not_recurse_submodules() {
+        // Regression: deploy fetch must not recurse submodules even when
+        // fetch.recurseSubmodules=true is set globally (deploy_consume.rs line 333).
+        let tr = temp_repo();
+        run(tr.path(), &["init", "-q"]);
+        let origin_dir = root.path().join("tr-origin");
+        std::fs::create_dir(&origin_dir).expect("dir");
+        run(origin_dir.as_path(), &["init", "--bare", "-q"]);
+        // Set global recurseSubmodules=true — deploy consumer must not be affected
+        run(tr.path(), &[
+            "config",
+            "fetch.recurseSubmodules",
+            "true"
+        ]);
+        let err = run(tr.path(), &[
+            "fetch",
+            "--no-recurse-submodules",
+            "--quiet",
+            "origin"
+        ]);
+        assert!(
+            err.contains("no such remote") || err.contains("could not resolve hostname"),
+            "git fetch --no-recurse-submodules origin should refuse missing remote, not recurse: {}",
+            err
+        );
+    }
 }
