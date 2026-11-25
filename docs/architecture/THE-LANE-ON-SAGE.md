@@ -130,18 +130,61 @@ discrete GPU any DMA not hidden under decode. So a deep mind whose pages went co
 in and is worth keeping longer once in, and a shallow warm one is cheap to rotate: Joel's "larger KV
 caches worth sticking longer", arrived at from the costs, not written as a rule.
 
-**History: the lane records, each policy declares what it reads.** The lane is the owner of its
-history (SAGE: it records what it decided and what followed); a policy never keeps a private log.
-- Recorded at each boundary, binary, one ring per mind and one for the lane, persisted per node so a
-  restart keeps what it learned: *step* (mind, phase, tokens, took, batch width, depth); *switch* (from,
-  to, took, rebuild, cold bytes faulted); *wait* (mind, ready to stepped, her urgency); *turn* (begun,
-  ended, tokens, activity); *blocked and run* (time in tools against time on the Core: Clutch's
-  interactivity, so a mind that wakes from a tool with a short tail is served at once); *node* (device,
-  measured bandwidths, memory pressure).
-- A policy declares its features as typed views over those records (an EWMA, a windowed
-  distribution, a per-pair matrix, a per-activity turn-length histogram), keyed by owner and revision
-  (Codex's SAGE algorithm-and-history draft, 2026-11-25). A new feature is a new view; the lane, the
-  envelope and the other policies do not change.
+**One interface for every decision; the lane is one use case** (Joel and Codex, 2026-11-25: the
+algorithm and the history are both extensible, as OpenCV's algorithms share one interface with their
+own parameters and state; SAGE.md carries the interface, Codex's draft):
+- A *use case* declares its typed observations, the actions available at a decision, and the measured
+  outcome of each. The lane: observations below; actions Continue, Switch, Batch, Idle; outcome the
+  need-weighted progress and every wait over the next window.
+- A *policy* reads a *view* of the history and scores the available actions. Policy and view vary
+  independently: an EWMA, a windowed distribution, a per-pair matrix, a per-activity histogram are
+  views; a cost model, a bandit, a learned model are policies.
+- The *executor* is the resource's existing owner (the Core worker here; the block layer for
+  residency; the renderer for a grade; the grid for placement). It carries out the choice and records
+  what happened. A policy never keeps a private log.
+- A *decision record* names the exact owner-published revisions it read, the action taken and the
+  outcome that followed. Replay hands another policy exactly the information available at that
+  choice and nothing later; an unchosen action has no recorded outcome.
+- Every action is priced against the one scarcity ledger (memory, Core time, bandwidth, the drive).
+- The design test: **a new use case is added without editing any existing policy, and a new policy
+  is tried against recorded history without changing the producer or the executor.**
+
+**The observations we already measure: the starting catalog.** Each has one owner that publishes it
+and a receipt that it is measured today; each use case reads the ones it needs.
+
+| Observation | Owner (publishes) | Measured today | Read by |
+|---|---|---|---|
+| switch time, per pair of minds | Core worker | `persona_switch` (0.01 ms, 35B, 2026-11-25) | lane |
+| graph rebuild for her next token | Core worker | `test-persona-blocks --test-core` (+0.1-1 ms) | lane |
+| step time by phase, depth, batch width | Core worker | `persona_switch`, `llama-batched-bench` | lane, batching |
+| aggregate tok/s by batch width and depth | Core worker | `llama-batched-bench` (194/389/784 at 2k) | lane's `Batch` |
+| wait from ready to stepped, by urgency | lane | `frame.rs` `wait_ms` rows (p50 12.1 s, 2026-11-24) | every use case's envelope |
+| time in tools against time on the Core, per act | her turn | act probes | lane (interactivity) |
+| turn length, per mind and activity | her turn | act and turn probes | lane (finish-first, remainder) |
+| first token after a tool result | her turn | submit-to-first-token probe | lane, prefill during tools |
+| prefix reused per act | context codec | node health ("prefix reuse 63%", BigMama 13:36Z) | residency, codec |
+| re-processed against appended tokens per act | context codec | CONTINUUM-ENGINE governing law (Aris 12:1, 10-27) | codec |
+| resident and cold bytes, per mind | block layer | `MappedRegion` demote/promote | lane (switch cost), residency |
+| restore time, by part (map, attach, record, rename) | block layer | `persona_handoff` (3.4 ms at 1k; 6.8-9.7 ms at 30k) | residency, stop |
+| hand-over time, bytes moved, record bytes | block layer, preserve | `persona_handoff` (record 18 KB) | residency, stop |
+| next-token continuity after a move | block layer | `persona_handoff` against its control (32/32) | residency (a correctness outcome: a gate, never traded) |
+| evictions | residency | #6258's 4,191 in 15 minutes | residency |
+| drive read and write rate, fault rate | node | the block layer's syncs and faults | residency, lane |
+| memory and VRAM free | node, the ledger | the pressure monitor | residency, placement |
+| frame time and observed quality grade | renderer | render probes | rendering |
+| link throughput and queue delay | grid | airc and grid probes | peer placement |
+| acts per hour, tool calls per hour, median act | the node | the CLAUDE.md gates | the outcome every use case answers to |
+
+**Published policies are candidates, scored on our outcomes.** Apple's KVP (learned per-token
+eviction) and EpiCache (episodes, per-layer budgets) answer a different decision from the lane's:
+which of one mind's tokens to keep under a budget. In Continuum that decision belongs to the context
+codec and to residency, and it is bound by the codec's law: the head never changes, nothing already
+sent moves, the newest is never clipped. Evicting tokens inside a live prefix breaks exact prefix
+reuse and next-token continuity, the two outcomes we measure best. So they enter as candidate policies
+where they can be fair: for a parked mind's cold state (what stays resident and what goes to flash)
+and for the codec's collapse at an epoch start. Each is scored against the baseline of an exact warm
+prefix, on matched resident traces, by reuse, continuity, act time and memory held. The exact prefix
+may win outright.
 
 **The policies, compared before any reaches a resident:**
 0. `Fixed` and today's whole-turn rule: the baselines, never production.
