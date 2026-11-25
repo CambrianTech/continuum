@@ -1,28 +1,57 @@
 //! The lane's cost model: an algorithm over the lane's history. The running mind continues while her
-//! next step (or her whole predicted remainder) fits inside every waiter's slack: her bound, less her
-//! wait, less what bringing her in is measured to cost. When it no longer fits, the waiter with the
-//! least slack is brought in. A more urgent mind is brought in at once. So a deep mind whose switch is
-//! costly keeps the Core longer, and a waiter near her bound is served before she reaches it: run
-//! lengths follow from her measured costs, never a quantum.
+//! next step (or her whole predicted remainder) fits inside the tightest waiter's slack: her bound,
+//! less her wait, less what bringing her in is measured to cost, times a learned `margin`. When it no
+//! longer fits, that waiter is brought in; a more urgent mind is brought in at once. So a deep mind
+//! whose switch is costly is served before her bound, and a long turn runs while it can: run lengths
+//! follow from measured costs, never a quantum.
+//!
+//! The margin is a control loop that moves both ways: every closed decision with a mind waiting is
+//! one reading. A wait past its bound pushes the margin down (switch sooner); a window with every
+//! waiter inside her bound pushes it up (run longer, switch less). The step is adaptive (Rprop): it
+//! grows while the readings agree and halves when they flip, so the margin settles at the edge this
+//! node's load allows and follows it when the load changes. Its state is saved through the owner's
+//! saved state and resumed at the next start; absent, it starts from its starting value.
 //! hot-path: the lane decides at every Core step.
 
 use std::fmt::Debug;
 use std::time::Duration;
 
 use super::super::policy::{Choice, Param, Policy, PolicyId, Refused};
+use super::super::record::Record;
 use super::lane::{Action, Lane, Mind, Situation, Slot, SLOTS};
 
-/// The cost model, with its one parameter.
+/// The cost model, with its learned state.
 #[derive(Debug, Clone, Copy)]
 pub struct CostModel {
     /// The share of a waiter's slack the running mind may use before the waiter is brought in, in
-    /// (0, 1]: lower switches sooner. A parameter to tune and learn, saved with the algorithm.
+    /// (0, 1]: lower switches sooner.
     margin: f64,
+    /// The margin's current step, as a fraction of the margin, and the last reading's direction.
+    step: f64,
+    last: Direction,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+enum Direction {
+    None = 0,
+    Up = 1,
+    Down = 2,
+}
+
+/// How the step adapts: grown while readings agree, halved when they flip (Rprop's published
+/// factors). It needs no bounds of its own: it grows only while the margin can still move, so a
+/// margin pinned at the whole slack never inflates it, and a halved step regrows on agreement.
+const GROW: f64 = 1.2;
+const SHRINK: f64 = 0.5;
+
+/// The learned state's bytes: margin, step, last direction.
+const STATE: usize = 17;
+
 impl Default for CostModel {
+    /// The starting state when nothing was saved: half the slack, a tenth of it per step.
     fn default() -> Self {
-        Self { margin: 0.5 } // cold: the starting margin; set_param and load move it
+        Self { margin: 0.5, step: 0.1, last: Direction::None } // cold: the starting state; learning and load move it
     }
 }
 
@@ -30,6 +59,36 @@ impl Default for CostModel {
 /// cost this run has not seen, so none is subtracted).
 fn slack<K>(mind: &Mind<K>) -> Duration {
     mind.deadline.saturating_sub(mind.waited).saturating_sub(mind.switch_in.value().unwrap_or(Duration::ZERO)) // unwrap_or: an unmeasured switch is a cost not yet seen
+}
+
+impl CostModel {
+    /// The margin, refused outside (0, 1] (and NaN), never clamped.
+    fn set_margin(&mut self, margin: f64) -> Result<(), Refused> {
+        if margin > 0.0 && margin <= 1.0 {
+            self.margin = margin;
+            Ok(())
+        } else {
+            Err(Refused::Value { param: "margin", value: Param::Real(margin) })
+        }
+    }
+
+    /// One reading of the loop: move the margin by its step in `direction`, multiplicatively so it
+    /// never reaches 0, and never past 1 (the whole slack).
+    fn adjust(&mut self, direction: Direction) {
+        let pinned = direction == Direction::Up && self.margin >= 1.0;
+        self.step = match self.last {
+            Direction::None => self.step,
+            _ if pinned => self.step,
+            last if last == direction => self.step * GROW,
+            _ => self.step * SHRINK,
+        };
+        self.last = direction;
+        self.margin = match direction {
+            Direction::Up => (self.margin * (1.0 + self.step)).min(1.0),
+            Direction::Down => self.margin / (1.0 + self.step),
+            Direction::None => self.margin,
+        };
+    }
 }
 
 impl<K: Copy + Debug + PartialEq + Send + 'static> Policy<Lane<K>> for CostModel {
@@ -58,6 +117,13 @@ impl<K: Copy + Debug + PartialEq + Send + 'static> Policy<Lane<K>> for CostModel
         Choice { index, expected: None }
     }
 
+    /// A reading only when the decision was the margin's to make: a mind running and another waiting.
+    /// A wait past its bound reads down; every waiter inside hers reads up.
+    fn learn(&mut self, record: &Record<Lane<K>>) {
+        let (Some(_), false, Some(outcome)) = (&record.situation.running, record.situation.ready.is_empty(), &record.outcome) else { return };
+        self.adjust(if outcome.worst_wait > outcome.worst_deadline { Direction::Down } else { Direction::Up });
+    }
+
     fn params(&self) -> &'static [&'static str] {
         &["margin"]
     }
@@ -76,22 +142,31 @@ impl<K: Copy + Debug + PartialEq + Send + 'static> Policy<Lane<K>> for CostModel
 
     fn save(&self, into: &mut Vec<u8>) {
         into.extend_from_slice(&self.margin.to_le_bytes());
+        into.extend_from_slice(&self.step.to_le_bytes());
+        into.push(self.last as u8);
     }
 
+    /// Empty bytes (nothing saved yet) keep the starting state; anything else is its own saved state
+    /// or refused whole.
     fn load(&mut self, from: &[u8]) -> Result<(), Refused> {
-        let bytes: [u8; 8] = from.try_into().map_err(|_| Refused::State { algorithm: "cost-model", bytes: from.len() })?;
-        self.set_margin(f64::from_le_bytes(bytes))
-    }
-}
-
-impl CostModel {
-    /// The margin, refused outside (0, 1] (and NaN), never clamped.
-    fn set_margin(&mut self, margin: f64) -> Result<(), Refused> {
-        if margin > 0.0 && margin <= 1.0 {
-            self.margin = margin;
-            Ok(())
-        } else {
-            Err(Refused::Value { param: "margin", value: Param::Real(margin) })
+        if from.is_empty() {
+            return Ok(());
         }
+        let refused = Refused::State { algorithm: "cost-model", bytes: from.len() };
+        let bytes: &[u8; STATE] = from.try_into().map_err(|_| refused)?;
+        let real = |at: usize| bytes[at..at + 8].try_into().map(f64::from_le_bytes).map_err(|_| refused);
+        let (margin, step) = (real(0)?, real(8)?);
+        let last = match bytes[16] {
+            0 => Direction::None,
+            1 => Direction::Up,
+            2 => Direction::Down,
+            _ => return Err(refused),
+        };
+        if !(step.is_finite() && step > 0.0) {
+            return Err(refused);
+        }
+        self.set_margin(margin)?;
+        (self.step, self.last) = (step, last);
+        Ok(())
     }
 }

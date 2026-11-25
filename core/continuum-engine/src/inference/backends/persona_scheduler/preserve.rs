@@ -224,6 +224,11 @@ impl Preserved {
         Ok(instance)
     }
 
+    /// This node's directory for what outlives its engine: minds' files and the lane's learned state.
+    pub(super) fn dir(&self) -> &Path {
+        &self.dir
+    }
+
     pub(super) fn path(&self, file: &str) -> PathBuf {
         self.dir.join(file)
     }

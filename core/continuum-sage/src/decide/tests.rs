@@ -327,3 +327,43 @@ fn the_cost_model_continues_while_steps_fit_and_brings_in_the_tightest_waiter() 
     let costly = lane::Situation { running: Some(running), ready: vec![mind(2, 100), cold], batch_width: 1 };
     assert_eq!(decide(&costly), lane::Action::Switch(1), "her 880 ms switch leaves 20 ms of slack: she is brought in now");
 }
+
+// what this catches: a margin fixed at its starting value (a constant dressed as an algorithm), a loop
+// that only ever moves one way, a step that never adapts, a reading taken when no one waited, and a
+// learned state lost across a restart.
+#[test]
+fn the_cost_models_margin_is_a_control_loop_both_ways_and_survives_a_restart() {
+    let registry = lane::algorithms::<u8>().expect("test: distinct names register"); // expect: the test's own precondition
+    let mut decider = Decider::new(registry.create("cost-model").expect("test: registered"), capacity(16)); // expect: the test's own precondition
+    let margin = |decider: &Decider<Lane<u8>>| f64::from_bits(decider.policy().parameters);
+    let contended = lane::Situation { running: Some(mind(1, 0)), ready: vec![mind(2, 100)], batch_width: 1 };
+    let read = |decider: &mut Decider<Lane<u8>>, situation: &lane::Situation<u8>, waited_ms: u64| {
+        let Decided::Act(id, _) = decider.decide(situation, &[]) else { panic!("test: the lane acts") };
+        let outcome = lane::Outcome { tokens: Measured::Unmeasured, engine: Duration::from_millis(26), worst_wait: Duration::from_millis(waited_ms), worst_deadline: Duration::from_secs(1) };
+        decider.outcome(id, outcome);
+    };
+    let start = margin(&decider);
+    read(&mut decider, &contended, 200);
+    read(&mut decider, &contended, 200);
+    let calm = margin(&decider);
+    assert!(calm > start, "every waiter inside her bound: the margin rises ({start} -> {calm})");
+    let first_rise = calm / start;
+    read(&mut decider, &contended, 200);
+    assert!(margin(&decider) / calm > first_rise.sqrt(), "agreeing readings grow the step");
+    let before_breach = margin(&decider);
+    read(&mut decider, &contended, 1_200);
+    let breached = margin(&decider);
+    assert!(breached < before_breach, "a wait past her bound: the margin falls ({before_breach} -> {breached})");
+    let alone = lane::Situation { running: Some(mind(1, 0)), ready: vec![], batch_width: 1 };
+    read(&mut decider, &alone, 0);
+    assert_eq!(margin(&decider), breached, "no one waiting is no reading");
+
+    let mut saved = Vec::new();
+    decider.save(&mut saved);
+    let mut restarted = Decider::new(registry.create("cost-model").expect("test: registered"), capacity(16)); // expect: the test's own precondition
+    restarted.load(&saved).expect("test: its own state loads"); // expect: the test's own precondition
+    assert_eq!(margin(&restarted), breached, "a restart resumes the learned margin");
+    let mut fresh = Decider::new(registry.create("cost-model").expect("test: registered"), capacity(16)); // expect: the test's own precondition
+    fresh.load(&[]).expect("test: nothing saved loads as the start"); // expect: the test's own precondition
+    assert_eq!(margin(&fresh), start, "nothing saved: the starting value");
+}

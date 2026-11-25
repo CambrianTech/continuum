@@ -509,11 +509,16 @@ every depth measured. The 35B's rows need serving down.
 - The history is the lane's own (`cases::lane_history`). The driver is only the executor: it reports
   each switch-in, reuse, step (tokens and time, prefill and decode apart), turn end, residency and
   departure. The history fills every mind's features; what it has not measured stays `Unmeasured`.
-- `cost-model` (the serving default): the running mind continues while her next step, or her whole
+- `cost-model` (the serving default; its `margin` is learned, below): the running mind continues while her next step, or her whole
   predicted remainder, fits a `margin` share of the tightest waiter's slack (her bound, less her wait,
   less her measured switch cost); otherwise that waiter is brought in, and a more urgent one at once.
   So a mind whose switch is costly is served before her bound arrives, and a long turn runs while it
   can.
+- The margin is a control loop both ways (Rprop): a closed decision with a mind waiting reads down
+  when a wait passed its bound, up when every waiter stayed inside hers; the step grows while
+  readings agree and halves when they flip, and never grows while the margin is pinned at the whole
+  slack. It starts at 0.5, or from `lane-learned.json` (a Rebuildable saved-state kind keyed by the
+  algorithm, beside the preserved minds), and is saved at every stop.
 
 Measured on the M5, 2026-11-25, qwen2.5-0.5b, serving live beside it (load average 10),
 `a_short_turn_never_waits_out_another_minds_long_one`, alternating runs:

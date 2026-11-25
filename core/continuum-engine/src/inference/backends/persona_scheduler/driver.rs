@@ -275,6 +275,8 @@ pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
             return;
         }
     };
+    let mut lane = lane;
+    lane.resume(store.dir());
     let mut tier = UnifiedTier::new(&mut ctx, KvHome::Mapped(instance));
     let parked = resume(&mut tier, &mut store, &config.model, &log);
     log.info(&format!("persona scheduler ready: {geometry:?} (one mind decodes at a time; {} minds resumed)", parked.len()));
@@ -544,6 +546,7 @@ impl Driver<'_, '_> {
                 return blocked(id.0, format!("copy-out of {:?} blocked preservation: {why}", id.0));
             }
         }
+        self.lane.save();
         let Some(mut store) = self.store.take() else {
             return blocked(Uuid::nil(), "this node has no home to preserve minds in".into());
         };
