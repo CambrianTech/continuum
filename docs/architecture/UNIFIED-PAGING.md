@@ -595,6 +595,77 @@ stream's own KV allocation then serves only a mind without storage; its size at 
 - a crash simulated after her file left the manifest's path (a restart that never stopped): refused,
   cold, named.
 
+## Slice 2c: her recurrent state by pointer too (Joel, 2026-11-25: "make sure transfers are fast and lowest possible cpu cost")
+
+**Found** (M5, Metal, `persona_switch`, 2026-11-25): on a hybrid model the Core's switch is a pointer for her
+attention rows but a copy for her recurrent state. `persona_commit_save` reads her r and s rows out of the
+stream (`llama-memory-recurrent.cpp:493`, one `tensor_get` per layer per snapshot group) and
+`persona_commit_load` writes the next mind's back (`:572`). On Metal each is a CPU memcpy.
+
+| model | her recurrent state | switch p50 | p90 |
+|---|---|---|---|
+| qwen2.5-0.5b (attention only) | none | 0.01 ms | |
+| qwen35 0.8B (hybrid) | small | 0.85 ms | 1.43 ms |
+| Qwen3.6-35B-A3B (the live model, hybrid) | 62.8 MiB (R 2.8, S 60.0) | 3.16 ms | 4.95 ms |
+
+On the 35B a decode step is about 26 ms (39 tok/s), so a mind switching at every step spends about 12% of
+the step copying 126 MiB with the CPU. Her rows also ride in her record at every stop (63 MiB written and
+read where her attention rows move by rename). And the PLE rows (`p_l`) are not saved at all: a model with
+them would lose that state at a switch.
+
+**The design: the same object as her KV storage.** On the Core the recurrent memory has one cell
+(`mem_size` 1), so each layer's r, s and p tensors are exactly her rows in every snapshot group. Her
+storage is tensors of that exact shape, laid out after her KV in the same run of memory (her one mapped
+file on Metal; her one VRAM reservation on CUDA):
+- `llama_rs_storage` beside `llama_kv_storage`: r, s, p per layer, its buffers, and the memory viewing it;
+- `llama_memory_recurrent::persona_view(storage)`: each layer's tensor data, buffer and extra point at
+  hers, as `llama_kv_cache::persona_view` does; `nullptr` points them back. The context already drops its
+  graphs after a move;
+- save: the stream views its own memory again, her cell's record (position, rollback index, whether she
+  holds state) is kept, her cell is emptied; no row moves. Load: the stream views her storage, her cell's
+  record goes into cell 0; no row moves. A mind she follows with no state starts from the zeroed cell
+  the recurrent memory already clears for a new sequence;
+- the hybrid's storage bytes are its attention bytes, aligned, plus its recurrent bytes; attach and
+  reserve place both, so one file (or one reservation) holds her whole state;
+- her record: rows in storage means all her rows, attention and recurrent; the record keeps only her
+  cells and her recurrent cell's record. `attached_bytes` names the whole run.
+
+A mind without storage (several streams, an example's native home) keeps the row-copy move; it is not
+the Core.
+
+**Not in this cut:** a checkpoint (`persona_commit_checkpoint_rows`) still copies her rows out, once
+per act rather than per step. The snapshot groups the memory already keeps (`n_rs_seq`) are the
+in-place form of it; that is the next cut, measured by the same probe.
+
+**Gates:**
+- `persona_switch` on the 35B: switch p50 within 0.05 ms of the attention-only model's;
+- `test-persona-blocks`: A/B/A byte-identical on a hybrid model, attached and reserved;
+- `persona_handoff` on the hybrid: record without recurrent rows, 32 of 32 tokens equal to the control.
+
+**Measured, as built** (M5, Metal, 2026-11-25, fork b46a43f93 and a08234c04; `persona_switch <model> 3 256 8 4`):
+
+| model | switch p50 before | after | p90 after |
+|---|---|---|---|
+| qwen2.5-0.5b (attention only) | 0.01 ms | 0.01 ms | 0.01 ms |
+| qwen35 0.8B (hybrid) | 0.85 ms | 0.01 ms | 0.02 ms |
+| Qwen3.6-35B-A3B (hybrid, live model) | 3.16 ms | 0.01 ms | 0.02 ms |
+
+- On the 35B, decode over those turns read 39.0 tok/s before and 49.3 after, at the same parameters. The node
+  was serving residents during both runs, so that gap is not claimed for this change until the live read.
+- `test-persona-blocks` and `--test-core 3`: byte-identical on qwen2.5-0.5b and qwen35-0.8b (24 recurrent
+  layers); the hybrid's record is 0.1 KB over 23.3 MB of attached storage.
+- `persona_handoff` on qwen35-0.8b, 1k: record 18 KB (her recurrent rows used to ride in it), file 36.0 MB
+  moved by rename, restore 3.4 ms, 32 of 32 tokens equal to the control.
+- Not measured here: the reserved (VRAM) path, and a stop from it, which now stages through the device's
+  pinned host memory. Owner Codex on the 5090: `test-persona-blocks --test-core 3` and `persona_handoff`.
+
+**Also cut in this change:** a mind's token history is written and read as its own bytes (`bytemuck`),
+refused by the file's length before any byte is read; the per-token encode and decode loops are gone.
+
+**Deleted:** the row copy of her recurrent state at every switch on the Core, the recurrent rows in an
+attached mind's record, and the KV storage's private layout, reserve, attach and repoint code (now
+`llama-persona-view`, shared by both memories).
+
 ## Questions for review
 
 1. **Metal and a file mapping as a buffer** (Fable, slice 1): does `buffer_from_host_ptr` over a

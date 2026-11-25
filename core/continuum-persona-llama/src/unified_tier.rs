@@ -435,6 +435,15 @@ impl Execute for UnifiedTier<'_, '_> {
         self.settle()?;
         from.rewind(&mut *self.ctx, stream.seq(), owner_of(mind)).map_err(|refusal| native(mind, "the fork refused her rewind", refusal))
     }
+
+    fn clear(&mut self, mind: MindId) -> Result<(), TierRefusal> {
+        let stream = self.stream_of(mind).ok_or_else(|| refused(mind, "not bound"))?;
+        self.settle()?;
+        if !self.ctx.memory_seq_truncate(stream.seq(), Pos::ZERO) || self.ctx.memory_seq_pos_max(stream.seq()).is_some() {
+            return Err(refused(mind, "the engine could not empty her sequence"));
+        }
+        Ok(())
+    }
 }
 
 const TIER: &str = "unified";

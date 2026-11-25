@@ -78,15 +78,21 @@ impl Preserved {
         Ok((blocks, held))
     }
 
-    /// Her history from `name`: exactly `count` raw tokens, refused before any is taken otherwise.
+    /// Her history from `name`: exactly `count` raw tokens, refused by the file's length before any byte is read,
+    /// then read straight into her token buffer (one read, no staging copy, no per-token decode).
     fn read_tokens(&self, name: &str, count: u64) -> Result<Vec<i32>, RestoreRefusal> {
+        use std::io::Read;
         let path = self.path(name);
-        let bytes = std::fs::read(&path).map_err(|source| RestoreRefusal::Tokens { path: path.clone(), source })?;
+        let refused = |source| RestoreRefusal::Tokens { path: path.clone(), source };
+        let mut file = std::fs::File::open(&path).map_err(refused)?;
+        let found = file.metadata().map_err(refused)?.len();
         let expected = count.saturating_mul(TOKEN_BYTES as u64);
-        if bytes.len() as u64 != expected {
-            return Err(RestoreRefusal::TokenLength { path, found: bytes.len() as u64, count, expected });
+        if found != expected {
+            return Err(RestoreRefusal::TokenLength { path, found, count, expected });
         }
-        Ok(bytes.chunks_exact(TOKEN_BYTES).map(|raw| i32::from_ne_bytes([raw[0], raw[1], raw[2], raw[3]])).collect())
+        let mut held = vec![0_i32; count as usize];
+        file.read_exact(bytemuck::cast_slice_mut(&mut held)).map_err(refused)?;
+        Ok(held)
     }
 
     /// Hand one mind over in `generation`: her history, then her blocks (record durable, KV file synced,
@@ -95,8 +101,8 @@ impl Preserved {
         let Leaving { persona, epoch, basis, blocks, held } = her;
         self.take_custody(persona).map_err(HandOverError::Custody)?;
         let tokens = generation.tokens(persona);
-        let bytes: Vec<u8> = held.iter().flat_map(|token| token.to_ne_bytes()).collect();
-        continuum_host::durable::write_replace(&self.path(&tokens), &bytes).map_err(HandOverError::Tokens)?;
+        // her history's own bytes, written as they lie in memory: no per-token encode, no staging copy
+        continuum_host::durable::write_replace(&self.path(&tokens), bytemuck::cast_slice(held)).map_err(HandOverError::Tokens)?;
         let (record, kv) = (generation.record(persona), generation.kv(persona));
         let in_kv = blocks.hand_over(&self.path(&record), &self.path(&kv), generation.number())?;
         Ok(PreservedMind {
@@ -140,9 +146,8 @@ mod tests {
     fn a_token_history_of_another_length_is_refused_and_a_whole_one_reads_back() {
         let dir = tempfile::tempdir().expect("test: a temp dir"); // expect: the test's own precondition
         let preserved = Preserved::at(dir.path().to_path_buf()).expect("test: a store"); // expect: the test's own precondition
-        let held = [151_644, -1, 7];
-        let bytes: Vec<u8> = held.iter().flat_map(|token: &i32| token.to_ne_bytes()).collect();
-        std::fs::write(preserved.path("her.tok"), &bytes).expect("test: write"); // expect: the test's own precondition
+        let held: [i32; 3] = [151_644, -1, 7];
+        std::fs::write(preserved.path("her.tok"), bytemuck::cast_slice(&held)).expect("test: write"); // expect: the test's own precondition
         assert_eq!(preserved.read_tokens("her.tok", 3).expect("test: whole"), held.to_vec()); // expect: the test's own precondition
         let torn = preserved.read_tokens("her.tok", 4).expect_err("test: torn is refused"); // expect: the test's own precondition
         assert!(matches!(torn, RestoreRefusal::TokenLength { found: 12, count: 4, expected: 16, .. }), "{torn}");
