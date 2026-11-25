@@ -14,7 +14,9 @@ use super::lane::{Mind, Phase};
 pub enum Observation<K> {
     /// One step for her: how long it took on the Core, how many tokens it moved, and whether it was a
     /// prefill chunk (hundreds of tokens per step) or a decode step (one).
-    Stepped { mind: K, took: Duration, tokens: u64, prefill: bool },
+    /// `switched`: the step right after she was brought in, which pays what the switch threw away
+    /// (the engine's reusable graph, rebuilt for her), beyond the bind `SwitchedIn` measured.
+    Stepped { mind: K, took: Duration, tokens: u64, prefill: bool, switched: bool },
     /// She was brought onto the Core: how long the bind took.
     SwitchedIn { mind: K, took: Duration },
     /// Her turn ended after decoding this many tokens.
@@ -59,6 +61,9 @@ struct Track<K> {
     prefill: Ewma,
     decode: Ewma,
     switch_in: Ewma,
+    /// What a switched step took beyond her plain steps at the same count of tokens: the rest of a
+    /// switch's cost (the M5, 2026-11-25: binds 0.28 ms, the graph rebuild after them 5.6 ms a step).
+    rebuild: Ewma,
     prefix_hit: Ewma,
     /// Decoded tokens per finished turn.
     turn_tokens: Window,
@@ -87,7 +92,7 @@ impl<K: Copy + PartialEq> LaneHistory<K> {
             Some(at) => at,
             None => {
                 let ewma = || Ewma::new(views.smoothing);
-                self.tracks.push(Track { mind, prefill: ewma(), decode: ewma(), switch_in: ewma(), prefix_hit: ewma(), turn_tokens: Window::new(views.turns), decoded: 0, kv_bytes: Measured::Unmeasured, cold_bytes: Measured::Unmeasured });
+                self.tracks.push(Track { mind, prefill: ewma(), decode: ewma(), switch_in: ewma(), rebuild: ewma(), prefix_hit: ewma(), turn_tokens: Window::new(views.turns), decoded: 0, kv_bytes: Measured::Unmeasured, cold_bytes: Measured::Unmeasured });
                 self.tracks.len() - 1
             }
         };
@@ -96,16 +101,22 @@ impl<K: Copy + PartialEq> LaneHistory<K> {
 
     pub fn observe(&mut self, observation: Observation<K>) {
         match observation {
-            Observation::Stepped { mind, took, tokens, prefill } => {
+            Observation::Stepped { mind, took, tokens, prefill, switched } => {
                 let track = self.track(mind);
-                if tokens > 0 {
-                    let per_token = took.as_secs_f64() / tokens as f64;
-                    if prefill {
-                        track.prefill.observe(per_token);
-                    } else {
-                        track.decode.observe(per_token);
-                        track.decoded += tokens;
-                    }
+                if !prefill {
+                    track.decoded += tokens;
+                }
+                if tokens == 0 {
+                    return;
+                }
+                let plain = if prefill { &mut track.prefill } else { &mut track.decode };
+                // A switched step is not one of her plain steps: what it took beyond them, at her plain
+                // time a token, is the switch's rebuild. Before a plain step is measured there is
+                // nothing to compare it with, so it waits for one.
+                match (switched, plain.mean()) {
+                    (false, _) => plain.observe(took.as_secs_f64() / tokens as f64),
+                    (true, Measured::Value(per_token)) => track.rebuild.observe((took.as_secs_f64() - per_token * tokens as f64).max(0.0)),
+                    (true, Measured::Unmeasured) => {}
                 }
             }
             Observation::SwitchedIn { mind, took } => self.track(mind).switch_in.observe(took.as_secs_f64()),
@@ -139,7 +150,12 @@ impl<K: Copy + PartialEq> LaneHistory<K> {
     pub fn fill(&self, mind: &mut Mind<K>, typical: Fraction) {
         let Some(track) = self.tracks.iter().find(|track| track.mind == mind.mind) else { return };
         let seconds = |measured: Measured<f64>| measured.value().and_then(|s| Duration::try_from_secs_f64(s).ok()).map_or(Measured::Unmeasured, Measured::Value);
-        mind.switch_in = seconds(track.switch_in.mean());
+        // her bind and the rebuild her next step pays after it; a part not yet seen adds nothing yet
+        mind.switch_in = match (track.switch_in.mean(), track.rebuild.mean()) {
+            (Measured::Value(bind), Measured::Value(rebuild)) => seconds(Measured::Value(bind + rebuild)),
+            (bind, Measured::Unmeasured) => seconds(bind),
+            (Measured::Unmeasured, rebuild) => seconds(rebuild),
+        };
         mind.prefix_hit = track.prefix_hit.mean();
         mind.kv_bytes = track.kv_bytes;
         mind.cold_bytes = track.cold_bytes;

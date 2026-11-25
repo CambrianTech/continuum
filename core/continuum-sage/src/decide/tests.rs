@@ -285,7 +285,8 @@ fn the_lane_history_fills_what_the_executor_observed_and_nothing_else() {
     for decoded in [100, 300, 200] {
         history.observe(Observation::TurnEnded { mind: 1u8, decoded });
     }
-    history.observe(Observation::Stepped { mind: 1, took: Duration::from_millis(260), tokens: 10, prefill: false });
+    history.observe(Observation::Stepped { mind: 1, took: Duration::from_millis(260), tokens: 10, prefill: false, switched: false });
+    history.observe(Observation::Stepped { mind: 1, took: Duration::from_micros(31_600), tokens: 1, prefill: false, switched: true });
     history.observe(Observation::SwitchedIn { mind: 1, took: Duration::from_micros(10) });
     history.observe(Observation::Reused { mind: 1, reused: 900, prompt: 1_000 });
     history.observe(Observation::Resident { mind: 1, kv_bytes: 64 << 20, cold_bytes: Measured::Value(0) });
@@ -294,9 +295,9 @@ fn the_lane_history_fills_what_the_executor_observed_and_nothing_else() {
     her.step = Measured::Unmeasured;
     history.fill(&mut her, median);
     assert_eq!(her.step, Measured::Value(Duration::from_millis(26)), "per token");
-    assert_eq!(her.switch_in, Measured::Value(Duration::from_micros(10)));
+    assert_eq!(her.switch_in, Measured::Value(Duration::from_micros(5_610)), "her bind and the 5.6 ms her switched step took beyond her plain one");
     assert_eq!((her.prefix_hit, her.kv_bytes), (Measured::Value(0.9), Measured::Value(64 << 20)));
-    assert_eq!(her.remaining, Measured::Value(190), "the median turn (200) less the 10 she decoded");
+    assert_eq!(her.remaining, Measured::Value(189), "the median turn (200) less the 11 she decoded");
     let mut stranger = lane::Mind { step: Measured::Unmeasured, ..mind(7, 0) };
     history.fill(&mut stranger, median);
     assert_eq!((stranger.step, stranger.remaining), (Measured::Unmeasured, Measured::Unmeasured), "unseen stays unmeasured");

@@ -641,7 +641,8 @@ impl Driver<'_, '_> {
         if turn.spent.first_step.is_none() {
             turn.spent.first_step = Some(turn.submitted.elapsed());
         }
-        if self.engine.active() != Some(turn.id) {
+        let switched = self.engine.active() != Some(turn.id);
+        if switched {
             let switching = Instant::now();
             self.switch_to(turn.id, turn.one_off)?;
             let took = switching.elapsed();
@@ -677,7 +678,7 @@ impl Driver<'_, '_> {
             (Some(from), Phase::Decoding { .. }) => turn.prompt.len().saturating_sub(from),
             (Some(_), Phase::Waiting) | (None, _) => usize::from(decoding && advanced.is_ok()),
         };
-        self.lane.observe(Observation::Stepped { mind: turn.id, took, tokens: tokens as u64, prefill: !decoding });
+        self.lane.observe(Observation::Stepped { mind: turn.id, took, tokens: tokens as u64, prefill: !decoding, switched });
         if let Ok(Advanced::Done { tokens_generated, .. }) = &advanced {
             self.lane.observe(Observation::TurnEnded { mind: turn.id, decoded: *tokens_generated as u64 });
         }
@@ -773,8 +774,7 @@ impl Driver<'_, '_> {
     fn prefill_chunk(&mut self, turn: &mut Turn, pos: usize) -> Result<(), TurnError> {
         // A chunk never runs past her view's end, so she can be checkpointed exactly there.
         let limit = turn.boundaries.next_end(pos, turn.prompt.len());
-        // As many tokens as the lane allows this step (`lane::step_tokens`): at most the engine's
-        // batch, and no longer than every other mind's slack.
+        // As many tokens as the lane allows (`lane::step_tokens`): within every other mind's slack.
         let end = pos.saturating_add(self.lane.step_tokens()).min(limit);
         let chunk = &turn.prompt[pos..end];
         let last = end == turn.prompt.len();
