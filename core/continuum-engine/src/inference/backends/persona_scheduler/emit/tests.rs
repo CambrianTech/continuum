@@ -11,7 +11,7 @@ fn open(stops: &[&str]) -> Open {
     let stops: Vec<String> = stops.iter().map(|stop| stop.to_string()).collect();
     let stops = Stops::of(&stops, control);
     let (sink, _) = tokio::sync::mpsc::unbounded_channel();
-    Open { tail: Tail::with_capacity(stops.longest()), sink, stops, cancel: Arc::new(AtomicBool::new(false)) }
+    Open { tail: Tail::with_capacity(stops.longest()), sink, stops, cancel: Arc::new(AtomicBool::new(false)), piece: Vec::new() }
 }
 
 /// Feed `pieces` (each with its token id); the index of the piece that stopped it, if any.

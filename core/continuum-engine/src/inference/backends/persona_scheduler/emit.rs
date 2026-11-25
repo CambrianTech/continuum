@@ -1,6 +1,6 @@
-//! Emit: an answer's tokens become text on their own worker, never on the engine thread
+//! Emit: an answer's tokens are streamed and watched on their own worker, never on the engine thread
 //! (CONTINUUM-ENGINE 4.16). The engine pushes what it decoded and goes straight on to its next step;
-//! this stage turns each token into its piece, streams it to the answer's caller, and watches for
+//! this stage streams each token id to the answer's caller (who decodes the whole answer once) and watches for
 //! the answer's stop sequences. A stop it sees (or a caller that hung up) raises the answer's cancel
 //! flag, which the engine reads at its next step without a lock or a wait; tokens decoded after
 //! that are not shown. Everything for one answer arrives in order on one queue, so its end is
@@ -96,12 +96,14 @@ impl Tail {
     }
 }
 
-/// An answer being emitted: where it goes, what ends it, and its tail.
+/// An answer being emitted: where it goes, what ends it, its tail, and the buffer each token's
+/// bytes are rendered into (only when a text stop needs them; it grows only to the longest piece).
 struct Open {
     sink: UnboundedSender<TokenEvent>,
     stops: Stops,
     cancel: Arc<AtomicBool>,
     tail: Tail,
+    piece: Vec<u8>,
 }
 
 impl Open {
@@ -139,16 +141,22 @@ impl Stage for Emit {
             Out::Open { answer, sink, stops, cancel } => {
                 let stops = Stops::of(&stops, |stop| self.control_token(stop));
                 let tail = Tail::with_capacity(stops.longest());
-                self.open.insert(answer, Open { sink, stops, cancel, tail });
+                self.open.insert(answer, Open { sink, stops, cancel, tail, piece: Vec::new() });
             }
             Out::Token { answer, token } => {
                 let Some(open) = self.open.get_mut(&answer) else { return };
                 if open.cancel.load(Ordering::Acquire) {
                     return; // stopped: tokens the engine decoded before it saw the flag are not shown
                 }
-                let piece = self.model.token_to_piece(token);
-                open.tail.push(piece.as_bytes());
-                let hung_up = open.sink.send(TokenEvent::Token(piece)).is_err();
+                // only an answer with a text stop renders its bytes, into its own buffer
+                if !open.stops.texts.is_empty() {
+                    match self.model.piece_into(token, &mut open.piece) {
+                        Ok(piece) => open.tail.push(piece),
+                        Err(refused) => continuum_base::probe!(class = "persona.engine.piece_refused", token, reason = %refused,
+                            "a token's bytes were not rendered: its text stops are not checked on it"),
+                    }
+                }
+                let hung_up = open.sink.send(TokenEvent::Token(token)).is_err();
                 if hung_up || open.stopped_by(token) {
                     open.cancel.store(true, Ordering::Release);
                 }

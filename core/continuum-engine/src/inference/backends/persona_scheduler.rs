@@ -58,8 +58,9 @@ use uuid::Uuid;
 /// Token event streamed from the scheduler to the requester.
 #[derive(Debug)]
 pub enum TokenEvent {
-    /// One generated token piece (UTF-8 fragment from the tokenizer).
-    Token(String),
+    /// One generated token, by id: its text is decoded once for the whole answer by whoever reads
+    /// the stream, never piece by piece (a character split across tokens stays whole).
+    Token(i32),
     /// Generation finished cleanly (EOG / max_tokens / stop sequence), with what the Core measured of it.
     Done(TurnFacts),
     /// Refused at the door: her prompt and the reply she asked for do not fit one stream. Her caller
