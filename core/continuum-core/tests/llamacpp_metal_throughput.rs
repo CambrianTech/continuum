@@ -22,7 +22,7 @@
 //! Marked #[ignore] because it requires the qwen3.5-4b GGUF file at the DMR
 //! path, takes 10-30s, and isn't part of the regular CI test loop.
 
-use continuum_core::inference::backends::llamacpp::GenerationAllocation;
+use continuum_core::inference::backends::llamacpp::{GenerationAllocation, TurnPrompt};
 use continuum_core::inference::backends::llamacpp::{LlamaCppBackend, LlamaCppConfig};
 use continuum_core::inference::backends::SamplingConfig;
 use llama::FlashAttn;
@@ -80,9 +80,9 @@ fn qwen35_08b_draft_path() -> Option<PathBuf> {
     None
 }
 
-#[test]
+#[tokio::test]
 #[ignore = "requires local GGUF + 10-30s; run manually with --ignored --nocapture"]
-fn qwen35_4b_metal_throughput_via_bundled_llamacpp() {
+async fn qwen35_4b_metal_throughput_via_bundled_llamacpp() {
     let model_path = qwen35_4b_target_path();
     if !model_path.exists() {
         panic!(
@@ -129,7 +129,13 @@ fn qwen35_4b_metal_throughput_via_bundled_llamacpp() {
     eprintln!("[smoke] warm-up generation (10 tokens)...");
     let warm_start = Instant::now();
     let warm_result = backend
-        .generate(GenerationAllocation::new(std::num::NonZeroU32::new(32768).expect("explicit test allocation")), "Reply OK.", 10, SamplingConfig::chat(), &[], &[])
+        .submit_for_persona(
+            GenerationAllocation::new(std::num::NonZeroU32::new(32768).expect("explicit test allocation")),
+            None,
+            TurnPrompt { text: "Reply OK.", stable_prefix: None }, 10, SamplingConfig::chat(), &[], &[])
+        .expect("submit test turn")
+        .collect()
+        .await
         .expect("warm-up generate failed");
     eprintln!(
         "[smoke] warm-up: {} tokens in {}ms ({:.1} tok/s) — text={:?}",
@@ -143,13 +149,18 @@ fn qwen35_4b_metal_throughput_via_bundled_llamacpp() {
     eprintln!("[smoke] measurement generation (100 tokens)...");
     let gen_start = Instant::now();
     let (text, tokens) = backend
-        .generate(GenerationAllocation::new(std::num::NonZeroU32::new(32768).expect("explicit test allocation")),
-            "Count from 1 to 50, separated by commas.",
+        .submit_for_persona(
+            GenerationAllocation::new(std::num::NonZeroU32::new(32768).expect("explicit test allocation")),
+            None,
+            TurnPrompt { text: "Count from 1 to 50, separated by commas.", stable_prefix: None },
             100,
             SamplingConfig::chat(),
             &[],
             &[],
         )
+        .expect("submit test turn")
+        .collect()
+        .await
         .expect("measurement generate failed");
     let elapsed_secs = gen_start.elapsed().as_secs_f64();
     let tokens_per_sec = tokens as f64 / elapsed_secs;

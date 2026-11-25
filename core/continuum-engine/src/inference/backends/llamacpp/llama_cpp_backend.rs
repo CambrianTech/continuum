@@ -325,7 +325,7 @@ impl LlamaCppBackend {
             start.elapsed().as_millis()
         ));
 
-        // Sample-until-done loop. Mirrors LlamaCppBackend::generate but
+        // Sample-until-done loop. Uses the native sampler and
         // single-seq, no scheduler. EOG / max_tokens / stop-sequence are
         // the three exit conditions, same shape.
         let mut sampler = if sampling.temperature <= 0.0 && sampling.grammar.is_none() {
@@ -500,49 +500,8 @@ impl LlamaCppBackend {
         Ok(self.scheduler(allocation)?.state())
     }
 
-    /// Generate text through the persona scheduler: the turn continues her mind (one decodes at a
-    /// time, the next waits its turn) and tokens stream back as they are sampled. Concurrent
-    /// generate() calls are served one after another on the one context.
-    ///
-    /// `active_loras` is `(id, scale)` pairs naming genes previously paged
-    /// in via [`ensure_adapter`]. They are resolved to live adapter handles
-    /// and applied context-level by the scheduler before decode (genome
-    /// paging). A requested id that was never `ensure_adapter`'d is a hard
-    /// error — never a silent base-model run (Rule 2: fail loud).
-    pub fn generate(
-        &self,
-        allocation: GenerationAllocation,
-        prompt: &str,
-        max_tokens: usize,
-        sampling: SamplingConfig,
-        stop_sequences: &[&str],
-        active_loras: &[(String, f32)],
-    ) -> Result<(String, usize), String> {
-        // Forwards to the persona-aware variant with persona_id=None so
-        // test rigs and ad-hoc probes don't need to change. Production
-        // adapter calls go through generate_for_persona() so the registry
-        // can attribute KV bytes per-persona.
-        self.generate_for_persona(
-            allocation,
-            None,
-            TurnPrompt { text: prompt, stable_prefix: None },
-            max_tokens,
-            sampling,
-            stop_sequences,
-            active_loras,
-        )
-    }
-
-    /// Same as `generate` but threads a `persona_id` through to the
-    /// scheduler so the registry can attribute the seq slot's KV bytes
-    /// to the right persona. Pass `None` for test/ad-hoc paths that
-    /// shouldn't appear in per-persona accounting.
-    ///
-    /// `persona_id` is forwarded as-is into `ActiveSeq::persona_id`. The
-    /// actual registry reporting (Piece 2 of the substrate work) hooks
-    /// into seq alloc / Done events inside the scheduler — this method's
-    /// only job here is to deliver the value.
-    pub fn generate_for_persona(
+    /// Prepare and enqueue on a blocking worker. The caller owns the returned event receiver.
+    pub fn submit_for_persona(
         &self,
         allocation: GenerationAllocation,
         persona_id: Option<uuid::Uuid>,
@@ -551,14 +510,13 @@ impl LlamaCppBackend {
         sampling: SamplingConfig,
         stop_sequences: &[&str],
         active_loras: &[(String, f32)],
-    ) -> Result<(String, usize), String> {
-        let log = runtime::logger("llamacpp");
+    ) -> Result<TurnAnswer, String> {
         let gen_start = Instant::now();
         let prompt = turn.text;
         let prompt_len_chars = prompt.len();
 
         // Channel for streaming tokens back from the scheduler.
-        let (response_tx, mut response_rx) = tokio::sync::mpsc::unbounded_channel::<TokenEvent>();
+        let (response_tx, response_rx) = tokio::sync::mpsc::unbounded_channel::<TokenEvent>();
 
         // Resolve requested genes (`id`, scale) to live adapter handles from
         // the cache BEFORE crossing to the scheduler thread (which can't lock
@@ -611,40 +569,23 @@ impl LlamaCppBackend {
             return Err(refused.to_string());
         }
 
-        // Collect tokens from the channel until Done/Error. We're called
-        // synchronously from spawn_blocking by CandleAdapter — block_in_place
-        // a tokio runtime handle to await the channel.
-        //
-        // Stop-sequence trimming happens here (at the boundary): the
-        // scheduler emits the stop sequence's tokens before signaling Done,
-        // so we strip them from the collected output.
-        let mut output = String::new();
-        let runtime_handle = tokio::runtime::Handle::try_current().ok();
+        Ok(TurnAnswer { events: response_rx, started: gen_start, prompt_chars: prompt_len_chars, stops: stop_sequences.iter().map(|s| s.to_string()).collect() })
+    }
+}
 
+/// Dropping a turn drops its receiver even when the native driver is busy.
+pub struct TurnAnswer {
+    events: tokio::sync::mpsc::UnboundedReceiver<TokenEvent>,
+    started: Instant,
+    prompt_chars: usize,
+    stops: Vec<String>,
+}
+
+impl TurnAnswer {
+    pub async fn collect(mut self) -> Result<(String, usize), String> {
+        let mut output = String::new();
         loop {
-            let event = if let Some(ref h) = runtime_handle {
-                h.block_on(response_rx.recv())
-            } else {
-                // Fallback for non-tokio callers (e.g. tests). Spin briefly.
-                let mut tries = 0u32;
-                loop {
-                    match response_rx.try_recv() {
-                        Ok(e) => break Some(e),
-                        Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
-                            break None;
-                        }
-                        Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
-                            std::thread::sleep(std::time::Duration::from_millis(2));
-                            tries += 1;
-                            if tries > 60_000 {
-                                // 2 minutes without a token — treat as fatal.
-                                break None;
-                            }
-                        }
-                    }
-                }
-            };
-            match event {
+            match self.events.recv().await {
                 Some(TokenEvent::Token(piece)) => {
                     output.push_str(&piece);
                 }
@@ -655,19 +596,19 @@ impl LlamaCppBackend {
                     // The scheduler's own count is the receipt; a per-piece tally here
                     // was never read (rustc: value assigned is never read).
                     let n_decoded = tokens_generated;
-                    let elapsed = gen_start.elapsed();
-                    log.info(&format!(
+                    let elapsed = self.started.elapsed();
+                    runtime::logger("llamacpp").info(&format!(
                         "Generated {} tokens in {:.3}s ({:.1} tok/s, scheduler={}ms, prompt={}chars)",
                         n_decoded,
                         elapsed.as_secs_f64(),
                         n_decoded as f64 / elapsed.as_secs_f64().max(0.001),
                         elapsed_ms,
-                        prompt_len_chars
+                        self.prompt_chars
                     ));
                     // Trim trailing stop sequence(s) — scheduler emits them
                     // before signaling Done.
-                    for s in stop_sequences {
-                        if output.ends_with(s) {
+                    for s in &self.stops {
+                        if output.ends_with(s.as_str()) {
                             output.truncate(output.len() - s.len());
                         }
                     }

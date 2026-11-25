@@ -45,6 +45,8 @@ pub(super) enum TurnError {
     TooLong,
     #[error("nothing was decoded for her turn")]
     NothingDecoded,
+    #[error("the caller released this turn")]
+    CallerReleased,
 }
 
 /// Why one mind was not preserved at a stop. She stays in the engine's custody, and the stop
@@ -271,6 +273,9 @@ pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
         // the stage's space: a wake on both, never a poll, and a stalled caller never blocks a stop.
         let holding = driver.holding();
         if holding || turns.is_empty() {
+            let parked_at = Instant::now();
+            let emit_pending = driver.emit.waiting();
+            let record_pending = driver.record.waiting();
             let woke = stages_on.block_on(async {
                 tokio::select! {
                     biased;
@@ -278,6 +283,24 @@ pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
                     () = driver.drain(), if holding => None,
                 }
             });
+            let parked_for = parked_at.elapsed();
+            if parked_for > std::time::Duration::from_millis(500) {
+                let wake = match &woke {
+                    Some(Some(Submission::Turn(_))) => "turn",
+                    Some(Some(Submission::Suspend(_))) => "suspend",
+                    Some(None) => "closed",
+                    None => "stage_space",
+                };
+                continuum_base::probe!(
+                    class = "persona.engine.park",
+                    parked_ms = super::record::whole_ms(parked_for),
+                    active_turns = turns.len() as u64,
+                    emit_pending = emit_pending as u64,
+                    record_pending = record_pending as u64,
+                    wake = wake,
+                    "engine thread resumed after parking"
+                );
+            }
             match woke {
                 Some(Some(submission)) => driver.take(submission, &mut turns),
                 // Every handle dropped: Emit ends once it has drained what it holds.
@@ -413,10 +436,10 @@ impl Driver<'_, '_> {
         self.record.flush();
     }
 
-    /// Hand each stage everything that waits for it, awaiting its space: only when no turn is left.
+    /// Each outbox wakes on its own consumer's space. Both retain undelivered items
+    /// when an incoming submission interrupts the drain.
     async fn drain(&mut self) {
-        self.emit.drain().await;
-        self.record.drain().await;
+        tokio::join!(self.emit.drain(), self.record.drain());
     }
 
     /// Whether anything still waits for a stage that was full.
@@ -546,6 +569,11 @@ impl Driver<'_, '_> {
     /// cannot reuse, never her whole prompt: a 1.2k tail on a 29k prompt she holds is a 1.2k turn
     /// (the M5, 2026-11-19, a6da599330: sized as 29k, her rewind waited 161 s behind cold prompts).
     fn pick(&mut self, turns: &[Turn]) -> Option<(usize, std::num::NonZeroUsize)> {
+        // A lone turn needs no ranking or cache estimate. Its bind still
+        // validates reuse against the actual prompt before advancing.
+        if turns.len() == 1 {
+            return Some((0, std::num::NonZeroUsize::MIN));
+        }
         let mut seen = std::collections::HashSet::new();
         let eligible: Vec<usize> = (0..turns.len()).filter(|&index| seen.insert(turns[index].id)).collect();
         let active = self.engine.active();
@@ -573,6 +601,9 @@ impl Driver<'_, '_> {
     /// One frame for `turn`: bind her if another mind is bound, then one step (a prefill chunk, or
     /// one token).
     fn step(&mut self, turn: &mut Turn, ready: std::num::NonZeroUsize) -> Result<Advanced, TurnError> {
+        if turn.req.response_tx.is_closed() {
+            return Err(TurnError::CallerReleased);
+        }
         let gap = turn.ready_since.elapsed();
         turn.spent.longest_gap = turn.spent.longest_gap.max(gap);
         if turn.spent.first_step.is_none() {
@@ -636,7 +667,11 @@ impl Driver<'_, '_> {
             reuse::Reuse::Append { from } => (from, "append"),
             reuse::Reuse::Rewind { from } => match self.rewind_to_checkpoint(from) {
                 Ok(()) => (from, "rewind"),
-                Err(_) => (0, "rewind_refused"),
+                Err(error) => {
+                    continuum_base::probe!(class = "persona.engine.rewind_failed", persona = %turn.id.0, checkpoint_end = from as u64,
+                        shared_tokens = shared as u64, error = %error, "native rewind failed; turn must prefill");
+                    (0, "rewind_refused")
+                }
             },
             reuse::Reuse::Restart(miss) => (0, miss.reason()),
         };
@@ -662,9 +697,20 @@ impl Driver<'_, '_> {
     fn keep_checkpoint(&mut self, turn: &mut Turn, kind: Boundary, end: usize) -> Result<(), TurnError> {
         let taking = Instant::now();
         let history = &mut self.engine.active_mut().ok_or(TurnError::NoneActive)?.parts_mut().tokens;
-        let Some(mut blocks) = history.capture_buffer(kind, end) else { return Ok(()) };
-        if self.engine.checkpoint_active(&mut blocks).is_ok_and(|pos| pos as usize + 1 == end) {
-            self.record(|her| her.tokens.save(kind, blocks, end, &turn.basis))?;
+        let Some(mut blocks) = history.capture_buffer(kind, end) else {
+            continuum_base::probe!(class = "persona.engine.checkpoint_allocation_failed", persona = %turn.id.0,
+                expected_end = end as u64, "native checkpoint buffer allocation failed");
+            turn.spent.checkpoint_ms += record::whole_ms(taking.elapsed());
+            return Ok(());
+        };
+        match self.engine.checkpoint_active(&mut blocks) {
+            Ok(pos) if pos as usize + 1 == end => {
+                self.record(|her| her.tokens.save(kind, blocks, end, &turn.basis))?;
+            }
+            Ok(pos) => continuum_base::probe!(class = "persona.engine.checkpoint_misaligned", persona = %turn.id.0,
+                expected_end = end as u64, native_position = i64::from(pos), "discarded misaligned native checkpoint"),
+            Err(error) => continuum_base::probe!(class = "persona.engine.checkpoint_failed", persona = %turn.id.0,
+                expected_end = end as u64, error = %error, "native checkpoint capture failed"),
         }
         turn.spent.checkpoint_ms += record::whole_ms(taking.elapsed());
         Ok(())
@@ -683,14 +729,14 @@ impl Driver<'_, '_> {
             (tokens as u128 * allowance).checked_div(elapsed.as_nanos())
         }).map_or(1, |count| count.clamp(1, self.batch.get() as u128) as usize);
         let end = pos.saturating_add(count).min(limit);
-        let chunk = turn.prompt[pos..end].to_vec();
+        let chunk = &turn.prompt[pos..end];
         let last = end == turn.prompt.len();
         let from = i32::try_from(pos).map_err(|_| TurnError::TooLong)?;
         let len = chunk.len();
-        self.engine.submit(Step { tokens: chunk.clone(), from, logits_at_end: last, genes: Arc::clone(&turn.genes) })?;
+        self.engine.submit(Step { tokens: chunk.to_vec(), from, logits_at_end: last, genes: Arc::clone(&turn.genes) })?;
         if !last {
             self.engine.settle()?;
-            self.record(|her| her.tokens.held.extend_from_slice(&chunk))?;
+            self.record(|her| her.tokens.held.extend_from_slice(chunk))?;
             if let Some(kind) = turn.boundaries.at(end) {
                 self.keep_checkpoint(turn, kind, end)?;
             }
@@ -700,7 +746,7 @@ impl Driver<'_, '_> {
         }
         let at = i32::try_from(len - 1).map_err(|_| TurnError::TooLong)?;
         let token = self.engine.tier().sample(&mut turn.sampler, at);
-        self.record(|her| her.tokens.held.extend_from_slice(&chunk))?;
+        self.record(|her| her.tokens.held.extend_from_slice(chunk))?;
         self.report_footprint(turn.id, turn.one_off);
         let pos = i32::try_from(end).map_err(|_| TurnError::TooLong)?;
         self.prefill_sample = Some((len, started.elapsed()));

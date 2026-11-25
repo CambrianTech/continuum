@@ -17,7 +17,7 @@
 // unit tests are the windows-supported surface today.
 #![cfg(unix)]
 
-use continuum_core::inference::backends::llamacpp::GenerationAllocation;
+use continuum_core::inference::backends::llamacpp::{GenerationAllocation, TurnPrompt};
 use continuum_core::inference::backends::llamacpp::{LlamaCppBackend, LlamaCppConfig};
 use continuum_core::inference::backends::{SamplingConfig, JSON_GRAMMAR};
 use llama::{render_chat, ChatMsg, FlashAttn};
@@ -33,9 +33,9 @@ fn model_path() -> std::path::PathBuf {
 
 const CHATML: &str = "{% for message in messages %}{{ '<|im_start|>' + message['role'] + '\n' + message['content'] + '<|im_end|>\n' }}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant\n' }}{% endif %}";
 
-#[test]
+#[tokio::test]
 #[ignore = "requires local GGUF; cargo test --release --test qwen35_chat_pipeline_full -- --ignored --nocapture"]
-fn qwen35_persona_style_chat_produces_coherent_short_reply() {
+async fn qwen35_persona_style_chat_produces_coherent_short_reply() {
     // n_gpu_layers honors QWEN35_N_GPU_LAYERS env var (default -1 = all on GPU).
     // Set QWEN35_N_GPU_LAYERS=0 for CPU-only inference. Needed on Intel Macs
     // with discrete AMD Metal devices where the SSM-hybrid qwen35 Metal
@@ -93,7 +93,13 @@ fn qwen35_persona_style_chat_produces_coherent_short_reply() {
     // model produced correct '12 × 7 = 84' inside <think> but never
     // reached the visible-text phase before max_tokens.
     let (text, n_tokens) = backend
-        .generate(GenerationAllocation::new(std::num::NonZeroU32::new(context_length).expect("explicit test allocation")), &prompt, 2500, sampling, &stop, &[])
+        .submit_for_persona(
+            GenerationAllocation::new(std::num::NonZeroU32::new(context_length).expect("explicit test allocation")),
+            None,
+            TurnPrompt { text: &prompt, stable_prefix: None }, 2500, sampling, &stop, &[])
+        .expect("submit test turn")
+        .collect()
+        .await
         .expect("generate");
 
     eprintln!("[full] tokens={n_tokens} text={text:?}");
@@ -127,9 +133,9 @@ fn qwen35_persona_style_chat_produces_coherent_short_reply() {
     );
 }
 
-#[test]
+#[tokio::test]
 #[ignore = "requires local GGUF; cargo test --release --test qwen35_chat_pipeline_full -- --ignored --nocapture"]
-fn qwen35_scheduler_json_grammar_returns_object() {
+async fn qwen35_scheduler_json_grammar_returns_object() {
     let backend = LlamaCppBackend::load(LlamaCppConfig {
         model_path: PathBuf::from(model_path()),
         n_gpu_layers: -1,
@@ -160,13 +166,18 @@ fn qwen35_scheduler_json_grammar_returns_object() {
     };
 
     let (text, n_tokens) = backend
-        .generate(GenerationAllocation::new(std::num::NonZeroU32::new(32768).expect("explicit test allocation")),
-            &prompt,
+        .submit_for_persona(
+            GenerationAllocation::new(std::num::NonZeroU32::new(32768).expect("explicit test allocation")),
+            None,
+            TurnPrompt { text: &prompt, stable_prefix: None },
             128,
             sampling,
             &["<|im_end|>", "<|endoftext|>"],
             &[],
         )
+        .expect("submit test turn")
+        .collect()
+        .await
         .expect("generate");
 
     eprintln!("[json-grammar] tokens={n_tokens} text={text:?}");

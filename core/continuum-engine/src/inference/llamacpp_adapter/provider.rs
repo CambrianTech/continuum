@@ -411,7 +411,8 @@ impl AIProviderAdapter for LlamaCppAdapter {
             let genes_for_closure = requested_genes;
             continuum_base::time_probe!(
                 "inference.forward.text",
-                tokio::task::spawn_blocking(move || {
+                async move {
+                    let answer = tokio::task::spawn_blocking(move || {
                     let stop_refs: Vec<&str> =
                         stop_for_closure.iter().map(|s| s.as_str()).collect();
                     // Page in each requested gene (idempotent) before generation.
@@ -424,17 +425,18 @@ impl AIProviderAdapter for LlamaCppAdapter {
                         .iter()
                         .map(|(id, _, scale)| (id.clone(), *scale))
                         .collect();
-                    backend_for_blocking.generate_for_persona(
-                        allocation,                        persona_id,
+                    backend_for_blocking.submit_for_persona(
+                        allocation, persona_id,
                         crate::inference::backends::llamacpp::TurnPrompt { text: &prompt_for_blocking, stable_prefix: stable_for_blocking.as_deref() },
                         max_tokens,
                         sampling_for_closure,
                         &stop_refs,
                         &active_loras,
                     )
-                })
+                    }).await.map_err(|e| format!("generate task panicked: {e}"))??;
+                    answer.collect().await
+                }
             )
-            .map_err(|e| format!("generate task panicked: {e}"))?
         } else {
             // Multimodal path: bypass the scheduler — media tokens have
             // a fixed positional layout the scheduler can't interleave

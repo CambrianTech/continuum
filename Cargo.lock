@@ -3220,6 +3220,7 @@ dependencies = [
  "candle-nn",
  "continuum-base",
  "continuum-engine",
+ "continuum-flow",
  "continuum-host",
  "continuum-kernel",
  "continuum-process",
