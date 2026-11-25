@@ -86,9 +86,9 @@ fn calibration(hour: &Hour, costs: &Costs) -> Vec<(String, f64, f64, f64)> {
 const CALIBRATION_BOUND: f64 = 0.20;
 
 fn print_calibration(rows: &[(String, f64, f64, f64)], costs: &Costs) {
-    eprintln!("fits: prefill chunk {:.3} + {:.4} d + t ({:.3} + {:.4} d) s, t and d in k tokens (median residual {:.0}%); decode step {:.3} + {:.3} n + {:.4} D/1k s (median residual {:.0}%)",
-        costs.prefill[0], costs.prefill[1], costs.prefill[2], costs.prefill[3], costs.prefill_residual * 100.0,
-        costs.decode[0], costs.decode[1], costs.decode[2], costs.decode_residual * 100.0);
+    eprintln!("fits: prefill chunk {:.3} + {:.4} d + t ({:.3} + {:.4} d) s, t and d in k tokens (median residual {:.0?}%); decode step {:.3} + {:.3} n + {:.4} D/1k s (median residual {:.0?}%)",
+        costs.prefill[0], costs.prefill[1], costs.prefill[2], costs.prefill[3], costs.prefill_residual.map(|r| r * 100.0),
+        costs.decode[0], costs.decode[1], costs.decode[2], costs.decode_residual.map(|r| r * 100.0));
     for (n, r, m, e) in rows {
         eprintln!("   {n:34} recorded {r:9.1} modeled {m:9.1} ({:+.0}%)", e * 100.0);
     }
@@ -171,6 +171,60 @@ fn candidate_schedulers_on_the_recorded_hour() {
     let bound = table[0].2;
     let best = table.iter().filter(|r| r.2 <= bound).max_by(|a, b| a.1.total_cmp(&b.1)).expect("test: the baseline meets its own bound");
     eprintln!("winner at an oldest waiter <= {bound:.0} s: {} ({:.1} acts/h)", best.0, best.1);
+}
+
+// what this catches (4.10 P5 slice 2's gate, #6063): the decode set going live without beating
+// today's engine on the recorded M5 hour. On the live M5 (2026-11-16 04:10Z) four generating slots
+// decoded together at 1.4-4.3 tok/s each against ~60 alone, and one 45k-token think ran 1.9 h before
+// it was dropped. The measured width (the fitted decode plane's argmin, `MeasuredConcurrency`) must
+// finish residents' acts sooner at the median and the p90, and leave no resident waiting longer for
+// first service, than every generating slot decoding every step (`Fork`), on the same arrivals.
+#[test]
+fn the_measured_decode_width_beats_every_slot_decoding_on_the_recorded_hour() {
+    let e = evidence();
+    let hour = &e.m5_hour.value;
+    let costs = Costs::of(&e);
+    let resident: Vec<usize> = (0..hour.tasks.len()).filter(|i| hour.tasks[*i].class == TaskClass::Resident).collect();
+    let run = |policy: &mut dyn BatchScheduler| {
+        let out = replay(hour, &costs, policy);
+        assert!(out.iter().all(|o| o.release_s.is_finite()), "{} left tasks unfinished", policy.name());
+        let acts: Vec<f64> = resident.iter().map(|i| out[*i].act_s()).collect();
+        let oldest = resident.iter().map(|i| out[*i].first_service_wait_s).fold(0.0, f64::max);
+        let p90 = quantile(acts.iter().copied().collect(), 0.9);
+        (median(acts), p90, oldest)
+    };
+    let fork = run(&mut Fork::default());
+    let measured = run(&mut MeasuredConcurrency::new(&costs));
+    let shown = format!("fork (median, p90, oldest waiter) = {fork:.0?} s; measured width = {measured:.0?} s");
+    assert!(measured.0 < fork.0, "the median act is not shorter: {shown}");
+    assert!(measured.1 < fork.1, "the p90 act is not shorter: {shown}");
+    assert!(measured.2 <= fork.2, "a resident waits longer for first service: {shown}");
+}
+
+// what this catches (4.10 P5 slice 2, the live shape): a width published with remaining work unknown,
+// the engine filling it by wait (llama.cpp#120), going live without beating the engine as it is. On
+// the recorded hour it does not yet: (145, 365, 151) s against the fork's (142, 377, 234): a shorter
+// tail and oldest wait, a longer median. The measured width above wins by finishing the shortest
+// remaining first, which the engine cannot do without each sequence's expected remaining tokens (her
+// measured output need, sent with her request): that is the next slice, and this test goes green with it.
+#[test]
+#[ignore = "P5 slice 2: the live width needs each sequence's expected remaining work (median 145 vs the fork's 142 s)"]
+fn the_published_width_beats_every_slot_decoding_on_the_recorded_hour() {
+    let e = evidence();
+    let hour = &e.m5_hour.value;
+    let costs = Costs::of(&e);
+    let resident: Vec<usize> = (0..hour.tasks.len()).filter(|i| hour.tasks[*i].class == TaskClass::Resident).collect();
+    let run = |policy: &mut dyn BatchScheduler| {
+        let out = replay(hour, &costs, policy);
+        let acts: Vec<f64> = resident.iter().map(|i| out[*i].act_s()).collect();
+        let oldest = resident.iter().map(|i| out[*i].first_service_wait_s).fold(0.0, f64::max);
+        let p90 = quantile(acts.iter().copied().collect(), 0.9);
+        (median(acts), p90, oldest)
+    };
+    let fork = run(&mut Fork::default());
+    let published = run(&mut PublishedWidth::new(&costs));
+    let shown = format!("fork (median, p90, oldest waiter) = {fork:.0?} s; published width = {published:.0?} s");
+    assert!(published.0 < fork.0 && published.1 < fork.1 && published.2 <= fork.2, "{shown}");
 }
 
 // what this catches: a fork fill that drifts from the source: a slot stops where its remaining
