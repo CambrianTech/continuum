@@ -332,6 +332,20 @@ toward one unit's value and cost. Finer units come later, each placed on its own
 avatar's render quality (photorealistic, reduced, thumbnail), a voice gene, a modality. Her genome and
 her learning stay core mind, so a finer unit never splits a mind from the genes she learned with.
 
+
+**One economy at every scope: the node, the grid, and open peers across the web.** The same `Placer`,
+bill of materials and prices work at three scopes. Only trust and settlement differ:
+
+| Scope | Places | Trust | Settlement |
+|---|---|---|---|
+| A node | its tiers, its LOD rungs, awake to asleep | its own | none: one owner |
+| Our grid | our machines, by measured capacity and link | our nodes, keyed (airc trust) | leases with receipts |
+| Open peers (wiki-like, p2p over airc across the web) | anyone's offered capacity, a peer's hosted minds, shared artifacts | earned: receipts, review, reputation | priced in the economy; verified by receipts, never assumed |
+
+A unit asks the same question at every scope: where is it cheapest to fill every required role at a
+grade worth having. The answer may be a tier on this node, a machine in our grid, or a peer's offer
+on the open web. Handles travel to all three. A placement on an untrusted peer never carries what its
+trust level does not allow: a mind's private state stays inside the trust it was given.
 Each instance supplies only what differs: its units, its places, how it measures, and its moves. The
 measurement, budgets, the law, its lifecycle, and the fencing and custody are the `Placer`'s, once.
 
