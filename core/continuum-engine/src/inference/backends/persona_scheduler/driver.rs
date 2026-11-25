@@ -59,8 +59,8 @@ enum PreserveError {
     Retire(#[from] HandoffError),
     #[error("she did not come back from her retirement")]
     NotReturned,
-    #[error("the fork refused to write her blocks: {0}")]
-    Write(#[from] llama::PersonaRefusal),
+    #[error(transparent)]
+    HandOver(#[from] preserve::HandOverError),
 }
 
 /// The context could not be made, so no turn can run.
@@ -177,10 +177,10 @@ fn resume(tier: &mut UnifiedTier<'_, '_>, preserved: &mut preserve::Preserved, m
     for mind in minds {
         let id = PersonaId(mind.persona);
         let epoch = Epoch(mind.epoch);
-        match tier.read_file(MindId { persona: id, epoch }, &preserved.path(&mind.blocks)) {
-            Ok(blocks) => {
-                continuum_base::probe!(class = "persona.engine.resumed", persona = %mind.persona, tokens = mind.held.len() as u64, "a mind came back from her preserved blocks");
-                let parts = Parts { blocks, tokens: History::from(mind.held), genome: Basis { genes: mind.basis }, learning: (), decode: Tenure::Resident };
+        match preserved.restore(tier, &mind) {
+            Ok((blocks, held)) => {
+                continuum_base::probe!(class = "persona.engine.resumed", persona = %mind.persona, tokens = held.len() as u64, in_place = mind.kv.is_some(), "a mind came back from her preserved files");
+                let parts = Parts { blocks, tokens: History::from(held), genome: Basis { genes: mind.basis }, learning: (), decode: Tenure::Resident };
                 parked.insert(id, Mind::new(id, epoch, parts));
             }
             Err(refused) => {
@@ -542,7 +542,7 @@ impl Driver<'_, '_> {
         let mut entries = Vec::new();
         let mut retained = Vec::new();
         for id in minds {
-            match self.preserve(id, &store, &generation) {
+            match self.preserve(id, &mut store, generation) {
                 Ok(entry) => entries.push(entry),
                 Err(why) => retained.push((id.0, why.to_string())), // the stop's report: Display at the edge
             }
@@ -562,9 +562,10 @@ impl Driver<'_, '_> {
         Suspension { preserved, retained }
     }
 
-    /// One mind out to her file in `generation`: bound, rewound to her view, retired through the
-    /// pipeline, written. Her entry names that file; it is published with the stop's manifest.
-    fn preserve(&mut self, id: PersonaId, store: &preserve::Preserved, generation: &preserve::Generation) -> Result<preserve::PreservedMind, PreserveError> {
+    /// One mind handed over in `generation`: bound, rewound to her view, retired through the
+    /// pipeline, her files written and moved (preserve/mind_files.rs). Her entry names them; it is
+    /// published with the stop's manifest.
+    fn preserve(&mut self, id: PersonaId, store: &mut preserve::Preserved, generation: preserve::Generation) -> Result<preserve::PreservedMind, PreserveError> {
         self.switch_to(id, false)?;
         let end = self.engine.active_mut().and_then(|her| her.parts().tokens.deepest());
         if let Some(end) = end {
@@ -574,11 +575,10 @@ impl Driver<'_, '_> {
         if self.engine.retire_active()?.is_some() {
             self.retire_previous()?;
         }
-        let her = self.parked.get(&id).ok_or(PreserveError::NotReturned)?;
-        let parts = her.parts();
-        let file = generation.file(id.0);
-        parts.blocks.write_file(&store.path(&file))?;
-        Ok(preserve::PreservedMind { persona: id.0, epoch: her.epoch().0, basis: parts.genome.genes.clone(), held: parts.tokens.held.clone(), blocks: file })
+        let her = self.parked.remove(&id).ok_or(PreserveError::NotReturned)?;
+        let (epoch, parts) = (her.epoch().0, her.into_parts());
+        let leaving = preserve::Leaving { persona: id.0, epoch, basis: parts.genome.genes, blocks: parts.blocks, held: &parts.tokens.held };
+        Ok(store.hand_over(leaving, generation)?)
     }
 
     /// Take a submission into the frame loop: its token ids and its sampler, both built on her own

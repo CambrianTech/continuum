@@ -484,8 +484,11 @@ network link between them. So that works later with no rework, everything built 
   fork's private reservation (#6264, deleted). It is refused as `unsupported` when a KV device cannot
   wrap host memory (CUDA, until slice 4). Then her storage stays the fork's own allocation, as on
   canary today: the discrete adapter is slice 4's.
-- `llama_persona_write_file` no longer writes her rows, because her rows are already in her file.
-  It writes her cell table and identity into a small header region at the file's head, then flushes.
+- `llama_persona_write_file` no longer writes her attention rows when her storage is attached, because
+  they are already in her file. Its record (format 2) says where her rows are: `in_storage` or
+  `in_record`. `llama_persona_read_file` takes an `in_storage` record only into a persona whose storage
+  is attached, and checks the storage's bytes against the record's before taking anything. Her KV file
+  carries no header, so it is exactly her storage, and a torn write cannot leave a half-written mark.
 
 **The Rust side:**
 - `continuum-persona-llama`: a mind's `Blocks` holds a `Block<MindId>` for her KV:
@@ -493,15 +496,36 @@ network link between them. So that works later with no rework, everything built 
   - created at her first park;
   - attached to her fork persona;
   - dropped with her.
-- Her token history is a second mapped region beside it (`.tokens`): raw `i32`s, appended as she
-  grows.
-- `preserve.rs`:
-  - The stop flushes each mind's two regions and writes her header with a clean mark: the generation
-    number and the byte lengths it flushed.
-  - The manifest names each mind's files, generation and token count. It no longer carries her
-    tokens (the 5.3 MB of JSON on the M5 today).
-- The restart maps each mind's files and checks her header's clean mark against the manifest's
-  generation, then attaches and binds. No byte is read until a page is touched.
+- `preserve.rs`, **custody by rename** (corrected while building the second half, 2026-11-25):
+  - A running mind's file lives in this core's instance directory (`live/<instance>/`). That directory
+    is reclaimed by the next core to join once this one's lease is released, so a file left there at
+    a stop would be deleted before the restart maps it. The stop moves her file out, and a restart
+    moves it back in. A rename is metadata only, so no byte is copied either way.
+  - The stop, per mind: flush her region (`msync`, then the file synced), then the fork writes her
+    **record** to `<persona>.<generation>.cpb`. The record holds her identity, layout, row count, cell
+    table and recurrent rows; her attention rows are not in it, because they are already in her
+    file. Then her mapping is dropped and her file renamed to `<persona>.<generation>.kv` in the
+    preserved directory, which is then synced. Her token history is written beside it as raw `i32`s
+    (`<persona>.<generation>.tok`, one write of the bytes she holds, never an encoding).
+  - The manifest names each mind's three files, generation and token count. It no longer carries her
+    tokens (the 5.3 MB of JSON on the M5).
+  - **Custody is per mind** (Codex, 2026-11-25). A core takes her custody lock
+    (`<persona>.custody` in the preserved directory, an OS lock like an instance's lease) before
+    it touches her files, and holds it from her restore through her stop's sync, unmap and rename.
+    So two cores contending for one mind (a parallel copy, or a handoff) never both move her file:
+    the second is refused while the first holds her.
+  - **The clean mark is where her file is.** Under her custody, the restart first checks everything it
+    can without moving anything: her record's generation (the manifest's), identity, layout and
+    storage bytes, her `.kv`'s exact length and her `.tok`'s exact length (four bytes per token,
+    the manifest's count). Only then does it rename her `.kv` from the manifest's path into its own
+    instance directory, before any byte of it can change. Then it maps it, attaches it as her
+    storage and reads her record's cells. No row is read until a page is touched. Once her file has
+    left the manifest's path, a crash leaves her cold and named: only a file that a completed stop
+    put at that path restores.
+  - The manifest is published only once every mind's three files are durable (each synced, then the
+    directory synced).
+  - Where her storage is the fork's own memory (a device that cannot wrap host memory, until slice
+    4), her record carries her rows, as the file does today. The record says which.
 
 **The stream is a view; a mind's storage never changes hands** (corrected while building slice 2).
 #6264's exchange swapped storage between the stream and the outgoing mind. With anonymous memory
@@ -519,9 +543,41 @@ stream's own KV allocation then serves only a mind without storage; its size at 
 1.8 GB on the 35B) is measured and its release is a follow-up.
 
 **Crash safety:**
-- A mapped file changes while she runs, so only a clean mark that matches the manifest restores her.
-- A crash leaves the mark stale, and she starts cold, named, as today when a stop does not finish.
-  A torn file is never bound.
+- A mapped file changes while she runs, so only a file a completed stop put at the manifest's path
+  restores her (custody by rename, above).
+- A crash while she runs, or during a stop before its manifest, leaves her cold and named, as today
+  when a stop does not finish. A torn file is never bound.
+- An old manifest (format 2: rows inside each record, tokens as JSON) is migrated, never dropped,
+  because a named cold start loses her continuity (Codex). An old record is exactly an `in_record`
+  record, the same read a device without attachable storage uses. So the restart copies her rows into
+  her new mapped storage once, the manifest upgrade carries her tokens until that stop, and the
+  stop writes the new format. The upgrade is deleted once no node holds a format-2 manifest.
+
+**Gates added by the second half** (Codex):
+- two cores contending for one mind's custody, on each side of each rename: one holds her, the
+  other is refused, and nothing is lost;
+- a handoff in the new format with next-token continuity: her first token after the restore is
+  byte-identical to a control that never stopped;
+- Windows: a rename while another mapping of her file is still held fails with its error carried
+  to the stop's report, and leaves the manifest's last generation whole.
+
+**Measured, the second half as built** (M5, Metal, 2026-11-25, fork 62923e28b and its cell-table commit):
+- `persona_handoff` (control never stopped; the old core hands her over and ends; a new core joins the
+  same root, refuses another generation in place, restores her, refuses the path her file left, and
+  decodes on):
+  - qwen2.5-0.5b, 1k prompt: hand-over 12.9 ms, restore 4.1 ms, record 18 KB, KV file 15.7 MB moved by
+    rename, 32 of 32 tokens after the restore equal the control's.
+  - qwen35moe (hybrid), 1k prompt: hand-over 12.8 ms, restore 3.2 ms, record 158 KB (her recurrent rows
+    stay in it), 32 of 32 tokens equal.
+  - qwen2.5-0.5b, 30k prompt: hand-over 14–16 ms, restore 6.8–9.7 ms over three runs, record 510 KB,
+    KV file 371 MB moved by rename, 16 of 16 tokens equal.
+- Restore's parts at 30k: map 0.1 ms; attach (Metal wrapping her 371 MB) 2.3 ms; her record 0.3 ms (2.3
+  ms before the cell table moved in one transfer); the synced rename 3.4 ms.
+- Not yet measured: 130k on the 35B (the live model; it shares the M5 with serving). Owner Fable; due at
+  this change's first deploy on the M5, read from the live stop and restore probes.
+- The rename's directory sync is on restore's path because a crash after an unsynced rename could put
+  her changed file back at the manifest's name. Overlapping it with the attach and the record read is
+  the next cut if 130k misses 10 ms.
 
 **Deleted:**
 - the fork's private storage reservation;
@@ -536,7 +592,8 @@ stream's own KV allocation then serves only a mind without storage; its size at 
 - a mind parked to flash (demoted) and back, byte-identical;
 - a stop and restore at 30k and 130k: restore in under 10 ms before her first touch, and her first
   token byte-identical to her control;
-- a crash simulated between her writes and the clean mark: refused, cold, named.
+- a crash simulated after her file left the manifest's path (a restart that never stopped): refused,
+  cold, named.
 
 ## Questions for review
 
