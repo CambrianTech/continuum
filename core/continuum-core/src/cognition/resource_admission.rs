@@ -851,6 +851,19 @@ pub struct LaneAdmission {
     work_waiting: AtomicUsize,
     /// Fires on every permit release so a parked ambient caller re-checks.
     released: tokio::sync::Notify,
+    /// AGING (Joel, 2026-10-19: "never totally starving anyone"). When each mind FIRST
+    /// queued for work, kept when her wait gives up at its bound and cleared when she is
+    /// granted any lane. A mind who starved comes back at the HEAD of the line.
+    ///
+    /// Measured on the M5 2026-10-19 (prompt captures, 4 residents, 2 lanes): 9 of 38
+    /// work acts in four hours waited 439-653 s, gave up at the bound, and re-queued
+    /// at the BACK of a FIFO semaphore, so the next wait starved again; two completed
+    /// acts had first waited ~20 min. A few minds, so a Vec.
+    seniority: parking_lot::Mutex<Vec<(uuid::Uuid, std::time::Instant)>>,
+    /// Work callers parked right now, as (seniority, ticket). The most senior takes the
+    /// next free non-directed permit; a tie is broken by arrival (the ticket).
+    work_queue: parking_lot::Mutex<Vec<(std::time::Instant, u64)>>,
+    next_ticket: std::sync::atomic::AtomicU64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -919,6 +932,21 @@ fn resize_semaphore_to(sem: &tokio::sync::Semaphore, installed: &AtomicUsize, ta
     } else if target < cur {
         let forgotten = sem.forget_permits(cur - target);
         installed.store(cur - forgotten, Ordering::Release);
+    }
+}
+
+/// Lanes a NON-directed call may occupy out of `lanes`: the reservation of one lane for
+/// directed turns applies only from THREE lanes up (Joel, 2026-10-19). On two lanes it
+/// halved the work capacity for a handful of directed turns: M5, four hours, 4 residents
+/// — 9 directed turns, 38 work acts on the one remaining lane, 9 of them cancelled in
+/// the queue. With no reserve, a directed turn still goes first: it queues on the
+/// physical lanes directly, while work queues for the non-directed budget before it, so
+/// the next lane to free is the directed turn's. What it gives up is an IDLE lane
+/// waiting for it — at most one running turn's remainder.
+pub(crate) fn nondirected_budget_for(lanes: usize) -> usize {
+    match lanes {
+        0..=2 => lanes.max(1),
+        n => n - 1,
     }
 }
 
@@ -1012,6 +1040,9 @@ impl LaneAdmission {
             ambient_installed: AtomicUsize::new(0),
             work_waiting: AtomicUsize::new(0),
             released: tokio::sync::Notify::const_new(),
+            seniority: parking_lot::const_mutex(Vec::new()),
+            work_queue: parking_lot::const_mutex(Vec::new()),
+            next_ticket: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -1024,10 +1055,9 @@ impl LaneAdmission {
         }
     }
 
-    /// Lanes a non-directed (ambient / idle) call may occupy: all but one, floored at 1 so a
-    /// single-lane machine still lets idle work run rather than starving it forever.
+    /// Lanes a non-directed call may occupy: see [`nondirected_budget_for`].
     fn nondirected_budget(&self) -> usize {
-        self.lane_count().saturating_sub(1).max(1)
+        nondirected_budget_for(self.lane_count())
     }
 
     /// See [`set_served_lane_count`].
@@ -1048,17 +1078,13 @@ impl LaneAdmission {
             resize_semaphore_to(sem, &self.serving_installed, lanes);
         }
         if let Some(sem) = self.nondirected.get() {
-            resize_semaphore_to(
-                sem,
-                &self.nondirected_installed,
-                lanes.saturating_sub(1).max(1),
-            );
+            resize_semaphore_to(sem, &self.nondirected_installed, nondirected_budget_for(lanes));
         }
         // The ambient-turn pool rides the SAME budget, so it grows on the same signal.
         // Missing this is how a pool installed at the boot floor would stay there for the
         // process's life while serving grew underneath it.
         if let Some(sem) = self.ambient.get() {
-            resize_semaphore_to(sem, &self.ambient_installed, lanes.saturating_sub(1).max(1));
+            resize_semaphore_to(sem, &self.ambient_installed, nondirected_budget_for(lanes));
         }
         let after = (
             lanes,
@@ -1178,7 +1204,7 @@ impl LaneAdmission {
                                 );
                                 (None, Some(lane))
                             }
-                            None => (Some(self.acquire_nondirected_as_work().await), None),
+                            None => (Some(self.acquire_nondirected_as_work(persona).await), None),
                         }
                     }
                 }
@@ -1196,6 +1222,9 @@ impl LaneAdmission {
                 .await
             }
         };
+        if let Some(mind) = persona {
+            self.seniority.lock().retain(|(m, _)| *m != mind);
+        }
         crate::probe!(
             class = "admission.lane.granted",
             persona = ?persona,
@@ -1217,29 +1246,72 @@ impl LaneAdmission {
         }
     }
 
-    /// A held-work caller queues in the non-directed semaphore in arrival order, and
-    /// is COUNTED while it waits so ambient callers stand aside.
-    async fn acquire_nondirected_as_work(&self) -> tokio::sync::OwnedSemaphorePermit {
+    /// A held-work caller queues by SENIORITY (when she first waited, kept across a wait
+    /// that gave up at its bound), and is COUNTED while it waits so ambient callers stand
+    /// aside. Only the most senior parked caller takes a freed permit; a newcomer takes a
+    /// free one at once only when nobody is parked.
+    async fn acquire_nondirected_as_work(
+        &self,
+        persona: Option<uuid::Uuid>,
+    ) -> tokio::sync::OwnedSemaphorePermit {
         let sem = self.nondirected_lanes().clone();
-        if let Some(p) =
-            self.try_acquire_resized(&sem, &self.nondirected_installed, LaneBudget::NonDirected)
-        {
-            return p;
+        if self.work_queue.lock().is_empty() {
+            if let Some(p) = self.try_acquire_resized(
+                &sem,
+                &self.nondirected_installed,
+                LaneBudget::NonDirected,
+            ) {
+                return p;
+            }
         }
+        let since = self.seniority_of(persona);
         tracing::info!(
             probe_class = "serving.lane.nondirected_waiting",
-            "held-work model call waiting — a lane is reserved for directed turns (#139)"
+            "held-work model call waiting for the non-directed budget (#139)"
         );
         // COUNTED BY A GUARD, NOT BY HAND (2026-09-15, 20:35Z: sixteen minds idle for 50
         // minutes with all seven lanes free). A parked work wait is CANCELLED whenever
         // the turn's future is dropped — `delib.gate.yielded_to_directed` selects away
         // from it, the settle deadline ends the drive, a despawn aborts the loop — and a
-        // by-hand `fetch_sub` after the await never ran, so `work_waiting` read 1 for
-        // the rest of the process and every ambient caller parked forever on a pool
-        // that was empty. Cancellation is a normal exit here; the guard makes it one.
+        // by-hand `fetch_sub` after the await never ran. Cancellation is a normal exit
+        // here; the guards make it one, for the count AND the queue.
         let _counted = WorkWaiting::enter(&self.work_waiting);
-        self.acquire_resized(&sem, &self.nondirected_installed, LaneBudget::NonDirected)
-            .await
+        let queued = QueuedWork::enter(self, since);
+        loop {
+            if queued.is_head() {
+                if let Some(p) = self.try_acquire_resized(
+                    &sem,
+                    &self.nondirected_installed,
+                    LaneBudget::NonDirected,
+                ) {
+                    crate::probe!(
+                        class = "admission.lane.work_granted_by_seniority",
+                        persona = ?persona,
+                        queued_since_ms = since.elapsed().as_millis() as u64,
+                        "the most senior work caller took the freed lane"
+                    );
+                    return p;
+                }
+            }
+            // A release notifies BEFORE its permits drop (field order), so the 1 s tick is
+            // what lets the head see the returned permit; a turn holds minutes.
+            let _ =
+                tokio::time::timeout(std::time::Duration::from_secs(1), self.released.notified())
+                    .await;
+        }
+    }
+
+    /// When `persona` first queued for work and has not been granted since; now for a
+    /// new waiter (recorded) or an anonymous one (not recorded).
+    fn seniority_of(&self, persona: Option<uuid::Uuid>) -> std::time::Instant {
+        let now = std::time::Instant::now();
+        let Some(mind) = persona else { return now };
+        let mut seniority = self.seniority.lock();
+        if let Some((_, since)) = seniority.iter().find(|(m, _)| *m == mind) {
+            return *since;
+        }
+        seniority.push((mind, now));
+        now
     }
 
     /// An ambient caller never enters the semaphore's queue: it takes a permit only when
@@ -1294,6 +1366,31 @@ impl<'a> WorkWaiting<'a> {
 impl Drop for WorkWaiting<'_> {
     fn drop(&mut self) {
         self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+/// One parked work caller's place in [`LaneAdmission::work_queue`]: entered on park,
+/// removed on drop — granted or cancelled. Her SENIORITY outlives it; her place does not.
+struct QueuedWork<'a> {
+    gate: &'a LaneAdmission,
+    key: (std::time::Instant, u64),
+}
+
+impl<'a> QueuedWork<'a> {
+    fn enter(gate: &'a LaneAdmission, since: std::time::Instant) -> Self {
+        let key = (since, gate.next_ticket.fetch_add(1, Ordering::AcqRel));
+        gate.work_queue.lock().push(key);
+        Self { gate, key }
+    }
+    fn is_head(&self) -> bool {
+        self.gate.work_queue.lock().iter().min() == Some(&self.key)
+    }
+}
+
+impl Drop for QueuedWork<'_> {
+    fn drop(&mut self) {
+        let key = self.key;
+        self.gate.work_queue.lock().retain(|k| *k != key);
     }
 }
 
@@ -1776,24 +1873,58 @@ mod tests {
     // could silently hurt the smallest supported hardware, so it gets its own row.
     #[test]
     fn a_one_lane_box_keeps_exactly_one_ambient_slot() {
-        for lanes in [1usize, 2] {
-            let gate = LaneAdmission::new();
-            gate.set_served_lane_count(lanes);
-            assert_eq!(
-                gate.nondirected_budget(),
-                1,
-                "{lanes}-lane box floors the non-directed budget at 1"
-            );
-            let held = gate
-                .try_hold_ambient_turn()
-                .expect("the one slot is grantable");
-            assert!(
-                gate.try_hold_ambient_turn().is_none(),
-                "a {lanes}-lane box admits exactly ONE ambient turn — unchanged from the \
-                 pre-2026-08-17 hardcoded bound"
-            );
-            drop(held);
-        }
+        let gate = LaneAdmission::new();
+        gate.set_served_lane_count(1);
+        assert_eq!(gate.nondirected_budget(), 1, "1-lane box floors the non-directed budget at 1");
+        let held = gate.try_hold_ambient_turn().expect("the one slot is grantable");
+        assert!(gate.try_hold_ambient_turn().is_none(), "a 1-lane box admits exactly ONE ambient turn");
+        drop(held);
+    }
+
+    // what this catches: a directed reserve on a TWO-lane box, which left four minds'
+    // work on one lane (M5 2026-10-19: 9 of 38 work acts starved in the queue for 9
+    // directed turns in four hours). The reserve starts at three lanes (Joel).
+    #[test]
+    fn the_directed_reserve_starts_at_three_lanes() {
+        assert_eq!(
+            [1, 2, 3, 4, 8].map(nondirected_budget_for),
+            [1, 2, 2, 3, 7],
+            "no reserve below three lanes; one reserved lane from three up"
+        );
+    }
+
+    // what this catches: a work wait that gave up at its bound re-queueing at the BACK
+    // of a FIFO, so the mind that waited longest starved again (M5 2026-10-19: 439-653 s
+    // waits cancelled, re-queued behind later arrivals). Seniority survives the cancel.
+    #[tokio::test]
+    async fn a_mind_whose_wait_gave_up_comes_back_at_the_head_of_the_line() {
+        use std::time::Duration;
+        let gate: &'static LaneAdmission = Box::leak(Box::new(LaneAdmission::new()));
+        gate.set_served_lane_count(1);
+        let (first, second) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+        let holder = gate.acquire_serving_lane(None, LanePriority::Work, None).await;
+        // `first` queues, and gives up at her bound.
+        let gave_up = tokio::time::timeout(
+            Duration::from_millis(100),
+            gate.acquire_serving_lane(Some(first), LanePriority::Work, None),
+        )
+        .await;
+        assert!(gave_up.is_err(), "the lane is held, so her wait hits its bound");
+        // `second` queues after her and is still parked when she comes back.
+        let later = tokio::spawn(gate.acquire_serving_lane(Some(second), LanePriority::Work, None));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let back = tokio::spawn(gate.acquire_serving_lane(Some(first), LanePriority::Work, None));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        drop(holder);
+        let granted = tokio::time::timeout(Duration::from_secs(3), back)
+            .await
+            .expect("the senior mind is granted the freed lane")
+            .expect("task ran");
+        assert!(!later.is_finished(), "the later arrival is still waiting behind her");
+        drop(granted);
+        let _ = tokio::time::timeout(Duration::from_secs(3), later)
+            .await
+            .expect("and is served next");
     }
 
     // what this catches: an ambient pool installed at the BOOT floor and then never grown.
@@ -1821,7 +1952,7 @@ mod tests {
             .expect("…and a third (budget = lanes - 1)");
         assert!(
             gate.try_hold_ambient_turn().is_none(),
-            "still bounded at lanes-1 — growth must not remove the directed reservation"
+            "still bounded at lanes-1 from three lanes up — growth keeps the directed reservation"
         );
         drop((first, second, third));
     }
