@@ -12,8 +12,8 @@ repository = "https://github.com/CambrianTech/continuum"
 # paths.
 
 [dependencies]
-continuum-kernel = { path = "../continuum-kernel" }  # the ORM derive names it (recipe runs)
-continuum-base = { path = "../continuum-base" }
+continuum-kernel = { workspace = true }  # the ORM derive names it (recipe runs)
+continuum-base = { workspace = true }
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -29,8 +29,8 @@ ts-rs.workspace = true  # TypeScript type generation
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }
-continuum-kernel = { path = "../continuum-kernel", features = ["test-fixtures"] }
-continuum-positron = { path = "../continuum-positron", features = ["test-fixtures"] }
+continuum-kernel = { workspace = true, features = ["test-fixtures"] }
+continuum-positron = { workspace = true, features = ["test-fixtures"] }
 
 [features]
 default = []

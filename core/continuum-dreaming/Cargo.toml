@@ -19,15 +19,15 @@ build = "../continuum-core/build.rs"
 thiserror.workspace = true  # typed refusals (training_trigger::durable::rekey)
 parking_lot.workspace = true # the engine learning lock's holder record (in_place/engine_lock.rs)
 futures = { workspace = true }  # join every bucket's learning pass at once (training_trigger::in_place)
-continuum-mind = { path = "../continuum-mind" }
-continuum-academy = { path = "../continuum-academy" }
-continuum-genome = { path = "../continuum-genome" }
-continuum-engine = { path = "../continuum-engine" }
-continuum-kernel = { path = "../continuum-kernel" }
-continuum-sage = { path = "../continuum-sage" }  # the trainer and the engine-train cleaner are SAGE components
-continuum-base = { path = "../continuum-base" }
-continuum-host = { path = "../continuum-host" }
-continuum-client = { path = "../../client/continuum-client" }
+continuum-mind = { workspace = true }
+continuum-academy = { workspace = true }
+continuum-genome = { workspace = true }
+continuum-engine = { workspace = true }
+continuum-kernel = { workspace = true }
+continuum-sage = { workspace = true }  # the trainer and the engine-train cleaner are SAGE components
+continuum-base = { workspace = true }
+continuum-host = { workspace = true }
+continuum-client = { workspace = true }
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -45,11 +45,11 @@ csv = { workspace = true }
 inventory = { workspace = true }
 
 [dev-dependencies]
-continuum-mind = { path = "../continuum-mind", features = ["test-fixtures"] }
-continuum-capture = { path = "../continuum-capture", features = ["test-fixtures"] }  # the capture's inline sink and playback fixtures, reached through cognition's re-export
-continuum-kernel = { path = "../continuum-kernel", features = ["test-fixtures"] }  # every test build of this crate gets the per-process continuum home (card d11d9827)
-continuum-genome = { path = "../continuum-genome", features = ["test-fixtures"] }
-continuum-client = { path = "../../client/continuum-client", features = ["test-fixtures"] }
+continuum-mind = { workspace = true, features = ["test-fixtures"] }
+continuum-capture = { workspace = true, features = ["test-fixtures"] }  # the capture's inline sink and playback fixtures, reached through cognition's re-export
+continuum-kernel = { workspace = true, features = ["test-fixtures"] }  # every test build of this crate gets the per-process continuum home (card d11d9827)
+continuum-genome = { workspace = true, features = ["test-fixtures"] }
+continuum-client = { workspace = true, features = ["test-fixtures"] }
 airc-core.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }

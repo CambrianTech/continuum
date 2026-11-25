@@ -7,9 +7,9 @@ description = "A mind's engrams: the engram entity and graph, recall metadata an
 
 [dependencies]
 thiserror.workspace = true
-continuum-base = { path = "../continuum-base" }
-continuum-kernel = { path = "../continuum-kernel" }
-continuum-engine = { path = "../continuum-engine" }
+continuum-base = { workspace = true }
+continuum-kernel = { workspace = true }
+continuum-engine = { workspace = true }
 async-trait.workspace = true
 dashmap = { workspace = true }
 serde.workspace = true
@@ -18,6 +18,6 @@ ts-rs.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
-continuum-kernel = { path = "../continuum-kernel", features = ["test-fixtures"] }
+continuum-kernel = { workspace = true, features = ["test-fixtures"] }
 tokio = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }

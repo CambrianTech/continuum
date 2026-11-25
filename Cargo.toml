@@ -20,6 +20,7 @@ members = [
     "core/continuum-gateway",
     "core/continuum-base",
     "core/continuum-sage",
+    "core/continuum-blocks",
     "core/continuum-git",
     "core/continuum-host",
     "core/continuum-saved-state",
@@ -443,6 +444,58 @@ filetime = "0.2"
 toml = "0.8"
 wide = "0.7"
 windows-sys = { version = "0.60", features = ["Win32_Foundation"] }
+
+# The workspace's own crates, declared once: a crate depends on a sibling with `{ workspace = true }`, never
+# by its own relative path, so one place names every crate's path.
+airc-test-fixtures = { path = "core/airc-test-fixtures" }
+continuum-academy = { path = "core/continuum-academy" }
+continuum-airc-protocol = { path = "core/continuum-airc-protocol" }
+continuum-base = { path = "core/continuum-base" }
+continuum-blocks = { path = "core/continuum-blocks" }
+continuum-bridge-protocol = { path = "core/livekit-protocol" }
+continuum-capture = { path = "core/continuum-capture" }
+continuum-cli-lifecycle = { path = "core/continuum-cli-lifecycle" }
+continuum-client = { path = "client/continuum-client" }
+continuum-cognition = { path = "core/continuum-cognition" }
+continuum-context = { path = "core/continuum-context" }
+continuum-dreaming = { path = "core/continuum-dreaming" }
+continuum-embedding = { path = "core/continuum-embedding" }
+continuum-engine = { path = "core/continuum-engine" }
+continuum-engram = { path = "core/continuum-engram" }
+continuum-experience = { path = "core/continuum-experience" }
+continuum-gateway = { path = "core/continuum-gateway" }
+continuum-genome = { path = "core/continuum-genome" }
+continuum-git = { path = "core/continuum-git" }
+continuum-grid = { path = "core/continuum-grid" }
+continuum-grounding = { path = "core/continuum-grounding" }
+continuum-hands = { path = "core/continuum-hands" }
+continuum-host = { path = "core/continuum-host" }
+continuum-kernel = { path = "core/continuum-kernel" }
+continuum-live = { path = "core/continuum-live" }
+continuum-memory = { path = "core/continuum-memory" }
+continuum-mind = { path = "core/continuum-mind" }
+continuum-models = { path = "core/continuum-models" }
+continuum-orm-derive = { path = "core/continuum-orm-derive" }
+continuum-perception = { path = "core/continuum-perception" }
+continuum-persona-engine = { path = "core/continuum-persona-engine" }
+continuum-persona-llama = { path = "core/continuum-persona-llama" }
+continuum-positron = { path = "core/continuum-positron" }
+continuum-process = { path = "core/continuum-process" }
+continuum-prompt = { path = "core/continuum-prompt" }
+continuum-rooms = { path = "core/continuum-rooms" }
+continuum-sage = { path = "core/continuum-sage" }
+continuum-saved-state = { path = "core/continuum-saved-state" }
+continuum-sentinel = { path = "core/continuum-sentinel" }
+continuum-service = { path = "core/continuum-service" }
+continuum-serving = { path = "core/continuum-serving" }
+continuum-store = { path = "core/continuum-store" }
+continuum-text-analysis = { path = "core/continuum-text-analysis" }
+continuum-tool-protocol = { path = "core/continuum-tool-protocol" }
+continuum-vitals = { path = "core/continuum-vitals" }
+expert-pager-policy = { path = "core/expert-pager-policy" }
+llama = { path = "core/llama" }
+source-hygiene = { path = "core/source-hygiene" }
+tool-working-set = { path = "core/tool-working-set" }
 [profile.release]
 # codegen-units = 1  # REMOVED — was single-threading rustc compilation for no benefit
 # Strip debug symbols — continuum-core-server is ~200MB+ without this, mostly

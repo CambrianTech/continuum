@@ -10,10 +10,10 @@ description = "A mind's vitals: the health and turn ledgers, turn ingress, grid 
 test-fixtures = []
 
 [dependencies]
-continuum-base = { path = "../continuum-base" }
-continuum-kernel = { path = "../continuum-kernel" }
-continuum-engine = { path = "../continuum-engine" }
-continuum-experience = { path = "../continuum-experience" }
+continuum-base = { workspace = true }
+continuum-kernel = { workspace = true }
+continuum-engine = { workspace = true }
+continuum-experience = { workspace = true }
 dashmap = { workspace = true }  # the workspace pin, shared with continuum-cognition
 parking_lot.workspace = true
 serde.workspace = true

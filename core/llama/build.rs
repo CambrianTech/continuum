@@ -233,6 +233,10 @@ fn main() {
         println!("cargo:rustc-link-lib=cuda");
         println!("cargo:rustc-link-lib=cudart");
         println!("cargo:rustc-link-lib=cublas");
+        // ggml-cuda's own CMake target links CUDA::cublasLt beside cublas; the synced fork calls it
+        // (fp8.cu, ggml-cuda.cu): 12 unresolved cublasLt symbols on Windows MSVC without it (Codex,
+        // 2026-11-25 at 9a37d05bed).
+        println!("cargo:rustc-link-lib=cublasLt");
     } else {
         cfg.define("GGML_CUDA", "OFF");
     }

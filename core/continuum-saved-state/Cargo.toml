@@ -6,8 +6,8 @@ publish = false
 description = "The one contract for state that outlives a process: an owner declares its kind, format, typed key, validity contract, medium and retention; every load returns a typed Loaded verdict, probed when it changes, from the disk once per key per process, every save is one atomic envelope. Sits on continuum-base and continuum-host only, so every crate may use it."
 
 [dependencies]
-continuum-base = { path = "../continuum-base" } # probe!, EpochMs
-continuum-host = { path = "../continuum-host" } # durable::write_replace: the one atomic placement
+continuum-base = { workspace = true } # probe!, EpochMs
+continuum-host = { workspace = true } # durable::write_replace: the one atomic placement
 serde = { workspace = true }
 tracing = { workspace = true } # the probe! macro expands to tracing events
 serde_json = { workspace = true }

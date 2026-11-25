@@ -55,6 +55,19 @@ topic; no component holds another.
 - **The only serial work is a queue insert or a state read** (about 10 ms max per step). Expensive work
   runs on the worker that owns it and is published when done; assembling a turn's context is a pass of
   reads of finished frames (gate: every input's frame lag at assembly is 0).
+- **What an algorithm learns is part of its lifecycle, owned once.** Every pluggable law (the Lane's
+  `Control` and `Tuner`, the block layer's `PlacementLaw` and `Forecaster`, any learned policy after
+  them) inherits one lifecycle from SAGE: default, resume, learn, checkpoint, stop.
+  - It starts from its saved last best for the key it was learned on: the node's fingerprint, the
+    model, and the schema of what it reads.
+  - Failing that, it starts from the closest saved key, then from a good default.
+  - It learns online for its own objective.
+  - It checkpoints its current state and its best by that objective, off its worker's hot path, on a
+    frame cadence and at a stop.
+  - A resumed algorithm never relearns what it knew.
+
+  An algorithm declares only its parameters, its state and its objective; saving, keying and
+  resuming are SAGE's, as a component's worker and rest are.
 - **Rest is as important as action.** A component with no new input frame does nothing and publishes
   nothing. Resting frees the Core, memory and the GPU for others.
 - **Need comes from novelty, awareness and appraisal.** A part measures how unknown an input is against
@@ -228,6 +241,132 @@ become a gene; emits lessons and candidate genes; a refusal is input, never retr
 Lessons the reads taught: a change that only moves work can still move a cost (dreams resuming cost
 every resident her cache); a state reader skips frames, so a test waits on frame numbers, never on a value
 it may have coalesced past; iteration time is the goal: build and deploy as often as possible, by judgment.
+
+## Ebb and flow: one placement pattern at every scale
+
+Joel, 2026-11-25: "Awakens and sleeps persona as it goes up and down, the resources exist ... within
+the entire grid as the capacity changes. We also know how many it's worth keeping up and decide who is
+up ... we do everything by this same ebb flow architecture."
+
+The same pattern repeats wherever something finite is shared, so SAGE owns it once as a `Placer`:
+- **Capacity is measured continually,** never only at start. Other processes, other copies of us, and
+  other nodes take and give back room; a growing budget is filled in steps, a shrinking one emptied
+  before anything fails.
+- **Places are levels of detail as often as tiers of memory.** A call places participants at a
+  resolution and frame rate, as a game engine streams detail by distance. The same law decides who is
+  rendered full, who at a reduced level, and who as audio only.
+- **Value is priority, and priority comes from the activity,** read as SAGE state and events on the
+  bus, never polled: who is speaking, who is addressed, who is on screen, what the room is doing.
+- **Demand is forecast** by whoever knows it: the Lane knows who steps next, a room knows who is
+  addressed.
+- **Each unit is worth something,** measured: a mind's need and how often she is used, against what
+  keeping her up costs.
+- **A pluggable law places units** where they are worth the most within each place's budget, learning
+  for its own objective. It inherits the algorithm lifecycle above: default, resume, learn,
+  checkpoint, stop.
+- **When room shrinks the coldest goes down a level, and when room appears the most valuable comes
+  up.** Never a fixed count of anything: how many it is worth keeping up is the law's answer for the
+  capacity there is now.
+- **Every move is fenced, and custody is leased,** so a unit is in one place at a time and nothing is
+  lost when a place goes away.
+
+| Instance | Units | Places, best first | Owner |
+|---|---|---|---|
+| The block layer's `Streamer` (UNIFIED-PAGING.md) | blocks: minds' KV, weights, experts, genes | VRAM, pinned or unified, flash, cold, per volume | Fable, Codex |
+| Who is awake on a node | minds | stepping on the Core, resident, parked to flash, asleep | Fable |
+| Who runs where on the grid | minds (leased in and out across nodes) | each node, by its measured capacity and its link to the mind's room | Codex (grid) |
+| What models are hot | models | VRAM or unified, flash, cold (the hot tier) | Codex |
+| A live call | participants, their video and avatars | levels of detail: rendered full, reduced resolution or frame rate, thumbnail, audio only | BigMama (live, media) |
+| Rendering anything | scenes, avatars, textures | LOD rungs, as a game engine streams detail | BigMama |
+
+**Every consumer of resources speaks one interface.** Anything in the system that holds memory, VRAM,
+disk, GPU time or bandwidth is a unit of a `Placer`, through one trait, so one law can weigh all of
+them against the same capacity:
+
+```rust
+pub trait Consumer {
+    type Unit;                                   // what it places: a mind, a block, a participant
+    fn levels(&self) -> &[Level];                // its places, best first: tiers, LOD rungs, awake to asleep
+    fn holds(&self, unit: &Self::Unit) -> Holding;      // what the unit costs at its level now, measured
+    fn bill(&self, unit: &Self::Unit) -> Bill;          // its required roles, each with grades: worth, cost, floor
+    fn move_to(&mut self, unit: &Self::Unit, level: Level) -> Carry;   // done, or in flight with a fence
+}
+```
+
+It replaces the kernel's `ResourcePool` and `PressureBroker` (18 adapters; 27 callers of
+`evict_at_least`), whose pools each evict on their own and can only delete. A pool migrating to
+`Consumer` keeps its own moves, and the `Placer` decides which unit moves and how far.
+
+
+**Value is a bill of materials, not a priority number.** Joel, 2026-11-25: "we can release a car with
+many different engines, suspensions and wheels, but we can't have none of something or it's worth
+zero."
+- **Required roles.** A unit's value has roles, each of which must be filled. A live persona in a
+  call needs her mind stepping, her voice and her presence on screen. A role has grades that fill
+  it: her avatar photorealistic, reduced or a thumbnail; her voice gene or a base voice.
+- **Every cost, in one ledger.** A grade costs GPU step time, memory on each tier, render time,
+  link bandwidth, energy and money. Each is measured, and each is priced by its own scarcity into one
+  currency, so one law answers "how many minds awake", "at what render quality" and "here or on a
+  peer" against the same budget.
+- **Each grade has a measured worth and cost.** The worth comes from the activity's state: the
+  speaker's video is worth more than a listener's thumbnail.
+- **The unit's worth is zero unless every required role is filled at some grade,** with an
+  acceptability floor per role: below it the role is not filled. So a law never "saves" by dropping
+  a role, because that throws away the whole unit. It trades grades within roles, and it drops whole
+  units, coldest first, when the grades left cannot fit.
+- The law's choice is a grade for every role of every unit placed, maximizing total worth under the
+  places' budgets: a choice among bundles, not a sort by priority.
+
+**An economy, so the law has prices to reason with.**
+- Each place has a price that rises with its measured scarcity: a tier nearly full, a GPU nearly
+  saturated, a node's link congested.
+- The law maximizes worth minus price, so a unit moves to wherever it is cheapest to give it the
+  grades it needs.
+- Across the grid, prices are how nodes trade. A node short of room prices high, and a mind leased to
+  a node with room (GENOME-FOUNDRY-SENTINEL.md's artifact economy, the `SubstrateGovernor`'s policy
+  per machine) moves by the same law that places a block on a tier.
+
+**Handles everywhere, so it works across the grid.** Units, roles, grades and placements are named by
+typed handles (`PersonaId`, `BlockId`, a participant's handle), never by local pointers or strings.
+So a `Placer` can place a unit on another node as naturally as on another tier: the handle travels
+and the bytes follow it by the link between them.
+**The unit starts as the whole mind.** For now a mind is placed whole: her KV, her genome (LoRA genes,
+voice genes among them), her senses and her live presence (voice, avatar render, every modality) count
+toward one unit's value and cost. Finer units come later, each placed on its own once it is: an
+avatar's render quality (photorealistic, reduced, thumbnail), a voice gene, a modality. Her genome and
+her learning stay core mind, so a finer unit never splits a mind from the genes she learned with.
+
+
+**Spend, preferences and time are inputs to the law, set by the owner and by the mind.**
+- **A desired spend.** The owner sets a budget: per day, per activity, a ceiling, or none. A law
+  maximizes worth minus price within it, and never buys past it.
+- **Preferences the owner sets, and preferences the mind sets for herself within them.** How much
+  outside help to use: our own nodes only, our grid, open peers, or a cloud provider. Which roles may
+  be bought, and which must stay local (her genome and private state stay inside the trust she is
+  given). How much quality she will trade for cost.
+- **Time is a price too.** Work with a deadline that allows it can wait for capacity that is cheaper
+  later: off-peak hours, a node that will be idle, a peer's quiet time. A mind's dreaming and training
+  are the obvious cases. A unit's bill carries its deadline, and the law weighs waiting against
+  buying now.
+- **It trades in the markets.** A node with spare capacity offers it, priced by the same law. A mind
+  or a node buys where it is cheapest to fill its roles, and sells what it is not using. Receipts
+  settle both sides, at every scope.
+
+**One economy at every scope: the node, the grid, and open peers across the web.** The same `Placer`,
+bill of materials and prices work at three scopes. Only trust and settlement differ:
+
+| Scope | Places | Trust | Settlement |
+|---|---|---|---|
+| A node | its tiers, its LOD rungs, awake to asleep | its own | none: one owner |
+| Our grid | our machines, by measured capacity and link | our nodes, keyed (airc trust) | leases with receipts |
+| Open peers (wiki-like, p2p over airc across the web) | anyone's offered capacity, a peer's hosted minds, shared artifacts | earned: receipts, review, reputation | priced in the economy; verified by receipts, never assumed |
+
+A unit asks the same question at every scope: where is it cheapest to fill every required role at a
+grade worth having. The answer may be a tier on this node, a machine in our grid, or a peer's offer
+on the open web. Handles travel to all three. A placement on an untrusted peer never carries what its
+trust level does not allow: a mind's private state stays inside the trust it was given.
+Each instance supplies only what differs: its units, its places, how it measures, and its moves. The
+measurement, budgets, the law, its lifecycle, and the fencing and custody are the `Placer`'s, once.
 
 ## Memory is one cache hierarchy, detected per machine
 

@@ -11,7 +11,7 @@ Slice 2 imports the winning policy behind `WorkingSetPolicy`.
 """
 
 [dependencies]
-continuum-base = { path = "../continuum-base" }
+continuum-base = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }

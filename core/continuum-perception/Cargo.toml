@@ -10,8 +10,8 @@ repository = "https://github.com/CambrianTech/continuum"
 # Neither names cognition or persona; the mind re-exports both modules under their old paths.
 
 [dependencies]
-continuum-live = { path = "../continuum-live" }
-continuum-base = { path = "../continuum-base" }
+continuum-live = { workspace = true }
+continuum-base = { workspace = true }
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -26,7 +26,7 @@ scraper = { workspace = true }
 base64 = { workspace = true }  # perception/look encodes a captured frame as a data URL
 
 [dev-dependencies]
-continuum-kernel = { path = "../continuum-kernel", features = ["test-fixtures"] }  # every test build of this crate gets the per-process continuum home (card d11d9827)
+continuum-kernel = { workspace = true, features = ["test-fixtures"] }  # every test build of this crate gets the per-process continuum home (card d11d9827)
 tokio = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }
 airc-blobs.workspace = true  # tests: frames retained into a real blob store

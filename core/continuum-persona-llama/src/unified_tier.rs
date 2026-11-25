@@ -20,7 +20,10 @@ use continuum_persona_engine::persona::MindId;
 use continuum_persona_engine::residency::{Completion, Direction, Execute, Fence, FenceTag, Native, Tier, TierRefusal};
 use llama::{Batch, BindRefusal, ChatRefusal, Context, LoraAdapter, PersonaBlocks, PersonaCheckpoint, PersonaOwner, PersonaRefusal, Pos, TurnSampler};
 
+mod kv_home;
 mod learn;
+pub use kv_home::KvHome;
+use kv_home::KvMemory;
 pub use learn::LearnReply;
 
 /// Execution streams the Core's context holds: the occupant's, which is the whole context. Not a
@@ -79,14 +82,34 @@ enum Saved {
 pub struct Blocks {
     native: PersonaBlocks,
     saved: Saved,
+    /// Her KV storage's memory (her mapped file, or none: the fork's own). Declared after `native`, so it
+    /// drops after the fork blocks that view it.
+    memory: KvMemory,
+}
+
+/// Why a stop could not hand a mind's blocks over (UNIFIED-PAGING slice 2). The manifest's last
+/// generation stands; the stop reports her as not preserved.
+#[derive(Debug, thiserror::Error)]
+pub enum HandOverRefusal {
+    #[error("the fork refused to write her record: {0}")]
+    Record(#[from] PersonaRefusal),
+    #[error("her files were not made durable: {0}")]
+    Io(#[from] std::io::Error),
 }
 
 impl Blocks {
-    /// Write what her last copy-out saved to `path` as raw rows (CONTINUUM-ENGINE 4.16). Her unit is
-    /// in the warm table, not in the stream, whenever a caller holds it to write: a bound mind's unit
-    /// is the pipeline's.
-    pub fn write_file(&self, path: &std::path::Path) -> Result<(), PersonaRefusal> {
-        self.native.write_file(path)
+    /// Hand her blocks to the next start (UNIFIED-PAGING slice 2, custody by rename). Her record goes to
+    /// `record`, stamped with the stop's `generation` and made durable. Then, where her storage is her
+    /// mapped file: the fork's view of it released, every dirty page written and the file synced, the
+    /// mapping dropped and the file renamed to `kv`. Returns whether `kv` now holds her rows (otherwise her
+    /// record does). Her unit is parked, never bound, when a caller holds her blocks; this consumes them,
+    /// so nothing views her file after.
+    pub fn hand_over(self, record: &std::path::Path, kv: &std::path::Path, generation: u64) -> Result<bool, HandOverRefusal> {
+        self.native.write_file(record, generation)?;
+        continuum_host::durable::fence_path(record)?;
+        let Blocks { native, mut memory, .. } = self;
+        drop(native); // the fork's tensors over her mapping go before the mapping does
+        Ok(memory.hand_over(kv)?)
     }
 }
 
@@ -109,11 +132,45 @@ pub struct UnifiedTier<'c, 'm> {
     in_flight: Option<Rc<Cell<bool>>>,
     /// The gene set on the context now (`None` before any step).
     applied_genes: Option<Genes>,
+    /// Where each mind's KV storage lives; `Native` from the first mind on whose device cannot view
+    /// host memory.
+    home: KvHome,
 }
 
 impl<'c, 'm> UnifiedTier<'c, 'm> {
-    pub fn new(ctx: &'c mut Context<'m>) -> Self {
-        Self { ctx, streams: [None; STREAMS], last_rebind: None, in_flight: None, applied_genes: None }
+    pub fn new(ctx: &'c mut Context<'m>, home: KvHome) -> Self {
+        Self { ctx, streams: [None; STREAMS], last_rebind: None, in_flight: None, applied_genes: None, home }
+    }
+
+    /// Her KV memory: a block over her own file, attached so the stream views it, where this node's
+    /// device can view host memory; the fork's own otherwise (the fork's `storage_bytes` is 0 then, and
+    /// the tier keeps that answer for every later mind).
+    fn kv_memory(&mut self, mind: MindId, native: &mut PersonaBlocks) -> Result<KvMemory, TierRefusal> {
+        let KvHome::Mapped(instance) = &self.home else { return Ok(KvMemory::Native) };
+        let dir = instance.dir().to_path_buf();
+        let bytes = PersonaBlocks::storage_bytes(self.ctx);
+        if bytes == 0 {
+            continuum_base::probe!(class = "persona.kv_home.native", "this context is not the Core's shape: minds' KV moves by row copy");
+            self.home = KvHome::Native;
+            return Ok(KvMemory::Native);
+        }
+        if !PersonaBlocks::storage_viewable(self.ctx) {
+            // a device that cannot wrap host memory (CUDA): her storage in the fork's own device memory, viewed the
+            // same way; where it does not fit she moves by row copy until room is made (the Placer's decision)
+            return Ok(match native.reserve_storage(self.ctx) {
+                Ok(()) => KvMemory::Device,
+                Err(refusal) => {
+                    continuum_base::probe!(class = "persona.kv_home.no_device_room", persona = %mind.persona.0, why = %refusal, bytes = bytes as u64, "her KV storage did not fit in device memory: she moves by row copy");
+                    KvMemory::Native
+                }
+            });
+        }
+        let path = dir.join(live_name(mind));
+        let (memory, at, len) = KvMemory::mapped(mind, path, bytes).map_err(|_| refused(mind, "her KV file could not be mapped"))?;
+        // SAFETY: `memory` owns the mapping and is held in her `Blocks` after `native`, so it outlives the
+        // fork blocks that view it; nothing but the fork writes it.
+        unsafe { native.attach_storage(self.ctx, at, len) }.map_err(|refusal| self::native(mind, "the fork refused her KV storage", refusal))?;
+        Ok(memory)
     }
 
     /// The stream `mind` is bound to, if she is in the execution stream.
@@ -170,13 +227,34 @@ impl<'c, 'm> UnifiedTier<'c, 'm> {
         self.last_rebind
     }
 
-    /// Her blocks read back from `path` (CONTINUUM-ENGINE 4.16), bound when she is next scheduled. A
-    /// file of another owner, epoch or memory layout is refused and nothing is made.
-    pub fn read_file(&mut self, mind: MindId, path: &std::path::Path) -> Result<Blocks, TierRefusal> {
-        let mut blocks = self.blocks_for(mind)?;
-        blocks.native.read_file(path).map_err(|e| native(mind, "the fork refused her file", e))?;
-        blocks.saved = Saved::Restored;
-        Ok(blocks)
+    /// Her blocks back from what a stop handed over (UNIFIED-PAGING slice 2), bound when she is next
+    /// scheduled. With her KV file (`kv`): mapped where the stop left it, attached as her storage, and her
+    /// record read over it, so the fork checks owner, epoch, generation, layout and the storage's bytes
+    /// before anything moves. Only then is the file renamed into this core's directory: a refused
+    /// restore leaves it where the manifest names it. Without one, her record carries her rows (a device
+    /// without attachable storage, or a format-1 record migrated once) and they are copied in.
+    pub fn restore(&mut self, mind: MindId, record: &std::path::Path, kv: Option<&std::path::Path>, generation: u64) -> Result<Blocks, TierRefusal> {
+        let Some(kv) = kv else {
+            let mut blocks = self.blocks_for(mind)?;
+            blocks.native.read_file(record, generation).map_err(|e| native(mind, "the fork refused her record", e))?;
+            blocks.saved = Saved::Restored;
+            return Ok(blocks);
+        };
+        let KvHome::Mapped(instance) = &self.home else { return Err(refused(mind, "her KV file needs a mapped home on this node")) };
+        let live = live_file(instance, mind);
+        let bytes = PersonaBlocks::storage_bytes(self.ctx);
+        if bytes == 0 || !PersonaBlocks::storage_viewable(self.ctx) {
+            return Err(refused(mind, "this node's device cannot view her KV file"));
+        }
+        // her mapping first, so on any refusal below the fork's blocks over it drop before it does
+        let (mut memory, at, len) = KvMemory::handed(mind, kv.to_path_buf(), bytes).map_err(|_| refused(mind, "her KV file is absent or not the length her storage maps"))?;
+        let mut native = PersonaBlocks::new(self.ctx, owner_of(mind)).ok_or_else(|| refused(mind, "this context's memory has no persona move"))?;
+        // SAFETY: `memory` owns the mapping and is held in her `Blocks` after `native`, so it outlives the fork
+        // blocks that view it; nothing but the fork writes it.
+        unsafe { native.attach_storage(self.ctx, at, len) }.map_err(|refusal| self::native(mind, "the fork refused her KV file as her storage", refusal))?;
+        native.read_file(record, generation).map_err(|e| self::native(mind, "the fork refused her record", e))?;
+        memory.adopt(&live).map_err(|_| refused(mind, "her KV file could not be moved into this core's directory"))?;
+        Ok(Blocks { native, saved: Saved::Restored, memory })
     }
 
     fn move_in(&mut self, mind: MindId, blocks: &mut Blocks) -> Result<(), TierRefusal> {
@@ -192,6 +270,11 @@ impl<'c, 'm> UnifiedTier<'c, 'm> {
             return Err(refused(mind, "her stream already holds another sequence's state"));
         }
         self.last_rebind = None;
+        // a mind with her own KV storage is bound even before her first save, so she decodes straight into
+        // it from her first token (never into the stream's own memory, to be carried over at her first park)
+        if blocks.saved == Saved::Never && blocks.memory.held() {
+            blocks.native.bind_fresh(self.ctx, stream.seq()).map_err(|e| bind_refused(mind, e))?;
+        }
         if blocks.saved != Saved::Never {
             blocks.native.bind(self.ctx, stream.seq(), owner_of(mind)).map_err(|e| bind_refused(mind, e))?;
             self.last_rebind = Some(match blocks.saved {
@@ -226,8 +309,9 @@ impl Tier for UnifiedTier<'_, '_> {
 
     /// New blocks for `mind`, stamped with her owner and epoch.
     fn blocks_for(&mut self, mind: MindId) -> Result<Blocks, TierRefusal> {
-        let native = PersonaBlocks::new(self.ctx, owner_of(mind)).ok_or_else(|| refused(mind, "this context's memory has no persona move"))?;
-        Ok(Blocks { native, saved: Saved::Never })
+        let mut native = PersonaBlocks::new(self.ctx, owner_of(mind)).ok_or_else(|| refused(mind, "this context's memory has no persona move"))?;
+        let memory = self.kv_memory(mind, &mut native)?;
+        Ok(Blocks { native, saved: Saved::Never, memory })
     }
 
     fn begin(&mut self, mind: MindId, blocks: &mut Blocks, direction: Direction) -> Result<Landed, TierRefusal> {
@@ -355,6 +439,16 @@ impl Execute for UnifiedTier<'_, '_> {
 
 const TIER: &str = "unified";
 
+/// Her KV file's name in a core's own directory: one per generation of her, so an earlier epoch never maps it.
+fn live_name(mind: MindId) -> String {
+    format!("{}.{}.kv", mind.persona.0, mind.epoch.0)
+}
+
+/// Her KV file in `instance`'s directory.
+fn live_file(instance: &continuum_blocks::Instance, mind: MindId) -> std::path::PathBuf {
+    instance.dir().join(live_name(mind))
+}
+
 fn stream_at(slot: usize) -> Stream {
     Stream(slot as i32)
 }
@@ -372,6 +466,7 @@ fn native(mind: MindId, reason: &'static str, refusal: PersonaRefusal) -> TierRe
 fn bind_refused(mind: MindId, refusal: BindRefusal) -> TierRefusal {
     match refusal {
         BindRefusal::WrongOwner { .. } => refused(mind, "her blocks are stamped for another owner or epoch"),
+        BindRefusal::NotFresh { .. } => refused(mind, "her blocks were saved before: a fresh bind is only for blocks never saved"),
         BindRefusal::Native(native_refusal) => native(mind, "the fork refused her bind", native_refusal),
     }
 }

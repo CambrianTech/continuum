@@ -14,13 +14,22 @@ test-fixtures = []
 name = "persona_switch"
 required-features = ["test-fixtures"]
 
+[[example]]
+name = "persona_handoff"
+required-features = ["test-fixtures"]
+
 [dependencies]
-continuum-base = { path = "../continuum-base" } # probe!: a refused decode reports what the engine held
-continuum-persona-engine = { path = "../continuum-persona-engine" }
-llama = { path = "../llama" }
+continuum-base = { workspace = true } # probe!: a refused decode reports what the engine held
+continuum-persona-engine = { workspace = true }
+llama = { workspace = true }
+continuum-blocks = { workspace = true } # a mind's KV storage is a block over her own mapped file (UNIFIED-PAGING.md slice 2)
+continuum-host = { workspace = true } # durable: a stop hands her KV file over by a synced rename
 tracing.workspace = true # probe! expands to tracing
 thiserror.workspace = true
 uuid.workspace = true
+
+[dev-dependencies]
+tempfile = { workspace = true } # the persona_switch bench maps each mind's KV file in a temp directory
 
 [lints.clippy]
 unwrap_used = "deny"

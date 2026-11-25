@@ -5,31 +5,32 @@ edition = "2021"
 publish = false
 
 [dependencies]
-continuum-persona-engine = { path = "../continuum-persona-engine" }
-continuum-persona-llama = { path = "../continuum-persona-llama" }
-continuum-sage = { path = "../continuum-sage" }
-continuum-process = { path = "../continuum-process" }
+continuum-persona-engine = { workspace = true }
+continuum-persona-llama = { workspace = true }
+continuum-sage = { workspace = true }
+continuum-process = { workspace = true }
+continuum-blocks = { workspace = true } # the persona scheduler joins its minds' live KV home as an instance under a lease
 tempfile = { workspace = true, optional = true }
-continuum-kernel = { path = "../continuum-kernel" }
-continuum-tool-protocol = { path = "../continuum-tool-protocol" }
+continuum-kernel = { workspace = true }
+continuum-tool-protocol = { workspace = true }
 tokio.workspace = true
-expert-pager-policy = { path = "../expert-pager-policy" }
+expert-pager-policy = { workspace = true }
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
-continuum-base = { path = "../continuum-base" }
-continuum-service = { path = "../continuum-service" }  # the resident alarm a node beacons (card 1c157668)
-continuum-host = { path = "../continuum-host" }
-continuum-saved-state = { path = "../continuum-saved-state" } # the measured rate stores save and load through the one contract
+continuum-base = { workspace = true }
+continuum-service = { workspace = true }  # the resident alarm a node beacons (card 1c157668)
+continuum-host = { workspace = true }
+continuum-saved-state = { workspace = true } # the measured rate stores save and load through the one contract
 schemars = { workspace = true }
-continuum-airc-protocol = { path = "../continuum-airc-protocol" }
+continuum-airc-protocol = { workspace = true }
 reqwest = { workspace = true, features = ["json", "multipart", "stream"] }
 thiserror.workspace = true
 dashmap = { workspace = true }  # Lock-free concurrent HashMap
 inventory = { workspace = true }
 libc = { workspace = true }     # Process group management (setsid, kill -pgid)
 fs2 = { workspace = true }      # Cross-platform advisory file locks (flock / LockFileEx)
-continuum-cli-lifecycle = { path = "../continuum-cli-lifecycle" }  # the CLI's platform lifecycle; its tests must not link this crate
+continuum-cli-lifecycle = { workspace = true }  # the CLI's platform lifecycle; its tests must not link this crate
 base64 = { workspace = true }  # Base64 encoding for audio data
 sha2 = { workspace = true }   # SHA-256 for OAuth 2.0 PKCE code challenges (RFC 7636) + L1-6 contract canonical hash
 airc-core.workspace = true
@@ -43,7 +44,7 @@ ort.workspace = true  # ONNX Runtime for TTS
 num_cpus = { workspace = true }  # CPU count detection
 dirs = { workspace = true }  # User directories for model paths
 sysinfo = { workspace = true }  # Cross-platform CPU, memory, system resource monitoring
-llama = { path = "../llama" }
+llama = { workspace = true }
 candle-core.workspace = true
 candle-nn.workspace = true  # For VarBuilder
 candle-transformers.workspace = true
@@ -63,10 +64,10 @@ windows-sys = { workspace = true, features = ["Win32_Globalization", "Win32_Secu
 metal = { workspace = true }
 
 [dev-dependencies]
-continuum-kernel = { path = "../continuum-kernel", features = ["test-fixtures"] }  # every test build of this crate gets the per-process continuum home (card d11d9827)
+continuum-kernel = { workspace = true, features = ["test-fixtures"] }  # every test build of this crate gets the per-process continuum home (card d11d9827)
 tokio = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }                   # Temp directories for code module tests
-continuum-saved-state = { path = "../continuum-saved-state", features = ["test-fixtures"] } # every kind runs the one round trip
+continuum-saved-state = { workspace = true, features = ["test-fixtures"] } # every kind runs the one round trip
 airc-protocol = { workspace = true }
 futures = { workspace = true }
 
@@ -75,10 +76,10 @@ futures = { workspace = true }
 # right engine: Metal on Apple Silicon; the CPU profile on an Intel Mac, where ggml-metal device init
 # hangs (#129). No `--features metal` to remember, and no CPU-only build on an M-series by accident.
 [target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
-llama = { path = "../llama", features = ["metal"] }
+llama = { workspace = true, features = ["metal"] }
 
 [target.'cfg(all(target_os = "macos", target_arch = "x86_64"))'.dependencies]
-llama = { path = "../llama", features = ["mac-cpu-only"] }
+llama = { workspace = true, features = ["mac-cpu-only"] }
 
 [features]
 default = []

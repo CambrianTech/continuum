@@ -7,10 +7,10 @@ description = "Prompt assembly and its budgets: prompt assembly, context and tok
 
 [dependencies]
 tracing.workspace = true  # continuum_base::probe! expands to tracing::event
-continuum-base = { path = "../continuum-base" }
-continuum-kernel = { path = "../continuum-kernel" }
-continuum-engine = { path = "../continuum-engine" }
-continuum-text-analysis = { path = "../continuum-text-analysis" }
+continuum-base = { workspace = true }
+continuum-kernel = { workspace = true }
+continuum-engine = { workspace = true }
+continuum-text-analysis = { workspace = true }
 dashmap = { workspace = true }
 serde.workspace = true
 serde_json.workspace = true
