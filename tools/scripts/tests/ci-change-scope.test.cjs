@@ -12,7 +12,7 @@ const select = (...paths) => {
 // Tested crates a kernel change does not reach: the floor (base, host, git, service, saved-state) and
 // the leaves that depend on nothing in the workspace (the codec continuum-context, the flow
 // continuum-flow, the proving ground's types continuum-proving-types).
-const BELOW_KERNEL = ['continuum-base', 'continuum-host', 'continuum-git', 'continuum-service', 'continuum-saved-state', 'continuum-context', 'continuum-flow', 'continuum-proving-types', 'continuum-persona-engine', 'continuum-persona-llama', 'continuum-sage', 'step-replay'];
+const BELOW_KERNEL = ['continuum-base', 'continuum-host', 'continuum-blocks', 'continuum-git', 'continuum-service', 'continuum-saved-state', 'continuum-context', 'continuum-flow', 'continuum-proving-types', 'continuum-persona-engine', 'continuum-persona-llama', 'continuum-sage', 'step-replay'];
 // continuum-sage is under the kernel (the kernel's disk relief is a SAGE component); step-replay reads captures
 // on continuum-base alone: neither depends on the kernel or the CLI lifecycle.
 
