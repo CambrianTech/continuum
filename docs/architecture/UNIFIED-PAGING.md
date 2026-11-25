@@ -78,9 +78,28 @@ Two `Flash` volumes are two tiers, ranked by their measured read and write rates
 appears or disappears (an external drive plugged in or out) is a `Topology` change. A block on a
 volume that disappears is lost from that tier and counted, never assumed still there.
 
-`Topology`, a SAGE component, measures the stack at boot (each GPU and its memory, RAM, each drive's
-`DriveKind` and its measured read and write rates), publishes it as state, and wakes on memory
-pressure. The hot tier's drive detection moves into it.
+**`Topology` measures continually, never only at start.** We are not the only thing running: other
+processes take RAM, VRAM and disk, a drive slows when it is hot or busy, and an external volume comes
+and goes. A number measured once at boot is wrong within minutes, and a law placing blocks on it
+stops working. So `Topology`, a SAGE component, keeps every quantity current, each from the cheapest
+source that is true now:
+- **Free memory per tier:** the resource authority's `resources/free`, which already follows the OS
+  (free and compressed RAM, swap, pressure on macOS; device free memory from the backend for VRAM).
+  `Topology` subscribes and never samples on its own.
+- **Link and drive rates, passively:** every move a link makes is itself a measurement (bytes over
+  measured time, by direction and volume), so the rates follow contention and thermal throttling at
+  no cost. An active probe runs only for a volume no move has used within its staleness window, and
+  only while the tier is idle.
+- **Volumes:** mount and unmount, free space and its rate of change, from the OS's own notifications
+  where it gives them (`DiskArbitration` on macOS, `WM_DEVICECHANGE` or volume notifications on
+  Windows), and its free-space query otherwise.
+- **Our own share against everything else:** what our blocks hold on each tier against what the tier
+  has free, so pressure from another process shows up as a shrinking budget, not as our own misses.
+
+Each publishes as frame-numbered state, so a law reads how stale a number is, never just the number.
+A shrinking budget is an input like any other: the Streamer demotes to fit it before anything fails,
+and a law that learned on a quiet machine adapts as the machine fills. The hot tier's drive detection
+moves into `Topology`.
 
 **`Region` and `Block`: the memory, and the thing consumers hold.**
 
