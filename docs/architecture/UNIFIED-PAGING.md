@@ -61,7 +61,7 @@ pub struct TierRates { read_bps: u64, write_bps: u64, latency: Duration }   // m
 
 pub trait Tier: Send + Sync {                      // one adapter per kind holds only what differs
     fn kind(&self) -> TierKind;
-    fn budget(&self) -> u64;                       // bytes the Streamer may place here (measured free, minus reserve)
+    fn budget(&self) -> u64;                       // the resource authority's number for this tier (resources/free), never a second measurement
     fn rates(&self) -> TierRates;
     fn allocate(&self, bytes: u64, align: u64) -> Result<Region, TierRefusal>;
 }
@@ -88,11 +88,32 @@ pub enum BlockKind {                       // what the bytes are; never how they
     Expert { model: ModelId, layer: u32, expert: u32 },
     Gene { gene: GeneId },
     Embeddings { index: IndexId, shard: u32 },
+    Training { seat: SeatId, part: TrainingPart },   // a seated learner's shadow, optimizer state, workspace: owner-held
 }
 pub struct BlockRef(Arc<BlockInner>);      // what a consumer holds
 pub struct Pin<'b>(&'b BlockInner);        // while held, the block does not move (RAII)
 pub struct InFlight<T> { value: T, done: Completion }   // device work still reading it: it moves after `done`
 ```
+
+**Owner-held blocks.** Some blocks are leased and held by their owner, never placed: a seated
+learner's shadow weights, optimizer state and workspace (`BlockKind::Training`) are `Pinned` for the
+whole seat, because losing the optimizer mid-seat loses its moments. The Streamer counts them against
+the tier's budget and never moves them; the trainer releases them on the engine's `Released`
+(Cormac, 2026-11-25).
+
+**One owner for "free".** A tier's `budget()` is the resource authority's number, which it says on
+the node bus (`resources/free`, card 9d856843); `Topology` and the Streamer read it and never sample
+memory themselves. Two owners of "what is free" is how the 5090 trainer once read 428 TB free
+(Cormac).
+
+**The OS calls live in `continuum-host`.** A new adapter module, `mapped_region`, holds a writable
+file mapping and its calls:
+- Unix: `mmap`, `msync`, `madvise`, plus `F_NOCACHE` on macOS and `O_DIRECT` on Linux.
+- Windows: `CreateFileMapping`, `MapViewOfFile`, `FlushViewOfFile`, `PrefetchVirtualMemory`, and
+  `FILE_FLAG_NO_BUFFERING`.
+
+It sits beside `positioned` and `read_pin`: logic in `mod.rs`, the calls in `unix.rs` and
+`windows.rs`. `continuum-blocks` holds only the logic, and never a `cfg(windows)`.
 
 A block's bytes are its native layout: KV rows as the cache lays them out, weights as the GGUF lays
 them out. Moving a block never interprets it.
