@@ -1,12 +1,15 @@
 //! [`UnifiedTier`]: the persona engine's residency tier on one libllama context, the Core's (object
-//! model 4.11, CONTINUUM-ENGINE 4.3). The context's KV is one pool that every seated mind grows into as
-//! she needs; each seated mind holds one of its sequences, and her state stays in place while she is
-//! seated, so a switch between seated minds moves nothing. A mind moves only when she is not seated
-//! (her blocks paged back in, the fork's native bind scattering her rows into the pool's empty cells)
-//! or when the pool needs her room (the fork's native save gathering exactly her cells out). Both are
-//! synchronous copies, so the fence a move returns has already landed. No window is a share of the
-//! context: every mind may grow to the whole pool, and when it runs out a seated mind is evicted, never
-//! a window shrunk (2026-11-21: streams of half the context each held seven dying turns).
+//! model 4.11). One execution stream, the occupant's, holding the whole context: the mind swapped in
+//! has all of it. Every other mind's blocks stay in host memory exactly as she left them. A swap moves
+//! the occupant out first (the fork's native save: her rows copied to her blocks, her stream emptied)
+//! and then moves the next mind in (its native bind into the emptied stream). Both are synchronous
+//! copies, so the fence a move returns has already landed.
+//!
+//! One stream, because the fork moves a mind by copying her own stream's rows (it requires per-stream
+//! KV), and llama.cpp sizes each stream at the context divided by the stream count: a second stream to
+//! bind the next mind into would halve the occupant's context, and buys nothing while a swap is a
+//! synchronous copy (2026-11-21: a 24,320-token half held seven dying turns while the other half held
+//! nobody decoding). The next mind's prefetch lives in host memory, where her blocks already are.
 
 use std::cell::Cell;
 
@@ -15,10 +18,14 @@ use std::sync::Arc;
 
 use continuum_persona_engine::persona::MindId;
 use continuum_persona_engine::residency::{Completion, Direction, Execute, Fence, FenceTag, Native, Tier, TierRefusal};
-use llama::{Batch, BindRefusal, ChatRefusal, Context, DecodeRefusal, LoraAdapter, PersonaBlocks, PersonaCheckpoint, PersonaOwner, PersonaRefusal, Pos, TurnSampler};
+use llama::{Batch, BindRefusal, ChatRefusal, Context, LoraAdapter, PersonaBlocks, PersonaCheckpoint, PersonaOwner, PersonaRefusal, Pos, TurnSampler};
 
 mod learn;
 pub use learn::LearnReply;
+
+/// Execution streams the Core's context holds: the occupant's, which is the whole context. Not a
+/// tuning number: the fork's move needs a stream per bound mind, and the Core binds only its occupant.
+pub const STREAMS: usize = 1;
 
 /// The context's execution stream, by the sequence id the context knows it as.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,14 +52,33 @@ impl Fence for Landed {
     }
 }
 
+/// How a mind's last bind met her blocks: on the sequence she was saved from (her cells keep their
+/// label), or on the other one (the fork relabels her cells, a walk over her span; Codex on #6134).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Rebind {
+    SameSequence,
+    OtherSequence,
+    /// Her blocks came back from her file after a restart (CONTINUUM-ENGINE 4.16).
+    FromFile,
+}
+
+/// What her blocks hold beyond their preparation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Saved {
+    /// Nothing: she starts on a stream as it is.
+    Never,
+    /// Saved out of this stream.
+    From(Stream),
+    /// Read back from her file after a restart.
+    Restored,
+}
+
 /// Her blocks: the unit's blocks part (CONTINUUM-ENGINE 4.17). The native blocks her moves copy,
 /// stamped with her owner at creation, and what they hold. The unit carries them; the tier moves
 /// them when handed them and keeps no copy of who she is.
 pub struct Blocks {
     native: PersonaBlocks,
-    /// Whether they hold her rows (a copy-out, or her file read back): bound, they are written in;
-    /// otherwise she starts on an empty sequence.
-    holds: bool,
+    saved: Saved,
 }
 
 impl Blocks {
@@ -77,7 +103,8 @@ fn owner_of(mind: MindId) -> PersonaOwner {
 pub struct UnifiedTier<'c, 'm> {
     ctx: &'c mut Context<'m>,
     /// Who occupies each execution stream, by her whole id: a stream holds one generation of her.
-    streams: Vec<Option<MindId>>,
+    streams: [Option<MindId>; STREAMS],
+    last_rebind: Option<Rebind>,
     /// The last submitted decode's landed flag, until the device is known to have finished it.
     in_flight: Option<Rc<Cell<bool>>>,
     /// The gene set on the context now (`None` before any step).
@@ -86,8 +113,7 @@ pub struct UnifiedTier<'c, 'm> {
 
 impl<'c, 'm> UnifiedTier<'c, 'm> {
     pub fn new(ctx: &'c mut Context<'m>) -> Self {
-        let seats = ctx.n_seq_max().max(1) as usize; // u32 into usize: every target this builds for is 32 bits or wider
-        Self { ctx, streams: vec![None; seats], in_flight: None, applied_genes: None }
+        Self { ctx, streams: [None; STREAMS], last_rebind: None, in_flight: None, applied_genes: None }
     }
 
     /// The stream `mind` is bound to, if she is in the execution stream.
@@ -139,12 +165,17 @@ impl<'c, 'm> UnifiedTier<'c, 'm> {
         self.ctx
     }
 
+    /// How the last move in met her blocks; `None` when she had never been saved.
+    pub fn last_rebind(&self) -> Option<Rebind> {
+        self.last_rebind
+    }
+
     /// Her blocks read back from `path` (CONTINUUM-ENGINE 4.16), bound when she is next scheduled. A
     /// file of another owner, epoch or memory layout is refused and nothing is made.
     pub fn read_file(&mut self, mind: MindId, path: &std::path::Path) -> Result<Blocks, TierRefusal> {
         let mut blocks = self.blocks_for(mind)?;
         blocks.native.read_file(path).map_err(|e| native(mind, "the fork refused her file", e))?;
-        blocks.holds = true;
+        blocks.saved = Saved::Restored;
         Ok(blocks)
     }
 
@@ -152,17 +183,22 @@ impl<'c, 'm> UnifiedTier<'c, 'm> {
         if self.streams.iter().flatten().any(|held| held.persona == mind.persona) {
             return Err(refused(mind, "already bound"));
         }
-        let slot = self.streams.iter().position(Option::is_none).ok_or_else(|| no_room(mind, "every sequence is seated"))?;
+        let slot = self.streams.iter().position(Option::is_none).ok_or_else(|| refused(mind, "the occupant has not moved out"))?;
         let stream = stream_at(slot);
         // A mind with nothing to bind starts on this stream as it is, so it must hold nothing (the
         // context may have been in use before this tier wrapped it). The engine's own memory is the
         // evidence, never this tier's bookkeeping.
-        if !blocks.holds && self.ctx.memory_seq_pos_max(stream.seq()).is_some() {
+        if blocks.saved == Saved::Never && self.ctx.memory_seq_pos_max(stream.seq()).is_some() {
             return Err(refused(mind, "her stream already holds another sequence's state"));
         }
-        if blocks.holds {
+        self.last_rebind = None;
+        if blocks.saved != Saved::Never {
             blocks.native.bind(self.ctx, stream.seq(), owner_of(mind)).map_err(|e| bind_refused(mind, e))?;
-            blocks.holds = false; // her rows are in the pool now; her blocks are empty again
+            self.last_rebind = Some(match blocks.saved {
+                Saved::From(from) if from == stream => Rebind::SameSequence,
+                Saved::Restored => Rebind::FromFile,
+                _ => Rebind::OtherSequence,
+            });
         }
         self.streams[slot] = Some(mind);
         Ok(())
@@ -174,7 +210,7 @@ impl<'c, 'm> UnifiedTier<'c, 'm> {
         let slot = self.streams.iter().position(|held| *held == Some(mind)).ok_or_else(|| refused(mind, "not bound"))?;
         let stream = stream_at(slot);
         blocks.native.save(self.ctx, stream.seq()).map_err(|e| native(mind, "the fork refused her save", e))?;
-        blocks.holds = true;
+        blocks.saved = Saved::From(stream);
         self.streams[slot] = None;
         Ok(())
     }
@@ -191,7 +227,7 @@ impl Tier for UnifiedTier<'_, '_> {
     /// New blocks for `mind`, stamped with her owner and epoch.
     fn blocks_for(&mut self, mind: MindId) -> Result<Blocks, TierRefusal> {
         let native = PersonaBlocks::new(self.ctx, owner_of(mind)).ok_or_else(|| refused(mind, "this context's memory has no persona move"))?;
-        Ok(Blocks { native, holds: false })
+        Ok(Blocks { native, saved: Saved::Never })
     }
 
     fn begin(&mut self, mind: MindId, blocks: &mut Blocks, direction: Direction) -> Result<Landed, TierRefusal> {
@@ -242,7 +278,7 @@ impl Execute for UnifiedTier<'_, '_> {
     type Work = Step;
     type Done = Decoded;
 
-    fn submit(&mut self, mind: MindId, step: &Step) -> Result<Decoded, TierRefusal> {
+    fn submit(&mut self, mind: MindId, step: Step) -> Result<Decoded, TierRefusal> {
         let stream = self.stream_of(mind).ok_or_else(|| refused(mind, "not bound"))?;
         // A step at `from` replaces whatever she held from there (a re-decoded last token, a restart
         // at 0, a failed turn's partial tail), so her stream never holds two tokens at one position.
@@ -255,7 +291,7 @@ impl Execute for UnifiedTier<'_, '_> {
         if !self.applied_genes.as_ref().is_some_and(|applied| Arc::ptr_eq(applied, &step.genes)) {
             let genes: Vec<(&LoraAdapter, f32)> = step.genes.iter().map(|(adapter, scale)| (adapter.as_ref(), *scale)).collect();
             let applied = if genes.is_empty() { self.ctx.clear_loras() } else { self.ctx.set_loras(&genes) };
-            applied.map_err(|message| TierRefusal { tier: TIER, mind, reason: "the engine refused her genes", native: Native::Reported(message) })?;
+            applied.map_err(|message| TierRefusal { tier: TIER, mind, reason: "the engine refused her genes", native: Native::Reported(message.into()) })?;
             self.applied_genes = Some(Arc::clone(&step.genes));
         }
         let last = step.tokens.len().checked_sub(1).ok_or_else(|| refused(mind, "an empty step"))?;
@@ -265,7 +301,7 @@ impl Execute for UnifiedTier<'_, '_> {
             let pos = step.from.advanced(i).map_err(|_| refused(mind, "a step past what a sequence can address"))?;
             batch.push(token, pos, &[stream.seq()], step.logits_at_end && i == last);
         }
-        self.ctx.decode(&batch).map_err(|refusal| {
+        self.ctx.decode(&batch).map_err(|message| {
             // The refusal says what the engine held when it refused (the M5, 2026-11-21: a cold
             // 26-36k replay prefill refused with no KV slot ~31 s in; the cause is not yet known).
             let occupied: Vec<(usize, Option<MindId>, Option<Pos>)> =
@@ -281,11 +317,10 @@ impl Execute for UnifiedTier<'_, '_> {
                 n_batch = self.ctx.n_batch(),
                 n_ubatch = self.ctx.n_ubatch(),
                 streams = ?occupied,
-                native = %refusal,
+                native = %message,
                 "the engine refused a decode: what it held then"
             );
-            let said = if refusal == DecodeRefusal::NoRoom { Native::NoRoom } else { Native::Reported(refusal.to_string()) };
-            TierRefusal { tier: TIER, mind, reason: "the engine refused her decode", native: said }
+            TierRefusal { tier: TIER, mind, reason: "the engine refused her decode", native: Native::Reported(message.into()) }
         })?;
         let landed = Rc::new(Cell::new(false));
         self.in_flight = Some(Rc::clone(&landed));
@@ -337,13 +372,6 @@ fn native(mind: MindId, reason: &'static str, refusal: PersonaRefusal) -> TierRe
 fn bind_refused(mind: MindId, refusal: BindRefusal) -> TierRefusal {
     match refusal {
         BindRefusal::WrongOwner { .. } => refused(mind, "her blocks are stamped for another owner or epoch"),
-        // the pool has fewer empty cells than her rows: a seated mind evicted makes room
-        BindRefusal::Native(full) if full.wants_room() => no_room(mind, "the pool has no room for her rows"),
         BindRefusal::Native(native_refusal) => native(mind, "the fork refused her bind", native_refusal),
     }
-}
-
-/// No room for her: a seated mind evicted makes it.
-fn no_room(mind: MindId, reason: &'static str) -> TierRefusal {
-    TierRefusal { tier: TIER, mind, reason, native: Native::NoRoom }
 }

@@ -1,7 +1,8 @@
-//! The persona engine on a real model: N minds seated at once in the Core's pool (CONTINUUM-ENGINE
-//! 4.3) through `PersonaEngine` over the `UnifiedTier`, one decoding at a time. Each mind is seated
-//! once; a turn only makes the next mind active, so a switch moves nothing. Reports the switch and the
-//! decode rate, separately and together.
+//! The persona engine on a real model: N minds take turns through `PersonaEngine` over the
+//! `UnifiedTier`, one decoding at a time, in the Core's one stream (the mind swapped in holds the
+//! whole window). Each turn moves the occupant out (her copy-out to RAM, once her decode landed),
+//! stages the next mind into the emptied stream (her copy-in), hands off, then submits the new mind's
+//! steps. Reports the switch (copy-out + stage + handoff) and the decode rate, separately and together.
 //!
 //! cargo run --release --features metal,test-fixtures --example persona_switch -- <model.gguf> <minds> <prompt_tokens> <decode_tokens> <rounds>
 
@@ -11,8 +12,8 @@ use std::time::{Duration, Instant};
 use continuum_persona_engine::engine::PersonaEngine;
 use continuum_persona_engine::persona::{Epoch, MindId, PersonaId, PersonaParts, PersonaUnit};
 use continuum_persona_engine::residency::{Direction, Execute, Tier};
-use continuum_persona_llama::{base_genes, Blocks, Step, UnifiedTier};
-use llama::{Batch, ContextParams, FlashAttn, KvLayout, Model, ModelParams, Pos};
+use continuum_persona_llama::{base_genes, Blocks, Rebind, Step, UnifiedTier};
+use llama::{Batch, ContextParams, FlashAttn, Model, ModelParams, Pos};
 
 /// Where her decode stands: the next position and her last sampled token.
 #[derive(Default)]
@@ -84,7 +85,7 @@ fn a_refused_newer_epoch_keeps_her_parked_blocks(model: &Model, ctx: &mut llama:
     let mut kept = tier.blocks_for(first_gen).map_err(|e| e.to_string())?;
     tier.begin(first_gen, &mut kept, Direction::In).map_err(|e| e.to_string())?;
     let seq = tier.stream_of(first_gen).ok_or("replay: she is not bound")?.seq();
-    tier.submit(first_gen, &Step { tokens: tokens.clone(), from: Pos::ZERO, logits_at_end: false, genes: base_genes() }).map_err(|e| e.to_string())?;
+    tier.submit(first_gen, Step { tokens: tokens.clone(), from: Pos::ZERO, logits_at_end: false, genes: base_genes() }).map_err(|e| e.to_string())?;
     tier.settle().map_err(|e| e.to_string())?;
     let held_to = tier.position_of(first_gen).ok_or("replay: she is not bound after her decode")?;
     tier.begin(first_gen, &mut kept, Direction::Out).map_err(|e| e.to_string())?;
@@ -115,10 +116,9 @@ fn main() -> Result<(), String> {
 
     llama::backend_init();
     let model = Model::load(model_path, ModelParams::default())?;
-    // the Core's pool: every mind seated in it at once, each in place
+    // the Core's one stream: the mind swapped in holds the whole window
     let window = (prompt_tokens + decode_tokens * rounds + 64) as u32;
-    let seats = minds as u32;
-    let params = ContextParams { n_ctx: window * seats, n_batch: 2048, n_ubatch: 2048, n_seq_max: seats, kv_layout: KvLayout::Pool, flash_attn: FlashAttn::Enabled, ..ContextParams::default() };
+    let params = ContextParams { n_ctx: window, n_batch: 2048, n_ubatch: 2048, n_seq_max: 1, flash_attn: FlashAttn::Enabled, ..ContextParams::default() };
     let mut ctx = model.new_context(params)?;
     adopted_context_is_refused(&model, &mut ctx)?;
     a_refused_newer_epoch_keeps_her_parked_blocks(&model, &mut ctx)?;
@@ -136,24 +136,30 @@ fn main() -> Result<(), String> {
         })
         .collect::<Result<_, String>>()?;
 
-    // every mind seated once: a new mind claims an empty sequence, nothing copied
-    let order: Vec<PersonaId> = parked.iter().map(|mind| mind.id()).collect();
-    for mind in parked.drain(..) {
-        engine.stage(mind).map_err(|r| r.reason.to_string())?;
-        engine.seat().map_err(|e| e.to_string())?;
-    }
-
+    let (mut same_seq, mut other_seq) = (Vec::new(), Vec::new());
     let (mut switches, mut decode_time, mut decoded, mut prefill_time) = (Vec::new(), Duration::ZERO, 0usize, Duration::ZERO);
     let run = Instant::now();
     for turn in 0..minds * rounds {
         // the next mind in turn order (the scheduler's choice in the engine; round-robin here)
-        let next = order[turn % minds];
+        let next = parked.remove(0);
         let t = Instant::now();
-        // seated, she is only made active: nothing moves
-        engine.activate(next).map_err(|e| e.to_string())?;
+        // the occupant moves out first: one stream, whole to whoever is in it
+        if engine.active().is_some() {
+            engine.retire_active().map_err(|e| e.to_string())?;
+            parked.push(engine.release_retired().map_err(|e| e.to_string())?);
+        }
+        engine.stage(next).map_err(|r| r.reason.to_string())?;
+        let rebind = engine.tier().last_rebind();
+        engine.handoff().map_err(|e| e.to_string())?;
         let switched = t.elapsed();
         if turn > 0 {
             switches.push(switched);
+            match rebind {
+                Some(Rebind::SameSequence) => same_seq.push(switched),
+                Some(Rebind::OtherSequence) => other_seq.push(switched),
+                // this example never restores from a file; a restored bind is not a switch it measures
+                Some(Rebind::FromFile) | None => {}
+            }
         }
 
         let (pos, prompt) = {
@@ -166,7 +172,7 @@ fn main() -> Result<(), String> {
         if !prompt.is_empty() {
             let t = Instant::now();
             for chunk in prompt.chunks(2048) {
-                engine.submit(&Step { tokens: chunk.to_vec(), from: pos, logits_at_end: true, genes: Arc::clone(&genes) }).map_err(|e| e.to_string())?;
+                engine.submit(Step { tokens: chunk.to_vec(), from: pos, logits_at_end: true, genes: Arc::clone(&genes) }).map_err(|e| e.to_string())?;
                 pos = pos.advanced(chunk.len()).map_err(|e| e.to_string())?;
                 last = argmax(engine.tier().logits_ith(chunk.len() as i32 - 1));
             }
@@ -174,7 +180,7 @@ fn main() -> Result<(), String> {
         }
         let t = Instant::now();
         for _ in 0..decode_tokens {
-            engine.submit(&Step { tokens: vec![last], from: pos, logits_at_end: true, genes: Arc::clone(&genes) }).map_err(|e| e.to_string())?;
+            engine.submit(Step { tokens: vec![last], from: pos, logits_at_end: true, genes: Arc::clone(&genes) }).map_err(|e| e.to_string())?;
             pos = pos.advanced(1).map_err(|e| e.to_string())?;
             last = argmax(engine.tier().logits_ith(0));
         }
@@ -185,6 +191,8 @@ fn main() -> Result<(), String> {
     }
 
     switches.sort();
+    same_seq.sort();
+    other_seq.sort();
     let ms = |d: Duration| d.as_secs_f64() * 1e3;
     let at = |v: &[Duration], q: f64| v.get(((v.len().max(1) as f64 - 1.0) * q) as usize).copied().map(ms).unwrap_or(0.0); // unwrap_or: an empty class prints 0
     let p = |q: f64| at(&switches, q);
@@ -199,6 +207,13 @@ fn main() -> Result<(), String> {
         p(1.0),
         prefill_time.as_secs_f64(),
         run.elapsed().as_secs_f64()
+    );
+    println!(
+        "persona_switch: rebinds (binds of a mind saved before) same sequence n={} p50 {:.2} ms | other sequence (cells relabeled over her span) n={} p50 {:.2} ms; stage, handoff and release run serially before her decode, not overlapped",
+        same_seq.len(),
+        at(&same_seq, 0.5),
+        other_seq.len(),
+        at(&other_seq, 0.5)
     );
     Ok(())
 }

@@ -3,19 +3,19 @@
 //! decodes are ordered children of the engine, serialized by that edge").
 //!
 //! The edge is the engine itself. [`PersonaEngine::submit`] hands the tier the active mind's work and
-//! nothing else: the tier decodes on the sequence she is seated in, so a step cannot name another
-//! sequence or move a mind. Its completion is held, and a switch away from her is refused until it has
-//! landed, so a decode still running on the device is never cut off (Codex on #6139). Only one decode is
-//! in flight at a time. Several minds are seated in the pool at once (CONTINUUM-ENGINE 4.3): a switch
-//! between them moves nothing. A mind moves only to be seated or to leave her seat, through the same
-//! tier, fenced.
+//! nothing else: the tier decodes on the stream she is bound to, so a step cannot name another
+//! sequence or move a mind. Its completion is held, and [`handoff`](PersonaEngine::handoff) is refused
+//! until it has landed, so a decode still running on the device is never cut off by a switch (Codex
+//! on #6139). Only one decode is in flight at a time; no count, lane or launch parameter exists to ask
+//! for more. Staging the next mind and retiring the previous one are transfers through the same tier,
+//! fenced, and proceed while a decode runs.
 //!
 //! - [`submit`](PersonaEngine::submit): decode a step of the active mind, after the previous step landed;
-//! - [`activate`](PersonaEngine::activate): make a seated mind active; nothing moves;
-//! - [`stage`](PersonaEngine::stage) then [`seat`](PersonaEngine::seat): bring a mind who is not seated
-//!   in (her blocks paged in, or a new mind claiming a sequence);
-//! - [`evict`](PersonaEngine::evict): take a seated mind out when the pool needs her room, beginning her
-//!   copy-out; [`release_retired`](PersonaEngine::release_retired) gives her back once it landed.
+//! - [`stage`](PersonaEngine::stage): begin her copy-in, and hold her as next under its fence;
+//! - [`handoff`](PersonaEngine::handoff): once the active mind's decode and the next mind's copy-in have
+//!   landed, bind next, then begin the previous mind's copy-out;
+//! - [`release_retired`](PersonaEngine::release_retired): give the previous mind back once her copy-out
+//!   landed.
 //!
 //! Every refusal that receives a unit returns it: custody never ends in a refusal.
 //!
@@ -29,7 +29,7 @@
 //!
 //! fn step_while_holding_her<U: Identified, T: Execute>(engine: &mut PersonaEngine<U, T>, work: T::Work) {
 //!     let her = engine.active_mut();
-//!     let _ = engine.submit(&work);
+//!     let _ = engine.submit(work);
 //!     drop(her);
 //! }
 //! ```
@@ -38,7 +38,7 @@
 mod tests;
 
 use crate::persona::{MindId, PersonaId};
-use crate::pipeline::{Identified, Refused, RetireRefusal, Roles, SeatRefusal, SeatedRefusal, StageRefusal};
+use crate::pipeline::{HandoffRefusal, Identified, Refused, RetireRefusal, Roles, StageRefusal};
 use crate::residency::{Completion, Direction, Execute, Learns, Native, TierRefusal};
 use crate::persona::Carries;
 
@@ -63,21 +63,18 @@ pub enum DecodeError {
     Tier(#[from] TierRefusal),
 }
 
-/// Why a seat, an activation or an eviction did not complete.
+/// Why a handoff did not complete.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum SwitchError {
+pub enum HandoffError {
     /// Nothing changed: the active mind's decode is still on the device.
     #[error("{active:?}'s decode has not landed")]
     DecodeInFlight { active: PersonaId },
-    /// Nothing changed: next is not staged or her copy-in has not landed.
+    /// Nothing changed: next is not ready, or the previous retirement is still in flight.
     #[error(transparent)]
-    Seat(#[from] SeatRefusal),
-    /// Nothing changed: she is not seated, or another retirement is still in flight.
-    #[error(transparent)]
-    Seated(#[from] SeatedRefusal),
-    /// She left her seat; her copy-out could not begin. She stays retiring, awaiting a copy-out, in the
-    /// engine's custody: [`PersonaEngine::retry_retire`].
-    #[error("{previous:?} left her seat but her copy-out did not begin: {refusal}")]
+    Pipeline(#[from] HandoffRefusal),
+    /// The bind happened (next is active); the previous mind's copy-out could not begin. She stays
+    /// retiring, awaiting a copy-out, in the engine's custody: [`PersonaEngine::retry_retire`].
+    #[error("{previous:?} is bound out but her copy-out did not begin: {refusal}")]
     CopyOut { previous: PersonaId, refusal: TierRefusal },
 }
 
@@ -86,7 +83,7 @@ pub enum SwitchError {
 pub enum RetireError {
     /// Her copy-out could not begin.
     #[error(transparent)]
-    CopyOut(#[from] SwitchError),
+    CopyOut(#[from] HandoffError),
     /// Her copy-out has not landed, or the pipeline refused the release.
     #[error(transparent)]
     Release(#[from] RetireRefusal),
@@ -157,7 +154,7 @@ where
 
     /// Submit one step of the active mind's decode. Refused while her previous step is still on the
     /// device: one decode is in flight at a time.
-    pub fn submit(&mut self, work: &T::Work) -> Result<(), DecodeError> {
+    pub fn submit(&mut self, work: T::Work) -> Result<(), DecodeError> {
         let mind = self.active_mind()?;
         if !self.decode_landed() {
             return Err(DecodeError::InFlight { active: mind.persona });
@@ -205,74 +202,52 @@ where
             .map_err(|refused| Refused { reason: refused.reason.into(), returned: refused.returned.0 })
     }
 
-    /// The minds seated in the pool, the active one among them.
-    pub fn seated(&self) -> impl Iterator<Item = PersonaId> + '_ {
-        self.roles.seated().map(Identified::persona)
+    /// Bind next once the active mind's decode and next's copy-in have landed, then begin the
+    /// previous mind's copy-out. Returns who retired (`None` when nobody was active). Changes nothing
+    /// until both have landed and the previous retirement is released.
+    pub fn handoff(&mut self) -> Result<Option<PersonaId>, HandoffError> {
+        self.require_landed()?;
+        let previous = self.roles.handoff()?;
+        self.retired(previous)
     }
 
-    pub fn is_seated(&self, persona: PersonaId) -> bool {
-        self.roles.is_seated(persona)
+    /// Retire the active mind with nobody to follow her (a stop's suspend): once her decode has
+    /// landed, begin her copy-out. Returns who retired (`None` when nobody was active); bring it to
+    /// its end with [`Self::finish_retirement`].
+    pub fn retire_active(&mut self) -> Result<Option<PersonaId>, HandoffError> {
+        self.require_landed()?;
+        let previous = self.roles.retire()?;
+        self.retired(previous)
     }
 
-    /// Seat the staged mind once her copy-in has landed. Returns who was seated.
-    pub fn seat(&mut self) -> Result<PersonaId, SwitchError> {
-        Ok(self.roles.seat()?)
-    }
-
-    /// Make a seated mind active: nothing moves. Refused, changing nothing, while another mind's decode
-    /// is on the device. Returns who was active before.
-    pub fn activate(&mut self, persona: PersonaId) -> Result<Option<PersonaId>, SwitchError> {
-        if self.active() != Some(persona) {
-            self.require_landed()?;
-        }
-        let previous = self.roles.activate(persona)?;
-        if previous != Some(persona) {
-            self.decoding = None;
-        }
-        Ok(previous)
-    }
-
-    /// Take a seated mind out of the pool (it needs her room, or a stop preserves her): she stops being
-    /// active if she was, once her decode landed, and her copy-out begins. Bring it to its end with
-    /// [`Self::finish_retirement`].
-    pub fn evict(&mut self, persona: PersonaId) -> Result<(), SwitchError> {
-        let was_active = self.active() == Some(persona);
-        if was_active {
-            self.require_landed()?;
-        }
-        self.roles.evict(persona)?;
-        if was_active {
-            self.decoding = None;
-        }
-        self.retry_retire()
-    }
-
-    /// Evict the active mind (a stop's suspend). Returns who left (`None` when nobody was active).
-    pub fn retire_active(&mut self) -> Result<Option<PersonaId>, SwitchError> {
-        let Some(active) = self.active() else { return Ok(None) };
-        self.evict(active)?;
-        Ok(Some(active))
-    }
-
-    /// A move of the active mind is refused while her decode is on the device.
-    fn require_landed(&self) -> Result<(), SwitchError> {
+    /// A move out of the active role is refused while her decode is on the device.
+    fn require_landed(&self) -> Result<(), HandoffError> {
         match self.active() {
-            Some(active) if !self.decode_landed() => Err(SwitchError::DecodeInFlight { active }),
+            Some(active) if !self.decode_landed() => Err(HandoffError::DecodeInFlight { active }),
             _ => Ok(()),
         }
     }
 
-    /// Begin the copy-out of the mind awaiting it (after an eviction whose copy-out was refused): the
+    /// After the active role changed hands: her decode is over, and whoever left begins her copy-out.
+    fn retired(&mut self, previous: Option<PersonaId>) -> Result<Option<PersonaId>, HandoffError> {
+        self.decoding = None;
+        if previous.is_some() {
+            self.retry_retire()?;
+        }
+        Ok(previous)
+    }
+
+    /// Begin the copy-out of the mind awaiting it (after a handoff whose copy-out was refused): the
     /// tier is handed her own blocks. Does nothing when no copy-out awaits.
-    pub fn retry_retire(&mut self) -> Result<(), SwitchError> {
+    pub fn retry_retire(&mut self) -> Result<(), HandoffError> {
         let tier_name = self.tier.name();
         let Some((tag, unit)) = self.roles.awaiting_copy_out_mut() else { return Ok(()) };
         let fence = self
             .tier
             .begin(tag.mind, unit.blocks_mut(), Direction::Out)
-            .map_err(|refusal| SwitchError::CopyOut { previous: tag.mind.persona, refusal })?;
+            .map_err(|refusal| HandoffError::CopyOut { previous: tag.mind.persona, refusal })?;
         // The tag came from the pipeline itself, so the fence it carries is the one it expects.
-        self.roles.begin_retire(fence).map_err(|refused| SwitchError::CopyOut {
+        self.roles.begin_retire(fence).map_err(|refused| HandoffError::CopyOut {
             previous: tag.mind.persona,
             refusal: TierRefusal { tier: tier_name, mind: tag.mind, reason: refusal_reason(&refused.reason), native: Native::NotAsked },
         })

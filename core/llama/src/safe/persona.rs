@@ -24,14 +24,6 @@ pub struct PersonaRefusal {
     pub name: String,
 }
 
-impl PersonaRefusal {
-    /// The pool has fewer empty cells than her rows (the fork's `pool_full`): another mind paged out
-    /// makes room, and nothing of hers changed.
-    pub fn wants_room(&self) -> bool {
-        self.name == "pool_full"
-    }
-}
-
 /// Why a bind was refused: the blocks are not the expected owner's, or the fork refused.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum BindRefusal {

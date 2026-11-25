@@ -67,8 +67,6 @@ pub struct ContextParams {
     /// prompts >1k tokens fail `llama_decode` with rc=1 ("no KV slot").
     /// Single-persona chat only uses sequence 0, so default to 1.
     pub n_seq_max: u32,
-    /// How the sequences share the KV memory. Default `Streams`.
-    pub kv_layout: KvLayout,
     /// Flash attention setting. Default `Auto` — runtime picks per-backend.
     pub flash_attn: FlashAttn,
     /// KV cache element type for K. Default `F16` (lossless).
@@ -89,16 +87,6 @@ pub struct ContextParams {
     /// `ffn_moe_topk` nodes and feeds every `(layer, selected experts)` to it. `None`
     /// (default) registers NO callback — a non-MoE context pays exactly zero overhead.
     pub expert_observer: Option<std::sync::Arc<dyn ExpertObserver>>,
-}
-
-/// How a context's sequences share its KV memory (`llama_context_params.kv_unified`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum KvLayout {
-    /// A stream per sequence, each `n_ctx / n_seq_max` cells.
-    Streams,
-    /// One pool of `n_ctx` cells that every sequence grows into as it needs (CONTINUUM-ENGINE 4.3): no
-    /// sequence's window is a share of the context.
-    Pool,
 }
 
 /// Sequence-embedding pooling strategy — maps to `llama_pooling_type`. Set it to
@@ -138,7 +126,6 @@ impl Default for ContextParams {
             n_batch: 512,
             n_ubatch: 512,
             n_seq_max: 1,
-            kv_layout: KvLayout::Streams,
             flash_attn: FlashAttn::Auto,
             type_k: KvCacheType::F16,
             type_v: KvCacheType::F16,
@@ -233,8 +220,13 @@ impl<'m> Context<'m> {
     /// Process a batch through the model (updates KV cache, produces logits
     /// for tokens where `batch.push(..., want_logits=true)` was called).
     ///
-    /// A refusal is typed ([`DecodeRefusal`]): no room in the memory (code 1) is the one a caller can
-    /// act on, by making room; every other code is named.
+    /// Return codes from llama.cpp:
+    ///   0 — success
+    ///   1 — no KV slot (reduce batch or raise n_ctx)
+    ///   2 — aborted (partial state retained)
+    ///  -1 — invalid batch
+    /// <-1 — fatal
+    /// A refusal is typed ([`DecodeRefusal`](super::DecodeRefusal)): every code is named.
     pub fn decode(&mut self, batch: &Batch) -> Result<(), super::DecodeRefusal> {
         let rc = unsafe { crate::decode_boundary::decode(self.ptr.as_ptr(), batch.inner) }.map_err(super::DecodeRefusal::Threw)?;
         if rc == 0 {

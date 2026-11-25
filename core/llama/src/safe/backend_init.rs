@@ -494,7 +494,6 @@ impl Model {
         ffi.n_batch = params.n_batch;
         ffi.n_ubatch = params.n_ubatch;
         ffi.n_seq_max = params.n_seq_max;
-        ffi.kv_unified = params.kv_layout == KvLayout::Pool;
         ffi.flash_attn_type = match params.flash_attn {
             FlashAttn::Auto => sys::llama_flash_attn_type_LLAMA_FLASH_ATTN_TYPE_AUTO,
             FlashAttn::Enabled => sys::llama_flash_attn_type_LLAMA_FLASH_ATTN_TYPE_ENABLED,

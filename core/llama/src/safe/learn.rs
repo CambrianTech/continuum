@@ -118,8 +118,7 @@ impl Label {
     }
 }
 
-/// One reply to learn, on the sequence that served it. Afterwards the sequence holds exactly `[0,
-/// n_cached)`: her owner prefills what follows under her own adapters.
+/// One reply to learn, on the sequence that served it.
 pub struct Reply<'a> {
     pub seq: i32,
     /// The positions `[0, n_cached)` the sequence holds as served, before the reply.
@@ -127,6 +126,8 @@ pub struct Reply<'a> {
     pub tokens: &'a [i32],
     /// One per token.
     pub labels: &'a [Label],
+    /// The exact original served tail, restored afterwards (it may differ from a correction).
+    pub restore: &'a [i32],
 }
 
 /// Why learning refused or failed, in the native code's own words.
@@ -375,7 +376,7 @@ impl<'c, 'm> Learner<'c, 'm> {
             let refusal = LearnRefusal { step: "reply", message: format!("{} labels for {} tokens", reply.labels.len(), reply.tokens.len()) };
             return Err(Refused { refusal, admission });
         }
-        let Ok(n) = i32::try_from(reply.tokens.len()) else {
+        let (Ok(n), Ok(n_restore)) = (i32::try_from(reply.tokens.len()), i32::try_from(reply.restore.len())) else {
             let refusal = LearnRefusal { step: "reply", message: "a reply longer than a position holds".into() };
             return Err(Refused { refusal, admission });
         };
@@ -395,6 +396,7 @@ impl<'c, 'm> Learner<'c, 'm> {
         };
         let tokens = reply.tokens.to_vec();
         let labels: Vec<i32> = reply.labels.iter().map(|label| label.native()).collect();
+        let restore = reply.restore.to_vec();
         let data = {
             let holder = self.holder();
             holder.optimizer = optimizer_params(shadow.optimizer);
@@ -421,10 +423,8 @@ impl<'c, 'm> Learner<'c, 'm> {
                 tokens.as_ptr(),
                 labels.as_ptr(),
                 n,
-                // no tail restored: she ends at her served prefix, and her owner prefills what follows
-                // under her own adapters (a tail re-decoded here would run under the shadow)
-                std::ptr::null(),
-                0,
+                restore.as_ptr(),
+                n_restore,
                 result.as_ptr(),
             )
         };
@@ -433,7 +433,7 @@ impl<'c, 'm> Learner<'c, 'm> {
             let refusal = self.refusal("learn_begin");
             return Err(Refused { refusal, admission: self.reclaim() });
         }
-        Ok(LearnRun { learner: self, result, seq: reply.seq, shadow: key, steps_before, state: RunState::Running, _buffers: (tokens, labels) })
+        Ok(LearnRun { learner: self, result, seq: reply.seq, shadow: key, steps_before, state: RunState::Running, _buffers: (tokens, labels, restore) })
     }
 
     /// Take the reply's admission back out of the holder (native state unchanged by the reply):
@@ -471,8 +471,8 @@ pub struct LearnRun<'l, 'c, 'm> {
     shadow: ShadowKey,
     steps_before: i64,
     state: RunState,
-    /// The reply's tokens and labels, alive while the reply is.
-    _buffers: (Vec<i32>, Vec<i32>),
+    /// The reply's tokens, labels and restore tail, alive while the reply is.
+    _buffers: (Vec<i32>, Vec<i32>, Vec<i32>),
 }
 
 impl LearnRun<'_, '_, '_> {
