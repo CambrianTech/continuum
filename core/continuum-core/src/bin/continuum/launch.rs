@@ -196,6 +196,12 @@ pub(super) async fn launch_core(wait_for_death: &[i32], policy: LaunchSource<'_>
         script.is_some(),
         server_bin.is_some(),
     );
+    // Whether the child this launch spawns is the core itself, or a start script that builds first.
+    let child_is_core = match plan {
+        LaunchPlan::Installed | LaunchPlan::InstalledWithoutRebuild => true,
+        LaunchPlan::Prebuilt => script.is_none() || explicit_prebuilt,
+        _ => false,
+    };
 
     let mut cmd = match plan {
         LaunchPlan::Prebuilt => match policy {
@@ -442,6 +448,24 @@ pub(super) async fn launch_core(wait_for_death: &[i32], policy: LaunchSource<'_>
     // Record the PID so `continuum stop` can find the detached process group.
     let pidfile = pidfile_for(&socket);
     let _ = std::fs::write(&pidfile, child.id().to_string());
+
+    // A core launched directly is waited on by events: its socket answering, or its exit
+    // (ready.rs). Only a start script (a build first) still takes the watched loop below, until
+    // the script is gone (card 71b1aeac).
+    if child_is_core {
+        let started = std::time::Instant::now();
+        return match super::ready::serving_or_exited(child.id(), Path::new(&socket), wait_for_death).await {
+            super::ready::Started::Serving => Ok(started.elapsed().as_secs()),
+            super::ready::Started::Exited => Err(format!(
+                "the core exited before it served.\n{}",
+                start_log_report(&logfile)
+            )),
+            super::ready::Started::Unwatchable(why) => Err(format!(
+                "the core started but its readiness cannot be observed: {why}.\n{}",
+                start_log_report(&logfile)
+            )),
+        };
+    }
 
     // Wait until the core answers ping AND every old core PID has exited. The
     // first build (cargo) can take minutes; poll generously, then fail loud with
