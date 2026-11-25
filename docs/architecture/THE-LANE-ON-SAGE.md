@@ -112,6 +112,73 @@ Read 2026-11-24 (fork `src/llama-kv-cache-persona.cpp`, `src/llama-persona-file.
 A step never runs a CPU loop over cells or rows, and never encodes to a string. A swap that is not a
 pointer or a DMA overlapped with compute is the defect.
 
+## The objects: two memory cases, two flash cases, one contract
+
+Every choice below is a trade-off measured per node, never a rule. The code is an object hierarchy:
+traits for the contracts, one adapter per case holding only what differs. Never free functions
+branching on the platform. It extends what exists: `continuum-persona-engine`'s `residency::Tier`
+("one contract for every residency tier ... an adapter holds only the calls that differ"), `Fence`,
+`Execute` and `pipeline::Roles`.
+
+**What the node is (measured once at boot, published on the engine's bus):**
+- `MemoryTopology`: `Unified { bytes }` (the M5) or `Discrete { vram, pinned_host }` (the 5090,
+  Windows), from what the backend reports.
+- `FlashTier`: `Fast` or `Slow`, with measured sequential and random read and write rates. The hot
+  tier's `DriveKind` already reads the drive kind from the OS; this adds the rates.
+- `CostModel`, measured live, never constants:
+  - swap ms by bytes and direction;
+  - graph rebuild ms;
+  - decode step ms by depth and by batch width;
+  - prefill ms by tokens and depth.
+
+  The lane's control law reads it.
+
+**Where her KV lives: `Placement`, the trait behind `Tier`'s moves:**
+
+| Adapter | Her storage | A move | Its fence |
+|---|---|---|---|
+| `UnifiedPlacement` | an address range reserved at window size, committed only as she grows | the Core's layer tensors exchanged with hers (pointer) | complete once the graph owner has rebuilt; her old storage is retained until the last pass that read it completes (Metal records buffer and offset at encode) |
+| `DiscretePlacement` | VRAM while the measured budget holds her; pinned host memory when parked | async DMA of her used rows only, on a copy stream, overlapped with the active mind's decode | the copy stream's event; the graph owner invalidates a captured graph at the binding change (CUDA graph replay reuses captured addresses on a reused graph id: Codex, `ggml_cuda_graph_update_required`) |
+
+**Where she goes when memory is short: `Backing`, the trait behind the flash tier:**
+
+| Adapter | Park | Restore |
+|---|---|---|
+| `FastFlash` (NVMe) | her storage is backed by her own file; parking is the OS writing back dirty pages | page-ins, with read-ahead advised for the whole of her |
+| `SlowFlash` (SATA, HDD) | one sequential block write | one sequential block read, prefetched ahead of her turn from the lane's forecast of who is next; never a page fault on the hot path |
+
+Her tokens and cells sit beside her KV in the same file as raw arrays. No JSON, no per-cell loop.
+
+**Who owns what:**
+- `GraphBinding` owns graph reuse against the current binding: it invalidates on a move, or keeps a
+  built graph per mind if the cost model says rebuilds cost more.
+- The `Core` owns the context and `Roles` (next staged under her fence while the active mind runs).
+- The `Lane` owns who steps, and how many: `StepPlan::One(mind)` or `StepPlan::Batch(minds)`. Batch
+  exists only if the bench shows batched decode beating switching at real depth; it is a variant
+  chosen by the cost model, not a principle either way.
+- `SharedPrefix` (only if measured worth it): the same physical pages mapped copy-on-write at the
+  start of each mind's range, per layer:
+  - unified memory: `mach_vm_remap`;
+  - discrete: the CUDA virtual memory API (`cuMemCreate` plus `cuMemMap`).
+
+  Valid only for an identical start under the same gene set.
+
+**Rust:**
+- Adapters are chosen once at boot from `MemoryTopology` and `FlashTier`, then held as one object.
+  The inner loops are monomorphized generics; boot-time choice is enum dispatch, never a branch in
+  the step.
+- Storage is RAII: `Drop` releases reserved ranges, pinned buffers and mappings. Storage still read
+  by in-flight GPU work is held by an `InFlight<T>` until its `Completion` lands, so a move can never
+  free what the device is still reading.
+- The context stays on the engine thread (it is `!Send`); only handles and fences cross threads.
+- `unsafe` lives only in the `llama` crate's FFI wrappers. The fork's side is C++ classes in its own
+  files (`llama-persona-storage.{h,cpp}`) with one-line hooks into upstream code.
+
+**The validator for every adapter** (Codex): A/B/A switching between distinct histories at
+identical shapes, with graph reuse on. After each switch, compare next-token logits and recurrent
+state with isolated controls. Report the end-to-end ready-to-step wait, including fences and
+recapture.
+
 ## The order, one PR each, merged before the next
 
 | # | Slice | Gate (validator, then the 15-minute live read) |
