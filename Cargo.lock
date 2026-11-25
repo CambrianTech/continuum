@@ -3623,8 +3623,10 @@ name = "continuum-persona-llama"
 version = "0.1.0"
 dependencies = [
  "continuum-base",
+ "continuum-blocks",
  "continuum-persona-engine",
  "llama",
+ "tempfile",
  "thiserror 2.0.18",
  "tracing",
  "uuid",

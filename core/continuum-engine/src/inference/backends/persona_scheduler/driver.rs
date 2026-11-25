@@ -11,7 +11,7 @@ use std::time::Instant;
 use continuum_persona_engine::engine::{DecodeError, HandoffError, PersonaEngine, RetireError, StageError};
 use continuum_persona_engine::persona::{Epoch, Footprint, Held, MindId, PersonaId, PersonaParts, PersonaUnit};
 use continuum_persona_engine::residency::TierRefusal;
-use continuum_persona_llama::{Blocks, Genes, Step, UnifiedTier, STREAMS};
+use continuum_persona_llama::{Blocks, Genes, KvHome, Step, UnifiedTier, STREAMS};
 use llama::{ContextParams, FlashAttn, LoraAdapter, Model, Pos};
 use uuid::Uuid;
 
@@ -246,8 +246,19 @@ pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
     let capacity = admission::Capacity::new(geometry.n_ctx_seq as usize);
     // The root resume (CONTINUUM-ENGINE 4.16): the minds the last stop preserved come back Warm, in
     // RAM, and bind when they are next scheduled. A mind that does not verify stays on disk, named.
-    let mut tier = UnifiedTier::new(&mut ctx);
     let mut store = preserve::Preserved::at_home();
+    // each mind's KV is a block over her own mapped file there; with no home to map into, the fork's own memory
+    let home = match &store {
+        Ok(store) => match store.live_kv() {
+            Ok(dir) => KvHome::Mapped(dir),
+            Err(why) => {
+                log.warn(&format!("minds' KV stays the fork's own memory: {why}"));
+                KvHome::Native
+            }
+        },
+        Err(_) => KvHome::Native,
+    };
+    let mut tier = UnifiedTier::new(&mut ctx, home);
     let parked = match &mut store {
         Ok(store) => resume(&mut tier, store, &config.model, &log),
         Err(why) => {

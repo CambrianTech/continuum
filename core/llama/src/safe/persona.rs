@@ -29,6 +29,8 @@ pub struct PersonaRefusal {
 pub enum BindRefusal {
     #[error("these blocks are stamped {held:?}, not the expected {expected:?}")]
     WrongOwner { expected: PersonaOwner, held: Option<PersonaOwner> },
+    #[error("these blocks were already saved by {held:?}: a fresh bind is only for blocks never saved")]
+    NotFresh { held: PersonaOwner },
     #[error(transparent)]
     Native(#[from] PersonaRefusal),
 }
@@ -105,6 +107,36 @@ impl PersonaBlocks {
         owner_matches(self.owner(), expected)?;
         // SAFETY: both pointers are live; the fork validates before writing and refuses whole.
         status(unsafe { sys::llama_persona_bind(ctx.as_ptr(), seq, self.ptr.as_ptr()) }).map_err(BindRefusal::Native)
+    }
+
+    /// Bind blocks that have never been saved (no owner stamp yet) as sequence `seq`: a new mind whose
+    /// storage is her own decodes straight into it from her first token. Blocks that carry an owner go
+    /// through [`Self::bind`], whose owner check this never bypasses.
+    pub fn bind_fresh(&mut self, ctx: &mut Context<'_>, seq: i32) -> Result<(), BindRefusal> {
+        if let Some(held) = self.owner() {
+            return Err(BindRefusal::NotFresh { held });
+        }
+        // SAFETY: both pointers are live; the fork validates before writing and refuses whole.
+        status(unsafe { sys::llama_persona_bind(ctx.as_ptr(), seq, self.ptr.as_ptr()) }).map_err(BindRefusal::Native)
+    }
+
+    /// Bytes one mind's KV storage takes on `ctx`; 0 when its memory has no storage a stream can view
+    /// (UNIFIED-PAGING.md, slice 2).
+    pub fn storage_bytes(ctx: &mut Context<'_>) -> usize {
+        // SAFETY: `ctx` is a live context; the fork only reads its layout.
+        unsafe { sys::llama_persona_storage_bytes(ctx.as_ptr()) }
+    }
+
+    /// Build her KV storage over `memory..memory+len`, once, before her first bind: from then on binding
+    /// her points the stream at it and saving her points it away, and no byte of KV is copied.
+    /// `unsupported` where a KV device cannot wrap host memory; `layout_mismatch` when `len` is short.
+    ///
+    /// # Safety
+    /// `memory..memory+len` must stay valid, and be written by nothing but the fork, for as long as
+    /// these blocks live: the owner holds the memory beside the blocks and drops the blocks first.
+    pub unsafe fn attach_storage(&mut self, ctx: &mut Context<'_>, memory: NonNull<u8>, len: usize) -> Result<(), PersonaRefusal> {
+        // SAFETY: both pointers are live; the caller keeps `memory` valid for the blocks' life.
+        status(unsafe { sys::llama_persona_storage_attach(ctx.as_ptr(), self.ptr.as_ptr(), memory.as_ptr().cast(), len) })
     }
 
     /// Write the blocks her last completed save holds to `path` (through `<path>.tmp` and a rename,

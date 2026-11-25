@@ -451,6 +451,7 @@ airc-test-fixtures = { path = "core/airc-test-fixtures" }
 continuum-academy = { path = "core/continuum-academy" }
 continuum-airc-protocol = { path = "core/continuum-airc-protocol" }
 continuum-base = { path = "core/continuum-base" }
+continuum-blocks = { path = "core/continuum-blocks" }
 continuum-bridge-protocol = { path = "core/livekit-protocol" }
 continuum-capture = { path = "core/continuum-capture" }
 continuum-cli-lifecycle = { path = "core/continuum-cli-lifecycle" }

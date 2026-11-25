@@ -150,6 +150,17 @@ impl Preserved {
     }
 
     /// The path of a block file named by a manifest or a generation.
+    /// Where each mind's live KV file is mapped while she runs (UNIFIED-PAGING.md slice 2), emptied at start:
+    /// a file left by a run that ended without a stop holds no restore yet (her written blocks do).
+    pub(super) fn live_kv(&self) -> Result<PathBuf, StoreError> {
+        let dir = self.dir.join("live");
+        if dir.exists() {
+            std::fs::remove_dir_all(&dir).map_err(|source| StoreError::Dir { dir: dir.clone(), source })?;
+        }
+        std::fs::create_dir_all(&dir).map_err(|source| StoreError::Dir { dir: dir.clone(), source })?;
+        Ok(dir)
+    }
+
     pub(super) fn path(&self, file: &str) -> PathBuf {
         self.dir.join(file)
     }

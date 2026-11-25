@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use continuum_persona_engine::engine::PersonaEngine;
 use continuum_persona_engine::persona::{Epoch, MindId, PersonaId, PersonaParts, PersonaUnit};
 use continuum_persona_engine::residency::{Direction, Execute, Tier};
-use continuum_persona_llama::{base_genes, Blocks, Rebind, Step, UnifiedTier};
+use continuum_persona_llama::{base_genes, Blocks, KvHome, Rebind, Step, UnifiedTier};
 use llama::{Batch, ContextParams, FlashAttn, Model, ModelParams, Pos};
 
 /// Where her decode stands: the next position and her last sampled token.
@@ -50,7 +50,7 @@ fn adopted_context_is_refused(model: &Model, ctx: &mut llama::Context<'_>) -> Re
     ctx.decode(&batch)?;
     let mind = MindId { persona: PersonaId(uuid::Uuid::new_v4()), epoch: Epoch(1) };
     {
-        let mut tier = UnifiedTier::new(ctx);
+        let mut tier = UnifiedTier::new(ctx, KvHome::Native);
         let mut blocks = tier.blocks_for(mind).map_err(|e| e.to_string())?;
         if tier.begin(mind, &mut blocks, Direction::In).is_ok() {
             return Err("adoption: a new mind was bound over sequence 0's state".into());
@@ -61,7 +61,7 @@ fn adopted_context_is_refused(model: &Model, ctx: &mut llama::Context<'_>) -> Re
     }
     ctx.memory_seq_clear(0);
     {
-        let mut tier = UnifiedTier::new(ctx);
+        let mut tier = UnifiedTier::new(ctx, KvHome::Native);
         let mut blocks = tier.blocks_for(mind).map_err(|e| e.to_string())?;
         if tier.begin(mind, &mut blocks, Direction::In).is_err() {
             return Err("adoption: a new mind was refused an empty stream".into());
@@ -81,7 +81,7 @@ fn a_refused_newer_epoch_keeps_her_parked_blocks(model: &Model, ctx: &mut llama:
     let tokens = model.tokenize("She keeps her own notes.", true, false)?;
     let her = PersonaId(uuid::Uuid::new_v4());
     let (first_gen, second_gen) = (MindId { persona: her, epoch: Epoch(1) }, MindId { persona: her, epoch: Epoch(2) });
-    let mut tier = UnifiedTier::new(ctx);
+    let mut tier = UnifiedTier::new(ctx, KvHome::Native);
     let mut kept = tier.blocks_for(first_gen).map_err(|e| e.to_string())?;
     tier.begin(first_gen, &mut kept, Direction::In).map_err(|e| e.to_string())?;
     let seq = tier.stream_of(first_gen).ok_or("replay: she is not bound")?.seq();
@@ -108,7 +108,13 @@ fn a_refused_newer_epoch_keeps_her_parked_blocks(model: &Model, ctx: &mut llama:
     Ok(())
 }
 
+// The run, apart from main, so an error is said the moment it happens: main's own return would drop the
+// context first, and a refusal inside the measurement would be heard only after its teardown.
 fn main() -> Result<(), String> {
+    run().inspect_err(|why| eprintln!("persona_switch: refused: {why}"))
+}
+
+fn run() -> Result<(), String> {
     let args: Vec<String> = std::env::args().collect();
     let model_path = args.get(1).ok_or("usage: persona_switch <model.gguf> <minds> <prompt_tokens> <decode_tokens> <rounds>")?;
     let (minds, prompt_tokens, decode_tokens, rounds) =
@@ -120,9 +126,11 @@ fn main() -> Result<(), String> {
     let window = (prompt_tokens + decode_tokens * rounds + 64) as u32;
     let params = ContextParams { n_ctx: window, n_batch: 2048, n_ubatch: 2048, n_seq_max: 1, flash_attn: FlashAttn::Enabled, ..ContextParams::default() };
     let mut ctx = model.new_context(params)?;
+    // each mind's KV is a block over her own mapped file (UNIFIED-PAGING.md slice 2), as the engine runs it
+    let kv_dir = tempfile::tempdir().map_err(|e| e.to_string())?;
     adopted_context_is_refused(&model, &mut ctx)?;
     a_refused_newer_epoch_keeps_her_parked_blocks(&model, &mut ctx)?;
-    let mut engine: PersonaEngine<Mind, UnifiedTier<'_, '_>> = PersonaEngine::new(UnifiedTier::new(&mut ctx));
+    let mut engine: PersonaEngine<Mind, UnifiedTier<'_, '_>> = PersonaEngine::new(UnifiedTier::new(&mut ctx, KvHome::Mapped(kv_dir.path().to_path_buf())));
     let genes = base_genes();
 
     let mut parked: Vec<Mind> = (0..minds)
