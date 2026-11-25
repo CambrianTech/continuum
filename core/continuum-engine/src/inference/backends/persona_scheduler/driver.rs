@@ -73,7 +73,7 @@ enum StartError {
     #[error("the persona scheduler's batch size is zero")]
     ZeroBatch,
     #[error("no home for minds' KV and preserved state: {0}")]
-    Home(String),
+    Home(#[from] preserve::StoreError),
 }
 
 /// One mind this scheduler serves: the unit that travels (CONTINUUM-ENGINE 4.17). Her blocks are her
@@ -253,7 +253,7 @@ pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
     let (mut store, instance) = match preserve::Preserved::at_home().and_then(|store| store.live_kv().map(|kv| (store, kv))) {
         Ok(found) => found,
         Err(why) => {
-            let refused = StartError::Home(why.to_string());
+            let refused = StartError::Home(why);
             refuse(&refused);
             refuse_all(refused.to_string());
             return;
