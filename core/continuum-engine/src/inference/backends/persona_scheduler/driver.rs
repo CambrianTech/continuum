@@ -41,6 +41,8 @@ pub(super) enum TurnError {
     Retire(#[from] RetireError),
     #[error("no mind is active after the switch")]
     NoneActive,
+    #[error("only her genes' identity was kept (she was resumed from disk): her prefix cannot be prefilled under them")]
+    GenesNotHeld,
     #[error("her history is longer than a context position holds")]
     TooLong,
     #[error("nothing was decoded for her turn")]
@@ -72,13 +74,6 @@ enum StartError {
     ZeroBatch,
 }
 
-/// What her blocks were computed under beside the token ids. The model is this context's own, and no
-/// native media reaches this path (the prompt is text), so her gene set (ids and scales) is the rest.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-struct Basis {
-    genes: String,
-}
-
 /// One mind this scheduler serves: the unit that travels (CONTINUUM-ENGINE 4.17). Her blocks are her
 /// own part, so wherever her unit is (active, parked, preserved) her blocks are with her.
 type Mind = PersonaUnit<Blocks, History, Basis, (), Tenure>;
@@ -97,6 +92,9 @@ enum Tenure {
 mod ending;
 mod history;
 mod learning;
+mod basis;
+use basis::Basis;
+mod prefix;
 pub(crate) use learning::{Job as LearningJob, Lesson as LearningLesson, Measuring as LearningMeasuring};
 
 use ending::{Ending, Stop, Suspension};
@@ -180,7 +178,8 @@ fn resume(tier: &mut UnifiedTier<'_, '_>, preserved: &mut preserve::Preserved, m
         match preserved.restore(tier, &mind) {
             Ok((blocks, held)) => {
                 continuum_base::probe!(class = "persona.engine.resumed", persona = %mind.persona, tokens = held.len() as u64, in_place = mind.kv.is_some(), "a mind came back from her preserved files");
-                let parts = Parts { blocks, tokens: History::from(held), genome: Basis { genes: mind.basis }, learning: (), decode: Tenure::Resident };
+                // a mind resumed from disk keeps only her genes' identity, never the adapters themselves
+                let parts = Parts { blocks, tokens: History::from(held), genome: Basis { genes: mind.basis, adapters: None }, learning: (), decode: Tenure::Resident };
                 parked.insert(id, Mind::new(id, epoch, parts));
             }
             Err(refused) => {
@@ -597,8 +596,8 @@ impl Driver<'_, '_> {
             return;
         }
         let prompt = std::mem::take(&mut req.prompt);
-        let basis = Basis { genes: signature(&req.active_loras) };
         let genes: Genes = req.active_loras.iter().map(|(_, adapter, scale)| (Arc::clone(adapter), *scale)).collect::<Vec<_>>().into();
+        let basis = Basis { genes: signature(&req.active_loras), adapters: Some(Arc::clone(&genes)) };
         let boundary = req.view_end;
         self.answers += 1;
         let answer = emit::AnswerSeq(self.answers);

@@ -181,6 +181,15 @@ where
         Ok(self.tier.rewind(mind, from)?)
     }
 
+    /// Empty the active mind's sequence once her submitted step landed: she holds nothing, and her next
+    /// step starts at 0.
+    pub fn clear_active(&mut self) -> Result<(), DecodeError> {
+        let mind = self.active_mind()?;
+        self.tier.settle()?;
+        self.decoding = None;
+        Ok(self.tier.clear(mind)?)
+    }
+
     fn active_mind(&self) -> Result<MindId, DecodeError> {
         self.roles.active().map(Identified::mind).ok_or(DecodeError::NoneActive)
     }

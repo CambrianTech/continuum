@@ -260,4 +260,112 @@
                 eprintln!("the validator's generation stays at {}: {kept}", generation().display());
             }
         }
+
+        // what this catches (Codex on c2d7a457 and 67af8fb2): a learn step that re-decoded her served tail
+        // under the shadow, so she then served from KV it computed; a hybrid's learn refused because her
+        // recurrent state was past the served prefix; and her prefix prefilled again under genes she was
+        // not served with. She serves under a learned gene that changes her answers, her history runs on
+        // past an older lesson, she learns it (Learned twice), and her next turn under the same gene
+        // answers exactly as a mind that never learned answers the same history (greedy). She reuses her
+        // served prefix, more than nothing: never a cold replay. (How much the mind that never learned
+        // reuses differs by architecture: a hybrid resumes only at a checkpoint.)
+        //     cargo test -p continuum-engine --features metal --lib an_older_lesson -- --ignored --nocapture
+        //     CONTINUUM_LEARN_MODEL=<a hybrid GGUF> for the recurrent path
+        #[tokio::test(flavor = "multi_thread")]
+        #[ignore = "requires qwen2.5-0.5b-instruct under ~/.continuum/genome/models, or CONTINUUM_LEARN_MODEL; run explicitly"]
+        async fn an_older_lesson_learned_under_her_genes_leaves_her_answering_as_a_mind_that_never_learned() {
+            let default = || dirs::home_dir().expect("test: a home").join(".continuum/genome/models/qwen2.5-0.5b-instruct/qwen2.5-0.5b-instruct-q4_k_m.gguf");
+            let path = std::env::var_os("CONTINUUM_LEARN_MODEL").map_or_else(default, std::path::PathBuf::from);
+            if !path.exists() {
+                eprintln!("SKIPPED: {} not present", path.display());
+                return;
+            }
+            eprintln!("model: {}", path.display());
+            let backend = LlamaCppBackend::load(LlamaCppConfig { model_path: path, ..Default::default() }).expect("test: the model loads");
+            let nonzero = |n| std::num::NonZeroU32::new(n).expect("test: nonzero");
+            let allocation = GenerationAllocation::new(nonzero(backend.capabilities().n_ctx_train.min(4096)));
+            let mut state = backend.start_scheduler(allocation).expect("test: the scheduler starts");
+            state.wait_for(|state| state.ready().is_some()).await.expect("test: the engine becomes ready");
+            let (tx, mut heard) = tokio::sync::mpsc::unbounded_channel();
+            let (input, _worker) = continuum_sage::spawn_stage(Heard(tx), continuum_sage::Capacity::granted(std::num::NonZeroUsize::new(64).expect("test: nonzero")));
+            let _subscribed = continuum_sage::component::node().subscribe::<Said>(LEARNING_SAID).attach(&input, std::num::NonZeroUsize::new(64).expect("test: nonzero"));
+            let port: &dyn LearnPort = &backend;
+
+            // a serving gene that changes answers: a shadow learned for a throwaway mind, saved
+            let gene_dir = std::env::temp_dir().join(format!("served-gene-{}", uuid::Uuid::new_v4()));
+            learned(port, &mut heard, Learns { mind: uuid::Uuid::new_v4(), steps: 3, into: Some(&gene_dir) }).await;
+            backend.ensure_adapter("served", &gene_dir.join("adapter.gguf")).expect("test: the gene loads");
+            let served = [("served".to_string(), 1.0_f32)];
+
+            // her view as the lesson renders it (they share a prefix), then a view sharing nothing with it
+            // (Codex on #6260: a served prefix of 0 with no checkpoint there)
+            for (view, shares) in [("<|im_start|>user\nWhat is the capital of Kansas?<|im_end|>\n", true), ("Notes on the river and the mill beside it.\n", false)] {
+                // greedy, under the gene, her view kept as a checkpoint at its end
+                let turn = |who: uuid::Uuid, text: &str| {
+                    let sampler = backend.turn_sampler(None, &crate::inference::backends::SamplingConfig::code(), None).expect("test: a sampler");
+                    let prompt = TurnPrompt { text, stable_prefix: Some(view), urgency: continuum_sage::component::Urgency::Want, request: None };
+                    backend.submit_for_persona(allocation, Some(who), prompt, 16, sampler, &[], &served).expect("test: the turn submits")
+                };
+                let (her, never) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+                let ask = |history: &str, said: &str, question: &str| format!("{history}{said}<|im_end|>\n<|im_start|>user\n{question}<|im_end|>\n<|im_start|>assistant\n");
+                let first = format!("{view}<|im_start|>user\nAnswer in one word.<|im_end|>\n<|im_start|>assistant\n");
+                let a1 = turn(her, &first).collect().await.expect("test: her first turn answers");
+                let _ = turn(never, &first).collect().await.expect("test: the other mind's first turn answers");
+                let second = ask(&first, &a1.text, "And of Kentucky?");
+                let a2 = turn(her, &second).collect().await.expect("test: her second turn answers");
+                let _ = turn(never, &second).collect().await.expect("test: the other mind's second turn answers");
+
+                // she learns the older lesson while her history has run on past it
+                learned(port, &mut heard, Learns { mind: her, steps: 2, into: None }).await;
+
+                let third = ask(&second, &a2.text, "And of Ohio?");
+                let hers = turn(her, &third).collect().await.expect("test: her next turn answers");
+                let theirs = turn(never, &third).collect().await.expect("test: the other mind's next turn answers");
+                eprintln!("view {view:?}: after learning {:?} (reused {} of {}); never learned {:?} (reused {} of {})", hers.text, hers.facts.reused_tokens, hers.facts.prompt_tokens, theirs.text, theirs.facts.reused_tokens, theirs.facts.prompt_tokens);
+                assert_eq!(hers.text, theirs.text, "under the same gene she answers as a mind that never learned");
+                // sharing a prefix with the lesson, she resumes from it: never a cold replay. (On the single
+                // Core an attention-only mind keeps the tail she held past the lesson and reuses it too; a
+                // hybrid resumes at her served prefix and prefills the rest under her genes.)
+                assert!(!shares || hers.facts.reused_tokens > 0, "she reuses her served prefix when she has one");
+            }
+            if let Err(kept) = std::fs::remove_dir_all(&gene_dir) {
+                eprintln!("the served gene stays at {}: {kept}", gene_dir.display());
+            }
+        }
+
+        /// What a shadow learns: whose, how many steps (each must say Learned), and where its generation
+        /// is saved, when it is.
+        struct Learns<'a> {
+            mind: uuid::Uuid,
+            steps: usize,
+            into: Option<&'a std::path::Path>,
+        }
+
+        /// A fresh shadow seated, learned and saved as `learns` says, then released.
+        async fn learned(port: &dyn LearnPort, heard: &mut tokio::sync::mpsc::UnboundedReceiver<Arc<Said>>, learns: Learns<'_>) {
+            let Learns { mind, steps, into } = learns;
+            let seat = SeatId(uuid::Uuid::new_v4());
+            let fresh = crate::inference::llama_server::FreshShadow { name: format!("shadow-{}", seat.0), rank: 8, alpha: 16.0, targets: vec!["attn_q".into(), "attn_v".into()], top_layers: 0, seed: 42 };
+            let optimizer = llama::Optimizer::AdamW { learning_rate: 5e-3, beta1: 0.9, beta2: 0.999, eps: 1e-8, weight_decay: 0.0 };
+            assert!(port.tell(Learning::Measure(Measure { seat, mind: continuum_persona_engine::persona::PersonaId(mind), shadow: ShadowSource::Fresh(fresh), optimizer, sized_for: lesson() })).is_ok());
+            assert!(matches!(next(heard).await, Said::Seat { state: SeatState::Measured { .. }, .. }));
+            assert!(port.tell(Learning::Load { seat }).is_ok());
+            assert!(matches!(next(heard).await, Said::Seat { state: SeatState::Loaded { .. }, .. }));
+            assert!(port.tell(Learning::Seat(Seat { seat, lease: Box::new(Counted::default()) })).is_ok());
+            assert!(matches!(next(heard).await, Said::Seat { state: SeatState::Seated { .. }, .. }));
+            for _ in 0..steps {
+                let step = StepId(uuid::Uuid::new_v4());
+                assert!(port.tell(Learning::Learn(crate::inference::learning::Learn { seat, step, lesson: lesson(), admission: Box::new(Open) })).is_ok());
+                match next(heard).await {
+                    Said::Step { outcome: StepOutcome::Learned { .. }, .. } => {}
+                    other => panic!("expected Learned, heard {other:?}"),
+                }
+            }
+            if let Some(into) = into {
+                assert!(port.tell(Learning::Checkpoint { seat, into: into.to_path_buf(), binding: "served".into() }).is_ok());
+                assert!(matches!(next(heard).await, Said::Generation { outcome: GenerationOutcome::Saved { .. }, .. }), "the gene is saved");
+            }
+            assert!(port.tell(Learning::Release { seat }).is_ok());
+            assert!(matches!(next(heard).await, Said::Seat { state: SeatState::Released, .. }));
+        }
     }
