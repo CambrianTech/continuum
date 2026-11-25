@@ -19,6 +19,9 @@ use std::path::{Path, PathBuf};
 
 use continuum_saved_state::{OwnedFile, Retention, SaveError, SavedState, Singleton, Store};
 
+mod mind_files;
+pub(super) use mind_files::HandOverError;
+
 /// Why preserved minds cannot be opened or published. Each leaves the last complete generation
 /// standing.
 #[derive(Debug, thiserror::Error)]
@@ -31,27 +34,45 @@ pub(super) enum StoreError {
     Save(#[from] SaveError),
 }
 
-/// One preserved mind: who she is, her genes, her token history (exactly what her blocks hold), and
-/// the file her blocks were written to in her generation.
+/// One preserved mind: who she is, her genes, the stop that handed her over, and her three files in
+/// the store's directory (UNIFIED-PAGING slice 2): her record, her KV file when her storage was one, and
+/// her token history (exactly what her blocks hold).
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(super) struct PreservedMind {
     pub persona: uuid::Uuid,
     pub epoch: u64,
     pub basis: String,
-    pub held: Vec<i32>,
-    /// Her block file's name in the store's directory, written in the generation that named it.
-    pub blocks: String,
+    /// The stop that wrote her files; her record carries it too, and a record of another is refused.
+    pub generation: u64,
+    /// Her record: identity, layout, cells, recurrent rows, and her attention rows when `kv` is `None`.
+    pub record: String,
+    /// Her KV file: her attention rows, exactly her storage, handed over by a rename.
+    pub kv: Option<String>,
+    pub tokens: Tokens,
 }
 
-/// A format-1 entry: her blocks were at the fixed `<persona>.cpb`.
+/// Her token history, as the manifest names it.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub(super) enum Tokens {
+    /// Raw `i32`s in their own file, `count` of them: one write of the bytes she holds, never an encoding.
+    File { name: String, count: u64 },
+    /// A format-1 or format-2 manifest's history, carried until her next stop writes the file: the one
+    /// migration (Codex: a preserved mind never starts cold for a format change). Deleted once no node
+    /// holds a format-2 manifest.
+    Migrating(Vec<i32>),
+}
+
+/// A format-1 or format-2 entry: her history inline, her rows inside her one block file (`blocks`;
+/// format 1 had none named, and hers was the fixed `<persona>.cpb`).
 #[derive(serde::Deserialize)]
-struct PreservedMindV1 {
+struct PreservedMindV2 {
     persona: uuid::Uuid,
     epoch: u64,
     basis: String,
     held: Vec<i32>,
+    #[serde(default)]
+    blocks: Option<String>,
 }
-
 /// What a preserved mind is valid against: the model she ran on.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(super) struct ServedModel {
@@ -63,32 +84,57 @@ pub(super) struct PreservedMinds;
 
 impl SavedState for PreservedMinds {
     const KIND: &'static str = "preserved-minds";
-    const FORMAT: u32 = 2;
+    const FORMAT: u32 = 3;
     const RETENTION: Retention = Retention::PerKey { bound: "one per node: the last complete generation, replaced only once a stop's every write landed" };
     type Key = Singleton;
     type Contract = ServedModel;
     type Value = Vec<PreservedMind>;
     type Medium = OwnedFile;
 
-    /// Format 1 named no block file: hers was the fixed `<persona>.cpb`.
+    /// Formats 1 and 2 held her rows inside her one block file and her history inline: each becomes a
+    /// record holding her rows (the fork reads a format-1 record as one) and a migrating history, so she
+    /// resumes warm, and her next stop writes format 3.
     fn upgrade(found: u32, old: serde_json::Value) -> Option<Self::Value> {
-        let minds: Vec<PreservedMindV1> = (found == 1).then(|| serde_json::from_value(old).ok()).flatten()?; // disk boundary: the saved-state envelope's format-1 body
-        Some(minds.into_iter().map(|m| PreservedMind { blocks: format!("{}.cpb", m.persona), persona: m.persona, epoch: m.epoch, basis: m.basis, held: m.held }).collect())
+        let minds: Vec<PreservedMindV2> = matches!(found, 1 | 2).then(|| serde_json::from_value(old).ok()).flatten()?; // disk boundary: the saved-state envelope's format-1/2 body
+        Some(minds.into_iter().map(|m| PreservedMind {
+            record: m.blocks.unwrap_or_else(|| format!("{}.cpb", m.persona)), // unwrap_or_else: format 1 named no file; hers was fixed
+            persona: m.persona,
+            epoch: m.epoch,
+            basis: m.basis,
+            generation: 0, // a format-1 record carries none, and the fork reads it under any
+            kv: None,
+            tokens: Tokens::Migrating(m.held),
+        }).collect())
     }
 }
 
-/// One stop's generation: the name its block files carry, fresh at every stop.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct Generation(String);
+/// One stop's generation: the number its files and records carry, fresh at every stop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Generation(u64);
 
 impl Generation {
     pub(super) fn fresh() -> Self {
-        Self(uuid::Uuid::new_v4().simple().to_string())
+        let (high, low) = uuid::Uuid::new_v4().as_u64_pair();
+        Self(high ^ low)
     }
 
-    /// Her block file's name in this generation.
-    pub(super) fn file(&self, persona: uuid::Uuid) -> String {
-        format!("{persona}.{}.cpb", self.0)
+    pub(super) fn number(self) -> u64 {
+        self.0
+    }
+
+    /// Her record's name in this generation.
+    pub(super) fn record(self, persona: uuid::Uuid) -> String {
+        format!("{persona}.{:016x}.cpb", self.0)
+    }
+
+    /// Her KV file's name in this generation.
+    pub(super) fn kv(self, persona: uuid::Uuid) -> String {
+        format!("{persona}.{:016x}.kv", self.0)
+    }
+
+    /// Her token history's name in this generation.
+    pub(super) fn tokens(self, persona: uuid::Uuid) -> String {
+        format!("{persona}.{:016x}.tok", self.0)
     }
 }
 
@@ -103,19 +149,31 @@ pub(super) fn next_manifest(last: &[PreservedMind], written: &[PreservedMind]) -
     written.iter().cloned().chain(kept).collect()
 }
 
-/// The block files in `dir` that `manifest` does not name: removable once it is published.
+/// The files in `dir` that `manifest` does not name: removable once it is published. Records, KV files
+/// and token histories (and a record's own staging), never a custody lock or the live directory.
 fn unreferenced(dir: &Path, manifest: &[PreservedMind]) -> std::io::Result<Vec<PathBuf>> {
-    let named: HashSet<&str> = manifest.iter().map(|mind| mind.blocks.as_str()).collect();
+    let named: HashSet<&str> = manifest.iter().flat_map(PreservedMind::files).collect();
     let mut out = Vec::new();
     for entry in std::fs::read_dir(dir)? {
         let path = entry?.path();
-        let name = path.file_name().and_then(|name| name.to_str()).unwrap_or_default(); // unwrap_or_default: a non-UTF-8 name is no block file of ours
-        let ours = name.ends_with(".cpb") || name.ends_with(".cpb.tmp");
+        let name = path.file_name().and_then(|name| name.to_str()).unwrap_or_default(); // unwrap_or_default: a non-UTF-8 name is no file of ours
+        let ours = [".cpb", ".cpb.tmp", ".kv", ".tok"].iter().any(|suffix| name.ends_with(suffix));
         if ours && !named.contains(name) {
             out.push(path);
         }
     }
     Ok(out)
+}
+
+impl PreservedMind {
+    /// Every file of hers the manifest names.
+    fn files(&self) -> impl Iterator<Item = &str> {
+        let tokens = match &self.tokens {
+            Tokens::File { name, .. } => Some(name.as_str()),
+            Tokens::Migrating(_) => None,
+        };
+        std::iter::once(self.record.as_str()).chain(self.kv.as_deref()).chain(tokens)
+    }
 }
 
 /// Where preserved minds live: the store, the directory of their block files, and the last complete
@@ -124,6 +182,9 @@ pub(super) struct Preserved {
     pub store: Store<PreservedMinds>,
     dir: PathBuf,
     last: Vec<PreservedMind>,
+    /// The minds this core holds custody of, from her restore (or her first stop) to the end of the
+    /// process: one OS lock per mind, so two cores never both move her files (mind_files.rs).
+    custody: std::collections::HashMap<uuid::Uuid, continuum_host::durable::Lock>,
 }
 
 impl Preserved {
@@ -137,7 +198,7 @@ impl Preserved {
         if let Err(source) = std::fs::create_dir_all(&dir) {
             return Err(StoreError::Dir { dir, source });
         }
-        Ok(Self { store: Store::at(dir.to_path_buf()), dir, last: Vec::new() })
+        Ok(Self { store: Store::at(dir.to_path_buf()), dir, last: Vec::new(), custody: std::collections::HashMap::new() })
     }
 
     /// The last complete generation, as loaded at start.
@@ -197,7 +258,7 @@ mod tests {
     use continuum_saved_state::Loaded;
 
     fn mind(n: u128, blocks: &str) -> PreservedMind {
-        PreservedMind { persona: uuid::Uuid::from_u128(n), epoch: 1, basis: String::new(), held: vec![n as i32], blocks: blocks.to_owned() }
+        PreservedMind { persona: uuid::Uuid::from_u128(n), epoch: 1, basis: String::new(), generation: 1, record: blocks.to_owned(), kv: None, tokens: Tokens::Migrating(vec![n as i32]) }
     }
 
     // what this catches (Codex on #6159): a stop interrupted between a block write and the manifest
@@ -209,21 +270,21 @@ mod tests {
         let served = ServedModel { model: "m".into() };
         let mut preserved = Preserved::at(dir.path().to_path_buf()).expect("test: a store"); // expect: the test's own precondition
         let first = Generation::fresh();
-        std::fs::write(preserved.path(&first.file(uuid::Uuid::from_u128(1))), b"generation one").expect("test: write"); // expect: the test's own precondition
-        let published = vec![mind(1, &first.file(uuid::Uuid::from_u128(1)))];
+        std::fs::write(preserved.path(&first.record(uuid::Uuid::from_u128(1))), b"generation one").expect("test: write"); // expect: the test's own precondition
+        let published = vec![mind(1, &first.record(uuid::Uuid::from_u128(1)))];
         preserved.publish(&served, &published).expect("test: publish"); // expect: the test's own precondition
 
         // the next stop writes her blocks, then the process ends before its manifest
         let second = Generation::fresh();
-        assert_ne!(first.file(uuid::Uuid::from_u128(1)), second.file(uuid::Uuid::from_u128(1)), "a new generation never overwrites a named file");
-        std::fs::write(preserved.path(&second.file(uuid::Uuid::from_u128(1))), b"generation two").expect("test: write"); // expect: the test's own precondition
+        assert_ne!(first.record(uuid::Uuid::from_u128(1)), second.record(uuid::Uuid::from_u128(1)), "a new generation never overwrites a named file");
+        std::fs::write(preserved.path(&second.record(uuid::Uuid::from_u128(1))), b"generation two").expect("test: write"); // expect: the test's own precondition
 
         let reopened = Preserved::at(dir.path().to_path_buf()).expect("test: reopen"); // expect: the test's own precondition
         let loaded = reopened.store.load(&Singleton, &served);
         assert!(matches!(loaded, Loaded::Matched(_)), "the last manifest loads: {}", loaded.describe());
         let Loaded::Matched(loaded) = loaded else { return };
         assert_eq!(loaded, published, "the last complete generation, unchanged");
-        assert_eq!(std::fs::read(reopened.path(&loaded[0].blocks)).ok().as_deref(), Some(&b"generation one"[..]), "with its own blocks");
+        assert_eq!(std::fs::read(reopened.path(&loaded[0].record)).ok().as_deref(), Some(&b"generation one"[..]), "with its own blocks");
     }
 
     // what this catches (Codex on #6159): a resident dropped from the next manifest because this stop
@@ -245,9 +306,9 @@ mod tests {
         let served = ServedModel { model: "m".into() };
         let her = uuid::Uuid::from_u128(1);
         let mut saved_at = Preserved::at(dir.path().to_path_buf()).expect("test: a store"); // expect: the test's own precondition
-        let file = Generation::fresh().file(her);
+        let file = Generation::fresh().record(her);
         std::fs::write(saved_at.path(&file), b"her rows at the large window").expect("test: write"); // expect: the test's own precondition
-        let original = vec![PreservedMind { persona: her, epoch: 1, basis: String::new(), held: vec![1, 2, 3], blocks: file.clone() }];
+        let original = vec![PreservedMind { persona: her, epoch: 1, basis: String::new(), generation: 1, record: file.clone(), kv: None, tokens: Tokens::File { name: format!("{her}.tok"), count: 3 } }];
         saved_at.publish(&served, &original).expect("test: publish"); // expect: the test's own precondition
 
         // the smaller boot: her manifest loads, her read is refused, so she never enters the warm
@@ -267,7 +328,7 @@ mod tests {
         assert!(matches!(back, Loaded::Matched(_)), "her manifest loads: {}", back.describe());
         let Loaded::Matched(back) = back else { return };
         assert_eq!(back, original, "her original history and file");
-        assert_eq!(std::fs::read(fits.path(&back[0].blocks)).ok().as_deref(), Some(&b"her rows at the large window"[..]), "her blocks, never deleted");
+        assert_eq!(std::fs::read(fits.path(&back[0].record)).ok().as_deref(), Some(&b"her rows at the large window"[..]), "her blocks, never deleted");
     }
 
     // what this catches (Codex on #6159): a committed manifest reported as lost, and `last` left
@@ -284,29 +345,36 @@ mod tests {
         assert_eq!(preserved.last(), manifest.as_slice(), "last is the committed generation");
     }
 
-    // what this catches: publishing removing a file the manifest names, or leaving one it no longer
-    // names to fill the disk. After a publish only the named block files remain.
+    // what this catches: publishing removing a file the manifest names (her record, KV file or history),
+    // removing a custody lock (deleting a lock file races the next locker), or leaving a file it no
+    // longer names to fill the disk. After a publish only the named files and the locks remain.
     #[test]
     fn a_publish_removes_only_what_it_no_longer_names() {
         let dir = tempfile::tempdir().expect("test: a temp dir"); // expect: the test's own precondition
         let mut preserved = Preserved::at(dir.path().to_path_buf()).expect("test: a store"); // expect: the test's own precondition
-        for file in ["a.g1.cpb", "a.g2.cpb", "b.g1.cpb", "b.g2.cpb.tmp"] {
+        let files = ["a.g1.cpb", "a.g2.cpb", "a.g2.kv", "a.g2.tok", "a.g1.kv", "a.g1.tok", "b.g1.cpb", "b.g2.cpb.tmp", "a.custody"];
+        for file in files {
             std::fs::write(preserved.path(file), b"rows").expect("test: write"); // expect: the test's own precondition
         }
-        let kept = preserved.publish(&ServedModel { model: "m".into() }, &[mind(1, "a.g2.cpb"), mind(2, "b.g1.cpb")]).expect("test: publish"); // expect: the test's own precondition
+        let a = PreservedMind { kv: Some("a.g2.kv".into()), tokens: Tokens::File { name: "a.g2.tok".into(), count: 1 }, ..mind(1, "a.g2.cpb") };
+        let kept = preserved.publish(&ServedModel { model: "m".into() }, &[a, mind(2, "b.g1.cpb")]).expect("test: publish"); // expect: the test's own precondition
         assert!(kept.is_empty(), "{kept:?}");
-        let mut left: Vec<String> = std::fs::read_dir(dir.path()).expect("test: list").filter_map(|e| e.ok()?.file_name().into_string().ok()).filter(|n| n.contains(".cpb")).collect(); // expect: the test's own precondition
+        let mut left: Vec<String> = std::fs::read_dir(dir.path()).expect("test: list").filter_map(|e| e.ok()?.file_name().into_string().ok()).filter(|n| files.contains(&n.as_str())).collect(); // expect: the test's own precondition
         left.sort();
-        assert_eq!(left, vec!["a.g2.cpb".to_owned(), "b.g1.cpb".to_owned()]);
+        assert_eq!(left, ["a.custody", "a.g2.cpb", "a.g2.kv", "a.g2.tok", "b.g1.cpb"].map(str::to_owned));
     }
 
-    // what this catches: the format change dropping every preserved mind at the first start after
-    // it. A format-1 manifest upgrades with her blocks at the fixed name it used.
+    // what this catches (Codex, 2026-11-25: a named cold start loses her continuity): a format change
+    // dropping every preserved mind at the first start after it. Format 1 (her blocks at a fixed name)
+    // and format 2 (named per generation) both upgrade to a record holding her rows and her history
+    // carried until her next stop, so she resumes warm.
     #[test]
-    fn a_format_one_manifest_upgrades_to_its_fixed_block_names() {
+    fn a_format_one_or_two_manifest_upgrades_to_a_record_with_her_rows() {
         let id = uuid::Uuid::from_u128(7);
-        let old = serde_json::json!([{ "persona": id, "epoch": 3, "basis": "", "held": [1, 2] }]);
-        let upgraded = PreservedMinds::upgrade(1, old).expect("test: format 1 upgrades"); // expect: the test's own precondition
-        assert_eq!(upgraded, vec![PreservedMind { persona: id, epoch: 3, basis: String::new(), held: vec![1, 2], blocks: format!("{id}.cpb") }]);
+        let migrated = |record: String| vec![PreservedMind { persona: id, epoch: 3, basis: String::new(), generation: 0, record, kv: None, tokens: Tokens::Migrating(vec![1, 2]) }];
+        let one = serde_json::json!([{ "persona": id, "epoch": 3, "basis": "", "held": [1, 2] }]);
+        assert_eq!(PreservedMinds::upgrade(1, one), Some(migrated(format!("{id}.cpb"))));
+        let two = serde_json::json!([{ "persona": id, "epoch": 3, "basis": "", "held": [1, 2], "blocks": format!("{id}.abc.cpb") }]);
+        assert_eq!(PreservedMinds::upgrade(2, two), Some(migrated(format!("{id}.abc.cpb"))));
     }
 }

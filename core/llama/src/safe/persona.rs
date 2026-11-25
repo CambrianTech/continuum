@@ -152,23 +152,26 @@ impl PersonaBlocks {
         status(unsafe { sys::llama_persona_storage_attach(ctx.as_ptr(), self.ptr.as_ptr(), memory.as_ptr().cast(), len) })
     }
 
-    /// Write the blocks her last completed save holds to `path` (through `<path>.tmp` and a rename,
-    /// so a crash never leaves a torn file that reads as hers): her raw rows and records, never
-    /// re-serialized. A restart demotes her to this file instead of dropping her (CONTINUUM-ENGINE
-    /// 4.16, restore is the norm).
-    pub fn write_file(&self, path: &std::path::Path) -> Result<(), PersonaRefusal> {
+    /// Write her record to `path` (through `<path>.tmp` and a rename, so a crash never leaves a torn
+    /// file that reads as hers), stamped with the stop's `generation`. Where her storage is attached
+    /// (her mapped file) her attention rows are already in it, so the record names the storage's bytes
+    /// and holds none of them; otherwise it holds her raw rows (UNIFIED-PAGING slice 2). The caller
+    /// makes it durable ([`continuum_host`]'s fence) before naming it in a manifest.
+    pub fn write_file(&self, path: &std::path::Path, generation: u64) -> Result<(), PersonaRefusal> {
         let path = path_c(path)?;
         // SAFETY: `self.ptr` is live; the fork only reads her blocks and writes the file.
-        status(unsafe { sys::llama_persona_write_file(self.ptr.as_ptr(), path.as_ptr()) })
+        status(unsafe { sys::llama_persona_write_file(self.ptr.as_ptr(), path.as_ptr(), generation) })
     }
 
     /// Fill these blocks (made by [`Self::new`] for the same owner on a context of the same layout)
-    /// from her file; bind her afterwards as after a save. A file of another owner, another epoch of
-    /// her, or another memory layout is refused and leaves these blocks as they were.
-    pub fn read_file(&mut self, path: &std::path::Path) -> Result<(), PersonaRefusal> {
+    /// from her record of `generation`; bind her afterwards as after a save. A record whose rows are in
+    /// storage takes only storage attached at exactly its bytes, so attach her file first. A record of
+    /// another owner, epoch, generation or memory layout is refused and leaves these blocks as they
+    /// were. A format-1 record (rows inside, no generation) is read as one holding her rows.
+    pub fn read_file(&mut self, path: &std::path::Path, generation: u64) -> Result<(), PersonaRefusal> {
         let path = path_c(path)?;
-        // SAFETY: `self.ptr` is live; the fork checks the whole file before committing anything.
-        status(unsafe { sys::llama_persona_read_file(self.ptr.as_ptr(), path.as_ptr()) })
+        // SAFETY: `self.ptr` is live; the fork checks the whole record before committing anything.
+        status(unsafe { sys::llama_persona_read_file(self.ptr.as_ptr(), path.as_ptr(), generation) })
     }
 
     /// The owner stamped by the last completed save; `None` before one.

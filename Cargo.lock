@@ -3625,6 +3625,7 @@ version = "0.1.0"
 dependencies = [
  "continuum-base",
  "continuum-blocks",
+ "continuum-host",
  "continuum-persona-engine",
  "llama",
  "tempfile",

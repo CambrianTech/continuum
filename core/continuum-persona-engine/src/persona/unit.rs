@@ -34,6 +34,12 @@ impl<B, T, G, L, D> PersonaUnit<B, T, G, L, D> {
     pub fn parts_mut(&mut self) -> &mut PersonaParts<B, T, G, L, D> {
         &mut self.parts
     }
+
+    /// Her parts, whole, as this generation of her ends (a stop hands her blocks' files to the next
+    /// start): the unit is consumed, so no part of her is left behind to be used after.
+    pub fn into_parts(self) -> PersonaParts<B, T, G, L, D> {
+        self.parts
+    }
 }
 
 /// A unit that carries her own blocks: the tier moves the blocks it is handed and holds no copy of

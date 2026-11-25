@@ -118,4 +118,31 @@ mod tests {
         assert!(reopened.as_slice().iter().enumerate().all(|(i, &b)| b == (i % 251) as u8), "the file holds the region's bytes");
         assert!(MappedRegion::create(&dir.path().join("none"), 0).is_err(), "zero bytes is refused");
     }
+
+    // what this catches (Codex, 2026-11-25, Windows: a rename with another mapping holder outstanding):
+    // a restore that adopts a mind's file while it is mapped (her mapping, and a second holder such as a
+    // copy of us reading it). POSIX renames it under every mapping. Windows may refuse while a view is
+    // open; then the error comes back and her file is still where it was, whole, never lost or torn.
+    #[test]
+    fn a_rename_under_two_mappings_moves_the_file_or_refuses_and_leaves_it() {
+        let dir = tempfile::tempdir().expect("test: a temp dir");
+        let (from, to) = (dir.path().join("handed.kv"), dir.path().join("adopted.kv"));
+        let len = 1024 * 1024;
+        let mut first = MappedRegion::create(&from, len).expect("test: her mapping");
+        first.as_mut_slice().fill(7);
+        first.flush().expect("test: flush");
+        let second = MappedRegion::create(&from, len).expect("test: a second holder");
+        match crate::durable::replace(&from, &to) {
+            Ok(()) => {
+                assert!(!from.exists() && to.exists(), "moved: the file is at its new name only");
+                assert!(first.as_slice().iter().all(|&b| b == 7) && second.as_slice().iter().all(|&b| b == 7), "both views still read her bytes");
+            }
+            Err(refused) => {
+                assert!(cfg!(windows), "only Windows refuses a rename under a mapping: {refused}");
+                assert!(from.exists() && !to.exists(), "refused: her file is where it was");
+                drop((first, second));
+                assert!(std::fs::read(&from).expect("test: read").iter().all(|&b| b == 7), "and whole");
+            }
+        }
+    }
 }

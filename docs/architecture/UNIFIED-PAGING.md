@@ -561,6 +561,24 @@ stream's own KV allocation then serves only a mind without storage; its size at 
 - Windows: a rename while another mapping of her file is still held fails with its error carried
   to the stop's report, and leaves the manifest's last generation whole.
 
+**Measured, the second half as built** (M5, Metal, 2026-11-25, fork 62923e28b and its cell-table commit):
+- `persona_handoff` (control never stopped; the old core hands her over and ends; a new core joins the
+  same root, refuses another generation in place, restores her, refuses the path her file left, and
+  decodes on):
+  - qwen2.5-0.5b, 1k prompt: hand-over 12.9 ms, restore 4.1 ms, record 18 KB, KV file 15.7 MB moved by
+    rename, 32 of 32 tokens after the restore equal the control's.
+  - qwen35moe (hybrid), 1k prompt: hand-over 12.8 ms, restore 3.2 ms, record 158 KB (her recurrent rows
+    stay in it), 32 of 32 tokens equal.
+  - qwen2.5-0.5b, 30k prompt: hand-over 14–16 ms, restore 6.8–9.7 ms over three runs, record 510 KB,
+    KV file 371 MB moved by rename, 16 of 16 tokens equal.
+- Restore's parts at 30k: map 0.1 ms; attach (Metal wrapping her 371 MB) 2.3 ms; her record 0.3 ms (2.3
+  ms before the cell table moved in one transfer); the synced rename 3.4 ms.
+- Not yet measured: 130k on the 35B (the live model; it shares the M5 with serving). Owner Fable; due at
+  this change's first deploy on the M5, read from the live stop and restore probes.
+- The rename's directory sync is on restore's path because a crash after an unsynced rename could put
+  her changed file back at the manifest's name. Overlapping it with the attach and the record read is
+  the next cut if 130k misses 10 ms.
+
 **Deleted:**
 - the fork's private storage reservation;
 - the row copy in her file write and read;
