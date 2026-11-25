@@ -77,6 +77,13 @@ topic; no component holds another.
   throughput estimator can read a time-weighted summary of completed transfers, and a cache
   policy can read a sequence of episodes. Native payloads stay with their owners. Each view
   declares what it retains and how it resumes when history is short or a source revision expires.
+- **Each use case owns its actions and constraints.** The lane can continue, switch, batch
+  or idle. Every lane policy must respect deadlines by urgency, stride by need and the
+  finish-first rule. Other uses can define their own actions and invariants, such as exact
+  continuity after moving a mind. Policies optimize the objective within those bounds.
+  The interface passes its design test when a new use case is added without editing any
+  existing policy; a new policy is tried against recorded history without changing the
+  producer or the executor.
 - **A choice and its outcome are distinct observations.** The resource owner applies an
   admissible choice and publishes its measured outcome against the choice's handle. Replay
   pins the history available when the choice was made. Later frames can grade the prediction.
@@ -88,6 +95,8 @@ topic; no component holds another.
   export, new work may finish more cheaply on a grid peer. When the export ends, the same
   comparison can admit more local work, even while the editor stays open. Charge transfer,
   restore and lost warmth when comparing a handoff with finishing work in place.
+  Local volume placement uses the same ledger, pricing a working set by its required space
+  and the achieved service rate for its access pattern on each eligible volume.
   Across independently operated grids, a peer can offer a grade at a price until a stated
   expiry. Only an accepted lease commits capacity for its agreed term. Reevaluate new work
   as offers, budgets and service rates change. The custody and completion owners govern
