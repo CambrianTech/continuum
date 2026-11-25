@@ -2755,6 +2755,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "continuum-blocks"
+version = "0.1.0"
+dependencies = [
+ "continuum-host",
+ "tempfile",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "continuum-bridge-protocol"
 version = "0.1.0"
 dependencies = [
@@ -3119,6 +3128,7 @@ dependencies = [
  "candle-transformers",
  "continuum-airc-protocol",
  "continuum-base",
+ "continuum-blocks",
  "continuum-cli-lifecycle",
  "continuum-host",
  "continuum-kernel",
@@ -3614,8 +3624,10 @@ name = "continuum-persona-llama"
 version = "0.1.0"
 dependencies = [
  "continuum-base",
+ "continuum-blocks",
  "continuum-persona-engine",
  "llama",
+ "tempfile",
  "thiserror 2.0.18",
  "tracing",
  "uuid",

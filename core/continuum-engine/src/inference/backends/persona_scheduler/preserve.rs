@@ -150,6 +150,19 @@ impl Preserved {
     }
 
     /// The path of a block file named by a manifest or a generation.
+    /// This core's place for its minds' live KV files (UNIFIED-PAGING.md slice 2): its own directory under
+    /// `live/`, held under a lease for as long as it runs, so a copy of us beside it never maps there. A
+    /// directory whose lease no live core holds belonged to a copy that is gone, and is reclaimed here.
+    pub(super) fn live_kv(&self) -> Result<continuum_blocks::Instance, StoreError> {
+        let root = self.dir.join("live");
+        let (instance, reclaimed) = continuum_blocks::Instance::join(&root, &uuid::Uuid::new_v4().simple().to_string())
+            .map_err(|source| StoreError::Dir { dir: root, source })?;
+        if reclaimed.instances > 0 {
+            continuum_base::probe!(class = "persona.kv_home.reclaimed", instances = reclaimed.instances as u64, bytes = reclaimed.bytes, "live KV of copies that are gone was reclaimed");
+        }
+        Ok(instance)
+    }
+
     pub(super) fn path(&self, file: &str) -> PathBuf {
         self.dir.join(file)
     }

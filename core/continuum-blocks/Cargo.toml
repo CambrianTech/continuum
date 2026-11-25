@@ -1,0 +1,12 @@
+[package]
+name = "continuum-blocks"
+version = "0.1.0"
+edition = "2021"
+description = "One block layer for every memory tier (UNIFIED-PAGING.md): regions of memory a node detects (unified, RAM, flash), blocks consumers hold and pin, and links that move a block as a pointer or as the OS's paging of a mapped file. Never a copy loop, never an encoding. Depends on no consumer: a block's kind is the consumer's own key."
+
+[dependencies]
+continuum-host = { workspace = true } # mapped_region: the file mapping a Flash-backed block lives in
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

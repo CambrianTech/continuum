@@ -12,7 +12,7 @@ const select = (...paths) => {
 // Tested crates a kernel change does not reach: the floor (base, host, git, service, saved-state) and
 // the leaves that depend on nothing in the workspace (the codec continuum-context, the flow
 // continuum-flow, the proving ground's types continuum-proving-types).
-const BELOW_KERNEL = ['continuum-base', 'continuum-host', 'continuum-git', 'continuum-service', 'continuum-saved-state', 'continuum-context', 'continuum-flow', 'continuum-proving-types', 'continuum-persona-engine', 'continuum-persona-llama', 'continuum-sage', 'step-replay'];
+const BELOW_KERNEL = ['continuum-base', 'continuum-host', 'continuum-blocks', 'continuum-git', 'continuum-service', 'continuum-saved-state', 'continuum-context', 'continuum-flow', 'continuum-proving-types', 'continuum-persona-engine', 'continuum-persona-llama', 'continuum-sage', 'step-replay'];
 // continuum-sage is under the kernel (the kernel's disk relief is a SAGE component); step-replay reads captures
 // on continuum-base alone: neither depends on the kernel or the CLI lifecycle.
 
@@ -156,7 +156,7 @@ test('a crate-local change runs that crate and every crate that depends on it', 
   const aboveFloor = TESTED_CRATES.filter(n => !BELOW_KERNEL.includes(n));
   assert.deepEqual(scope(['core/continuum-kernel/src/lib.rs']), { crates: aboveFloor, cli: false });
   // A floor change runs the floor crate and every crate built on it.
-  assert.deepEqual(scope(['core/continuum-host/src/durable/mod.rs']), { crates: TESTED_CRATES.filter(n => !['continuum-base', 'continuum-service', 'continuum-context', 'continuum-flow', 'continuum-proving-types', 'continuum-persona-engine', 'continuum-persona-llama', 'continuum-sage', 'step-replay'].includes(n)), cli: true });
+  assert.deepEqual(scope(['core/continuum-host/src/durable/mod.rs']), { crates: TESTED_CRATES.filter(n => !['continuum-base', 'continuum-service', 'continuum-context', 'continuum-flow', 'continuum-proving-types', 'continuum-persona-engine', 'continuum-sage', 'step-replay'].includes(n)), cli: true });
   // continuum-git is used by hands (a citizen's git) and core (the deploy tree): both run, and every crate above hands.
   assert.deepEqual(scope(['core/continuum-git/src/index_lock.rs']), crates('continuum-git', 'continuum-hands', 'continuum-cognition', 'continuum-academy', 'continuum-mind', 'continuum-dreaming', 'continuum-grid', 'continuum-serving', 'continuum-core'));
   // Untested crates reach the tested ones through the graph: llama -> engine -> ...
