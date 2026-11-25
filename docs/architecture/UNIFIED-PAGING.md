@@ -173,7 +173,7 @@ pub trait PlacementLaw<K>: Send {
     /// decisions (a miss, a move's measured time): the reward signal a learned law trains on.
     fn observe(&mut self, seen: &Observation<K>);
     /// The moves it wants now, given each block's placement and each tier's budget.
-    fn plan(&mut self, view: &View<K>) -> Vec<Move<K>>;
+    fn plan(&mut self, view: &View<K>) -> Vec<(DecisionId, Move<K>)>;
 }
 
 pub enum Observation<K> {
@@ -181,11 +181,64 @@ pub enum Observation<K> {
     Used { key: K, at: Instant },                     // the block was read
     Moved { key: K, from: Placement, to: Placement, bytes: u64, took: Duration },
     Missed { key: K, needed_at: Instant, landed_at: Instant },   // the outcome that scores a law
+    Refused { decision: DecisionId, why: Refusal },  // a move the Streamer would not make, and why
     Budget { tier: TierKind, bytes: u64 },            // the resource authority's number
     Pressure { tier: TierKind, level: Pressure },
 }
 pub enum Move<K> { Promote(K, TierKind), Demote(K), Hold(K) }
 ```
+
+**Easy for any algorithm to control: four contracts.**
+
+1. **The `View` is borrowed, never copied, and laid out for a model.** `plan(&mut self, view: &View<K>)`
+   borrows the Streamer's own state for the call. Every quantity a law could weigh is a column, one
+   row per block, in a struct of arrays, so a learned law reads `&[f32]` slices straight into a tensor
+   and a hand-written law indexes rows:
+
+   ```rust
+   pub struct View<'s, K> {
+       pub keys: &'s [K],
+       pub blocks: &'s Columns,   // per block: bytes, tier, placement, pinned, in_flight,
+                                  // since_used_s, forecast_next_use_s, forecast_error_s, misses
+       pub tiers: &'s Columns,    // per tier: budget, resident, moving, read_bps, write_bps, pressure
+       pub links: &'s Columns,    // per link: rate_bps, queued_bytes, last_took_s
+       pub frame: u64,            // the frame this view was taken at
+   }
+   pub struct Columns { schema: &'static Schema, data: Vec<f32>, rows: usize }   // column-major
+   pub struct Schema { version: u32, names: &'static [&'static str] }             // named, versioned
+   ```
+
+   Adding a measurement adds a named column and bumps the schema version. A law asks for a column by
+   name and is told when one is missing; a trained model is tied to the schema version it was
+   trained on, and is refused on any other.
+
+2. **The Streamer enforces the invariants, not the law.** A plan is a set of requests. Before acting,
+   the Streamer drops any move that would:
+   - move a pinned or in-flight block;
+   - exceed a tier's budget;
+   - demote a block forecast to be needed sooner than the demotion takes.
+
+   Each dropped move is an `Observation::Refused { decision, why }`, so a learned law learns from
+   it. A bad or still-learning law can make the system slower, but never wrong.
+
+3. **Every decision carries an id, and its outcome comes back on it.** `plan` returns
+   `Vec<(DecisionId, Move<K>)>`. Every later observation the move causes (`Moved`, and `Used`/`Missed`
+   for the block, or `Refused`) carries the same `DecisionId`, so credit assignment for reinforcement
+   learning is a join on the id. Nobody infers it from timing.
+
+4. **A run is training data as it stands.** The `Trace` stores each frame's `View` columns, the
+   decisions and their outcomes, as typed binary (the columns' own `f32`s, the schema version in the
+   header). It is never JSON: a learner, the simulator and replay all read the same bytes.
+
+**Measured with the future in mind.** Some columns are recorded before any law uses them, because a
+learned law may want them and they cannot be recovered later:
+- each block's use history (inter-use gaps);
+- its forecast error;
+- each consumer's declared demand next to the actual use;
+- per-link queue depth and achieved rate;
+- tier pressure.
+
+The cost is a few floats per block per frame, written off the engine thread.
 
 Two more seams, where a learned model is most likely to win, each with one implementation now:
 - `Forecaster`: a block's predicted time to next use, from its `Observation` history. The first
