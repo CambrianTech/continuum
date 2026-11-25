@@ -110,6 +110,41 @@
         assert_eq!(backend.effective_context_length(GenerationAllocation::new(tokens)), Ok(512));
     }
 
+    // what this catches (the M5, 2026-11-25 17:02Z: Benchy 38 asked, 0 completed, four minds on one
+    // Core): a running turn keeping the Core at equal need until it ends, so a short turn from another
+    // mind waits out a long answer. Two minds at one urgency: A asks for a long answer, B for a short one
+    // just after. Under the lane, B is stepped within her wait bound and finishes while A still decodes.
+    //     cargo test -p continuum-engine --features llama/metal --lib a_short_turn_never -- --ignored --nocapture
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "requires qwen2.5-0.5b-instruct under ~/.continuum/genome/models; run explicitly"]
+    async fn a_short_turn_never_waits_out_another_minds_long_one() {
+        let path = dirs::home_dir().expect("test: a home").join(".continuum/genome/models/qwen2.5-0.5b-instruct/qwen2.5-0.5b-instruct-q4_k_m.gguf"); // expect: the test's own precondition
+        if !path.exists() {
+            eprintln!("SKIPPED: {} not present", path.display());
+            return;
+        }
+        let backend = LlamaCppBackend::load(LlamaCppConfig { model_path: path, ..Default::default() }).expect("test: the 0.5B loads"); // expect: the test's own precondition
+        let allocation = GenerationAllocation::new(std::num::NonZeroU32::new(2048).expect("test: nonzero")); // expect: the test's own precondition
+        let mut state = backend.start_scheduler(allocation).expect("test: the scheduler starts"); // expect: the test's own precondition
+        state.wait_for(|state| state.ready().is_some()).await.expect("test: the engine becomes ready"); // expect: the test's own precondition
+        let turn = |text: &'static str, tokens: usize| {
+            let sampler = backend.turn_sampler(None, &crate::inference::backends::SamplingConfig::chat(), None).expect("test: a sampler"); // expect: the test's own precondition
+            let prompt = TurnPrompt { text, stable_prefix: None, urgency: continuum_sage::component::Urgency::Want, request: None };
+            backend.submit_for_persona(allocation, Some(uuid::Uuid::new_v4()), prompt, tokens, sampler, &[], &[]).expect("test: the turn submits") // expect: the test's own precondition
+        };
+        let mut long = turn("<|im_start|>user\nWrite a long story about a lighthouse keeper, in detail.<|im_end|>\n<|im_start|>assistant\n", 256);
+        long.until_first_token().await; // her turn is running: the next turn arrives while she decodes
+        let short = turn("<|im_start|>user\nSay hi.<|im_end|>\n<|im_start|>assistant\n", 8);
+        // the order the two completion events arrive in, never a stopwatch
+        let finished = std::sync::atomic::AtomicU8::new(0);
+        let rank = || finished.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let (long, short) = tokio::join!(async { (long.collect().await, rank()) }, async { (short.collect().await, rank()) });
+        let ((long_answer, long_rank), (short_answer, short_rank)) = (long, short);
+        let (long_answer, short_answer) = (long_answer.expect("test: the long turn answers"), short_answer.expect("test: the short turn answers")); // expect: the test's own precondition
+        eprintln!("long: {} tokens in {:?} (engine); short: {} tokens in {:?} (engine); finished first: {}", long_answer.facts.generated, long_answer.facts.elapsed, short_answer.facts.generated, short_answer.facts.elapsed, if short_rank < long_rank { "short" } else { "long" });
+        assert!(short_rank < long_rank, "the short turn finished while the long one still decoded");
+    }
+
     /// L2's validator (IN-PROCESS-LEARNING.md): a resident learns between her turns through the
     /// node's LearnPort, on the real engine, and every outcome is heard on learning/said.
     mod learn_port {

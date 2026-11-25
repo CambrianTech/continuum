@@ -21,6 +21,16 @@ pub enum Urgency {
     Urgent,
 }
 
+impl Urgency {
+    /// The longest a ready subject at this urgency may wait for a scarce capacity's next turn: the
+    /// guarantee every scheduling policy is held to, never a tuning a policy trades (Joel, 2026-11-24:
+    /// "Any over 2 s are wrong. Probably over 1 s"). One bound for every urgency today; a more urgent
+    /// subject is served sooner by the policy's preference, not by a looser bound for the others.
+    pub fn wait_bound(self) -> std::time::Duration {
+        std::time::Duration::from_secs(1)
+    }
+}
+
 /// A component's need as published: its own urgency, and the engine's facts beside it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Need {

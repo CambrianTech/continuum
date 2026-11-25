@@ -1,7 +1,7 @@
 //! The lane: who takes the Core's next step (THE-LANE-ON-SAGE.md, "When to switch"). How long a mind
-//! hot-path: the lane decides at every Core step (THE-LANE-ON-SAGE.md, "The types").
 //! keeps the Core is an outcome of these choices, never a parameter: a deep mind whose pages went cold
 //! costs more to bring in, and a policy that sees her features finds that out.
+//! hot-path: the lane decides at every Core step (THE-LANE-ON-SAGE.md, "The types").
 //!
 //! It decides at every step, so it allocates nothing past its buffers' high-water mark: actions name ready minds by
 //! slot (their index in `ready`) and a batch by a bitmask of slots; a mind's key is `Copy`.
@@ -13,6 +13,7 @@ use std::time::Duration;
 use crate::component::Urgency;
 
 use super::super::measured::Measured;
+use super::super::policy::{Choice, Policy, PolicyId};
 use super::super::use_case::{Gate, UseCase, Violation};
 
 /// A ready mind's index in [`Situation::ready`]. Only the first [`SLOTS`] ready minds are offered.
@@ -28,7 +29,7 @@ pub const SLOTS: usize = Mask::BITS as usize;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
     /// Tokens of her prompt still to prefill.
-    Prefill { remaining: u32 },
+    Prefill { remaining: u64 },
     Decode,
 }
 
@@ -44,8 +45,8 @@ pub struct Mind<K> {
     pub deadline: Duration,
     pub phase: Phase,
     /// Her KV's depth in bytes, and how much of it is not resident (the block layer knows exactly).
-    pub kv_bytes: u64,
-    pub cold_bytes: u64,
+    pub kv_bytes: Measured<u64>,
+    pub cold_bytes: Measured<u64>,
     /// Tokens left in her turn, predicted from her own history in this activity.
     pub remaining: Measured<u32>,
     /// Her step time, and the cost of bringing her in from where she is now.
@@ -77,7 +78,7 @@ pub enum Action {
 /// What a decision window measured.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Outcome {
-    pub tokens: u64,
+    pub tokens: Measured<u64>,
     pub engine: Duration,
     /// The longest any ready mind waited in the window, against her deadline.
     pub worst_wait: Duration,
@@ -140,5 +141,31 @@ impl<K: Copy + Debug + PartialEq + Send + 'static> UseCase for Lane<K> {
 
     fn empty() -> Situation<K> {
         Situation { running: None, ready: Vec::new(), batch_width: 1 } // cold: an empty slot is built once, at the decider's construction
+    }
+}
+
+/// Need first: the most urgent ready mind is switched in when she needs the Core more than the running
+/// one (an addressed mind takes the next step); otherwise the running one continues; with nobody
+/// running, the most urgent, longest-waiting mind starts. The envelope keeps every wait inside its
+/// bound whatever this prefers. The baseline the cost model is measured against.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NeedFirst;
+
+impl<K: Copy + Debug + PartialEq + Send + 'static> Policy<Lane<K>> for NeedFirst {
+    fn id(&self) -> PolicyId {
+        PolicyId { name: "need-first", parameters: 0 }
+    }
+
+    fn choose(&mut self, situation: &Situation<K>, admissible: &[Action]) -> Choice {
+        let best = situation.ready.iter().take(SLOTS).enumerate().max_by(|(_, a), (_, b)| a.urgency.cmp(&b.urgency).then(a.waited.cmp(&b.waited)));
+        let wanted = match (&situation.running, best) {
+            (Some(running), Some((slot, mind))) if mind.urgency > running.urgency => Action::Switch(slot as Slot),
+            (Some(_), _) => Action::Continue,
+            (None, Some((slot, _))) => Action::Switch(slot as Slot),
+            (None, None) => Action::Idle,
+        };
+        // The envelope offered what it allows; a wanted action it did not offer yields its first.
+        let index = admissible.iter().position(|action| *action == wanted).unwrap_or(0); // unwrap_or: not offered means the envelope decided; its first is its choice
+        Choice { index, expected: None }
     }
 }

@@ -132,8 +132,8 @@ fn mind(id: u8, waited_ms: u64) -> Mind<u8> {
         waited: Duration::from_millis(waited_ms),
         deadline: Duration::from_secs(1),
         phase: Phase::Decode,
-        kv_bytes: 60 << 20,
-        cold_bytes: 0,
+        kv_bytes: Measured::Value(60 << 20),
+        cold_bytes: Measured::Value(0),
         remaining: Measured::Unmeasured,
         step: Measured::Value(Duration::from_millis(26)),
         switch_in: Measured::Value(Duration::from_micros(10)),
@@ -164,7 +164,7 @@ fn the_lane_forces_an_overdue_mind_and_offers_batches_only_as_wide_as_the_core()
     assert_eq!(envelope::<Lane<u8>>(&alone).0, Gate::Forced(lane::Action::Idle));
 
     let mut decider: Decider<Lane<u8>> = Decider::new(Box::new(Baseline), capacity(4));
-    let step = lane::Outcome { tokens: 1, engine: Duration::from_millis(26), worst_wait: Duration::from_millis(20), worst_deadline: Duration::from_secs(1) };
+    let step = lane::Outcome { tokens: Measured::Value(1), engine: Duration::from_millis(26), worst_wait: Duration::from_millis(20), worst_deadline: Duration::from_secs(1) };
     for _ in 0..16 {
         let Decided::Act(id, lane::Action::Continue) = decider.decide(&open, &read(1)) else { panic!("test: the baseline continues") };
         assert!(decider.outcome(id, step).is_some(), "each step's outcome closes its record");
@@ -229,4 +229,23 @@ fn unmeasured_stays_explicit_and_views_keep_what_they_declare() {
         window.observe(sample);
     }
     assert_eq!((window.retains(), window.quantile(low), window.quantile(half), window.quantile(high)), (3, Measured::Value(1.0), Measured::Value(7.0), Measured::Value(9.0)));
+}
+
+// what this catches: an addressed mind left behind a running one that only wants to continue, and a
+// needless switch at equal need (the switch is cheap, but a policy that thrashes is not need-first).
+#[test]
+fn need_first_switches_to_a_more_urgent_mind_and_otherwise_continues() {
+    let urgent = |id, waited| lane::Mind { urgency: Urgency::Urgent, ..mind(id, waited) };
+    let mut policy = lane::NeedFirst;
+    let mut decide = |situation: &lane::Situation<u8>| {
+        let (gate, admissible) = envelope::<Lane<u8>>(situation);
+        assert_eq!(gate, Gate::Choose, "nobody is overdue");
+        admissible[Policy::<Lane<u8>>::choose(&mut policy, situation, &admissible).index]
+    };
+    let addressed = lane::Situation { running: Some(mind(1, 0)), ready: vec![mind(2, 300), urgent(3, 10)], batch_width: 1 };
+    assert_eq!(decide(&addressed), lane::Action::Switch(1), "the addressed mind takes the next step");
+    let equal = lane::Situation { running: Some(mind(1, 0)), ready: vec![mind(2, 300)], batch_width: 1 };
+    assert_eq!(decide(&equal), lane::Action::Continue, "at equal need the running mind continues until a bound forces otherwise");
+    let idle = lane::Situation { running: None, ready: vec![mind(2, 100), urgent(3, 10), mind(4, 900)], batch_width: 1 };
+    assert_eq!(decide(&idle), lane::Action::Switch(1), "with nobody running, the most urgent starts");
 }

@@ -351,7 +351,7 @@ impl Driver<'_, '_> {
         };
         // native learning begins only when her state ends at the served prefix (a hybrid's recurrent
         // state cannot be cut back, so she is rewound to a checkpoint and prefilled under her genes)
-        if let Err(why) = self.to_served_prefix(served) {
+        if let Err(why) = self.reposition_to_served_prefix(served) {
             return refused(format!("she could not be brought to her served prefix: {why}"));
         }
         // Her reply is built from what she holds NOW: on a hybrid the reposition cut her history to the

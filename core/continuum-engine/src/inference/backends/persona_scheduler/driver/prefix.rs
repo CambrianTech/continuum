@@ -11,7 +11,7 @@ use llama::Pos;
 use super::{Driver, TurnError};
 
 impl Driver<'_, '_> {
-    pub(super) fn to_served_prefix(&mut self, served: usize) -> Result<(), TurnError> {
+    pub(super) fn reposition_to_served_prefix(&mut self, served: usize) -> Result<(), TurnError> {
         if !self.model.has_recurrent_state() {
             return Ok(());
         }
