@@ -68,6 +68,10 @@ pub enum Priced {
         at_window: Option<(f64, f64)>,
         measured: (u32, u32),
     },
+    /// Her choice sat at the top of the contexts measured, with window above it: this act holds a
+    /// window past them (the top plus the spread measured), so the next choice is made over a range
+    /// that includes it.
+    Trial { held: u32, measured: (u32, u32) },
 }
 
 /// `claims` as a price choice may show them: each actionable head no epoch holds without its
@@ -222,6 +226,22 @@ pub(super) fn hold(window: u32, claims: ActClaims) -> ActPlan {
     }
     if !best.is_finite() {
         return outside;
+    }
+    // A peak at the top of what was measured is not a peak: the measurement is censored there, and
+    // holding it forever is a control that can only step down (CLAUDE.md, "Control both ways"). Aris
+    // on the M5, 2026-11-25 22:30Z: measured over 12,264..18,030 tokens, held 19,218 of a 66,209
+    // window, her view granted 5 to 7k, a turnover every act or two, 50k of her window unused. So an
+    // act whose choice sits at that top, with window above it, holds an upward trial: the top plus
+    // the spread measured so far (at least her reply's want), never past the window. Its act
+    // measures that context; the next choice is made over the wider range, and comes back down if
+    // the larger window priced worse.
+    if held_context(&plan).saturating_add(2) >= measured.1 && window > plan.window {
+        let trial = window.min(measured.1.saturating_add((measured.1 - measured.0).max(claims.reply.max_tokens)));
+        if trial > plan.window {
+            let need = need_past(window, &plan, best, beyond(window, &time, &claims), &probe, trained).grown(view_sent(&claims), trained);
+            let tried = plan_at(trial, priced_claims);
+            return ActPlan { priced: Priced::Trial { held: trial, measured }, need, limits: served.limits, hard_limits: served.hard_limits, ..tried };
+        }
     }
     // Her need carries her view's growth: a reserve as large as what it already sent, as her
     // view's start leaves one, so her next acts append into a granted window instead of turning

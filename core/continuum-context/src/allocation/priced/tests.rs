@@ -291,3 +291,20 @@ fn a_view_held_past_the_measured_contexts_turns_over_into_them() {
     assert!(matches!(plan.priced, Priced::Held { .. }), "priced, never served the whole window: {:?}", plan.priced);
     assert!(held(&plan) < sent, "held inside the measured contexts, below what she sent: {}", held(&plan));
 }
+
+// what this catches (Aris on the M5, 2026-11-25 22:30Z: measured over 12,264..18,030 tokens, held
+// 19,218 of a 66,209 window, her view granted 5 to 7k and turned over every act or two): a price that
+// only ever chooses inside what it measured, so a window held small is never measured larger and can
+// only step down. A choice at the top of the measured contexts, with window above it, holds an upward
+// trial past them, never past the window; a choice inside them is held as before.
+#[test]
+fn a_choice_at_the_top_of_what_was_measured_tries_above_it() {
+    let narrow = (12_264, 18_030);
+    let tried = allocate(66_209, act(Newest::Pageable { whole: 6_000, least: 600 }, ContextPrice::Measured(m5_over(narrow))));
+    let Priced::Trial { held: trial, measured } = tried.priced else { panic!("test: a choice at the top of 12k..18k tries above it, priced {:?}", tried.priced) };
+    assert_eq!(measured, narrow);
+    assert!(trial > narrow.1 && trial <= 66_209, "past what was measured, within the window: {trial}");
+    assert_eq!(tried.window, trial, "the act holds the trial window");
+    let wide = allocate(755_456, act(Newest::Pageable { whole: 6_000, least: 600 }, m5()));
+    assert!(matches!(wide.priced, Priced::Held { .. }), "a peak inside a wide measured range is held as before: {:?}", wide.priced);
+}
