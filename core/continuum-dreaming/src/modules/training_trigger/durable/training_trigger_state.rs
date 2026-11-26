@@ -337,7 +337,7 @@ impl TrainingTriggerState {
         #[cfg(not(test))]
         let trials = crate::genome::gene_trial::GeneTrials::default_store();
         #[cfg(test)]
-        let trials = Some(crate::genome::gene_trial::GeneTrials::at(self.test_trials.path()));
+        let trials = Some(crate::genome::gene_trial::GeneTrials::in_dir(self.test_trials_dir.as_path()));
         let Some(trials) = trials else {
             return Ok(None); // no home directory: no trial file can exist, nothing to hold
         };

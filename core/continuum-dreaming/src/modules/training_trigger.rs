@@ -183,10 +183,10 @@ pub struct TrainingTriggerState {
     running: owned::Running,
     #[cfg(test)]
     operation_pause: std::sync::Mutex<Option<Arc<durable::OperationPause>>>,
-    /// Test-only: the trial file `ready_to_dispatch` reads, so a test can open a trial
-    /// and watch the bucket hold.
+    /// Test-only: the genome directory whose trials `ready_to_dispatch` reads, so a test can
+    /// open a trial and watch the bucket hold.
     #[cfg(test)]
-    pub(crate) test_trials: std::sync::Arc<crate::genome::gene_trial::GeneTrials>,
+    pub(crate) test_trials_dir: std::path::PathBuf,
 }
 
 impl TrainingTriggerState {
@@ -232,9 +232,7 @@ impl TrainingTriggerState {
             #[cfg(test)]
             operation_pause: std::sync::Mutex::new(None),
             #[cfg(test)]
-            test_trials: std::sync::Arc::new(crate::genome::gene_trial::GeneTrials::at(
-                std::env::temp_dir().join(format!("training-trigger-trials-{}.json", Uuid::new_v4())),
-            )),
+            test_trials_dir: std::env::temp_dir().join(format!("training-trigger-trials-{}", Uuid::new_v4())),
         }
     }
 

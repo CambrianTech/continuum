@@ -64,7 +64,7 @@ fn admitted(t: &crate::genome::gene_trial::GeneTrial, boot: Uuid) -> GeneExamRec
 #[test]
 fn what_is_owed_follows_the_trials_and_their_receipts() {
     let dir = tempfile::tempdir().expect("test: dir");
-    let store = GeneTrials::at(dir.path().join("trials.json"));
+    let store = GeneTrials::in_dir(dir.path());
     let p = Uuid::from_u128(7);
     let (boot, later) = (Uuid::from_u128(0xb1), Uuid::from_u128(0xb2));
     let fresh = trial(&store, p, 1);
@@ -105,7 +105,7 @@ async fn a_receipt_round_trips_through_the_orm() {
     let (adapter, _tmp) = crate::orm::store::fresh_adapter().await;
     let receipts = crate::orm::OrmStore::<GeneExamReceipt>::new(adapter).await.expect("test: store");
     let dir = tempfile::tempdir().expect("test: dir");
-    let store = GeneTrials::at(dir.path().join("trials.json"));
+    let store = GeneTrials::in_dir(dir.path());
     let t = trial(&store, Uuid::from_u128(9), 1);
     let mut r = admitted(&t, Uuid::from_u128(0xb1));
     r.correction = Some(CorrectionSummary { trained_from: "/job".into(), examples: 1, cards: vec!["c".into()], sources: vec!["card-credit".into()] });
@@ -124,15 +124,15 @@ async fn a_later_sitting_replaces_a_refusal_and_still_owes_retention() {
     let (adapter, _tmp) = crate::orm::store::fresh_adapter().await;
     let receipts = crate::orm::OrmStore::<GeneExamReceipt>::new(adapter).await.expect("test: store");
     let dir = tempfile::tempdir().expect("test: dir");
-    let path = dir.path().join("trials.json");
-    let trials = GeneTrials::at(&path);
+    let path = dir.path().to_path_buf(); // the genome directory the trials live in
+    let trials = GeneTrials::in_dir(&path);
     let t = trials.open_from(Uuid::from_u128(8), "code", Path::new("/genes/retry.gguf"),
         "qwen-27b", Some(Path::new("/job/retry")), 10).expect("test: trial");
     let old = GeneExamReceipt::unexaminable(&t, "exam set unavailable".into(), Uuid::from_u128(1), 20);
     receipts.save(receipt_id(t.id), &old).await.expect("test: prior boot receipt");
     let gain = sitting((a(5, 6), a(1, 6)), (a(6, 6), a(6, 6)), unmeasured());
     let boot = Uuid::from_u128(2);
-    let examiner = Examiner::new(GeneTrials::at(&path), receipts.clone(), Arc::new(FixedHost(gain)), boot);
+    let examiner = Examiner::new(GeneTrials::in_dir(&path), receipts.clone(), Arc::new(FixedHost(gain)), boot);
     let report = examiner.pass().await.expect("test: later sitting");
     assert_eq!(report.decided, vec![(t.id, TrialState::Promoted)]);
     assert!(report.not_now.is_empty());
@@ -164,22 +164,22 @@ async fn a_pass_sits_receipts_decides_and_retention_retires_a_lost_gene() {
     let (adapter, _tmp) = crate::orm::store::fresh_adapter().await;
     let receipts = crate::orm::OrmStore::<GeneExamReceipt>::new(adapter).await.expect("test: store");
     let dir = tempfile::tempdir().expect("test: dir");
-    let path = dir.path().join("trials.json");
-    let store = GeneTrials::at(&path);
+    let path = dir.path().to_path_buf(); // the genome directory the trials live in
+    let store = GeneTrials::in_dir(&path);
     let p = Uuid::from_u128(5);
     let trained = store
         .open_from(p, "code", Path::new("/genes/a.gguf"), "qwen-27b", Some(Path::new("/job/a")), 10)
         .expect("test: open");
     let reused = trial(&store, p, 2);
     let gain = sitting((a(5, 6), a(1, 6)), (a(6, 6), a(6, 6)), unmeasured());
-    let examiner = Examiner::new(GeneTrials::at(&path), receipts.clone(), Arc::new(FixedHost(gain)), Uuid::from_u128(1));
+    let examiner = Examiner::new(GeneTrials::in_dir(&path), receipts.clone(), Arc::new(FixedHost(gain)), Uuid::from_u128(1));
     let report = examiner.pass().await.expect("test: pass");
     assert_eq!(report.decided, vec![(trained.id, TrialState::Promoted)]);
     assert_eq!(report.unexaminable, vec![reused.id]);
     assert_eq!(examiner.pass().await.expect("test: pass"), Default::default(), "nothing owed twice");
 
     let lost = sitting((a(1, 6), a(1, 6)), (a(6, 6), a(6, 6)), unmeasured());
-    let next = Examiner::new(GeneTrials::at(&path), receipts.clone(), Arc::new(FixedHost(lost)), Uuid::from_u128(2));
+    let next = Examiner::new(GeneTrials::in_dir(&path), receipts.clone(), Arc::new(FixedHost(lost)), Uuid::from_u128(2));
     let second = next.pass().await.expect("test: pass");
     assert_eq!(second.unexaminable, vec![reused.id], "a restart replaces the prior refusal receipt");
     assert!(second.not_now.is_empty(), "a prior receipt must not cause a duplicate-key refusal: {second:?}");
