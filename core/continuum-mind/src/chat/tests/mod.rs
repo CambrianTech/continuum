@@ -753,7 +753,7 @@
                             return json!({ "success": true, "created": true });
                         } else if collection == "chat_arrivals" {
                             // Handle arrival append: one result with seq and freshness.
-                            let was_ensure_duplicate = op_type != "append"
+                            let _was_ensure_duplicate = op_type != "append"
                                 || ops.iter().any(|op2| {
                                     op2.get("collection").and_then(Value::as_str)
                                         == Some(crate::chat::types::CHAT_MESSAGES_COLLECTION)
@@ -763,12 +763,15 @@
                             let mut seen = self.seen_ids.lock().unwrap();
                             let mut has_ensure_dup = false;
                             for op2 in ops.iter() {
+                                let eid_opt = op2.get("id").and_then(Value::as_str);
                                 if op2.get("collection").and_then(Value::as_str)
                                         == Some(crate::chat::types::CHAT_MESSAGES_COLLECTION)
                                     && op2.get("operationType").and_then(Value::as_str) == Some("ensure")
-                                    && let Some(eid) = op2.get("id").and_then(Value::as_str) {
-                                    if seen.contains(eid) {
-                                        has_ensure_dup = true;
+                                    && eid_opt.is_some() {
+                                    if let Some(eid) = eid_opt {
+                                        if seen.contains(eid) {
+                                            has_ensure_dup = true;
+                                        }
                                     }
                                 }
                             }
