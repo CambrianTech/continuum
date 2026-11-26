@@ -384,3 +384,19 @@ fn an_ask_is_summed_on_each_physical_memory_it_draws_on() {
     assert_eq!(out.len(), 1, "granted once the memory has room for both");
     assert_eq!(ledger.accounts(Tier::Pinned).map(|a| a.prepared), Some(Bytes(80)), "charged once on the memory");
 }
+
+// what this catches (the kernel's replace-myself budget, #438/#214): a place already over its budget
+// read as zero free before what an owner would give back is added, so the add-back hides the debt; and
+// an add-back past the place's capacity.
+#[test]
+fn room_if_released_repays_an_over_budget_place_and_never_passes_capacity() {
+    let mut ledger = Ledger::default();
+    ledger.place(Tier::Vram, Bytes(100), Bytes(100), &mut Vec::new());
+    let peer = granted(ledger.prepare(SERVING, FIRST, &[Need { place: Tier::Vram, amount: Bytes(20) }]));
+    assert!(peer.consume(Tier::Vram, Bytes(20)));
+    assert_eq!(ledger.commit(peer.id()), Ok(()));
+    ledger.place(Tier::Vram, Bytes(100), Bytes(10), &mut Vec::new()); // 90 resident beside it: 10 over
+    assert_eq!(ledger.room_for(TRAINER, Tier::Vram), Some(Bytes(0)));
+    assert_eq!(ledger.room_if(TRAINER, Tier::Vram, &[(Tier::Vram, Bytes(40))]), Some(Bytes(30)), "the 10 over is repaid first");
+    assert_eq!(ledger.room_if(TRAINER, Tier::Vram, &[(Tier::Vram, Bytes(500))]), Some(Bytes(100)), "never past capacity");
+}
