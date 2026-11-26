@@ -2,6 +2,11 @@ use super::*;
 
 pub(crate) use crate::persona::operator_peer::{persona_airc, persona_runtime};
 
+/// Bounded duration for board reads during card-id prefix resolution.
+/// Long enough for normal operation (a few rooms × one IPC call each)
+/// but prevents indefinite hangs when the Airc daemon blocks on a room.
+const BOARD_READ_TIMEOUT_SECS: u64 = 5;
+
 pub(super) fn priority_str(p: Priority) -> &'static str {
     match p {
         Priority::P0 => "p0",
@@ -32,9 +37,18 @@ pub(super) async fn resolve_card_id(
     if let Some(id) = shown.full() {
         return Ok(id);
     }
-    let horizon = board_horizon(airc)
-        .await
-        .map_err(|e| CommandError::Internal(format!("board read for id resolution: {e}")))?;
+    let horizon = tokio::time::timeout(
+        std::time::Duration::from_secs(BOARD_READ_TIMEOUT_SECS),
+        board_horizon(airc),
+    )
+    .await
+    .map_err(|_| {
+        CommandError::Internal(format!(
+            "board read timed out after {BOARD_READ_TIMEOUT_SECS}s while resolving card id prefix — \
+             the Airc daemon may be slow or unresponsive; retry shortly"
+        ))
+    })?
+    .map_err(|e| CommandError::Internal(format!("board read for id resolution: {e}")))?;
     resolve_card_id_in_boards(&horizon, s)
 }
 
@@ -72,9 +86,18 @@ pub(super) async fn resolve_claim_id(
     if let Some(id) = shown.full() {
         return Ok(id);
     }
-    let horizon = board_horizon(airc)
-        .await
-        .map_err(|e| CommandError::Internal(format!("board read for claim resolution: {e}")))?;
+    let horizon = tokio::time::timeout(
+        std::time::Duration::from_secs(BOARD_READ_TIMEOUT_SECS),
+        board_horizon(airc),
+    )
+    .await
+    .map_err(|_| {
+        CommandError::Internal(format!(
+            "board read timed out after {BOARD_READ_TIMEOUT_SECS}s while resolving claim id prefix — \
+             the Airc daemon may be slow or unresponsive; retry shortly"
+        ))
+    })?
+    .map_err(|e| CommandError::Internal(format!("board read for claim resolution: {e}")))?;
     shown.resolve_in(&horizon).map_err(|e| match refused::<ClaimId>(&horizon, s, e) {
         CommandError::Invalid(why) => CommandError::Invalid(claim_gone_hint(why)),
         other => other,
