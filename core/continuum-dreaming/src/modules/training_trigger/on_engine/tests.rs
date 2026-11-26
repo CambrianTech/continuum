@@ -378,4 +378,25 @@ mod held_off {
         assert_eq!(free_vram(&state), Some(0), "every stage spent the reserve, nothing more was asked and nothing is left over");
         drop(rest);
     }
+
+    // what this catches: a granted reserve kept for a bucket whose pass seats nothing (nothing pending, not
+    // now, a refusal): held from every other consumer with nothing to spend it on, for as long as the
+    // trainer runs.
+    #[tokio::test]
+    async fn a_pass_that_seats_nothing_gives_its_reserve_back() {
+        let (state, _key, _home, _dir, _guard) = waiting().await;
+        let free_vram = |state: &Arc<TrainingTriggerState>| state.authority.resources.board().kinds.iter().find(|k| k.kind == crate::resources::ResourceKind::Vram).map(|k| k.available_bytes);
+        let before = free_vram(&state);
+        let empty = BucketKey { persona_id: Uuid::new_v4(), trait_kind: "nothing-pending".into(), base_model: "qwen".into() };
+        let reserve = crate::inference::training_admission::try_training_memory(&state.authority.resources, Admission::Free(&state.authority.serving), "learning:reserve", crate::resources::ResourceKind::Vram, 100 << 20)
+            .expect("test: the authority answers")
+            .expect("test: 100 MiB is granted");
+        let held_for = empty.clone();
+        state.on_engine.reserves.lock().insert(held_for, vec![reserve]);
+        assert_ne!(free_vram(&state), before, "the reserve is held");
+        let kept = Arc::new(Kept::default());
+        let port: Arc<dyn LearnPort> = kept.clone();
+        state.seat_bucket(&port, &empty).await.expect("test: the pass ends cleanly");
+        assert_eq!(free_vram(&state), before, "nothing pending: the reserve is given back");
+    }
 }
