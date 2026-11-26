@@ -540,6 +540,27 @@ would be memory-only, and each later instance would write it again. So the order
   `Consumer`s, and the Streamer's single lease per tier is no longer needed. Until then it is the
   bridge that keeps one counter.
 
+**Audit against the golden rules (Joel, 2026-11-26: "thread and memory based, low cpu iterations and
+good object oriented compression into solid generalizations").** `continuum_sage::place` at
+f8d0f28655 passes the thread and memory rules: one `&mut` owner and no lock; the consumer spends
+from per-place atomics and never waits; typed places, quantities, owners and generations, never a
+string; nothing scans data. Prepare allocates its claim once (not per step), and a grant pass is
+O(waits × places), a few of each. It fails the compression rule: it was written before searching
+for copies, and three exist.
+
+| Copy | Where | What it has that `place` lacks | Its end |
+|---|---|---|---|
+| `ResourceLeaseLedger` (817 lines) | `continuum-kernel/src/resources/ledger.rs` | per-kind capacity from scans, physical-used samples, `set_backing` (a kind aliased onto another: unified memory), expiry and renew, reclaim selection; string consumer and lease ids | it becomes `place::Ledger<ResourceKind, Bytes>` at node scope. Backing aliasing becomes the per-physical-memory place rule (settled above), physical samples feed `Accounts::budget`, and expiry is a claim's `until` (`Lease<Q>`). Typed `Owner`s replace the strings. Its reclaim selection is the law. Owners: Cormac (the authority, delta 8) with Codex |
+| `ThroughputLeaseRegistry` | `continuum-kernel/src/resources/throughput_lease.rs` | concurrency slots for transient jobs | `Ledger<_, Slots>` |
+| `Flow` + `Scheduler` | `continuum-sage/src/{flow,scheduler}.rs` | QoS classes and aging (a waiter ages one class at a time), yield requests to the lowest class; but answers through a future (a promise) and has no user outside its own tests | `Scheduler`'s aging is the placer law's answer to multi-place starvation (Cormac, 09:24Z). `Flow`'s future wrapper is deleted. |
+
+So slice 3a is not done until the kernel's ledger and registry are instances of `place::Ledger` and
+their copies are deleted. Smaller findings on the same line: `LearningMemory::row`
+(`continuum-engine/src/inference/learning/memory.rs:64`) matches a buffer by its name string on
+every allocation callback on the engine thread; 3b deletes it, and until then it is bounded by a
+seat's few allocations. The lane rebuilds its batch bound as a `NonZeroU64` at each pick: one add,
+kept.
+
 What it deletes, in the slice that builds it (slice 3b below): `LearningMemory`'s workspace and lease
 matching, `lease_memory`, `from_rows`, `learning::leased`, the metrics sum, training's path through
 `window_allocator`, and `GrantHandoff` as bytes.
