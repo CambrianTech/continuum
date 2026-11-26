@@ -20,7 +20,92 @@ pub(crate) struct Arrival {
     pub(crate) schedule: Option<ScheduleParams>,
 }
 
+/// The bucket columns of a submission row, read without its payload (a projected query).
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct BucketColumns {
+    pub(super) sequence: u64,
+    pub(super) persona_id: Uuid,
+    pub(super) trait_kind: String,
+    pub(super) base_model: String,
+}
+
+impl BucketColumns {
+    /// The columns a projected query selects to read [`BucketColumns`].
+    pub(super) fn names() -> Vec<String> {
+        ["personaId", "traitKind", "baseModel", "sequence"].map(String::from).to_vec()
+    }
+
+    pub(super) fn key(self) -> BucketKey {
+        BucketKey { persona_id: self.persona_id, trait_kind: self.trait_kind, base_model: self.base_model }
+    }
+}
+
+/// A pending submission row as the learner reads it.
+fn arrival(row: Submission) -> Result<Arrival, String> {
+    Ok(Arrival {
+        id: entity_id(&row.base)?,
+        sequence: row.sequence,
+        key: BucketKey { persona_id: row.persona_id, trait_kind: row.trait_kind, base_model: row.base_model },
+        learned: row.learned,
+        persona_name: row.batch.persona_name,
+        lora: row.batch.lora,
+        schedule: row.batch.schedule,
+        examples: row.batch.examples,
+    })
+}
+
 impl DurableStore {
+    /// Every bucket with a pending submission, read from the bucket columns alone: no example
+    /// or batch is decoded, so a pass that only needs to know which buckets wait holds keys,
+    /// never the journal (Codex on the 5090 replay, 2026-11-25). Paged along the sequence.
+    pub(in crate::modules::training_trigger) async fn pending_keys(&self) -> Result<std::collections::BTreeSet<BucketKey>, String> {
+        const PAGE: usize = 1024;
+        let mut keys = std::collections::BTreeSet::new();
+        let mut after = 0u64;
+        loop {
+            let query = QueryBuilder::new(Submission::COLLECTION)
+                .filter_eq("isPending", true)
+                .filter("sequence", QueryOperator::Gt(after.into()))
+                .sort_asc("sequence")
+                .limit(PAGE)
+                .select(BucketColumns::names());
+            let result = self.adapter.query(query.build()).await;
+            if !result.success {
+                return Err(result.error.unwrap_or_else(|| "pending bucket query refused".into())); // the query failed; this supplies its missing diagnostic, never keys
+            }
+            let rows = result.data.ok_or("pending bucket query omitted rows")?;
+            let full = rows.len() == PAGE;
+            for row in rows {
+                let columns: BucketColumns = row.decode().map_err(|error| error.to_string())?; // the projected row's typed columns
+                after = after.max(columns.sequence);
+                keys.insert(columns.key());
+            }
+            if !full {
+                return Ok(keys);
+            }
+        }
+    }
+
+    /// Bucket `key`'s pending submissions, oldest first: read through the bucket's own index,
+    /// never the whole journal.
+    pub(in crate::modules::training_trigger) async fn arrivals_in(&self, key: &BucketKey) -> Result<Vec<Arrival>, String> {
+        const PAGE: usize = 256;
+        let mut rows = Vec::new();
+        let mut after = 0u64;
+        loop {
+            let page = self.pending_page(key, after, PAGE).await?;
+            let full = page.len() == PAGE;
+            for row in page {
+                after = after.max(row.sequence);
+                rows.push(arrival(row)?);
+            }
+            if !full {
+                return Ok(rows);
+            }
+        }
+    }
+
     /// Pending submissions with `sequence > after`, oldest first, at most `limit`.
     pub(in crate::modules::training_trigger) async fn arrivals(&self, after: u64, limit: usize) -> Result<Vec<Arrival>, String> {
         let result = self
@@ -41,19 +126,7 @@ impl DurableStore {
             .data
             .ok_or("training arrivals query omitted rows")?
             .into_iter()
-            .map(|row| {
-                let row: Submission = row.decode().map_err(|error| error.to_string())?; // decode the persisted ORM row into its typed owner
-                Ok(Arrival {
-                    id: entity_id(&row.base)?,
-                    sequence: row.sequence,
-                    key: BucketKey { persona_id: row.persona_id, trait_kind: row.trait_kind, base_model: row.base_model },
-                    learned: row.learned,
-                    persona_name: row.batch.persona_name,
-                    lora: row.batch.lora,
-                    schedule: row.batch.schedule,
-                    examples: row.batch.examples,
-                })
-            })
+            .map(|row| arrival(row.decode().map_err(|error| error.to_string())?)) // decode the persisted ORM row into its typed owner
             .collect()
     }
 
@@ -132,6 +205,9 @@ pub(super) mod tests {
             dispatch_id: None,
             retirement_id: None,
             learned: 0,
+            carried_to: None,
+            carried_from: None,
+            carried_offset: 0,
         };
         (id, row)
     }
@@ -153,21 +229,47 @@ pub(super) mod tests {
         assert!(store.arrivals(0, 8).await.expect("test: arrivals").is_empty(), "retired once every example is learned");
     }
 
-    // what this catches: a pass that reads one page of the pending journal, where 256 rows for
-    // another base hide every eligible row behind them forever (Codex on d177df17f).
+    // what this catches: a pass that reads one page of the pending keys, where a full page of rows
+    // for another base hides every eligible bucket behind them forever (Codex on d177df17f).
     #[tokio::test]
-    async fn an_eligible_row_behind_a_full_page_of_other_bases_is_found() {
+    async fn an_eligible_bucket_behind_a_full_page_of_other_bases_is_found() {
         let (adapter, _dir) = crate::orm::store::fresh_adapter().await;
         let store = DurableStore::new(adapter).await.expect("test: store");
-        for sequence in 1..=257 {
+        for sequence in 1..=1025 {
             let (id, row) = submission_for(sequence, 1, "some-other-base-model");
             store.submissions.save(id, &row).await.expect("test: saved");
         }
-        let (eligible, row) = submission_for(258, 1, "qwen");
+        let (eligible, row) = submission_for(1026, 1, "qwen");
+        let key = BucketKey { persona_id: row.persona_id, trait_kind: row.trait_kind.clone(), base_model: row.base_model.clone() };
         store.submissions.save(eligible, &row).await.expect("test: saved");
-        let buckets = super::super::super::in_place::eligible_buckets(&store, "qwen").await.expect("test: gathered");
-        assert_eq!(buckets.len(), 1);
-        assert_eq!(buckets[0].1.iter().map(|row| row.id).collect::<Vec<_>>(), vec![eligible], "found past the first page");
+        let waiting = super::super::super::in_place::waiting_by_base(&store, "qwen").await.expect("test: gathered");
+        assert_eq!(waiting.here, vec![key.clone()], "found past the first page, and only the served base's");
+        assert_eq!(waiting.elsewhere.len(), 1, "the other base's bucket is listed as elsewhere, not seated");
+        let rows = store.arrivals_in(&key).await.expect("test: its rows");
+        assert_eq!(rows.iter().map(|row| row.id).collect::<Vec<_>>(), vec![eligible]);
+    }
+
+    // what this catches (Codex on the 5090 replay, 2026-11-25): a pass that holds every pending
+    // row with its examples to learn one bucket. A bucket's rows come from its own index, so another
+    // bucket's rows are never read for it, and listing the waiting buckets reads keys alone.
+    #[tokio::test]
+    async fn a_bucket_reads_only_its_own_rows_and_the_waiting_buckets_are_keys() {
+        let (adapter, _dir) = crate::orm::store::fresh_adapter().await;
+        let store = DurableStore::new(adapter).await.expect("test: store");
+        let (mine, row) = submission_for(1, 2, "qwen");
+        let key = BucketKey { persona_id: row.persona_id, trait_kind: row.trait_kind.clone(), base_model: row.base_model.clone() };
+        store.submissions.save(mine, &row).await.expect("test: saved");
+        let (other, mut other_row) = submission_for(2, 3, "qwen");
+        other_row.persona_id = Uuid::new_v4(); // another persona's bucket on the same base
+        let other_key = BucketKey { persona_id: other_row.persona_id, trait_kind: other_row.trait_kind.clone(), base_model: other_row.base_model.clone() };
+        store.submissions.save(other, &other_row).await.expect("test: saved");
+
+        let keys = store.pending_keys().await.expect("test: keys");
+        assert_eq!(keys.len(), 2);
+        assert!(keys.contains(&key) && keys.contains(&other_key));
+        let rows = store.arrivals_in(&key).await.expect("test: its rows");
+        assert_eq!(rows.iter().map(|row| row.id).collect::<Vec<_>>(), vec![mine], "only its own rows");
+        assert_eq!(rows[0].examples.len(), 2);
     }
 
     // Independent recovery fixture: the checkpoint row survived but its submission projection

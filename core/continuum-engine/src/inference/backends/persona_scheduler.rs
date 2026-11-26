@@ -19,9 +19,11 @@
 
 mod driver;
 mod emit;
+mod gene;
+pub use gene::Gene;
+mod held_view;
 mod preserve;
 mod record;
-mod frame;
 mod reuse;
 mod geometry;
 mod admission;
@@ -162,6 +164,8 @@ fn rate(tokens: usize, took: std::time::Duration) -> f64 {
     tokens as f64 / took.as_secs_f64()
 }
 
+pub use held_view::HeldViews;
+
 /// A turn's prompt as token ids and where her view ends in them, computed by the submitter on its
 /// own thread (each act runs on its own), so many acts tokenize at once and the engine thread never
 /// does (CONTINUUM-ENGINE 4.16). The view's end is where the tokens of her view's text stop
@@ -169,11 +173,32 @@ fn rate(tokens: usize, took: std::time::Duration) -> f64 {
 /// marks nothing.
 pub fn prepare(model: &Model, prompt: &str, view: Option<&str>) -> Result<(Vec<i32>, Option<usize>), String> {
     // special=true so chat-template markers tokenize as the model's own special tokens
-    let tokens = model.tokenize(prompt, true, true)?;
-    let view_end = view
-        .and_then(|view| model.tokenize(view, true, true).ok())
-        .map(|view| reuse::common_prefix(&view, &tokens))
-        .filter(|end| *end > 0 && *end < tokens.len());
+    let started = std::time::Instant::now();
+    // Her view held inside her prompt (a slice of it from its start, by construction: the same render
+    // with its generation prompt stripped) is tokenized once with the rest after it: the split is where
+    // the template's generation prompt begins, a special token, so the halves tokenize as the whole does.
+    // Tokenizing her whole prompt and then her whole view again, to find where they agree, cost nearly
+    // twice (the M5, 2026-11-26: 1,974 ms prompt and 1,691 ms view over 39 acts, 505 + 509 ms at 230k).
+    let held = view.filter(|view| view.as_ptr() == prompt.as_ptr() && view.len() <= prompt.len());
+    let (tokens, view_end) = match held {
+        Some(view) => {
+            let mut tokens = model.tokenize(view, true, true)?;
+            let end = tokens.len();
+            tokens.extend(model.tokenize(prompt.get(view.len()..).unwrap_or(""), false, true)?); // unwrap_or: a view as long as the prompt leaves nothing after it
+            (tokens, Some(end))
+        }
+        None => {
+            let tokens = model.tokenize(prompt, true, true)?;
+            let view_end = view.and_then(|view| model.tokenize(view, true, true).ok()).map(|view| reuse::common_prefix(&view, &tokens));
+            (tokens, view_end)
+        }
+    };
+    let view_end = view_end.filter(|end| *end > 0 && *end < tokens.len());
+    let prompt_tokenized = started.elapsed();
+    // Where an act's submit time goes (inference.submit.render has its renders): her whole prompt
+    // tokenized, then her view tokenized again to find where it ends.
+    continuum_base::probe!(class = "inference.submit.tokenize", prompt_tokens = tokens.len() as u64, prompt_ms = prompt_tokenized.as_millis() as u64,
+        view_ms = started.elapsed().saturating_sub(prompt_tokenized).as_millis() as u64, "an act's prompt tokenized, and her view tokenized again");
     Ok((tokens, view_end))
 }
 
@@ -191,12 +216,12 @@ pub struct GenerationRequest {
     /// (`LlamaCppBackend::turn_sampler`): the engine thread only samples with it.
     pub sampler: llama::TurnSampler,
     pub stop_sequences: Vec<String>,
-    /// Genes for this turn: `(id, handle, scale)`, resolved by the backend before enqueue. Empty is
+    /// Genes for this turn, each with its handle, resolved by the backend before enqueue. Empty is
     /// the base model.
-    pub active_loras: Vec<(String, Arc<LoraAdapter>, f32)>,
+    pub active_loras: Vec<(Gene, Arc<LoraAdapter>)>,
     /// Tokens stream back through this.
     pub response_tx: tokio::sync::mpsc::UnboundedSender<TokenEvent>,
-    /// How much her mind needs this turn: waiting turns are ranked by it (`frame::pick`).
+    /// How much her mind needs this turn: the lane ranks by it (driver/lane.rs).
     pub urgency: continuum_sage::component::Urgency,
     /// The persona whose mind this turn continues. `None` is a one-off (a probe, a test rig): it
     /// runs as a mind of its own and its blocks are released when the turn ends.
@@ -222,6 +247,8 @@ pub struct SchedulerConfig {
     pub n_ubatch: u32,
     pub type_k: KvCacheType,
     pub type_v: KvCacheType,
+    /// The lane algorithm's registered name (driver/lane.rs).
+    pub lane_algorithm: &'static str,
 }
 
 /// What reaches the driver thread, in order: a turn, or the stop's suspend.

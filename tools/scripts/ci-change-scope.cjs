@@ -300,7 +300,11 @@ function selectChecks(files, evidence = {}) {
   const rust = rustPaths.length > 0;
   const workspace = evidence.eventName === 'push' ? null : evidence.workspace;
   const scope = !rust ? { crates: [], cli: false } : selectCrates(rustPaths, workspace);
-  const targets = selectTargets(rustPaths, workspace, scope.crates);
+  // a target is built only from paths that still exist after the change: a deleted example or bin
+  // (or a rename's old name) is gone, so cargo has nothing to build (#6283: `--example learn_in_place`
+  // on the PR that deleted it)
+  const present = new Set(files.filter(f => f.status !== 'removed').map(f => f.filename));
+  const targets = selectTargets(rustPaths.filter(p => present.has(p)), workspace, scope.crates);
   return { rust, installer: rust || paths.some(windows), publication: selectPublication(paths, evidence, files), ...scope, ...targets };
 }
 module.exports = { selectChecks, readWorkspace, readPolicy, deriveCrates, publishedBinaries, TESTED_CRATES, TEST_FEATURES, LIB_TESTS };

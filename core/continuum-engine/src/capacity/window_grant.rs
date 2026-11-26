@@ -371,19 +371,23 @@ pub fn evaluations_receiver() -> Option<tokio::sync::watch::Receiver<Option<Gran
     EVALUATIONS.get().cloned()
 }
 
-static DEMAND_MOVED: tokio::sync::Notify = tokio::sync::Notify::const_new();
+/// How many demand moves there have been: every listener holds its own receiver, so each sees every
+/// move. A `Notify` woke one waiter of all the process's listeners (`notify_one`), so a second listener
+/// (another daemon's in the test process, a relaunch's) took the wake meant for this one (the M5,
+/// 2026-11-25: a_demand_move_publishes_the_grants_without_a_tick timing out under parallel load).
+static DEMAND_MOVED: std::sync::LazyLock<tokio::sync::watch::Sender<u64>> = std::sync::LazyLock::new(|| tokio::sync::watch::Sender::new(0));
 
 /// A mind became ready without a grant, or an act ended and its cells came free: the grants
 /// publisher evaluates now, never at its next tick (RTOS rule 10; the M5 2026-11-15: every ready
-/// mind waited up to a 5 s tick for a grant the free cells already held). A notify with no
-/// waiter keeps one permit, so a move during an evaluation is never lost.
+/// mind waited up to a 5 s tick for a grant the free cells already held).
 pub fn demand_moved() {
-    DEMAND_MOVED.notify_one();
+    DEMAND_MOVED.send_modify(|moves| *moves = moves.wrapping_add(1));
 }
 
-/// Resolves at the next [`demand_moved`] (or at once, for one made while nobody waited).
-pub async fn demand_moves() {
-    DEMAND_MOVED.notified().await;
+/// A listener's own receiver of demand moves, made before it waits (a move after this call is never
+/// missed: its `changed()` resolves for it).
+pub fn demand_moves() -> tokio::sync::watch::Receiver<u64> {
+    DEMAND_MOVED.subscribe()
 }
 
 /// One measured mind's current demand on the pool: her floor and target, and whether a turn of hers

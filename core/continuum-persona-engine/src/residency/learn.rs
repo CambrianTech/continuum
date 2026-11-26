@@ -6,8 +6,43 @@
 //! turn waiting says no, and the reply drains: no further gradient runs, her served tail is restored,
 //! and the steps already committed stay. So a turn waits at most one chunk, never a whole reply.
 
+use std::num::NonZeroU32;
+
 use super::{Execute, TierRefusal};
 use crate::persona::MindId;
+
+/// A lesson's geometry as a seat is measured for it: the reply rows it trains, and the whole lesson
+/// (her context and the reply) its attention reads. A seat sized for one holds a lesson no longer
+/// on either; the workspace grows with both (attention priced at the 262,144-token served window
+/// quoted 78 to 105 GB for lessons on the M5's 35B, 2026-11-26).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LessonRows {
+    reply: NonZeroU32,
+    whole: NonZeroU32,
+}
+
+impl LessonRows {
+    /// A lesson of `whole` rows whose last `reply` are trained; none when the reply is longer than
+    /// the lesson holding it.
+    pub fn new(reply: NonZeroU32, whole: NonZeroU32) -> Option<Self> {
+        (reply <= whole).then_some(Self { reply, whole })
+    }
+
+    /// The rows it trains.
+    pub fn reply(self) -> NonZeroU32 {
+        self.reply
+    }
+
+    /// The rows its attention reads: her context and the reply.
+    pub fn whole(self) -> NonZeroU32 {
+        self.whole
+    }
+
+    /// Whether a seat sized for `self` holds `lesson`.
+    pub fn holds(self, lesson: Self) -> bool {
+        lesson.reply <= self.reply && lesson.whole <= self.whole
+    }
+}
 
 /// A tier whose bound mind can learn a reply into a shadow.
 pub trait Learns: Execute {
@@ -34,9 +69,9 @@ pub trait Learns: Execute {
     /// succeeds, an attached shadow is still referenced by the context.
     fn detach(&mut self, mind: MindId) -> Result<(), TierRefusal>;
 
-    /// What an attached `shadow`'s optimizer, and a lesson of up to `reply_rows` tokens, would hold, allocating
+    /// What an attached `shadow`'s optimizer, and a lesson of up to `rows`, would hold, allocating
     /// nothing: `(optimizer, workspace)`.
-    fn measure(&mut self, mind: MindId, shadow: &Self::Shadow, reply_rows: std::num::NonZeroU32) -> Result<(Vec<Self::Row>, Vec<Self::Row>), TierRefusal>;
+    fn measure(&mut self, mind: MindId, shadow: &Self::Shadow, rows: LessonRows) -> Result<(Vec<Self::Row>, Vec<Self::Row>), TierRefusal>;
 
     /// Save `shadow` as a generation in `into` (its weights and its optimizer state, bound to
     /// `binding`): the optimizer steps it holds.

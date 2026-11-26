@@ -6,7 +6,7 @@
 //! between the identity read and the mutation must refuse with nothing unloaded.
 //!
 //! Ignored by default: it needs the engine binary and a model it loads. Run it with
-//! `CONTINUUM_NATIVE_ENGINE_BIN=<fork llama-server> CONTINUUM_NATIVE_ENGINE_MODEL=<gguf>
+//! `CONTINUUM_NATIVE_ENGINE_BIN=<fork llama-server> CONTINUUM_NATIVE_ENGINE_MODEL=<gguf> CONTINUUM_NATIVE_ENGINE_GENE=<a LoRA gguf for it>
 //! cargo test -p continuum-genome --lib native -- --ignored --nocapture`. Any model whose attention
 //! tensors are named `attn_q`/`attn_v` works; a tiny one is enough.
 
@@ -15,9 +15,9 @@ use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 use super::*;
-use crate::genome::learner::seat::{seat, Authority};
+use crate::genome::learner::seat::Authority;
 use crate::inference::engine_residency::EngineIncarnation;
-use crate::inference::llama_server::{FreshShadow, LedgerAnswer};
+use crate::inference::llama_server::LedgerAnswer;
 
 const GENE: &str = "native-gene.gguf";
 
@@ -39,6 +39,13 @@ fn required(var: &str) -> String {
 }
 
 /// A free local port, released for the engine to bind.
+/// Place the gene, a LoRA for the model (`CONTINUUM_NATIVE_ENGINE_GENE`), in the engine's train dir as
+/// [`GENE`]: the gene the catalog loads and retires. (The engine wrote it over HTTP once; that writer
+/// was the trainer's and left with it, card 28aac827.)
+fn place_gene(train_dir: &std::path::Path) {
+    std::fs::copy(required("CONTINUUM_NATIVE_ENGINE_GENE"), train_dir.join(GENE)).expect("test: the gene is placed in the train dir");
+}
+
 fn free_port() -> u16 {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("test: a local port"); // test: loopback bind
     listener.local_addr().expect("test: its address").port() // test: a bound socket has an address
@@ -142,18 +149,10 @@ async fn an_adopted_engines_gene_change_keeps_every_residents_kv() {
     }
     assert!(before.iter().all(|cached| *cached > 0), "the engine reuses each resident's prefix: {before:?}");
 
-    // the engine writes the gene itself: a fresh shadow, seated, unloaded and released, leaves its file
-    let authority = Authority::isolated(u64::MAX / 2);
+    // the gene: a LoRA for this model, placed in the engine's train dir
     let learner = learning(&engine, port);
-    let shadow = FreshShadow { name: GENE.into(), rank: 4, alpha: 8.0, targets: vec!["attn_q".into(), "attn_v".into()], top_layers: 1, seed: 1 };
-    let writer = learner.clone();
-    let written = seat(&authority, writer, "native:writer", shadow).await.expect("test: the engine writes a shadow"); // test: a live engine with --train-dir
-    written.unload().await.expect("test: the writer's shadow unloads"); // test: it was just loaded
-    if let Err((_seat, why)) = written.release().await {
-        panic!("test: the writer's residency did not release: {why}");
-    }
-    assert!(train_dir.path().join(GENE).exists(), "the gene file is in the engine's train dir");
-    residents_kept_their_kv(&client, &engine.root, &before, "after the engine wrote the gene").await;
+    place_gene(train_dir.path());
+    residents_kept_their_kv(&client, &engine.root, &before, "after the gene was placed").await;
 
     // adopted: the catalog's owner, under a held serving gate, bound to the identity read first
     // the operation is held on the catalog's OWN gate: admission inside another gate's operation refuses
@@ -193,13 +192,7 @@ async fn a_replacement_on_the_same_port_refuses_the_change_bound_to_the_old_engi
     let first = start(port, train_dir.path()).await;
     let authority = Authority::isolated(u64::MAX / 2);
     let learner = learning(&first, port);
-    let shadow = FreshShadow { name: GENE.into(), rank: 4, alpha: 8.0, targets: vec!["attn_q".into(), "attn_v".into()], top_layers: 1, seed: 1 };
-    let writer = learner.clone();
-    let written = seat(&authority, writer, "native:writer", shadow).await.expect("test: the engine writes a shadow"); // test: a live engine with --train-dir
-    written.unload().await.expect("test: the writer's shadow unloads"); // test: it was just loaded
-    if let Err((_seat, why)) = written.release().await {
-        panic!("test: the writer's residency did not release: {why}");
-    }
+    place_gene(train_dir.path());
     let stale = identity(&learner).await;
     first.stop().await; // the engine is replaced on the same port
     let second = start(port, train_dir.path()).await;

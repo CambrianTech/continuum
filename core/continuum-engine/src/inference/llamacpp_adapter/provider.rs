@@ -281,6 +281,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
         let render_body = |body: &serde_json::Value| -> Result<llama::ChatRender, super::chat_turn::ChatTurnError> {
             Ok(backend.render_chat_turn(&body.to_string(), &registry_template, llama::ReasoningFormat::Auto)?)
         };
+        let render_started = Instant::now();
         let (prompt, collected_media, chat_render) = if !super::chat_turn::carries_media(&request) {
             let rendered = continuum_base::time_sync!("inference.render_chat", {
                 super::chat_turn::thinking_request(&request, thinking).and_then(|body| render_body(&body))
@@ -372,10 +373,16 @@ impl AIProviderAdapter for LlamaCppAdapter {
         let sampling = sampling_config_from_request(&request);
         // Where her next act stops matching this prompt (her view, CONTINUUM-ENGINE 4.15): the engine
         // checkpoints her there and her next act prefills only what follows.
+        let rendered_at = Instant::now();
         let stable_prefix = match &chat_render {
             Some((_, described)) => super::chat_turn::view_text(&request, described, thinking, &render_body).map_err(|refused| refused.to_string())?,
             None => None,
         };
+        // Where an act's submit time goes before her turn reaches the Core (the M5, 2026-11-26: submit to
+        // queue 0.6 to 9.5 s at 70k to 226k tokens): her prompt's render, and her view's second render.
+        continuum_base::probe!(class = "inference.submit.render", request = ?request.request_id, prompt_chars = prompt.len() as u64,
+            view_chars = ?stable_prefix.as_ref().map(super::chat_turn::View::chars), render_ms = render_started.elapsed().saturating_sub(rendered_at.elapsed()).as_millis() as u64,
+            view_render_ms = rendered_at.elapsed().as_millis() as u64, "an act's prompt rendered, and her view rendered again");
         // Stop sequences = caller-supplied + model's registry-declared
         // text-form stops. Some GGUFs (the forged qwen3.5 included) carry
         // the wrong tokenizer.ggml.eos_token_id, so is_eog_token never
@@ -400,7 +407,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
         let gen_start = Instant::now();
         let backend_for_blocking = backend.clone();
         let prompt_for_blocking = prompt.clone();
-        let stable_for_blocking = stable_prefix.clone();
+        let stable_for_blocking = stable_prefix;
         let stop_for_closure = stop_owned.clone();
         let request_for_blocking = request.request_id.clone();
         // Her need rides this call's scope; read here, before the blocking hop leaves it.
@@ -420,11 +427,11 @@ impl AIProviderAdapter for LlamaCppAdapter {
         // `(name, path, scale)`. We page each in (idempotent) and hand the
         // resolved `(id, scale)` list to the scheduler, which applies it
         // context-level before decode. Empty in the common base case.
-        let requested_genes: Vec<(String, std::path::PathBuf, f32)> = request
+        let requested_genes: Vec<crate::inference::backends::persona_scheduler::Gene> = request
             .active_adapters
             .iter()
             .flatten()
-            .map(|a| (a.name.clone(), std::path::PathBuf::from(&a.path), a.scale as f32))
+            .map(|a| crate::inference::backends::persona_scheduler::Gene { id: a.name.clone(), path: std::path::PathBuf::from(&a.path), scale: a.scale as f32 })
             .collect();
 
         // Her sampler, from the render that produced her prompt when she has one: its tool grammar
@@ -461,8 +468,8 @@ impl AIProviderAdapter for LlamaCppAdapter {
                     // Page in each requested gene (idempotent) before generation.
                     // A missing/unreadable adapter file is a hard error — never
                     // silently run the base model in its place (Rule 2).
-                    for (id, path, _) in &genes_for_closure {
-                        backend_for_blocking.ensure_adapter(id, path)?;
+                    for gene in &genes_for_closure {
+                        backend_for_blocking.ensure_adapter(&gene.id, &gene.path)?;
                     }
                     continuum_base::probe!(
                         class = "inference.generate.genes_ready",
@@ -471,17 +478,13 @@ impl AIProviderAdapter for LlamaCppAdapter {
                         since_enter = ?entered.elapsed(),
                         "her genes are loaded for this generation"
                     );
-                    let active_loras: Vec<(String, f32)> = genes_for_closure
-                        .iter()
-                        .map(|(id, _, scale)| (id.clone(), *scale))
-                        .collect();
                     backend_for_blocking.submit_for_persona(
                         allocation, persona_id,
-                        crate::inference::backends::llamacpp::TurnPrompt { text: &prompt_for_blocking, stable_prefix: stable_for_blocking.as_deref(), urgency, request: request_for_blocking.as_deref() },
+                        crate::inference::backends::llamacpp::TurnPrompt { text: &prompt_for_blocking, stable_prefix: stable_for_blocking.as_ref().and_then(|view| view.of(&prompt_for_blocking)), urgency, request: request_for_blocking.as_deref() },
                         max_tokens,
                         sampler,
                         &stop_refs,
-                        &active_loras,
+                        &genes_for_closure,
                     )
                     }).await.map_err(|e| format!("generate task panicked: {e}"))??;
                     answer.collect().await
@@ -502,7 +505,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
             if !requested_genes.is_empty() {
                 let names: Vec<&str> = requested_genes
                     .iter()
-                    .map(|(id, _, _)| id.as_str())
+                    .map(|gene| gene.id.as_str())
                     .collect();
                 return Err(format!(
                     "llamacpp_adapter: LoRA genes {names:?} requested with media — not supported \

@@ -49,6 +49,7 @@ pub(in crate::inference::backends::persona_scheduler) struct Leaving<'a> {
     pub persona: uuid::Uuid,
     pub epoch: u64,
     pub basis: String,
+    pub genes: &'a [crate::inference::backends::persona_scheduler::Gene],
     pub blocks: Blocks,
     pub held: &'a [i32],
 }
@@ -98,7 +99,7 @@ impl Preserved {
     /// Hand one mind over in `generation`: her history, then her blocks (record durable, KV file synced,
     /// unmapped and renamed), all under her custody. Returns her manifest entry, published with the stop's.
     pub(in crate::inference::backends::persona_scheduler) fn hand_over(&mut self, her: Leaving<'_>, generation: Generation) -> Result<PreservedMind, HandOverError> {
-        let Leaving { persona, epoch, basis, blocks, held } = her;
+        let Leaving { persona, epoch, basis, genes, blocks, held } = her;
         self.take_custody(persona).map_err(HandOverError::Custody)?;
         let tokens = generation.tokens(persona);
         // her history's own bytes, written as they lie in memory: no per-token encode, no staging copy
@@ -109,6 +110,7 @@ impl Preserved {
             persona,
             epoch,
             basis,
+            genes: genes.to_vec(),
             generation: generation.number(),
             record,
             kv: in_kv.then_some(kv),

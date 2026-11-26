@@ -87,7 +87,7 @@ fn a_reply_trains_her_shadow_and_leaves_her_sequence_as_it_was() {
     let charged = Arc::new(AtomicU64::new(0));
     let mut learner = Learner::new(&mut ctx);
     let nonzero = |n| NonZeroU32::new(n).expect("test: nonzero");
-    let llama::ShadowMeasure { optimizer: optimizer_rows, workspace: workspace_rows } = learner.measure(&shadow, nonzero(64)).expect("test: her shadow learning measures");
+    let llama::ShadowMeasure { optimizer: optimizer_rows, workspace: workspace_rows } = learner.measure(&shadow, nonzero(64), nonzero(256)).expect("test: her shadow learning measures");
     eprintln!("measured: weights {weight_bytes} B, optimizer {optimizer_rows:?}, workspace {workspace_rows:?}");
     // what this catches: a learning seat priced at the context's whole window instead of her lesson (on
     // this 0.5B at 2,048 tokens: 5,513,766,976 bytes of compute against 451,808,352; the 5090 refused a
@@ -97,9 +97,15 @@ fn a_reply_trains_her_shadow_and_leaves_her_sequence_as_it_was() {
     assert!(owns(&optimizer_rows, &[llama::MemoryRole::OptimizerStatic, llama::MemoryRole::OptimizerHost]), "optimizer rows only: {optimizer_rows:?}");
     assert!(owns(&workspace_rows, &[llama::MemoryRole::SharedComputeRequired, llama::MemoryRole::SharedComputeHeld]), "workspace rows only: {workspace_rows:?}");
     let required = |rows: &[llama::MemoryRow]| rows.iter().filter(|row| row.role == llama::MemoryRole::SharedComputeRequired).map(|row| row.bytes).sum::<u64>();
-    let longer = learner.measure(&shadow, nonzero(512)).expect("test: a longer reply measures");
+    let longer = learner.measure(&shadow, nonzero(512), nonzero(768)).expect("test: a longer reply measures");
     eprintln!("required workspace: {} B for 64 rows, {} B for 512", required(&workspace_rows), required(&longer.workspace));
     assert!(required(&workspace_rows) < required(&longer.workspace), "the workspace is sized by the reply, not the window");
+    // what this catches: attention priced at the served window, not the lesson it reads (the M5's 35B,
+    // 2026-11-26: 78,339,770,944 and 105,623,459,040 bytes at a 262,144-token window, past its 55.7 GB)
+    let windowed = learner.measure(&shadow, nonzero(64), nonzero(1024)).expect("test: a lesson as long as the window measures");
+    eprintln!("required workspace for 64 reply rows: {} B in a 256-row lesson, {} B in the 1,024-row window", required(&workspace_rows), required(&windowed.workspace));
+    assert!(required(&workspace_rows) < required(&windowed.workspace), "attention is priced at the lesson, not the window");
+    assert!(learner.measure(&shadow, nonzero(64), nonzero(32)).is_err(), "a lesson shorter than its reply is refused");
     assert!(learner.retain_shadow(&adapter, Box::new(Counted(Arc::clone(&charged)))).is_ok(), "the shadow is retained");
 
     // the reply to learn: from her last served token, the answer; the label after each token is the next

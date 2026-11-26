@@ -111,10 +111,9 @@ impl TrainingTriggerState {
             failure
         })
         .await;
-        // nothing learns now: leave no learner seated
-        let quiesced = super::super::shutdown_step("shutdown.quiesce", self.in_place.quiesce(self, super::super::in_place::Busy::Wait)).await;
-        continuum_base::probe!(class = "training.in_place.quiesced", stopped = quiesced.stopped, unpublished = quiesced.unpublished,
-            unconfirmed = quiesced.unconfirmed, "the trigger stopped: every learner checkpointed and stopped, every workspace released");
+        // nothing learns now: leave no seat held
+        let released = super::super::shutdown_step("shutdown.let_go_seats", async { self.let_go_seats() }).await;
+        continuum_base::probe!(class = "training.on_engine.stopped", released = released as u64, "the trigger stopped: every seat on the node engine was let go");
         failure.map_or(Ok(()), Err)
     }
 
@@ -279,6 +278,9 @@ impl TrainingTriggerState {
             dispatch_id: None,
             retirement_id: None,
             learned: 0,
+            carried_to: None,
+            carried_from: None,
+            carried_offset: 0,
         };
         if let Err(error) = store.submissions.save(id, &row).await {
             return Err(("PersistenceFailed", error.to_string()));

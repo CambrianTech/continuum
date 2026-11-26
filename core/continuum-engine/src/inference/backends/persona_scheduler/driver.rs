@@ -11,14 +11,16 @@ use std::time::Instant;
 use continuum_persona_engine::engine::{DecodeError, HandoffError, PersonaEngine, RetireError, StageError};
 use continuum_persona_engine::persona::{Epoch, Footprint, Held, MindId, PersonaId, PersonaParts, PersonaUnit};
 use continuum_persona_engine::residency::TierRefusal;
-use continuum_persona_llama::{Blocks, Genes, KvHome, Step, UnifiedTier, STREAMS};
-use llama::{ContextParams, FlashAttn, LoraAdapter, Model, Pos};
+use continuum_persona_llama::{Blocks, Genes, KvHome, Step, Tokens, UnifiedTier, STREAMS};
+use llama::{ContextParams, FlashAttn, Model, Pos};
 use uuid::Uuid;
 
 use super::geometry::StopsOnExit;
+use continuum_sage::decide::cases::lane_history::Observation;
+use continuum_sage::decide::Measured;
 use continuum_sage::{Outbox, StageInput};
 
-use super::{admission, emit, frame, preserve, record, reuse, transition, EngineGeometry, EngineState, GenerationRequest, Incarnation, SchedulerConfig, Submission, Suspended, TokenEvent};
+use super::{admission, emit, preserve, record, reuse, transition, EngineGeometry, EngineState, GenerationRequest, Incarnation, SchedulerConfig, Submission, Suspended, TokenEvent};
 use crate::inference::footprint_registry::{self, FootprintKey, ResourceType};
 use crate::inference::kv_quant::Residency;
 use crate::runtime;
@@ -74,6 +76,8 @@ enum StartError {
     ZeroBatch,
     #[error("no home for minds' KV and preserved state: {0}")]
     Home(#[from] preserve::StoreError),
+    #[error("the lane has no algorithm named {name}", name = .0.name)]
+    Lane(continuum_sage::decide::Unknown),
 }
 
 /// One mind this scheduler serves: the unit that travels (CONTINUUM-ENGINE 4.17). Her blocks are her
@@ -93,8 +97,10 @@ enum Tenure {
 
 mod ending;
 mod history;
+mod lane;
 mod learning;
 mod basis;
+mod divergence;
 use basis::Basis;
 mod prefix;
 pub(crate) use learning::{Job as LearningJob, Lesson as LearningLesson, Measuring as LearningMeasuring};
@@ -148,6 +154,8 @@ struct Driver<'c, 'm> {
     store: Option<preserve::Preserved>,
     /// The model this engine serves: preserved minds resume only on it.
     model_id: String,
+    /// Which turn takes the next step: the SAGE lane (driver/lane.rs).
+    lane: lane::Lanes,
     /// What the trainer told, worked between her turns.
     learning: learning::Learning,
     /// The stop has suspended every mind: no new turn is taken.
@@ -180,8 +188,8 @@ fn resume(tier: &mut UnifiedTier<'_, '_>, preserved: &mut preserve::Preserved, m
         match preserved.restore(tier, &mind) {
             Ok((blocks, held)) => {
                 continuum_base::probe!(class = "persona.engine.resumed", persona = %mind.persona, tokens = held.len() as u64, in_place = mind.kv.is_some(), "a mind came back from her preserved files");
-                // a mind resumed from disk keeps only her genes' identity, never the adapters themselves
-                let parts = Parts { blocks, tokens: History::from(held), genome: Basis { genes: mind.basis, adapters: None }, learning: (), decode: Tenure::Resident };
+                // a mind resumed from disk keeps her genes and their files, never the adapters themselves
+                let parts = Parts { blocks, tokens: History::from(held), genome: Basis::resumed(mind.basis, mind.genes), learning: (), decode: Tenure::Resident };
                 parked.insert(id, Mind::new(id, epoch, parts));
             }
             Err(refused) => {
@@ -230,6 +238,15 @@ pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
             }
         }
     };
+    let lane = match lane::Lanes::new(config.lane_algorithm) {
+        Ok(lane) => lane,
+        Err(unknown) => {
+            let refused = StartError::Lane(unknown);
+            refuse(&refused);
+            refuse_all(refused.to_string());
+            return;
+        }
+    };
     let mut ctx = match context(model, config) {
         Ok(ctx) => ctx,
         Err(refused) => {
@@ -243,7 +260,7 @@ pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
         refuse_all(StartError::ZeroBatch.to_string());
         return;
     };
-    let geometry = EngineGeometry::applied(incarnation, &ctx, config);
+    let geometry = EngineGeometry::applied(incarnation, &mut ctx, config);
     let capacity = admission::Capacity::new(geometry.n_ctx_seq as usize);
     // The root resume (CONTINUUM-ENGINE 4.16): the minds the last stop preserved come back Warm, in
     // RAM, and bind when they are next scheduled. A mind that does not verify stays on disk, named.
@@ -259,6 +276,8 @@ pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
             return;
         }
     };
+    let mut lane = lane;
+    lane.resume(store.dir(), &config.model);
     let mut tier = UnifiedTier::new(&mut ctx, KvHome::Mapped(instance));
     let parked = resume(&mut tier, &mut store, &config.model, &log);
     log.info(&format!("persona scheduler ready: {geometry:?} (one mind decodes at a time; {} minds resumed)", parked.len()));
@@ -278,10 +297,11 @@ pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
         model_id: config.model.clone(),
         stopping: false,
         learning: learning::Learning::default(),
+        lane,
     };
     // The frame loop (CONTINUUM-ENGINE 4.15): submissions are drained without blocking, and each
-    // frame advances ONE turn by ONE step (a prefill chunk or a token), chosen by `frame::pick`: a turn
-    // in progress keeps the Core until it ends, so new submissions wait for its end. What
+    // frame advances ONE turn by ONE step (a prefill chunk or a token), chosen by the SAGE lane
+    // (driver/lane.rs): any mind past her wait bound steps next, an addressed mind takes the next step. What
     // it decodes goes to Emit (4.16) and the loop goes on. It blocks only when no turn is left, on
     // the queue itself: a wake, never a poll.
     let mut turns: Vec<Turn> = Vec::new();
@@ -292,9 +312,9 @@ pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
         // while deferred, the thread waits for EITHER a submission (a turn, or the stop's suspend) or
         // the stage's space: a wake on both, never a poll, and a stalled caller never blocks a stop.
         let holding = driver.holding();
-        // Learning only between her turns: with no turn and nothing held for a stage, the oldest
-        // learning job runs, asking between chunks whether a submission waits (one drains it).
-        if turns.is_empty() && !holding && driver.learning.waiting() {
+        // Learning between her turns, and when the lane owes the background class a step (her learning
+        // keeps its queue in check, never waiting for an empty Core), asking between chunks whether a turn waits.
+        if !holding && driver.learning.waiting() && (turns.is_empty() || driver.lane.learning_owed()) {
             driver.learn_next(&mut || requests.is_empty());
             continue;
         }
@@ -364,7 +384,7 @@ struct Turn {
     req: GenerationRequest,
     id: PersonaId,
     one_off: bool,
-    prompt: Vec<i32>,
+    prompt: std::sync::Arc<[i32]>,
     basis: Basis,
     genes: Genes,
     phase: Phase,
@@ -384,8 +404,7 @@ struct Turn {
 /// Where a turn stands.
 enum Phase {
     /// Not bound yet: what her prefill starts from is decided against her blocks when she is.
-    /// Estimate once when first eligible, after any earlier turn for this mind. Native resume checks the actual blocks again.
-    Waiting(std::cell::OnceCell<usize>),
+    Waiting,
     /// Her prompt from `pos` is still to prefill.
     Prefilling { pos: usize },
     /// `token` is sampled and not yet emitted; it is decoded at `pos` if she goes on.
@@ -528,6 +547,7 @@ impl Driver<'_, '_> {
                 return blocked(id.0, format!("copy-out of {:?} blocked preservation: {why}", id.0));
             }
         }
+        self.lane.save();
         let Some(mut store) = self.store.take() else {
             return blocked(Uuid::nil(), "this node has no home to preserve minds in".into());
         };
@@ -572,7 +592,7 @@ impl Driver<'_, '_> {
         }
         let her = self.parked.remove(&id).ok_or(PreserveError::NotReturned)?;
         let (epoch, parts) = (her.epoch().0, her.into_parts());
-        let leaving = preserve::Leaving { persona: id.0, epoch, basis: parts.genome.genes, blocks: parts.blocks, held: &parts.tokens.held };
+        let leaving = preserve::Leaving { persona: id.0, epoch, basis: parts.genome.genes, genes: &parts.genome.sources, blocks: parts.blocks, held: &parts.tokens.held };
         Ok(store.hand_over(leaving, generation)?)
     }
 
@@ -592,8 +612,7 @@ impl Driver<'_, '_> {
             return;
         }
         let prompt = std::mem::take(&mut req.prompt);
-        let genes: Genes = req.active_loras.iter().map(|(_, adapter, scale)| (Arc::clone(adapter), *scale)).collect::<Vec<_>>().into();
-        let basis = Basis { genes: signature(&req.active_loras), adapters: Some(Arc::clone(&genes)) };
+        let (basis, genes) = Basis::of(&req.active_loras);
         let boundary = req.view_end;
         self.answers += 1;
         let answer = emit::AnswerSeq(self.answers);
@@ -607,41 +626,8 @@ impl Driver<'_, '_> {
             one_off,
             at: transition::At::Admitted { queue_depth: turns.len() + 1, urgency: req.urgency, prompt_tokens: prompt.len(), since_submit_ms: record::whole_ms(req.submitted.elapsed()) },
         };
-        turns.push(Turn { req, id, one_off, prompt, basis, genes, phase: Phase::Waiting(Default::default()), submitted, ready_since: submitted, spent: Spent::default(), boundaries: Boundaries { view: boundary, learned: None }, answer, cancel });
+        turns.push(Turn { req, id, one_off, prompt: prompt.into(), basis, genes, phase: Phase::Waiting, submitted, ready_since: submitted, spent: Spent::default(), boundaries: Boundaries { view: boundary, learned: None }, answer, cancel });
         self.record.send(record::Fact::Transition(admitted));
-    }
-
-    /// The turn the next frame advances: a mind is one serial queue, so only her oldest turn is a
-    /// candidate; among candidates, `frame::pick` decides. A waiting turn's prefill is what she
-    /// cannot reuse, never her whole prompt: a 1.2k tail on a 29k prompt she holds is a 1.2k turn
-    /// (the M5, 2026-11-19, a6da599330: sized as 29k, her rewind waited 161 s behind cold prompts).
-    fn pick(&mut self, turns: &[Turn]) -> Option<usize> {
-        // A lone turn needs no ranking or cache estimate. Its bind still
-        // validates reuse against the actual prompt before advancing.
-        if turns.len() == 1 {
-            return Some(0);
-        }
-        let mut seen = std::collections::HashSet::new();
-        let eligible: Vec<usize> = (0..turns.len()).filter(|&index| seen.insert(turns[index].id)).collect();
-        let active = self.engine.active();
-        let candidates: Vec<frame::Candidate> = eligible
-            .iter()
-            .map(|&index| {
-                let turn = &turns[index];
-                let (started, remaining) = match &turn.phase {
-                    Phase::Waiting(estimate) => (false, *estimate.get_or_init(|| {
-                        let her = if active == Some(turn.id) { self.engine.active_mut().map(|her| &*her) } else { self.parked.get(&turn.id) };
-                        let reused = if let Some(her) = her { reuse_for(her, &turn.prompt, &turn.basis).action.reused() } else { 0 }; // a mind never seen reuses nothing
-                        turn.prompt.len().saturating_sub(reused)
-                    })),
-                    Phase::Prefilling { pos } => (true, turn.prompt.len().saturating_sub(*pos)),
-                    Phase::Decoding { .. } => (true, 0),
-                };
-                let waited_ms = record::whole_ms(turn.ready_since.elapsed());
-                frame::Candidate { urgency: turn.req.urgency, place: frame::Place::of(active == Some(turn.id), started), remaining, waited_ms }
-            })
-            .collect();
-        frame::pick(&candidates).map(|chosen| eligible[chosen])
     }
 
     /// One frame for `turn`: bind her if another mind is bound, then one step (a prefill chunk, or
@@ -655,14 +641,18 @@ impl Driver<'_, '_> {
         if turn.spent.first_step.is_none() {
             turn.spent.first_step = Some(turn.submitted.elapsed());
         }
-        if self.engine.active() != Some(turn.id) {
+        let switched = self.engine.active() != Some(turn.id);
+        if switched {
             let switching = Instant::now();
             self.switch_to(turn.id, turn.one_off)?;
-            turn.spent.switch += switching.elapsed();
+            let took = switching.elapsed();
+            self.lane.observe(Observation::SwitchedIn { mind: turn.id, took });
+            turn.spent.switch += took;
             turn.spent.switches += 1;
         }
-        if matches!(turn.phase, Phase::Waiting(_)) {
+        if matches!(turn.phase, Phase::Waiting) {
             let from = self.resume(turn)?;
+            self.lane.observe(Observation::Reused { mind: turn.id, reused: from as u64, prompt: turn.prompt.len() as u64 });
             if from >= turn.prompt.len() {
                 return Err(TurnError::NothingDecoded);
             }
@@ -674,14 +664,24 @@ impl Driver<'_, '_> {
             }
         }
         let stepping = Instant::now();
-        let (advanced, decoding) = match std::mem::replace(&mut turn.phase, Phase::Waiting(Default::default())) {
-            Phase::Waiting(_) => (Err(TurnError::NothingDecoded), false),
-            Phase::Prefilling { pos } => (self.prefill_chunk(turn, pos).map(|()| Advanced::Continues), false),
-            Phase::Decoding { token, pos, generated } => (self.decode_token(turn, token, pos, generated), true),
+        let (advanced, decoding, prefill_from) = match std::mem::replace(&mut turn.phase, Phase::Waiting) {
+            Phase::Waiting => (Err(TurnError::NothingDecoded), false, None),
+            Phase::Prefilling { pos } => (self.prefill_chunk(turn, pos).map(|()| Advanced::Continues), false, Some(pos)),
+            Phase::Decoding { token, pos, generated } => (self.decode_token(turn, token, pos, generated), true, None),
         };
         let stepped = Instant::now();
         turn.ready_since = stepped;
         let took = stepped.saturating_duration_since(stepping);
+        // what the step moved: one token decoded, or the prefill chunk up to where she now stands
+        let tokens = match (prefill_from, &turn.phase) {
+            (Some(from), Phase::Prefilling { pos }) => pos.saturating_sub(from),
+            (Some(from), Phase::Decoding { .. }) => turn.prompt.len().saturating_sub(from),
+            (Some(_), Phase::Waiting) | (None, _) => usize::from(decoding && advanced.is_ok()),
+        };
+        self.lane.observe(Observation::Stepped { mind: turn.id, took, tokens: tokens as u64, prefill: !decoding, switched });
+        if let Ok(Advanced::Done { tokens_generated, .. }) = &advanced {
+            self.lane.observe(Observation::TurnEnded { mind: turn.id, decoded: *tokens_generated as u64 });
+        }
         if decoding {
             turn.spent.decode += took;
         } else {
@@ -698,16 +698,15 @@ impl Driver<'_, '_> {
         advanced
     }
 
-    /// Where her prefill starts, now that she is bound (`reuse::choose`): what she holds when the
-    /// prompt extends it, her checkpoint when the prompt keeps her view and changes what follows, else
-    /// from zero for the reason named in her probe row. A rewind the engine refuses restarts her.
+    /// Where her prefill starts once bound (`reuse::choose`): what she holds when the prompt extends it, her
+    /// checkpoint when it keeps her view and changes what follows, else zero for her probe row's reason.
     fn resume(&mut self, turn: &mut Turn) -> Result<usize, TurnError> {
         let basis = turn.basis.clone();
         let her = self.engine.active_mut().ok_or(TurnError::NoneActive)?;
         let reuse::Decision { shared, action: decided } = reuse_for(her, &turn.prompt, &basis);
         turn.spent.shared_prefix_tokens = shared;
-        // Prefill will cross this matching prefix again. Take a native checkpoint there
-        // so the next turn can use it if both token history and recurrent lineage match.
+        divergence::probe(self.model, turn.id, &her.parts().tokens.held, &turn.prompt, shared);
+        // Prefill crosses this matching prefix again: checkpoint there, for the next turn's use.
         let can_learn = match decided {
             reuse::Reuse::Rewind { from } => shared > from,
             reuse::Reuse::Restart(reuse::Miss::Diverged | reuse::Miss::NoCheckpoint) => shared > 0,
@@ -774,14 +773,13 @@ impl Driver<'_, '_> {
     fn prefill_chunk(&mut self, turn: &mut Turn, pos: usize) -> Result<(), TurnError> {
         // A chunk never runs past her view's end, so she can be checkpointed exactly there.
         let limit = turn.boundaries.next_end(pos, turn.prompt.len());
-        // Her turn keeps the Core until it ends (`frame`), so each chunk is as large as the engine's
-        // batch: nothing is sized to yield to another mind.
-        let end = pos.saturating_add(self.batch.get()).min(limit);
+        // As many tokens as the lane allows (`lane::step_tokens`): within every other mind's slack.
+        let end = pos.saturating_add(self.lane.step_tokens()).min(limit);
         let chunk = &turn.prompt[pos..end];
         let last = end == turn.prompt.len();
         let from = Pos::try_from(pos).map_err(|_| TurnError::TooLong)?;
         let len = chunk.len();
-        self.engine.submit(Step { tokens: chunk.to_vec(), from, logits_at_end: last, genes: Arc::clone(&turn.genes) })?;
+        self.engine.submit(Step { tokens: Tokens::Span { of: Arc::clone(&turn.prompt), from: pos, to: end }, from, logits_at_end: last, genes: Arc::clone(&turn.genes) })?;
         if !last {
             self.engine.settle()?;
             self.record(|her| her.tokens.held.extend_from_slice(chunk))?;
@@ -824,7 +822,7 @@ impl Driver<'_, '_> {
         }
         let forward = Instant::now();
         let reused_before = self.engine.tier().graphs_reused();
-        self.engine.submit(Step { tokens: vec![token], from: pos, logits_at_end: true, genes: Arc::clone(&turn.genes) })?;
+        self.engine.submit(Step { tokens: Tokens::One(token), from: pos, logits_at_end: true, genes: Arc::clone(&turn.genes) })?;
         turn.spent.forward += forward.elapsed();
         turn.spent.graphs_reused += self.engine.tier().graphs_reused().saturating_sub(reused_before);
         self.record(|her| her.tokens.held.push(token))?;
@@ -937,6 +935,7 @@ impl Driver<'_, '_> {
         if turn.one_off {
             self.parked.remove(&turn.id);
             self.live_one_offs.remove(&turn.id);
+            self.lane.observe(Observation::Left { mind: turn.id });
         }
     }
 
@@ -968,7 +967,10 @@ impl Driver<'_, '_> {
         if blocks == Held::NOTHING {
             return;
         }
-        footprint_registry::global().report_authoritative(FootprintKey::for_persona(id.0, ResourceType::KvCache, Residency::Active), (blocks + own).total());
+        let bytes = (blocks + own).total();
+        footprint_registry::global().report_authoritative(FootprintKey::for_persona(id.0, ResourceType::KvCache, Residency::Active), bytes);
+        // her blocks' bytes for the lane; which of them are cold the block layer does not report yet
+        self.lane.observe(Observation::Resident { mind: id, kv_bytes: bytes as u64, cold_bytes: Measured::Unmeasured });
     }
 }
 
@@ -986,10 +988,4 @@ fn report(stop: tokio::sync::oneshot::Sender<Suspended>, suspended: Suspended) {
     if let Err(late) = stop.send(suspended) {
         continuum_base::probe!(class = "persona.engine.suspend_unheard", preserved = late.preserved as u64, retained = late.retained.len() as u64, "a suspend finished after its stop gave up");
     }
-}
-
-fn signature(genes: &[(String, Arc<LoraAdapter>, f32)]) -> String {
-    let mut parts: Vec<String> = genes.iter().map(|(id, _, scale)| format!("{id}:{scale}")).collect();
-    parts.sort_unstable();
-    parts.join(",")
 }

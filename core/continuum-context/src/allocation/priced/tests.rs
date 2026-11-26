@@ -90,7 +90,9 @@ fn a_large_window_is_not_filled_when_its_tokens_cost_more_than_they_add() {
 // what this catches (the dyno on #5822: four in five priced windows fell below the smallest context
 // ever measured, where the fresh-tokens line clamps): a price chosen where the curve says nothing.
 // A curve measured only over larger contexts never holds below them; one measured only below what
-// she must hold says nothing, and the window plans exactly as before.
+// she must hold says nothing: the window grows by a bounded step past them (the measured top plus its
+// spread, at least her reply's want, never below what she must hold), never filling the window (the
+// M5, 2026-11-25 23:30Z: given the whole 262,144, unpriced contexts went to 180k and 230k tokens).
 #[test]
 fn the_price_never_chooses_outside_the_measured_contexts() {
     let window = 755_456;
@@ -102,7 +104,7 @@ fn the_price_never_chooses_outside_the_measured_contexts() {
     let before = allocate(window, act(Newest::Pageable { whole: 6_000, least: 600 }, ContextPrice::Unmeasured));
     let unmeasured_there = allocate(window, act(Newest::Pageable { whole: 6_000, least: 600 }, ContextPrice::Measured(m5_over(low))));
     assert_eq!(unmeasured_there.priced, Priced::OutsideMeasured { measured: low });
-    assert_eq!(ActPlan { priced: Priced::Unmeasured, need: ActNeed::Unpriced, ..unmeasured_there }, before, "planned as before");
+    assert!(unmeasured_there.window < before.window, "never the whole window: {} of {}", unmeasured_there.window, before.window);
 }
 
 // what this catches (the dyno on #5822: the price took her tool schemas to their names, a help
@@ -290,4 +292,27 @@ fn a_view_held_past_the_measured_contexts_turns_over_into_them() {
     let plan = allocate(window, claims);
     assert!(matches!(plan.priced, Priced::Held { .. }), "priced, never served the whole window: {:?}", plan.priced);
     assert!(held(&plan) < sent, "held inside the measured contexts, below what she sent: {}", held(&plan));
+}
+
+// what this catches (Aris on the M5, 2026-11-25 22:30Z: measured over 12,264..18,030 tokens, held
+// 19,218 of a 66,209 window, her view granted 5 to 7k and turned over every act or two): a price that
+// only ever chooses inside what it measured, so a window held small is never measured larger and can
+// only step down. A choice at the top of the measured contexts, with window above it, holds an upward
+// trial past them, never past the window; a choice inside them is held as before.
+#[test]
+fn a_choice_at_the_top_of_what_was_measured_tries_above_it() {
+    let narrow = (12_264, 18_030);
+    let tried = allocate(66_209, act(Newest::Pageable { whole: 6_000, least: 600 }, ContextPrice::Measured(m5_over(narrow))));
+    let Priced::Trial { held: trial, measured } = tried.priced else { panic!("test: a choice at the top of 12k..18k tries above it, priced {:?}", tried.priced) };
+    assert_eq!(measured, narrow);
+    assert!(trial > narrow.1 && trial <= 66_209, "past what was measured, within the window: {trial}");
+    assert_eq!(tried.window, trial, "the act holds the trial window");
+    // Benchy, the M5, 2026-11-26 01:48Z: measured 9,952..159,015 in a 262,144 window: a trial is one
+    // step of her growth past the top, never the whole window
+    let benchy = allocate(262_144, act(Newest::Pageable { whole: 6_000, least: 600 }, ContextPrice::Measured(m5_over((9_952, 159_015)))));
+    if let Priced::Trial { held: step, .. } = benchy.priced {
+        assert!(step < 262_144, "one step of growth past 159,015, not the whole window: {step}");
+    }
+    let wide = allocate(755_456, act(Newest::Pageable { whole: 6_000, least: 600 }, m5()));
+    assert!(matches!(wide.priced, Priced::Held { .. }), "a peak inside a wide measured range is held as before: {:?}", wide.priced);
 }

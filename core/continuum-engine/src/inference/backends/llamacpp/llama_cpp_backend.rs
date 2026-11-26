@@ -66,6 +66,7 @@ impl LlamaCppBackend {
 
         Ok(Self {
             embedding_lane: super::embedding_lane::EmbeddingLane::new(),
+            held_views: super::super::persona_scheduler::HeldViews::default(),
             chat: OnceLock::new(),
             model: Arc::new(model),
             config,
@@ -482,6 +483,7 @@ impl LlamaCppBackend {
                         n_ubatch: self.config.n_ubatch,
                         type_k: self.config.type_k,
                         type_v: self.config.type_v,
+                        lane_algorithm: self.config.lane_algorithm,
                     },
                 ),
             )
@@ -514,7 +516,7 @@ impl LlamaCppBackend {
         max_tokens: usize,
         sampler: llama::TurnSampler,
         stop_sequences: &[&str],
-        active_loras: &[(String, f32)],
+        active_loras: &[crate::inference::backends::persona_scheduler::Gene],
     ) -> Result<TurnAnswer, String> {
         let gen_start = Instant::now();
         let prompt = turn.text;
@@ -523,13 +525,13 @@ impl LlamaCppBackend {
         // Channel for streaming tokens back from the scheduler.
         let (response_tx, response_rx) = tokio::sync::mpsc::unbounded_channel::<TokenEvent>();
 
-        // Resolve requested genes (`id`, scale) to live adapter handles from
+        // Resolve requested genes to live adapter handles from
         // the cache BEFORE crossing to the scheduler thread (which can't lock
         // our cache). A requested id that was never paged in via
         // `ensure_adapter` is a hard error — never a silent base-model run
         // (Rule 2: fail loud, name the cause). Empty in the common no-gene
         // case, so the base path pays nothing.
-        let resolved_loras: Vec<(String, Arc<LoraAdapter>, f32)> = if active_loras.is_empty() {
+        let resolved_loras: Vec<(crate::inference::backends::persona_scheduler::Gene, Arc<LoraAdapter>)> = if active_loras.is_empty() {
             Vec::new()
         } else {
             let guard = self
@@ -538,15 +540,16 @@ impl LlamaCppBackend {
                 .map_err(|e| format!("LoRA cache lock poisoned: {e}"))?;
             active_loras
                 .iter()
-                .map(|(id, scale)| {
+                .map(|gene| {
                     guard
-                        .get(id)
-                        .map(|h| (id.clone(), Arc::clone(h), *scale))
+                        .get(&gene.id)
+                        .map(|h| (gene.clone(), Arc::clone(h)))
                         .ok_or_else(|| {
                             format!(
-                                "LoRA gene '{id}' requested but not loaded — call \
+                                "LoRA gene '{}' requested but not loaded — call \
                                  ensure_adapter(id, path) before generate (Rule 2: \
-                                 refuse to silently run the base model in its place)"
+                                 refuse to silently run the base model in its place)",
+                                gene.id
                             )
                         })
                 })
@@ -554,7 +557,7 @@ impl LlamaCppBackend {
         };
 
         // Tokenized here, on this act's own thread, so the engine thread never tokenizes.
-        let (prompt, view_end) = super::super::persona_scheduler::prepare(&self.model, prompt, turn.stable_prefix)?;
+        let (prompt, view_end) = self.held_views.prepare(&self.model, persona_id, prompt, turn.stable_prefix)?;
         let prompt_tokens = prompt.len();
         let req = GenerationRequest {
             prompt,
@@ -602,6 +605,17 @@ pub struct Answer {
 }
 
 impl TurnAnswer {
+    /// Until her first token arrives (a test's proof that her turn is running, never a timed guess).
+    /// The token is consumed; a test that waits on it does not read the answer's text.
+    #[cfg(test)]
+    pub(crate) async fn until_first_token(&mut self) {
+        while let Some(event) = self.events.recv().await {
+            if matches!(event, TokenEvent::Token(_)) {
+                return;
+            }
+        }
+    }
+
     pub async fn collect(mut self) -> Result<Answer, InferenceError> {
         let mut output = String::new();
         loop {

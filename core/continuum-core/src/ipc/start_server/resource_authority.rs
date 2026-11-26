@@ -182,5 +182,11 @@ pub(super) fn build_model_catalog_and_resource_daemon(
             crate::resources::DaemonConfig::default(),
         )
     };
+    // What is free, said on the node's bus (resources/free): a component waiting for memory (the
+    // trainer's held buckets) wakes on a release instead of sampling the board on its other wakes.
+    if let Err(taken) = resource_daemon.say_on(continuum_sage::component::node()) {
+        continuum_base::probe!(class = "resources.free.not_said", topic = taken.0 .0,
+            "the authority's free-memory topic is claimed elsewhere: nothing waiting for memory wakes on a release");
+    }
     (model_catalog, resource_daemon)
 }

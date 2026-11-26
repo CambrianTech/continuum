@@ -138,8 +138,17 @@ impl ActTimeFit {
         self.acts += 1;
         self.output += f64::from(act.output);
         let input = f64::from(act.input);
-        self.fresh.observe(input, f64::from(act.fresh), 1.0);
-        self.observed.observe(input, (act.decode_ms + act.prefill_ms) / 1_000.0, 1.0);
+        // A cold act (nothing resumed: a restart, a lost cache, a divergence before any checkpoint)
+        // prefills her whole prompt whatever context she holds: its cause is the engine's state, not
+        // her context's size. It still measures what a token costs to prefill and decode, but it is
+        // no evidence of how many fresh tokens, or how many seconds, holding context brings an act.
+        // Counted there, every restart read as "a large context is dear", the price held her window
+        // small, the small window turned over every act or two, and the turnovers read the same way
+        // (the M5, 2026-11-25: Aris held at 19k of 66k, a turnover every act or two).
+        if act.cached > 0 {
+            self.fresh.observe(input, f64::from(act.fresh), 1.0);
+            self.observed.observe(input, (act.decode_ms + act.prefill_ms) / 1_000.0, 1.0);
+        }
         if act.output > 0 {
             let over = input + f64::from(act.output) / 2.0;
             self.decode.observe(over, act.decode_ms / 1_000.0 / f64::from(act.output), f64::from(act.output));

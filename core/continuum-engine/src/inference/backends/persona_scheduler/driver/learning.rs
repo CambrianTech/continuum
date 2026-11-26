@@ -8,10 +8,11 @@
 //! between chunks whether a turn is waiting; one waiting drains it, so a turn waits at most one chunk.
 
 use std::collections::{HashMap, VecDeque};
-use std::num::NonZeroU32;
+
 use std::sync::Arc;
 
 use continuum_persona_engine::persona::{Epoch, MindId, PersonaId};
+use continuum_persona_engine::residency::LessonRows;
 use continuum_persona_engine::turn::common_prefix;
 use continuum_persona_llama::LearnReply;
 use llama::{Finished, FreshGeometry, Label, Optimizer, ReplyAdmission, Shadow, Walk};
@@ -19,7 +20,7 @@ use llama::{Finished, FreshGeometry, Label, Optimizer, ReplyAdmission, Shadow, W
 use super::Driver;
 use crate::inference::backends::persona_scheduler::lesson::Rendered;
 use crate::inference::learning::{
-    say, GenerationOutcome, Learning as Told, OptimizerStart, Said, Seat, SeatId, SeatState, ShadowSource, StepId, StepOutcome,
+    say, Fit, GenerationOutcome, Learning as Told, OptimizerStart, Said, Seat, SeatId, SeatState, ShadowSource, StepId, StepOutcome,
 };
 
 /// What reaches the driver: every verb as told, except a lesson, which arrives rendered.
@@ -41,7 +42,7 @@ pub(crate) struct Measuring {
     pub(crate) mind: PersonaId,
     pub(crate) shadow: ShadowSource,
     pub(crate) optimizer: Optimizer,
-    pub(crate) reply_rows: NonZeroU32,
+    pub(crate) rows: LessonRows,
 }
 
 /// One lesson for a seat, rendered, with its workspace admission view.
@@ -63,7 +64,7 @@ impl Job {
             Job::Told(Told::Learn(learn)) => say(Said::Step { seat: learn.seat, step: learn.step, outcome: StepOutcome::Refused { why } }),
             Job::Told(Told::Measure(measure)) => say(Said::Seat { seat: measure.seat, state: SeatState::Refused { why } }),
             // A seat told to load, seat or release already holds what it holds: kept, never ended.
-            Job::Told(Told::Load { seat }) => say(Said::Seat { seat, state: SeatState::Kept { why } }),
+            Job::Told(Told::Load { seat, .. }) => say(Said::Seat { seat, state: SeatState::Kept { why } }),
             Job::Told(Told::Seat(seated)) => say(Said::Seat { seat: seated.seat, state: SeatState::Kept { why } }),
             Job::Told(Told::Checkpoint { seat, .. }) => say(Said::Generation { seat, outcome: GenerationOutcome::Refused { why } }),
             Job::Told(Told::Release { seat }) => say(Said::Seat { seat, state: SeatState::Kept { why } }),
@@ -81,6 +82,11 @@ pub(super) struct Learning {
 impl Learning {
     pub(super) fn queue(&mut self, job: Job) {
         self.waiting.push_back(job);
+    }
+
+    /// How many jobs wait: the learning backlog the lane counts in the background class.
+    pub(super) fn waiting_jobs(&self) -> usize {
+        self.waiting.len()
     }
 
     pub(super) fn waiting(&self) -> bool {
@@ -106,7 +112,7 @@ impl Learning {
 struct Entry {
     mind: PersonaId,
     optimizer: Optimizer,
-    reply_rows: NonZeroU32,
+    rows: LessonRows,
     phase: Phase,
 }
 
@@ -126,6 +132,13 @@ fn mind_of(persona: PersonaId) -> MindId {
 impl Driver<'_, '_> {
     /// Work the oldest waiting job. `go_on` says whether no turn waits.
     pub(super) fn learn_next(&mut self, go_on: &mut dyn FnMut() -> bool) {
+        // timed whole: the lane's background class counts it as service and learns a job's cost
+        let started = std::time::Instant::now();
+        self.work_next(go_on);
+        self.lane.learned(started.elapsed());
+    }
+
+    fn work_next(&mut self, go_on: &mut dyn FnMut() -> bool) {
         let Some(job) = self.learning.waiting.pop_front() else { return };
         match job {
             Job::Measure(sized) => self.measure(sized),
@@ -134,7 +147,7 @@ impl Driver<'_, '_> {
                 say(Said::Seat { seat, state });
             }
             told @ Job::Told(Told::Measure(_)) => told.refuse("the measure reached the engine unrendered"),
-            Job::Told(Told::Load { seat }) => self.load(seat),
+            Job::Told(Told::Load { seat, fit }) => self.load(seat, fit),
             Job::Told(Told::Seat(seated)) => self.seat(seated),
             Job::Told(Told::Checkpoint { seat, into, binding }) => self.checkpoint(seat, &into, &binding),
             Job::Told(Told::Release { seat }) => self.release(seat),
@@ -162,7 +175,7 @@ impl Driver<'_, '_> {
     }
 
     fn measure(&mut self, sized: Measuring) {
-        let Measuring { seat, mind, shadow, optimizer, reply_rows } = sized;
+        let Measuring { seat, mind, shadow, optimizer, rows } = sized;
         if self.learning.seats.contains_key(&seat) {
             return say(Said::Seat { seat, state: SeatState::Kept { why: "the seat is already measured".into() } });
         }
@@ -178,14 +191,14 @@ impl Driver<'_, '_> {
         };
         match weights {
             Ok(weights) => {
-                self.learning.seats.insert(seat, Entry { mind, optimizer, reply_rows, phase: Phase::Measured { source: shadow } });
+                self.learning.seats.insert(seat, Entry { mind, optimizer, rows, phase: Phase::Measured { source: shadow } });
                 say(Said::Seat { seat, state: SeatState::Measured { weights } });
             }
             Err(refusal) => say(Said::Seat { seat, state: SeatState::Refused { why: refusal.to_string().into() } }),
         }
     }
 
-    fn load(&mut self, seat: SeatId) {
+    fn load(&mut self, seat: SeatId, fit: Fit) {
         let Some(entry) = self.learning.seats.remove(&seat) else {
             return say(Said::Seat { seat, state: SeatState::Refused { why: "load of a seat never measured".into() } });
         };
@@ -215,7 +228,7 @@ impl Driver<'_, '_> {
             Err(why) => return say(Said::Seat { seat, state: SeatState::Refused { why: why.into() } }),
         };
         let mind = mind_of(entry.mind);
-        let measured = self.engine.attach_shadow(mind, &shadow).and_then(|()| self.engine.measure_shadow(mind, &shadow, entry.reply_rows));
+        let measured = self.engine.attach_shadow(mind, &shadow).and_then(|()| self.measure_within(mind, &shadow, entry.rows, fit));
         // Off the context before the shadow can be dropped; if that is not confirmed, the engine
         // holds it until a release proves it off.
         if let Err(attached) = self.engine.detach_shadow(mind) {
@@ -223,15 +236,37 @@ impl Driver<'_, '_> {
             return say(Said::Seat { seat, state: SeatState::Quarantined { why: attached.to_string().into() } });
         }
         match measured {
-            Ok((optimizer, workspace)) => {
-                let reply_rows = entry.reply_rows;
-                self.learning.seats.insert(seat, Entry { phase: Phase::Loaded { shadow }, ..entry });
-                say(Said::Seat { seat, state: SeatState::Loaded { optimizer, workspace, reply_rows } });
+            Ok((optimizer, workspace, rows)) => {
+                self.learning.seats.insert(seat, Entry { rows, phase: Phase::Loaded { shadow }, ..entry });
+                say(Said::Seat { seat, state: SeatState::Loaded { optimizer, workspace, reply_rows: rows.reply(), lesson_rows: rows.whole() } });
             }
             Err(refusal) => {
                 // Detached: the last reference goes before the trainer hears nothing remains.
                 drop(shadow);
                 say(Said::Seat { seat, state: SeatState::Refused { why: refusal.to_string().into() } });
+            }
+        }
+    }
+
+    /// Measure `shadow`'s optimizer and workspace for the most of `rows` that `fit` holds: the whole
+    /// lesson when it fits, otherwise fewer lesson rows with her reply kept whole (each Learn then
+    /// renders the lesson collapsed to them). Each probe is scaled down by the measured overshoot and
+    /// is at most half the last, so the probes end by the reply alone, at most log2(whole / reply) + 1
+    /// of them, each a dry run that allocates nothing. Past the fit with the reply alone, the seat is
+    /// measured as it is: the trainer's hold decides between a wait and a defect.
+    fn measure_within(&mut self, mind: MindId, shadow: &Shadow, rows: LessonRows, fit: Fit) -> Result<(Vec<llama::MemoryRow>, Vec<llama::MemoryRow>, LessonRows), continuum_persona_engine::residency::TierRefusal> {
+        let mut rows = rows;
+        loop {
+            let (optimizer, workspace) = self.engine.measure_shadow(mind, shadow, rows)?;
+            let reply = rows.reply();
+            let whole = rows.whole().get();
+            let smaller = fit.overshoot(&[&optimizer, &workspace]).filter(|_| whole > reply.get()).and_then(|over| {
+                let scaled = (f64::from(whole) / over) as u32; // floor; an infinite overshoot is 0
+                LessonRows::new(reply, std::num::NonZeroU32::new(scaled.min(whole / 2).max(reply.get()))?)
+            });
+            match smaller {
+                Some(next) => rows = next,
+                None => return Ok((optimizer, workspace, rows)),
             }
         }
     }
@@ -305,18 +340,18 @@ impl Driver<'_, '_> {
         let Some(entry) = self.learning.seats.remove(&seat) else {
             return refused("a lesson for a seat never seated".into());
         };
-        let Entry { mind, optimizer, reply_rows, phase } = entry;
+        let Entry { mind, optimizer, rows, phase } = entry;
         let shadow = match phase {
             Phase::Seated { shadow } => shadow,
             other => {
-                self.learning.seats.insert(seat, Entry { mind, optimizer, reply_rows, phase: other });
+                self.learning.seats.insert(seat, Entry { mind, optimizer, rows, phase: other });
                 return refused("a lesson for a seat not seated".into());
             }
         };
         // Taken out while she learns (binding her needs the whole driver); put back whatever happens.
-        let (outcome, quarantined) = self.learn_seated(Seated { mind, reply_rows, shadow: &shadow, rendered: &rendered }, admission, go_on);
+        let (outcome, quarantined) = self.learn_seated(Seated { mind, rows, shadow: &shadow, rendered: &rendered }, admission, go_on);
         let phase = if quarantined.is_some() { Phase::Quarantined { shadow, retained: true } } else { Phase::Seated { shadow } };
-        self.learning.seats.insert(seat, Entry { mind, optimizer, reply_rows, phase });
+        self.learning.seats.insert(seat, Entry { mind, optimizer, rows, phase });
         if let Some(why) = quarantined {
             say(Said::Seat { seat, state: SeatState::Quarantined { why } });
         }
@@ -332,39 +367,29 @@ impl Driver<'_, '_> {
             return refused(format!("she could not be bound to learn: {unbound}"));
         }
         let mind = mind_of(seated.mind);
-        // her history read where it lies (130k tokens is 520 KB): never cloned to be read
+        // native learning begins only when her state ends at the lesson's context: what she holds of it
+        // is reused, the rest prefilled forward-only (no shadow, no gradient)
+        if let Err(why) = self.bring_to_lesson_context(seated.rendered) {
+            return refused(format!("she could not be brought to the lesson's context: {why}"));
+        }
+        // her history read where it lies (130k tokens is 520 KB): never cloned to be read; it now ends at
+        // the lesson's context, so the reply is her reply rows alone and restores no tail (her next turn
+        // rewinds to the checkpoint kept where her own history and the lesson part)
         let reply = match self.engine.active_mut() {
             Some(her) => reply_for(mind, &her.parts().tokens.held, seated.rendered),
-            None => return refused("she was not bound after the switch".into()),
+            None => return refused("she was not bound after reaching the lesson's context".into()),
         };
         let Some(reply) = reply else {
-            return refused("the lesson has no reply past what she holds".into());
+            return refused("the lesson has no reply past its context".into());
         };
-        if reply.tokens.len() > seated.reply_rows.get() as usize {
-            if let Some(need) = u32::try_from(reply.tokens.len()).ok().and_then(NonZeroU32::new) {
-                return (StepOutcome::TooLong { need }, None);
-            }
-            return refused(format!("{} reply tokens past the {} the seat was measured for", reply.tokens.len(), seated.reply_rows));
+        // her workspace was sized for a reply and a lesson of these rows: a longer one on either is measured again
+        let Some(lesson) = seated.rendered.rows() else {
+            return refused("the lesson renders to no rows a seat can hold".into());
+        };
+        let reply_fits = u32::try_from(reply.tokens.len()).is_ok_and(|rows| rows <= seated.rows.reply().get());
+        if !reply_fits || !seated.rows.holds(lesson) {
+            return (StepOutcome::TooLong { need: lesson.whole() }, None);
         }
-        let Ok(served) = usize::try_from(reply.n_cached) else {
-            return refused(format!("a served prefix of {} positions", reply.n_cached));
-        };
-        // native learning begins only when her state ends at the served prefix (a hybrid's recurrent
-        // state cannot be cut back, so she is rewound to a checkpoint and prefilled under her genes)
-        if let Err(why) = self.to_served_prefix(served) {
-            return refused(format!("she could not be brought to her served prefix: {why}"));
-        }
-        // Her reply is built from what she holds NOW: on a hybrid the reposition cut her history to the
-        // served prefix, so the reply restores no tail (re-decoding it natively would run under the shadow
-        // and leave her recurrent state past her history); her next turn prefills it under her own genes.
-        // On an attention-only model nothing was cut and the reply is the one built above.
-        let reply = match self.engine.active_mut() {
-            Some(her) => reply_for(mind, &her.parts().tokens.held, seated.rendered),
-            None => return refused("she was not bound after reaching her served prefix".into()),
-        };
-        let Some(reply) = reply else {
-            return refused("the lesson has no reply past her served prefix".into());
-        };
         let learned = match self.engine.attach_shadow(mind, seated.shadow) {
             Ok(()) => match self.engine.learn_active(seated.shadow, &reply, admission, go_on) {
                 Ok(Finished::Learned { steps, loss, .. }) => (StepOutcome::Learned { steps, loss }, None),
@@ -384,10 +409,68 @@ impl Driver<'_, '_> {
     }
 }
 
+impl Driver<'_, '_> {
+    /// Her lesson's context, forward only: what she does not already hold of it is prefilled into her
+    /// KV under her own genes with no shadow attached (plain KV, no gradient), after a checkpoint where
+    /// her own history and the lesson part, so her next turn rewinds there. The step then trains only
+    /// her reply against that KV, so its workspace is her reply against her context, never the whole
+    /// lesson from scratch (the 5090, 2026-11-26: seats quoted 244 GB to 48.8 TB of workspace, a
+    /// 100k-token lesson measured as a 100k-row training graph). Gradients do not reach the context's
+    /// own keys and values: the frozen-prefix approximation that makes learning a small addition.
+    fn bring_to_lesson_context(&mut self, rendered: &Rendered) -> Result<(), String> {
+        let last_context = rendered.reply_from.checked_sub(1).ok_or("the lesson has no context before its reply")?;
+        let her = self.engine.active_mut().ok_or("she is not bound")?;
+        let shared = common_prefix(&her.parts().tokens.held, &rendered.tokens).min(last_context);
+        // a resumed mind's adapters are loaded again from the files kept with her blocks, so she learns
+        // whether or not a turn of hers has handed them back (the M5, 2026-11-26)
+        let genes = her.parts_mut().genome.held_or_loaded(self.model)?;
+        let basis = her.parts().genome.clone();
+        self.reposition_to_served_prefix(shared).map_err(|why| format!("she could not be brought to her held prefix: {why}"))?;
+        if shared == last_context {
+            return Ok(());
+        }
+        // what she holds past the shared prefix is not the lesson's: her history ends there
+        self.record(|her| her.tokens.cut(shared)).map_err(|why| why.to_string())?;
+        // a resume point where her history and the lesson part, for every model (a rewind needs one):
+        // her KV must end exactly there when it is taken (the native rewind checks it). A hybrid's state
+        // stands there after reposition; an attention-only mind's KV still runs past it, so her last
+        // shared token is decoded again at its own position, which truncates her KV there (one token).
+        if shared > 0 {
+            if !self.model.has_recurrent_state() {
+                let last = *rendered.tokens.get(shared - 1).ok_or("the shared prefix is past the lesson")?;
+                let at = llama::Pos::try_from(shared - 1).map_err(|_| "a prefix past what a sequence can address".to_string())?;
+                self.engine
+                    .submit(continuum_persona_llama::Step { tokens: continuum_persona_llama::Tokens::One(last), from: at, logits_at_end: false, genes: Arc::clone(&genes) })
+                    .map_err(|why| why.to_string())?;
+                self.engine.settle().map_err(|why| why.to_string())?;
+            }
+            let history = &mut self.engine.active_mut().ok_or("she is not bound")?.parts_mut().tokens;
+            if let Some(mut blocks) = history.capture_buffer(super::history::Boundary::Learned, shared) {
+                if matches!(self.engine.checkpoint_active(&mut blocks), Ok(pos) if pos as usize + 1 == shared) {
+                    self.record(|her| her.tokens.save(super::history::Boundary::Learned, blocks, shared, &basis)).map_err(|why| why.to_string())?;
+                }
+            }
+        }
+        let context: Arc<[i32]> = Arc::from(rendered.tokens.get(..last_context).ok_or("the lesson ends before its reply")?);
+        let mut pos = shared;
+        while pos < last_context {
+            let end = last_context.min(pos + self.batch.get());
+            let at = llama::Pos::try_from(pos).map_err(|_| "a lesson longer than a sequence can address".to_string())?;
+            self.engine
+                .submit(continuum_persona_llama::Step { tokens: continuum_persona_llama::Tokens::Span { of: Arc::clone(&context), from: pos, to: end }, from: at, logits_at_end: false, genes: Arc::clone(&genes) })
+                .map_err(|why| why.to_string())?;
+            self.engine.settle().map_err(|why| why.to_string())?;
+            self.record(|her| her.tokens.held.extend_from_slice(&context[pos..end])).map_err(|why| why.to_string())?;
+            pos = end;
+        }
+        Ok(())
+    }
+}
+
 /// A seated lesson's inputs: whose, how long a lesson it was measured for, its shadow and its tokens.
 struct Seated<'a> {
     mind: PersonaId,
-    reply_rows: NonZeroU32,
+    rows: LessonRows,
     shadow: &'a Shadow,
     rendered: &'a Rendered,
 }

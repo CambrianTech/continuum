@@ -213,6 +213,12 @@ test('a PR that touches an example builds it, and runs the tests of one declarin
   assert.deepEqual(examples(['core/continuum-context/src/source.rs']), {});
   assert.deepEqual(examples(['docs/a.md']), {});
   assert.deepEqual(examples(['core/continuum-context/examples/replay.rs'], 'push'), {});
+  // what this catches: #6283 built `--example learn_in_place` on the PR that deleted it. A deleted
+  // example, or a rename's old name, is not built; a rename's new name is.
+  const removed = selectChecks([{ filename: 'core/continuum-context/examples/summarize.rs', status: 'removed' }], { eventName: 'pull_request', workspace }).examples;
+  assert.deepEqual(removed, {});
+  const renamed = selectChecks([{ filename: 'core/continuum-context/examples/summarize.rs', previous_filename: 'core/continuum-context/examples/old_name.rs', status: 'renamed' }], { eventName: 'pull_request', workspace }).examples;
+  assert.deepEqual(renamed, { 'continuum-context': { all: ['summarize'], tested: [] } });
 });
 
 test('a PR that touches a declared binary\'s own source compiles that binary', () => {

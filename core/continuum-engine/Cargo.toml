@@ -14,6 +14,7 @@ bytemuck = { workspace = true } # a mind's token history is written and read as 
 tempfile = { workspace = true, optional = true }
 continuum-kernel = { workspace = true }
 continuum-tool-protocol = { workspace = true }
+continuum-context = { workspace = true } # a lesson too long to learn is collapsed through the one context codec, never truncated
 tokio.workspace = true
 expert-pager-policy = { workspace = true }
 serde.workspace = true

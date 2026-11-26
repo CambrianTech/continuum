@@ -409,6 +409,189 @@ CLAUDE.md's polymorphism pattern), so a node's configuration or a trial picks on
   publishes the new placement only then. Cancelling a transfer waits for its event and leaves the
   block where it was.
 
+## Every byte the engine holds is a block: workspace, admission and reclaim
+
+Joel, 2026-11-26: "The low level cache/memory subsystem needs to be a whole smart object and sage based
+feature, not patched together. So there's no mystery and it works."
+
+**What the night of 2026-11-26 showed.** The design above places blocks the Streamer moves. The bytes
+that refused learning all night were bytes it does not see. Each refusal came from a different
+counter's private picture of the same memory:
+
+| Counter (2026-11-26, `fable/lesson-rows`) | Its picture | What it got wrong |
+|---|---|---|
+| `LearningMemory::workspace` (`continuum-engine/src/inference/learning/memory.rs`) | the seat's measured row against `required.max(held)` | refused every lesson smaller than what serving had grown the shared buffer to (MTL0 required 1.80 GB within held 4.62 GB, refused against 3.91 GB measured). Fixed in d119ff4dfb by checking growth only. |
+| `lease_memory` (`continuum-genome/.../learner/seat.rs`) and `LearningMemory::from_rows` | the gross `SharedComputeRequired` sum | prices a seat at the whole workspace when only the growth past what serving holds is allocated (Codex, the 5090: 5.73 GB required, 3.28 GB held, priced at 5.73 GB) |
+| `learning::leased`, `resource_admission/metrics.rs` | a third sum of the same rows | the same rule written again |
+| `window_grant` + `GrantHandoff` (`continuum-engine/src/capacity/`) | a slot's erase as bytes returned | a parked mind's KV on CUDA lives on host (`UnifiedTier::kv_memory`, native backing), so evicting her frees no VRAM; the handoff receipt proves an erase, never a device release (Codex, 2026-11-26 07:20Z) |
+| `training_demand::reservation` -> `working_set::with_training` -> `window_allocator::grow_shared_window` | demand as concurrent jobs | sums mutually exclusive queued seats as if they ran at once; a `TrainingGrowth::Reserved` plan is not a device release |
+| ggml's scheduler buffers, grown by `ggml_backend_sched_alloc_graph_admitted` | its own `held` | the only number that is true, and it sits outside every counter above |
+
+Six numbers for one memory, so every refusal needs a trace to explain, and a fix to one counter leaves
+the other five wrong. That is the mystery. The cure is the same as for the movers: one owner.
+
+**The compute workspace is a block.** A backend's shared compute buffer (the scheduler's per-buffer-type
+allocation that serving's graphs and a learner's reply graph both run in) becomes
+`BlockKind::Workspace { device, buffer_type }`, one per backend buffer type, owned by the Streamer like
+any block:
+- Its size is its `Region`'s size. `held` is never a separate number: it is the block's bytes.
+- Growth is a request to the Streamer: `grow(workspace, to: u64) -> Result<Grant, Refusal>`. The
+  Streamer prices exactly `to - held` on that block's tier, against that tier's budget, and makes room
+  by its law (demoting the coldest blocks *on that tier*) before refusing.
+- The scheduler's admission callback (`ReplyAdmission::workspace` today) becomes the one call site of
+  `grow`. Within `held` there is nothing to ask. `LearningMemory`'s row matching and lease checks are
+  deleted.
+- Shrinking is a demotion like any other: when serving's graphs no longer need the high-water mark and
+  the tier is under pressure, the law may shrink it, at a point where no graph is in flight
+  (`InFlight` covers it).
+
+**Admission is a reservation of blocks, priced where they will live.** A seat asks the Streamer for its
+blocks: `Training` blocks (shadow, optimizer state) by kind and tier, and growth of each `Workspace`
+it will run in. The Streamer answers with one typed `Reservation { per tier: bytes it will allocate }`
+computed from the same block table it places by, or a typed `Refusal` naming the tier, the bytes short
+and what it could not demote. Gross versus incremental stops being a question: the price is what the
+Streamer will allocate, because it is the allocator's owner. `lease_memory`, `from_rows`, `leased` and
+the metrics sum are deleted; Codex's typed incremental contract (2026-11-26 08:01Z) is this
+`Reservation`, not a fourth counter.
+
+**Reclaim is demotion, and the Streamer knows what a demotion frees.** Every block carries its tier, so
+"evict her to make room for training" becomes "demote blocks on the tier that is short". On the 5090
+a parked mind's KV is on `Pinned`, not `Vram`, so demoting it frees no VRAM and the Streamer never
+offers it as VRAM. What it can free on `Vram` is listed: other `Workspace` growth past need, `Weights`
+or `Expert` blocks the law can stream, a resident mind's `MindKv` on the stream. The answer is
+visible in `Placement` before anyone asks. `GrantHandoff` stays for slot custody; it stops being
+counted as bytes. `training_demand`'s reservation and `grow_shared_window`'s training path become
+`Demand` the Streamer hears, one queued seat at a time (mutually exclusive seats are one demand, not a
+sum).
+
+**Waiting, not refusing.** A seat whose reservation cannot be met now is not refused. It is `Demand`
+with a need and a forecast, and the Streamer answers `Granted` when its law has made room (a resting
+mind demoted, a workspace shrunk, a model's experts streamed). A refusal is only for a reservation
+that cannot be met on this node at all (the reply alone past every tier's budget), and it names that.
+This is how refusals become impossible rather than rarer: the only "no" is a proven "never here".
+
+**Why it works on every machine, or names the difference.** The M5 (unified) and the 5090 (discrete)
+run the same `Reservation` and the same law. On unified memory a demoted resident frees the one tier
+everyone shares; on the 5090 it frees `Pinned`, and the Streamer says so. The difference between
+nodes is a row in `Placement`, never a mystery found by trace.
+
+**Settled in review (Cormac, Codex, 2026-11-26 08:11Z and 08:19Z), before any code:**
+- **One authority, no seventh counter.** The resource authority keeps leasing to everything outside
+  the engine (builds, residents' tools). The Streamer holds one authority lease per tier for the
+  engine's memory and sub-allocates every block inside it. The authority sees one holder; the Streamer's
+  block table is the only picture of what is inside. Pressure from outside, our own builds included,
+  arrives as that lease's budget shrinking, and a growing budget wakes waiting seats. Both launch and
+  quit of another application are inputs.
+- **The engine thread never waits on a demotion. Prepare, consume, commit.** A `Reservation` is one
+  atomic claim across every tier. The Streamer prepares and pins it on its own workers, demoting as its
+  law decides, and says `Granted` only when the room is free. Inside the graph, the scheduler's callback
+  only consumes a prepared claim, answering at once. On allocator success it commits the actual size;
+  on allocator failure or cancel the unused claim unwinds. A replacement buffer that overlaps the old
+  one reserves its transient peak. With no prepared claim the step drains as `Unchanged`, and the seat
+  stays `Demand` until `Granted`. `grow()` is therefore never a call on the engine thread; the callback
+  is `consume`.
+- **A workspace is identified by its storage, not its name.** `Workspace` blocks key on the allocator's
+  context generation and backing allocation. Device and buffer type are descriptors, because two
+  schedulers can share a device and type without sharing storage.
+- **Bytes count as freed only when they are.** A source's bytes are credited to a tier only after a
+  fenced move and the allocator's release. On unified memory pinned RAM and GPU mappings may alias, so
+  the tier table is per physical memory. A smaller KV share, or a move from RAM to RAM, never pays for a
+  device shortage.
+- **"Never here" is a proven limit only.** A seat is refused only for a physical or semantic limit:
+  the reply alone past what this seat could reserve on each tier with every demotable block demoted.
+  The Streamer answers that query, and it is the `Fit` a lesson is sized within (2ae0feed16 sizes it from
+  governed capacity until 3b lands, then from the Streamer). External pressure is always a wait, never
+  a refusal.
+
+**None of this is about memory, so it is SAGE's, not the Streamer's** (Joel, 2026-11-26: "Is it well
+architected for more general use?"). Reservation, prepare/consume/commit, `Demand` that waits for
+`Granted`, the proven "never here" bound, credit only after a fenced release, and a lease per place
+from the authority apply to anything finite that is shared. SAGE.md's "Ebb and flow" lists the other
+instances: who is awake on a node, which models are hot, who runs where on the grid, the levels of
+detail in a live call. SAGE.md designs the `Placer` and `Consumer` for exactly this, but
+`continuum-sage` holds no `Placer` yet (grep, 0e54175a38). Built inside the Streamer, the contract
+would be memory-only, and each later instance would write it again. So the order is:
+- **Slice 3a, the `Placer` in `continuum-sage`.** `Consumer` gains the reservation half:
+  `prepare(units, place) -> Claim`, `consume(&Claim)` (answers now, never waits), `commit(actual)`,
+  `unwind`. `Demand` and `Granted` are its bus topics, and `ceiling(unit) -> Bound` is the "never here"
+  query. Its law is a `decide::Policy` use case, not a new `PlacementLaw` trait, so placement shares
+  the decide module's replay, checkpoint and learned-policy lifecycle with every other decision. A
+  committed claim keeps `decide::capacity`'s observed-versus-committed meaning, but `Lease` today is
+  a rate (work a second), and a byte extent, an awake slot and a service rate differ in dimension and
+  lifetime (Cormac, Codex, 2026-11-26). So `Lease` becomes `Lease<Q> { amount: Q, until, price }`,
+  generic over a typed quantity (`Bytes`, `Slots`, `Rate`), so one kind can never be spent as
+  another; the grid's rate is `Lease<Rate>`. Prepare, commit and unwind take a claim id and its
+  owner's generation, so an owner that restarts cannot spend a stale claim, and a prepare across
+  several places succeeds as one claim before `Granted`. Codex's host-wide arbitration across
+  instances (`codex/placement-under-load`, folded at a92d5fc514) is the `Placer` at node scope,
+  serializing prepares across instances; the Streamer supplies backing identity, aliasing, releases
+  and native completion.
+- **Validated by two outliers, as CLAUDE.md's method asks:** the Streamer's blocks (bytes on tiers,
+  fenced DMA) and who is awake on a node (minds on levels from stepping to asleep, no bytes moved by
+  the `Placer` itself). If both fit `Consumer` without forcing, the interface holds, and the hot tier,
+  the grid and a live call's levels follow.
+- **Slice 3b is the Streamer as its first `Consumer`.** It keeps only what is memory: `Workspace`
+  storage identity, the links, and what aliases on unified memory.
+- **The authority itself becomes the node's `Placer` in time.** Then builds and residents' tools are
+  `Consumer`s, and the Streamer's single lease per tier is no longer needed. Until then it is the
+  bridge that keeps one counter.
+
+What it deletes, in the slice that builds it (slice 3b below): `LearningMemory`'s workspace and lease
+matching, `lease_memory`, `from_rows`, `learning::leased`, the metrics sum, training's path through
+`window_allocator`, and `GrantHandoff` as bytes.
+
+### Placement while the machine is in use
+
+The resource authority continuously observes the host. For each physical pool it publishes the time of
+observation, the OS budget and available bytes, and the engine's attributed footprint where the backend
+can measure it. The Streamer joins that observation to its live blocks, outstanding reservations and
+transfers. OS available bytes already reflect resident allocations. Subtract only commitments that have
+yet to land. Charge aliases once and expose unexplained differences between the allocator and OS readings.
+An old observation can guide a forecast. The native allocation and its fence settle the actual result.
+Pressure can change between prepare and consume, including when another Continuum instance makes a claim.
+Slice 3b gives the resource authority one elected owner per host, held by a host-scoped OS lock.
+Codex owns the host reservation endpoint. Other instances prepare through that owner's bus endpoint.
+On owner loss, a successor reconciles live allocator receipts and outstanding lease identities before
+granting competing claims. A peer offer remains provisional until that peer's authority
+prepares it. Release a provisional claim on expiry or cancellation using its reservation identity.
+
+SAGE considers feasible actions against the same history. A policy may keep a warm block, demote it,
+place a future allocation on a host-capable backend, defer a seat, or use a compatible peer offer.
+Each proposal names the bytes it would free on the short pool, the destination capacity it needs,
+the transfer and restore time at recently observed rates, and the effect on the waiting lesson and
+active turns. Reusing an existing allocation and leaving the current placement intact are candidates too.
+Resource owners declare which backing can move and where computation can still execute. Free disk
+can preserve an idle block. A CUDA kernel still needs accessible backing when the block is used again.
+An authorized peer lease adds its price, expiry, queue delay and transfer cost to the same decision.
+Only the resource owner executes the selected action. The policy records the outcome beside its
+prediction so another algorithm can replay the decision using the same typed history.
+
+When outside pressure consumes a prepared reservation's headroom, validate the claim at consumption.
+If allocation fails, keep the original backing usable and release unused commitments. Observations
+continue while a seat waits, while it runs, and after it finishes. Each change can alter placement.
+Only a successful prepare covering the entire seat sends Granted to the trainer. Preserve the
+original seat identity and its waiting age. A competing application
+quitting, a transfer completing, and our own build ending can all change the preferred placement.
+Re-evaluate on those events and as observations age. Include the cost of undoing a move before bringing
+a block back. An executable path or an application name is unnecessary for these decisions.
+
+**Acceptance under changing load.** Run the same resident workload through three exact 900-second
+windows on each node. Establish the baseline, introduce a competing GPU and host-memory workload,
+then release it while the same lesson remains outstanding. Capture observations around both transitions
+inside the windows. Record build and artifact identity, request and lesson IDs, per-pool free bytes,
+prepared and committed bytes, physical bytes released, destination and move time, serving latency,
+and the interval from available capacity to grant. The proposed test command is
+`placement-pressure --host-mib 1024 --device-mib 1024 --hold-seconds 900`. Its separate process
+touches every host page and repeatedly executes a fixed GPU buffer pass using CUDA or Metal.
+Report actual resident bytes, allocation failures, pass latency and release time. On unified memory
+charge distinct physical backing once. These sizes belong to the repeatable fixture alone.
+Verify that foreground work continues, that two
+instances cannot spend the same headroom, and that the lesson produces one durable generation after
+capacity returns. Restore and exercise that generation. Replay local GPU pressure with ample disk
+space to detect false VRAM credits, and replay unified-memory pressure with aliased host and device
+views to detect duplicate credits. Report model-output quality and the competing workload's latency
+alongside throughput. These windows measure behavior; the control loop responds throughout each one.
+
 ## Built for the grid from the first slice
 
 Moving a mind or a block to another node is the same move as moving it to another tier, with a
@@ -467,6 +650,8 @@ network link between them. So that works later with no rework, everything built 
 | 1b | `Topology` and the tiers' budgets, once the resource authority says `resources/free` on the bus (card 9d856843, Cormac's delta 8). The drive's measured write rate checks the Mapping link: 64 MiB demoted at 1.06 GB/s on the M5 with serving beside, below what an SSD gives | Fable | Mapping at >= 80% of the measured drive rate |
 | 2 | The first consumer: the Core's parked minds' KV as `MindKv` blocks. Deletes the fork's private storage reservation (#6264), her separate file write, and `preserve.rs`'s JSON token history (her tokens are a block beside her KV) | Fable | `--test-core` byte-identical through a flash round trip; stop and restore at 130k at the drive's rate |
 | 3 | The `Streamer` with `PlacementLaw` (`FractalPager`, `Lru` as baseline), `Forecaster`, the law registry, `blocks/observed` and the `Trace`, simulator and replay; the Lane's `Forecast` as its first `Demand` | Fable | replay reproduces every decision; zero misses for forecast minds; `FractalPager` beats `Lru` on a fitted live trace |
+| 3a | SAGE's `Placer` in `continuum-sage`: `Consumer` with prepare/consume/commit/unwind, `Demand`/`Granted`, `ceiling`, its law as a `decide::Policy` use case, committed claims as `decide::capacity::Lease<Q>` over typed quantities, claims keyed by id and owner generation | Fable (Placer), Codex (node-scope arbitration on it) | two outlier consumers fit without forcing: a block consumer and the awake/asleep minds; sim replays a captured night's demand with zero waits that never clear |
+| 3b | Workspace, admission and reclaim as blocks ("Every byte the engine holds is a block"): `Workspace` blocks and `grow` at the scheduler's admission callback; `Reservation` replaces every learning lease sum; training demand as `Demand`. Deletes the six counters listed there | Fable (blocks, Streamer), Codex (`Reservation` contract, the discrete tiers' reclaim), Cormac (the trainer as a consumer, outstanding demand) | the M5 and the 5090 each run 15 min on one head: zero refusals that are not "never here"; every wait names the tier and bytes it waits for; forward progress (a `Saved` generation linked to its lesson, serving restored after) on both nodes; time from the short tier freeing to `Granted`, p50 and max; fixtures for pressure onset and recovery, cancel, and a native allocation failure after a reservation |
 | 4 | Discrete: the `Vram` and `Pinned` tiers, `Dma` and `Staged` links, the CUDA graph check | Codex | the 5090: a swap hidden under decode |
 | 5 | The hot tier as `Weights` blocks; its private copier deleted | Codex (owns the catalog) | model load from flash at the drive's rate |
 | 6 | llama-server page IO onto `Mapping`, or deleted with the HTTP lanes (the inference audit's line 2) | the card 6af87187 owner, with Codex | no `fread` of a page body |

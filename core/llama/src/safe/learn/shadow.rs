@@ -40,9 +40,47 @@ struct Fresh {
 
 extern "C" {
     fn continuum_lora_write_fresh(model: *const sys::llama_model, path: *const c_char, fresh: *const Fresh, sink: *const Sink) -> c_int;
-    fn continuum_adapter_measure(model: *mut sys::llama_model, path: *const c_char, sink: *const Sink) -> bool;
-    fn continuum_opt_measure_shadow_graph(ctx: *mut sys::llama_context, params: sys::llama_opt_params, reply_rows: u32, sink: *const Sink) -> bool;
+    fn continuum_adapter_measure(model: *mut sys::llama_model, path: *const c_char, sink: *const Sink) -> c_int;
+    fn continuum_opt_measure_shadow_graph(ctx: *mut sys::llama_context, params: sys::llama_opt_params, reply_rows: u32, lesson_rows: u32, sink: *const Sink) -> c_int;
     fn continuum_opt_shadow_state_write_path(ctx: *mut sys::llama_context, shadow: *const sys::llama_adapter_lora, path: *const c_char, binding: *const c_char) -> c_int;
+}
+
+/// What a boundary call did (learn_boundary.cpp `continuum_outcome`). A failure native code threw is
+/// caught there and named here, so it is refused by THIS step's name, never by a native failure string
+/// a previous call left (Codex on b32e31b7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Native {
+    Done,
+    /// Native code refused: its own failure string is this call's reason.
+    Refused,
+    NoMemory,
+    Threw,
+    /// A code this crate does not know: the boundary and this crate disagree.
+    Unknown(c_int),
+}
+
+impl Native {
+    pub(crate) fn of(code: c_int) -> Self {
+        match code {
+            0 => Self::Done,
+            1 => Self::Refused,
+            2 => Self::NoMemory,
+            3 => Self::Threw,
+            other => Self::Unknown(other),
+        }
+    }
+
+    /// The refusal a native failure is, by `step`'s name; `None` for a call that ran or refused (a
+    /// refusal's reason is native code's own, current for this call).
+    pub(crate) fn failed(self, step: &'static str) -> Option<LearnRefusal> {
+        let message = match self {
+            Self::Done | Self::Refused => return None,
+            Self::NoMemory => "native code could not allocate what it needed: the step is refused and the core keeps running".to_owned(),
+            Self::Threw => "native code threw: the step is refused and the core keeps running".to_owned(),
+            Self::Unknown(code) => format!("native code returned outcome {code}, which this crate does not know"),
+        };
+        Some(LearnRefusal { step, message })
+    }
 }
 
 /// What a shadow learning a reply would hold, by owner: the optimizer's own state (static for the
@@ -86,10 +124,14 @@ struct Measured {
 impl Measured {
     /// Measure through `measure`, handed the sink that fills this: the rows; `refused` when native
     /// code refused; or a refusal naming the roles nobody can lease against.
-    fn through(step: &'static str, measure: impl FnOnce(*const Sink) -> bool, refused: impl FnOnce() -> LearnRefusal) -> Result<Vec<MemoryRow>, LearnRefusal> {
+    fn through(step: &'static str, measure: impl FnOnce(*const Sink) -> c_int, refused: impl FnOnce() -> LearnRefusal) -> Result<Vec<MemoryRow>, LearnRefusal> {
         let mut measured = Measured::default();
         let sink = Sink { row: measured_row, data: std::ptr::from_mut(&mut measured).cast() };
-        if !measure(&sink) {
+        let native = Native::of(measure(&sink));
+        if let Some(failed) = native.failed(step) {
+            return Err(failed);
+        }
+        if native == Native::Refused {
             return Err(refused());
         }
         if measured.unknown.is_empty() {
@@ -118,7 +160,7 @@ impl Model {
         let step = "measure_fresh_shadow";
         let fresh = FreshText::of(geometry, step)?;
         let empty = c_path(Path::new(""), step)?;
-        Measured::through(step, |sink| unsafe { continuum_lora_write_fresh(self.as_ptr(), empty.as_ptr(), &fresh.native(), sink) } == 0, || LearnRefusal { step, message: "native code refused the fresh adapter (no target matched this model)".into() })
+        Measured::through(step, |sink| unsafe { continuum_lora_write_fresh(self.as_ptr(), empty.as_ptr(), &fresh.native(), sink) }, || LearnRefusal { step, message: "native code refused the fresh adapter (no target matched this model)".into() })
     }
 
     /// Write a fresh shadow at `path`: it leaves the model's output unchanged until its first
@@ -127,7 +169,11 @@ impl Model {
         let step = "write_fresh_shadow";
         let fresh = FreshText::of(geometry, step)?;
         let path = c_path(path, step)?;
-        if unsafe { continuum_lora_write_fresh(self.as_ptr(), path.as_ptr(), &fresh.native(), std::ptr::null()) } != 0 {
+        let native = Native::of(unsafe { continuum_lora_write_fresh(self.as_ptr(), path.as_ptr(), &fresh.native(), std::ptr::null()) });
+        if let Some(failed) = native.failed(step) {
+            return Err(failed);
+        }
+        if native == Native::Refused {
             return Err(LearnRefusal { step, message: "native code refused the fresh adapter (no target matched this model, or the write failed)".into() });
         }
         Ok(())
@@ -165,14 +211,16 @@ impl FreshText {
 }
 
 impl Learner<'_, '_> {
-    /// What `shadow` learning a reply of up to `reply_rows` tokens would hold on this context, allocating
+    /// What `shadow` learning a reply of up to `reply_rows` tokens, in a lesson of up to `lesson_rows` (her context
+    /// and the reply, what its attention reads), would hold on this context, allocating
     /// nothing: its optimizer's own state, and the shared workspace that reply needs. One measure, sized by
     /// the reply, never by the context's window (a window-sized measure reported 5,513,766,976 bytes of
-    /// compute on the 0.5B at 2,048 tokens where its lesson needed 451,808,352, 2026-11-24).
-    pub fn measure(&mut self, shadow: &Shadow, reply_rows: NonZeroU32) -> Result<ShadowMeasure, LearnRefusal> {
+    /// compute on the 0.5B at 2,048 tokens where its lesson needed 451,808,352, 2026-11-24; attention priced at the
+    /// served window quoted 78,339,770,944 and 105,623,459,040 bytes for lessons on the M5's 35B, 2026-11-26).
+    pub fn measure(&mut self, shadow: &Shadow, reply_rows: NonZeroU32, lesson_rows: NonZeroU32) -> Result<ShadowMeasure, LearnRefusal> {
         let params = shadow_params(shadow, std::ptr::from_mut(self.holder()).cast());
         let ctx = self.ctx.as_ptr();
-        let rows = Measured::through("measure_shadow_graph", |sink| unsafe { continuum_opt_measure_shadow_graph(ctx, params, reply_rows.get(), sink) }, || self.refusal("measure_shadow_graph"))?;
+        let rows = Measured::through("measure_shadow_graph", |sink| unsafe { continuum_opt_measure_shadow_graph(ctx, params, reply_rows.get(), lesson_rows.get(), sink) }, || self.refusal("measure_shadow_graph"))?;
         let (optimizer, workspace) = rows.into_iter().partition(|row| matches!(row.role, MemoryRole::OptimizerStatic | MemoryRole::OptimizerHost));
         Ok(ShadowMeasure { optimizer, workspace })
     }
@@ -188,7 +236,11 @@ impl Learner<'_, '_> {
         }
         let optimizer = c_path(&into.join("optimizer.gguf"), step)?;
         let binding = CString::new(binding).map_err(|_| LearnRefusal { step, message: "a binding with a NUL".into() })?;
-        if unsafe { continuum_opt_shadow_state_write_path(self.ctx.as_ptr(), adapter.ptr.as_ptr(), optimizer.as_ptr(), binding.as_ptr()) } != 0 {
+        let native = Native::of(unsafe { continuum_opt_shadow_state_write_path(self.ctx.as_ptr(), adapter.ptr.as_ptr(), optimizer.as_ptr(), binding.as_ptr()) });
+        if let Some(failed) = native.failed("shadow_state_write") {
+            return Err(failed);
+        }
+        if native == Native::Refused {
             return Err(self.refusal("shadow_state_write"));
         }
         let steps = unsafe { sys::llama_opt_shadow_steps(self.ctx.as_ptr(), adapter.ptr.as_ptr()) };

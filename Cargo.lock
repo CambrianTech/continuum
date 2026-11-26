@@ -3131,6 +3131,7 @@ dependencies = [
  "continuum-base",
  "continuum-blocks",
  "continuum-cli-lifecycle",
+ "continuum-context",
  "continuum-host",
  "continuum-kernel",
  "continuum-persona-engine",
@@ -3656,8 +3657,8 @@ version = "0.1.0"
 dependencies = [
  "airc-core",
  "continuum-base",
+ "continuum-host",
  "continuum-kernel",
- "libc",
  "sysinfo",
  "tempfile",
  "tokio",

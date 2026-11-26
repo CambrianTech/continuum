@@ -84,6 +84,9 @@ pub struct LlamaCppConfig {
     /// image bytes natively. None = text-only model (the common case);
     /// `generate_with_image()` returns an error.
     pub mmproj_path: Option<PathBuf>,
+    /// Which lane algorithm decides the Core's next step, by its registered name
+    /// (`continuum_sage::decide::cases::lane::algorithms`): configuration, never a type in code.
+    pub lane_algorithm: &'static str,
 }
 
 impl Default for LlamaCppConfig {
@@ -103,6 +106,7 @@ impl Default for LlamaCppConfig {
             type_k: KvCacheType::F16,
             type_v: KvCacheType::F16,
             mmproj_path: None,
+            lane_algorithm: continuum_sage::decide::cases::lane::SERVING,
         }
     }
 }
@@ -241,6 +245,8 @@ pub struct LlamaCppBackend {
     pub(super) chat: OnceLock<Result<Mutex<llama::ChatTemplates>, llama::ChatRefusal>>,
     pub(super) model: Arc<Model>,
     pub(super) config: LlamaCppConfig,
+    /// Each persona's view tokens from her last act: her next act tokenizes only past them.
+    pub(super) held_views: super::super::persona_scheduler::HeldViews,
     pub(super) model_id: String,
     /// Native weight buffer allocations reported by the loaded model.
     pub(super) weights: llama::WeightAllocation,

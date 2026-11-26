@@ -30,7 +30,7 @@ impl LearnPort for LlamaCppBackend {
         };
         let job = match learning {
             Learning::Learn(learn) => {
-                let rendered = lesson::render(&learn.lesson, |request| self.rendered_prompt(request), |text| self.model.tokenize(text, true, true).map_err(LessonRefusal::Template));
+                let rendered = lesson::render_within(&learn.lesson, learn.within, |request| self.rendered_prompt(request), |text| self.model.tokenize(text, true, true).map_err(LessonRefusal::Template));
                 match rendered {
                     Ok(rendered) => LearningJob::Learn(LearningLesson { seat: learn.seat, step: learn.step, rendered, admission: learn.admission }),
                     Err(refused) => {
@@ -40,12 +40,15 @@ impl LearnPort for LlamaCppBackend {
                 }
             }
             Learning::Measure(measure) => {
-                // Sized at the whole rendered lesson: the most a reply on it can be (from no prefix).
+                // Sized at the lesson's reply rows: the step prefills its context forward-only (no gradient)
+                // and trains only her reply, so a seat is her reply against her context, never the whole
+                // lesson from scratch (the 5090, 2026-11-26: whole-lesson sizing quoted 244 GB to 48.8 TB); its
+                // attention reads the lesson alone, never the served window (the M5 35B: 78 to 105 GB).
                 let rows = lesson::render(&measure.sized_for, |request| self.rendered_prompt(request), |text| self.model.tokenize(text, true, true).map_err(LessonRefusal::Template))
-                    .map(|rendered| u32::try_from(rendered.tokens.len()).ok().and_then(std::num::NonZeroU32::new));
+                    .map(|rendered| rendered.rows());
                 // A render refusal goes to the driver, which alone knows whether this seat holds anything.
                 match rows {
-                    Ok(Some(reply_rows)) => LearningJob::Measure(LearningMeasuring { seat: measure.seat, mind: measure.mind, shadow: measure.shadow, optimizer: measure.optimizer, reply_rows }),
+                    Ok(Some(rows)) => LearningJob::Measure(LearningMeasuring { seat: measure.seat, mind: measure.mind, shadow: measure.shadow, optimizer: measure.optimizer, rows }),
                     Ok(None) => LearningJob::Unmeasured { seat: measure.seat, why: "the lesson it is sized for renders to no rows a seat can hold".into() },
                     Err(refused) => LearningJob::Unmeasured { seat: measure.seat, why: refused.to_string().into() },
                 }

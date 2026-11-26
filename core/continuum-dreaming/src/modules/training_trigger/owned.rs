@@ -18,16 +18,10 @@ pub(crate) enum OwnedKind {
     Retire,
     /// Moving a bucket stranded under a base spelling to the catalog id (genome/training-trigger/rekey).
     Rekey,
-    /// Seating her learner and covering her next example.
-    Prepare,
-    /// One learning or restoring step.
-    Step,
-    /// Publishing her generation and paging her out at the end of a pass.
-    Settle,
+    /// Carrying a bucket's examples not learned yet to the base she runs (genome/training-trigger/transfer).
+    Transfer,
     /// Offering a bucket's newest generation as a candidate.
     Sweep,
-    /// Holding an engine until a lost answer's stop is confirmed.
-    Fence,
     #[cfg(test)]
     Test,
 }
@@ -107,15 +101,15 @@ mod tests {
         let her = Uuid::new_v4();
         let (release, released) = tokio::sync::oneshot::channel::<()>();
         let mut set = tokio::task::JoinSet::new();
-        set.spawn(running.named(OwnedKind::Step, Some(her), async move {
+        set.spawn(running.named(OwnedKind::Retire, Some(her), async move {
             let _ = released.await;
         }));
-        set.spawn(running.named(OwnedKind::Fence, None, std::future::pending::<()>()));
+        set.spawn(running.named(OwnedKind::Sweep, None, std::future::pending::<()>()));
         let kinds: Vec<(OwnedKind, Option<Uuid>)> = running.now().into_iter().map(|op| (op.kind, op.persona)).collect();
-        assert_eq!(kinds, [(OwnedKind::Step, Some(her)), (OwnedKind::Fence, None)], "both named from admission, oldest first");
+        assert_eq!(kinds, [(OwnedKind::Retire, Some(her)), (OwnedKind::Sweep, None)], "both named from admission, oldest first");
         release.send(()).expect("test: the step waits");
         set.join_next().await.expect("test: one finished").expect("test: it ran");
-        assert_eq!(running.now().iter().map(|op| op.kind).collect::<Vec<_>>(), [OwnedKind::Fence], "a finished step leaves");
+        assert_eq!(running.now().iter().map(|op| op.kind).collect::<Vec<_>>(), [OwnedKind::Sweep], "a finished step leaves");
         set.abort_all();
         while set.join_next().await.is_some() {}
         assert!(running.now().is_empty(), "an aborted fence leaves too");

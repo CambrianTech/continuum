@@ -225,6 +225,8 @@ impl LlamaServerControl for InProcessEngine {
             allocated_tokens: u64::from(geometry.n_ctx),
             max_tokens_per_sequence: u64::from(geometry.n_ctx_seq),
             sequence_capacity: u64::from(geometry.n_seq_max),
+            // per-mind only where her block is a host-mapped file the device views (unified memory)
+            holding: if geometry.blocks_mapped { crate::inference::weight_residency::KvHolding::PerMind } else { crate::inference::weight_residency::KvHolding::Shared },
         })
     }
 

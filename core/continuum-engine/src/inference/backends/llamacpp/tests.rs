@@ -110,16 +110,54 @@
         assert_eq!(backend.effective_context_length(GenerationAllocation::new(tokens)), Ok(512));
     }
 
+    // what this catches (the M5, 2026-11-25 17:02Z: Benchy 38 asked, 0 completed, four minds on one
+    // Core): a running turn keeping the Core at equal need until it ends, so a short turn from another
+    // mind waits out a long answer. Two minds at one urgency: A asks for a long answer, B for a short one
+    // just after. Under the lane, B is stepped within her wait bound and finishes while A still decodes.
+    //     cargo test -p continuum-engine --features llama/metal --lib a_short_turn_never -- --ignored --nocapture
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "requires qwen2.5-0.5b-instruct under ~/.continuum/genome/models; run explicitly"]
+    async fn a_short_turn_never_waits_out_another_minds_long_one() {
+        let path = dirs::home_dir().expect("test: a home").join(".continuum/genome/models/qwen2.5-0.5b-instruct/qwen2.5-0.5b-instruct-q4_k_m.gguf"); // expect: the test's own precondition
+        if !path.exists() {
+            eprintln!("SKIPPED: {} not present", path.display());
+            return;
+        }
+        let backend = LlamaCppBackend::load(LlamaCppConfig { model_path: path, ..Default::default() }).expect("test: the 0.5B loads"); // expect: the test's own precondition
+        let allocation = GenerationAllocation::new(std::num::NonZeroU32::new(2048).expect("test: nonzero")); // expect: the test's own precondition
+        let mut state = backend.start_scheduler(allocation).expect("test: the scheduler starts"); // expect: the test's own precondition
+        state.wait_for(|state| state.ready().is_some()).await.expect("test: the engine becomes ready"); // expect: the test's own precondition
+        let turn = |text: &'static str, tokens: usize| {
+            let sampler = backend.turn_sampler(None, &crate::inference::backends::SamplingConfig::chat(), None).expect("test: a sampler"); // expect: the test's own precondition
+            let prompt = TurnPrompt { text, stable_prefix: None, urgency: continuum_sage::component::Urgency::Want, request: None };
+            backend.submit_for_persona(allocation, Some(uuid::Uuid::new_v4()), prompt, tokens, sampler, &[], &[]).expect("test: the turn submits") // expect: the test's own precondition
+        };
+        let mut long = turn("<|im_start|>user\nWrite a long story about a lighthouse keeper, in detail.<|im_end|>\n<|im_start|>assistant\n", 256);
+        long.until_first_token().await; // her turn is running: the next turn arrives while she decodes
+        let short = turn("<|im_start|>user\nSay hi.<|im_end|>\n<|im_start|>assistant\n", 8);
+        // the order the two completion events arrive in, never a stopwatch
+        let finished = std::sync::atomic::AtomicU8::new(0);
+        let rank = || finished.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let (long, short) = tokio::join!(async { (long.collect().await, rank()) }, async { (short.collect().await, rank()) });
+        let ((long_answer, long_rank), (short_answer, short_rank)) = (long, short);
+        let (long_answer, short_answer) = (long_answer.expect("test: the long turn answers"), short_answer.expect("test: the short turn answers")); // expect: the test's own precondition
+        eprintln!("long: {} tokens in {:?} (engine); short: {} tokens in {:?} (engine); finished first: {}", long_answer.facts.generated, long_answer.facts.elapsed, short_answer.facts.generated, short_answer.facts.elapsed, if short_rank < long_rank { "short" } else { "long" });
+        assert!(short_rank < long_rank, "the short turn finished while the long one still decoded");
+    }
+
     /// L2's validator (IN-PROCESS-LEARNING.md): a resident learns between her turns through the
     /// node's LearnPort, on the real engine, and every outcome is heard on learning/said.
     mod learn_port {
         use super::*;
         use crate::inference::learning::{
-            GenerationOutcome, LearnPort, Learning, Lesson, Measure, Said, Seat, SeatId, SeatState, ShadowSource, StepId, StepOutcome, LEARNING_SAID,
+            Fit, GenerationOutcome, LearnPort, Learning, Lesson, Measure, Said, Seat, SeatId, SeatState, ShadowSource, StepId, StepOutcome, LEARNING_SAID,
         };
         use continuum_sage::dataflow::Event;
         use continuum_sage::{Qos, Stage};
         use std::sync::atomic::{AtomicU64, Ordering};
+
+        /// Room for any seat: a fit that never collapses a lesson.
+        const ROOM: Fit = Fit { vram: u64::MAX, ram: u64::MAX };
 
         /// What the test hears on learning/said, handed to its channel.
         struct Heard(tokio::sync::mpsc::UnboundedSender<Arc<Said>>);
@@ -194,7 +232,7 @@
             turn(prompt).expect("test: her turn submits").collect().await.expect("test: her first turn answers");
 
             let seat = SeatId(uuid::Uuid::new_v4());
-            let fresh = crate::inference::llama_server::FreshShadow { name: "validator".into(), rank: 8, alpha: 16.0, targets: vec!["attn_q".into(), "attn_v".into()], top_layers: 0, seed: 42 };
+            let fresh = crate::inference::learning::FreshShadow { name: "validator".into(), rank: 8, alpha: 16.0, targets: vec!["attn_q".into(), "attn_v".into()], top_layers: 0, seed: 42 };
             let optimizer = llama::Optimizer::AdamW { learning_rate: 5e-3, beta1: 0.9, beta2: 0.999, eps: 1e-8, weight_decay: 0.0 };
             let port: &dyn LearnPort = &backend;
             assert!(port.tell(Learning::Measure(Measure { seat, mind: continuum_persona_engine::persona::PersonaId(her), shadow: ShadowSource::Fresh(fresh), optimizer, sized_for: lesson() })).is_ok());
@@ -205,12 +243,15 @@
             // Out of order: a Seat before its Load is rejected, and the seat keeps what it holds.
             assert!(port.tell(Learning::Seat(Seat { seat, lease: Box::new(Counted::default()) })).is_ok());
             assert!(matches!(next(&mut heard).await, Said::Seat { state: SeatState::Kept { .. }, .. }), "a Seat before its Load is kept, never ended");
-            assert!(port.tell(Learning::Load { seat }).is_ok());
-            match next(&mut heard).await {
-                Said::Seat { state: SeatState::Loaded { optimizer, workspace, .. }, .. } => assert!(!optimizer.is_empty() && !workspace.is_empty(), "optimizer and workspace measured"),
+            assert!(port.tell(Learning::Load { seat, fit: ROOM }).is_ok());
+            let within = match next(&mut heard).await {
+                Said::Seat { state: SeatState::Loaded { optimizer, workspace, lesson_rows, .. }, .. } => {
+                    assert!(!optimizer.is_empty() && !workspace.is_empty(), "optimizer and workspace measured");
+                    lesson_rows
+                }
                 other => panic!("expected Loaded, heard {other:?}"),
-            }
-            assert!(port.tell(Learning::Load { seat }).is_ok());
+            };
+            assert!(port.tell(Learning::Load { seat, fit: ROOM }).is_ok());
             assert!(matches!(next(&mut heard).await, Said::Seat { state: SeatState::Kept { .. }, .. }), "a second Load is kept, never ended");
             let charged = Arc::new(AtomicU64::new(0));
             assert!(port.tell(Learning::Seat(Seat { seat, lease: Box::new(Counted(Arc::clone(&charged))) })).is_ok());
@@ -219,7 +260,7 @@
             let mut losses = Vec::new();
             for _ in 0..4 {
                 let step = StepId(uuid::Uuid::new_v4());
-                assert!(port.tell(Learning::Learn(crate::inference::learning::Learn { seat, step, lesson: lesson(), admission: Box::new(Open) })).is_ok());
+                assert!(port.tell(Learning::Learn(crate::inference::learning::Learn { seat, step, lesson: lesson(), within, admission: Box::new(Open) })).is_ok());
                 match next(&mut heard).await {
                     Said::Step { step: said, outcome: StepOutcome::Learned { loss, .. }, .. } if said == step => losses.push(loss.expect("test: a learned step reports its loss")),
                     other => panic!("expected Learned, heard {other:?}"),
@@ -242,14 +283,20 @@
             assert!(matches!(next(&mut heard).await, Said::Seat { state: SeatState::Released, .. }), "released");
             // A shadow loaded but never seated is released whole, and a seat never told is released too.
             let loaded = SeatId(uuid::Uuid::new_v4());
-            let fresh = crate::inference::llama_server::FreshShadow { name: "loaded".into(), rank: 4, alpha: 8.0, targets: vec!["attn_q".into()], top_layers: 0, seed: 7 };
+            let fresh = crate::inference::learning::FreshShadow { name: "loaded".into(), rank: 4, alpha: 8.0, targets: vec!["attn_q".into()], top_layers: 0, seed: 7 };
             assert!(port.tell(Learning::Measure(Measure { seat: loaded, mind: continuum_persona_engine::persona::PersonaId(her), shadow: ShadowSource::Fresh(fresh), optimizer, sized_for: lesson() })).is_ok());
             assert!(matches!(next(&mut heard).await, Said::Seat { state: SeatState::Measured { .. }, .. }));
-            assert!(port.tell(Learning::Load { seat: loaded }).is_ok());
-            assert!(matches!(next(&mut heard).await, Said::Seat { state: SeatState::Loaded { .. }, .. }));
+            // what this catches (the 5090, 2026-11-26: a lesson measured past the whole device was parked):
+            // a seat with no room beside its weights measured at the whole lesson. Its probes end at her
+            // reply alone, and the trainer's hold decides what that costs.
+            assert!(port.tell(Learning::Load { seat: loaded, fit: Fit { vram: 0, ram: 0 } }).is_ok());
+            match next(&mut heard).await {
+                Said::Seat { state: SeatState::Loaded { reply_rows, lesson_rows, .. }, .. } => assert_eq!(lesson_rows, reply_rows, "no room: the lesson is sized to her reply alone"),
+                other => panic!("expected Loaded, heard {other:?}"),
+            }
             // A repeated Measure whose lesson cannot render (no reply of hers) on that loaded seat keeps it.
             let unrenderable = Lesson { messages: vec![serde_json::json!({"role": "user", "content": "no reply"})], tools: None };
-            let refit = crate::inference::llama_server::FreshShadow { name: "loaded".into(), rank: 4, alpha: 8.0, targets: vec!["attn_q".into()], top_layers: 0, seed: 7 };
+            let refit = crate::inference::learning::FreshShadow { name: "loaded".into(), rank: 4, alpha: 8.0, targets: vec!["attn_q".into()], top_layers: 0, seed: 7 };
             assert!(port.tell(Learning::Measure(Measure { seat: loaded, mind: continuum_persona_engine::persona::PersonaId(her), shadow: ShadowSource::Fresh(refit), optimizer, sized_for: unrenderable })).is_ok());
             assert!(matches!(next(&mut heard).await, Said::Seat { state: SeatState::Kept { .. }, .. }), "a malformed repeat Measure on a loaded seat keeps it, never ends it");
             assert!(port.tell(Learning::Release { seat: loaded }).is_ok());
@@ -266,7 +313,7 @@
         // recurrent state was past the served prefix; and her prefix prefilled again under genes she was
         // not served with. She serves under a learned gene that changes her answers, her history runs on
         // past an older lesson, she learns it (Learned twice), and her next turn under the same gene
-        // answers exactly as a mind that never learned answers the same history (greedy). She reuses her
+        // answers exactly as a mind that never learned answers the same history along her resume path (greedy). She reuses her
         // served prefix, more than nothing: never a cold replay. (How much the mind that never learned
         // reuses differs by architecture: a hybrid resumes only at a checkpoint.)
         //     cargo test -p continuum-engine --features metal --lib an_older_lesson -- --ignored --nocapture
@@ -295,7 +342,7 @@
             let gene_dir = std::env::temp_dir().join(format!("served-gene-{}", uuid::Uuid::new_v4()));
             learned(port, &mut heard, Learns { mind: uuid::Uuid::new_v4(), steps: 3, into: Some(&gene_dir) }).await;
             backend.ensure_adapter("served", &gene_dir.join("adapter.gguf")).expect("test: the gene loads");
-            let served = [("served".to_string(), 1.0_f32)];
+            let served = [crate::inference::backends::persona_scheduler::Gene { id: "served".to_string(), path: gene_dir.join("adapter.gguf"), scale: 1.0 }];
 
             // her view as the lesson renders it (they share a prefix), then a view sharing nothing with it
             // (Codex on #6260: a served prefix of 0 with no checkpoint there)
@@ -321,8 +368,21 @@
                 let third = ask(&second, &a2.text, "And of Ohio?");
                 let hers = turn(her, &third).collect().await.expect("test: her next turn answers");
                 let theirs = turn(never, &third).collect().await.expect("test: the other mind's next turn answers");
-                eprintln!("view {view:?}: after learning {:?} (reused {} of {}); never learned {:?} (reused {} of {})", hers.text, hers.facts.reused_tokens, hers.facts.prompt_tokens, theirs.text, theirs.facts.reused_tokens, theirs.facts.prompt_tokens);
-                assert_eq!(hers.text, theirs.text, "under the same gene she answers as a mind that never learned");
+                // A mind that never learned, brought down her resume path, answers as she does. On a hybrid
+                // a re-prefill from a checkpoint is not bit-identical to a history decoded token by token,
+                // so a greedy answer can differ by a token between the two paths (the M5's Qwen3.6-35B,
+                // 2026-11-26: "<think>\n\nTopeka" re-prefilled from the view against "<think>Topeka"
+                // appended); the control takes her path. Sharing the view, she rewinds to its checkpoint, as
+                // a mind does after a detour that keeps only the view; sharing nothing, she restarts cold.
+                let control = uuid::Uuid::new_v4();
+                if shares {
+                    let _ = turn(control, &first).collect().await.expect("test: the control's first turn answers");
+                    let detour = format!("{view}<|im_start|>user\nSomething else.<|im_end|>\n<|im_start|>assistant\n");
+                    let _ = turn(control, &detour).collect().await.expect("test: the control's detour answers");
+                }
+                let same_path = turn(control, &third).collect().await.expect("test: the control's next turn answers");
+                eprintln!("view {view:?}: after learning {:?} (reused {} of {}); never learned, her path {:?} (reused {}); never learned, appended {:?} (reused {})", hers.text, hers.facts.reused_tokens, hers.facts.prompt_tokens, same_path.text, same_path.facts.reused_tokens, theirs.text, theirs.facts.reused_tokens);
+                assert_eq!(hers.text, same_path.text, "under the same gene she answers as a mind that never learned");
                 // sharing a prefix with the lesson, she resumes from it: never a cold replay. (On the single
                 // Core an attention-only mind keeps the tail she held past the lesson and reuses it too; a
                 // hybrid resumes at her served prefix and prefills the rest under her genes.)
@@ -345,17 +405,17 @@
         async fn learned(port: &dyn LearnPort, heard: &mut tokio::sync::mpsc::UnboundedReceiver<Arc<Said>>, learns: Learns<'_>) {
             let Learns { mind, steps, into } = learns;
             let seat = SeatId(uuid::Uuid::new_v4());
-            let fresh = crate::inference::llama_server::FreshShadow { name: format!("shadow-{}", seat.0), rank: 8, alpha: 16.0, targets: vec!["attn_q".into(), "attn_v".into()], top_layers: 0, seed: 42 };
+            let fresh = crate::inference::learning::FreshShadow { name: format!("shadow-{}", seat.0), rank: 8, alpha: 16.0, targets: vec!["attn_q".into(), "attn_v".into()], top_layers: 0, seed: 42 };
             let optimizer = llama::Optimizer::AdamW { learning_rate: 5e-3, beta1: 0.9, beta2: 0.999, eps: 1e-8, weight_decay: 0.0 };
             assert!(port.tell(Learning::Measure(Measure { seat, mind: continuum_persona_engine::persona::PersonaId(mind), shadow: ShadowSource::Fresh(fresh), optimizer, sized_for: lesson() })).is_ok());
             assert!(matches!(next(heard).await, Said::Seat { state: SeatState::Measured { .. }, .. }));
-            assert!(port.tell(Learning::Load { seat }).is_ok());
-            assert!(matches!(next(heard).await, Said::Seat { state: SeatState::Loaded { .. }, .. }));
+            assert!(port.tell(Learning::Load { seat, fit: ROOM }).is_ok());
+            let Said::Seat { state: SeatState::Loaded { lesson_rows: within, .. }, .. } = next(heard).await else { panic!("expected Loaded") };
             assert!(port.tell(Learning::Seat(Seat { seat, lease: Box::new(Counted::default()) })).is_ok());
             assert!(matches!(next(heard).await, Said::Seat { state: SeatState::Seated { .. }, .. }));
             for _ in 0..steps {
                 let step = StepId(uuid::Uuid::new_v4());
-                assert!(port.tell(Learning::Learn(crate::inference::learning::Learn { seat, step, lesson: lesson(), admission: Box::new(Open) })).is_ok());
+                assert!(port.tell(Learning::Learn(crate::inference::learning::Learn { seat, step, lesson: lesson(), within, admission: Box::new(Open) })).is_ok());
                 match next(heard).await {
                     Said::Step { outcome: StepOutcome::Learned { .. }, .. } => {}
                     other => panic!("expected Learned, heard {other:?}"),
@@ -368,4 +428,63 @@
             assert!(port.tell(Learning::Release { seat }).is_ok());
             assert!(matches!(next(heard).await, Said::Seat { state: SeatState::Released, .. }));
         }
+    }
+
+    // what this catches (the M5, 2026-11-26: every act tokenized her whole prompt, then her whole view
+    // again, 1,974 + 1,691 ms over 39 acts): her view held inside her prompt tokenized once with the
+    // rest after it must give exactly the tokens the whole prompt does, and her view's end, or her next
+    // act's prefix stops matching what she holds.
+    #[test]
+    #[ignore = "requires qwen2.5-0.5b-instruct under ~/.continuum/genome/models; run explicitly"]
+    fn a_held_view_tokenizes_once_with_the_rest_as_the_whole_prompt_does() {
+        let path = dirs::home_dir().expect("test: a home").join(".continuum/genome/models/qwen2.5-0.5b-instruct/qwen2.5-0.5b-instruct-q4_k_m.gguf"); // expect: the test's own precondition
+        if !path.exists() {
+            eprintln!("SKIPPED: {} not present", path.display());
+            return;
+        }
+        let backend = LlamaCppBackend::load(LlamaCppConfig { model_path: path, ..Default::default() }).expect("test: the 0.5B loads"); // expect: the test's own precondition
+        let generation = "<|im_start|>assistant\n";
+        let prompt = format!("<|im_start|>system\nYou are Benchy, a resident.<|im_end|>\n<|im_start|>user\nRead core/src/lib.rs and say what it owns. 9b: ünïcode — fine.<|im_end|>\n{generation}");
+        let view = &prompt[..prompt.len() - generation.len()];
+        let whole = backend.model.tokenize(&prompt, true, true).expect("test: the prompt tokenizes"); // expect: the test's own precondition
+        let held_view = backend.model.tokenize(view, true, true).expect("test: the view tokenizes"); // expect: the test's own precondition
+        let (tokens, view_end) = crate::inference::backends::persona_scheduler::prepare(&backend.model, &prompt, Some(view)).expect("test: prepare"); // expect: the test's own precondition
+        assert_eq!(tokens, whole, "tokenized in two halves at the generation prompt, the same tokens as whole");
+        assert_eq!(view_end, Some(held_view.len()), "her view ends where her view's own tokens do");
+        let apart = String::from(view);
+        let (tokens_apart, end_apart) = crate::inference::backends::persona_scheduler::prepare(&backend.model, &prompt, Some(&apart)).expect("test: prepare"); // expect: the test's own precondition
+        assert_eq!((tokens_apart, end_apart), (whole, Some(held_view.len())), "a view rendered apart takes the other path to the same answer");
+    }
+
+    // what this catches (the M5, 2026-11-26: a whole-prompt tokenization every act, 4.2 to 7.1 s at 100k
+    // to 233k tokens under a busy Core): her next act tokenizing what her last act's view already held.
+    // Kept per persona, her view's tokens are reused and only what follows is tokenized; the result is
+    // exactly the whole prompt's tokens, and a prompt that no longer begins with the kept view (a new
+    // epoch) is tokenized whole, never fed her old tokens.
+    #[test]
+    #[ignore = "requires qwen2.5-0.5b-instruct under ~/.continuum/genome/models; run explicitly"]
+    fn her_next_act_tokenizes_only_past_the_view_her_last_act_held() {
+        let path = dirs::home_dir().expect("test: a home").join(".continuum/genome/models/qwen2.5-0.5b-instruct/qwen2.5-0.5b-instruct-q4_k_m.gguf"); // expect: the test's own precondition
+        if !path.exists() {
+            eprintln!("SKIPPED: {} not present", path.display());
+            return;
+        }
+        let backend = LlamaCppBackend::load(LlamaCppConfig { model_path: path, ..Default::default() }).expect("test: the 0.5B loads"); // expect: the test's own precondition
+        let views = crate::inference::backends::persona_scheduler::HeldViews::default();
+        let her = uuid::Uuid::new_v4();
+        let generation = "<|im_start|>assistant\n";
+        let act = |view: &str| format!("{view}{generation}");
+        let whole = |prompt: &str| backend.model.tokenize(prompt, true, true).expect("test: tokenizes"); // expect: the test's own precondition
+        let first_view = "<|im_start|>system\nYou are Aris.<|im_end|>\n<|im_start|>user\nRead lib.rs<|im_end|>\n";
+        let first = act(first_view);
+        let (tokens, end) = views.prepare(&backend.model, Some(her), &first, Some(&first[..first_view.len()])).expect("test: prepare"); // expect: the test's own precondition
+        assert_eq!((tokens, end), (whole(&first), Some(whole(first_view).len())));
+        let second_view = format!("{first_view}<|im_start|>assistant\nIt owns the lane. ünï — ok.<|im_end|>\n<|im_start|>user\n[result #1] fn main() {{}}<|im_end|>\n");
+        let second = act(&second_view);
+        let (tokens, end) = views.prepare(&backend.model, Some(her), &second, Some(&second[..second_view.len()])).expect("test: prepare"); // expect: the test's own precondition
+        assert_eq!((tokens, end), (whole(&second), Some(whole(&second_view).len())), "past her kept view only, the same tokens as whole");
+        let turned_view = "<|im_start|>system\nYou are Aris, a new epoch.<|im_end|>\n";
+        let turned = act(turned_view);
+        let (tokens, end) = views.prepare(&backend.model, Some(her), &turned, Some(&turned[..turned_view.len()])).expect("test: prepare"); // expect: the test's own precondition
+        assert_eq!((tokens, end), (whole(&turned), Some(whole(turned_view).len())), "a prompt that no longer begins with her kept view is tokenized whole");
     }

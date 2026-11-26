@@ -17,6 +17,8 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::sync::{Arc, Weak};
+use std::sync::atomic::{AtomicU64, Ordering};
 use ts_rs::TS;
 
 use super::arbiter::{ArbiterContext, LeaseArbiter};
@@ -166,9 +168,29 @@ pub struct ResourceLeaseLedger {
 #[derive(Debug, Clone)]
 struct Held {
     lease: ResourceLease,
+    view: Option<Arc<LeaseCoverage>>,
     /// When its holder declared it landed: only a reading observed at or after this can show it. None while
     /// undeclared.
     landed_from: Option<super::observed::Observed>,
+}
+
+#[derive(Debug)]
+struct LeaseCoverage {
+    bytes: AtomicU64,
+    expires_at_ms: AtomicU64,
+}
+
+/// Observes the ledger grant without holding the reservation or locking the governor.
+pub struct LeaseView { coverage: Weak<LeaseCoverage>, kind: ResourceKind }
+
+impl LeaseView {
+    pub fn kind(&self) -> ResourceKind { self.kind }
+
+    pub fn bytes_at(&self, now_ms: u64) -> u64 {
+        let Some(coverage) = self.coverage.upgrade() else { return 0 };
+        if now_ms >= coverage.expires_at_ms.load(Ordering::Acquire) { return 0; }
+        coverage.bytes.load(Ordering::Acquire)
+    }
 }
 
 impl Held {
@@ -551,7 +573,7 @@ impl ResourceLeaseLedger {
             expires_at_ms: now_ms.saturating_add(req.ttl_ms),
             reclaim_policy: req.reclaim_policy,
         };
-        self.leases.insert(lease_id, Held { lease: lease.clone(), landed_from: None });
+        self.leases.insert(lease_id, Held { lease: lease.clone(), landed_from: None, view: None });
         Ok(lease)
     }
 
@@ -564,19 +586,20 @@ impl ResourceLeaseLedger {
         expires_at_ms: u64,
         now_ms: u64,
     ) -> Result<(), LeaseError> {
-        let lease = self
+        let held = self
             .leases
             .get_mut(lease_id)
-            .map(|held| &mut held.lease)
             .ok_or_else(|| LeaseError::MissingLease {
                 lease_id: lease_id.to_string(),
             })?;
+        let lease = &mut held.lease;
         if lease.is_expired(now_ms) {
             return Err(LeaseError::ExpiredLease {
                 lease_id: lease_id.to_string(),
             });
         }
         lease.expires_at_ms = expires_at_ms;
+        if let Some(view) = &held.view { view.expires_at_ms.store(expires_at_ms, Ordering::Release); }
         Ok(())
     }
 
@@ -586,7 +609,10 @@ impl ResourceLeaseLedger {
     pub fn release(&mut self, lease_id: &str) -> Result<ResourceLease, LeaseError> {
         self.leases
             .remove(lease_id)
-            .map(|held| held.lease)
+            .map(|held| {
+                if let Some(view) = held.view { view.bytes.store(0, Ordering::Release); }
+                held.lease
+            })
             .ok_or_else(|| LeaseError::MissingLease {
                 lease_id: lease_id.to_string(),
             })
@@ -601,14 +627,15 @@ impl ResourceLeaseLedger {
     /// lease is fail-loud (a stale id is a real bug). Returns the bytes still
     /// held by the lease (0 if it was removed).
     pub fn shrink(&mut self, lease_id: &str, freed_bytes: u64) -> Result<u64, LeaseError> {
-        let lease = self
+        let held = self
             .leases
             .get_mut(lease_id)
-            .map(|held| &mut held.lease)
             .ok_or_else(|| LeaseError::MissingLease {
                 lease_id: lease_id.to_string(),
             })?;
+        let lease = &mut held.lease;
         lease.bytes = lease.bytes.saturating_sub(freed_bytes);
+        if let Some(view) = &held.view { view.bytes.store(lease.bytes, Ordering::Release); }
         let remaining = lease.bytes;
         if remaining == 0 {
             self.leases.remove(lease_id);
@@ -707,6 +734,15 @@ impl ResourceLeaseLedger {
         } else {
             None
         }
+    }
+
+    pub(super) fn lease_view(&mut self, id: &str) -> Option<LeaseView> {
+        let held = self.leases.get_mut(id)?;
+        let coverage = held.view.get_or_insert_with(|| Arc::new(LeaseCoverage {
+            bytes: AtomicU64::new(held.lease.bytes),
+            expires_at_ms: AtomicU64::new(held.lease.expires_at_ms),
+        }));
+        Some(LeaseView { coverage: Arc::downgrade(coverage), kind: held.lease.kind })
     }
 
     pub fn lease(&self, lease_id: &str) -> Option<&ResourceLease> {

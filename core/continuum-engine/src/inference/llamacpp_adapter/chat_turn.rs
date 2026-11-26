@@ -60,6 +60,31 @@ pub(super) fn described(render: &llama::ChatRender) -> Result<Described, ChatTur
     Ok(serde_json::from_str(&render.describe()?)?)
 }
 
+/// Where her view ends: inside the prompt this render produced (its first `n` bytes, by construction:
+/// the same render with its generation prompt stripped), or a text rendered apart when her view holds
+/// fewer messages than the request.
+pub(super) enum View {
+    Held(usize),
+    Rendered(String),
+}
+
+impl View {
+    /// Her view's text: a slice of `prompt` itself when it is held there (never a copy), else its own.
+    pub(super) fn of<'a>(&'a self, prompt: &'a str) -> Option<&'a str> {
+        match self {
+            Self::Held(bytes) => prompt.get(..*bytes),
+            Self::Rendered(text) => Some(text),
+        }
+    }
+
+    pub(super) fn chars(&self) -> usize {
+        match self {
+            Self::Held(bytes) => *bytes,
+            Self::Rendered(text) => text.len(),
+        }
+    }
+}
+
 /// The text of her prompt her next act will hold unchanged: her view's messages
 /// (`request.view_messages`, where cognition says her next act stops matching), rendered by the same
 /// templates with the generation prompt taken off. The engine checkpoints her there, so a next act
@@ -69,14 +94,14 @@ pub(super) fn view_text(
     full: &Described,
     thinking: bool,
     render: impl FnOnce(&Value) -> Result<llama::ChatRender, ChatTurnError>,
-) -> Result<Option<String>, ChatTurnError> {
+) -> Result<Option<View>, ChatTurnError> {
     let Some(held) = request.view_messages.and_then(|held| usize::try_from(held).ok()) else { return Ok(None) };
     if held >= request.messages.len() {
-        return Ok(full.held().map(str::to_owned));
+        return Ok(full.held().map(|held| View::Held(held.len())));
     }
     let view = TextGenerationRequest { messages: request.messages[..held].to_vec(), ..request.clone() };
     let body = thinking_request(&view, thinking)?;
-    Ok(described(&render(&body)?)?.held().map(str::to_owned))
+    Ok(described(&render(&body)?)?.held().map(|held| View::Rendered(held.to_owned())))
 }
 
 /// The message her render parses from what the model wrote (common/chat's OpenAI-compatible

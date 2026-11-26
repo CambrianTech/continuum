@@ -42,6 +42,10 @@ pub(super) struct PreservedMind {
     pub persona: uuid::Uuid,
     pub epoch: u64,
     pub basis: String,
+    /// The genes her blocks were computed under, with the files they were loaded from: a resumed mind
+    /// loads them again (gene.rs). A manifest written before they were kept names none.
+    #[serde(default)]
+    pub genes: Vec<super::Gene>,
     /// The stop that wrote her files; her record carries it too, and a record of another is refused.
     pub generation: u64,
     /// Her record: identity, layout, cells, recurrent rows, and her attention rows when `kv` is `None`.
@@ -101,6 +105,7 @@ impl SavedState for PreservedMinds {
             persona: m.persona,
             epoch: m.epoch,
             basis: m.basis,
+            genes: Vec::new(), // a format-1 or format-2 manifest kept no gene files
             generation: 0, // a format-1 record carries none, and the fork reads it under any
             kv: None,
             tokens: Tokens::Migrating(m.held),
@@ -224,6 +229,11 @@ impl Preserved {
         Ok(instance)
     }
 
+    /// This node's directory for what outlives its engine: minds' files and the lane's learned state.
+    pub(super) fn dir(&self) -> &Path {
+        &self.dir
+    }
+
     pub(super) fn path(&self, file: &str) -> PathBuf {
         self.dir.join(file)
     }
@@ -258,7 +268,7 @@ mod tests {
     use continuum_saved_state::Loaded;
 
     fn mind(n: u128, blocks: &str) -> PreservedMind {
-        PreservedMind { persona: uuid::Uuid::from_u128(n), epoch: 1, basis: String::new(), generation: 1, record: blocks.to_owned(), kv: None, tokens: Tokens::Migrating(vec![n as i32]) }
+        PreservedMind { persona: uuid::Uuid::from_u128(n), epoch: 1, basis: String::new(), genes: Vec::new(), generation: 1, record: blocks.to_owned(), kv: None, tokens: Tokens::Migrating(vec![n as i32]) }
     }
 
     // what this catches (Codex on #6159): a stop interrupted between a block write and the manifest
@@ -308,7 +318,9 @@ mod tests {
         let mut saved_at = Preserved::at(dir.path().to_path_buf()).expect("test: a store"); // expect: the test's own precondition
         let file = Generation::fresh().record(her);
         std::fs::write(saved_at.path(&file), b"her rows at the large window").expect("test: write"); // expect: the test's own precondition
-        let original = vec![PreservedMind { persona: her, epoch: 1, basis: String::new(), generation: 1, record: file.clone(), kv: None, tokens: Tokens::File { name: format!("{her}.tok"), count: 3 } }];
+        // her genes and their files travel with her (a resumed resident learns before her next turn, 2026-11-26)
+        let genes = vec![crate::inference::backends::persona_scheduler::Gene { id: "served".into(), path: "/genes/served/adapter.gguf".into(), scale: 1.0 }];
+        let original = vec![PreservedMind { persona: her, epoch: 1, basis: "served:1".into(), genes, generation: 1, record: file.clone(), kv: None, tokens: Tokens::File { name: format!("{her}.tok"), count: 3 } }];
         saved_at.publish(&served, &original).expect("test: publish"); // expect: the test's own precondition
 
         // the smaller boot: her manifest loads, her read is refused, so she never enters the warm
@@ -371,7 +383,7 @@ mod tests {
     #[test]
     fn a_format_one_or_two_manifest_upgrades_to_a_record_with_her_rows() {
         let id = uuid::Uuid::from_u128(7);
-        let migrated = |record: String| vec![PreservedMind { persona: id, epoch: 3, basis: String::new(), generation: 0, record, kv: None, tokens: Tokens::Migrating(vec![1, 2]) }];
+        let migrated = |record: String| vec![PreservedMind { persona: id, epoch: 3, basis: String::new(), genes: Vec::new(), generation: 0, record, kv: None, tokens: Tokens::Migrating(vec![1, 2]) }];
         let one = serde_json::json!([{ "persona": id, "epoch": 3, "basis": "", "held": [1, 2] }]);
         assert_eq!(PreservedMinds::upgrade(1, one), Some(migrated(format!("{id}.cpb"))));
         let two = serde_json::json!([{ "persona": id, "epoch": 3, "basis": "", "held": [1, 2], "blocks": format!("{id}.abc.cpb") }]);

@@ -19,14 +19,18 @@
 //! No engine is a typed [`Unavailable`] that returns the command to the trainer, which still owns its
 //! guards; never a fallback to another path.
 
+mod memory;
+pub use memory::LearningMemory;
+
 use std::num::NonZeroU64;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use continuum_persona_engine::persona::PersonaId;
+pub use continuum_persona_engine::persona::PersonaId;
 use continuum_sage::dataflow::TopicName;
-use crate::inference::llama_server::FreshShadow;
-use llama::{MemoryRow, Optimizer, OptimizerLease, ReplyAdmission};
+use crate::resources::ResourceKind;
+// The seam's own vocabulary: a caller names the guards and the optimizer through it, never through llama.
+pub use llama::{BufferType, MemoryRole, MemoryRow, Optimizer, OptimizerLease, ReplyAdmission, Slot};
 
 /// The engine's one learning stream: every [`Said`], from its one producer (Cormac on #6254).
 pub const LEARNING_SAID: TopicName = TopicName("learning/said");
@@ -54,8 +58,8 @@ pub enum Learning {
     /// [`SeatState::Measured`].
     Measure(Measure),
     /// Load the measured shadow, under the weights lease the trainer took, and measure what its
-    /// optimizer and the lesson it was sized for would hold. Says [`SeatState::Loaded`].
-    Load { seat: SeatId },
+    /// optimizer and the lesson it was sized for would hold within `fit`. Says [`SeatState::Loaded`].
+    Load { seat: SeatId, fit: Fit },
     /// Seat the loaded shadow under the optimizer and workspace leases the trainer took for it.
     Seat(Seat),
     /// Learn one lesson into a seated shadow.
@@ -81,11 +85,65 @@ pub struct Measure {
     pub sized_for: Lesson,
 }
 
+/// The most a seat's optimizer and workspace may lease of each kind: what the resource authority
+/// governs of it less the seat's own weights (the trainer reads it from what is free when it tells
+/// Load). The engine sizes the lesson rows a seat learns within it: the whole lesson when it fits,
+/// otherwise fewer, the lesson collapsed to them through the context codec at each Learn
+/// (`lesson::render_within`). A seat past it with the reply alone is measured as it is: past the whole
+/// governed kind, the trainer holds it as a defect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Fit {
+    pub vram: u64,
+    pub ram: u64,
+}
+
+impl Fit {
+    /// How many times past this fit a `seat`'s rows are, in the kind most past it; `None` within it. The
+    /// overshoot a smaller lesson is probed from.
+    pub fn overshoot(self, seat: &[&[MemoryRow]]) -> Option<f64> {
+        [(ResourceKind::Vram, self.vram), (ResourceKind::Ram, self.ram)]
+            .into_iter()
+            .filter_map(|(kind, most)| match leased(seat.iter().copied().flatten(), kind) {
+                Some(bytes) if bytes <= most => None,
+                Some(bytes) => Some(std::num::NonZeroU64::new(most).map_or(f64::INFINITY, |most| bytes as f64 / most.get() as f64)), // no room: past it by any byte
+                None => Some(f64::INFINITY), // rows past a byte count are past every fit
+            })
+            .reduce(f64::max)
+    }
+}
+
+/// The bytes of `kind` that `rows` lease: device rows are VRAM and host rows RAM; already-held
+/// shared compute is evidence of what is held, never a lease, and no seat row leases disk. The one
+/// counting rule (Codex, 2026-11-26: two counters would disagree): the trainer's lease and hold and
+/// the engine's fit count by it. `None` when the rows overflow a byte count.
+pub fn leased<'a>(rows: impl IntoIterator<Item = &'a MemoryRow>, kind: ResourceKind) -> Option<u64> {
+    let host = match kind {
+        ResourceKind::Vram => false,
+        ResourceKind::Ram => true,
+        ResourceKind::Disk => return Some(0),
+    };
+    rows.into_iter()
+        .filter(|row| row.host == host && row.role != MemoryRole::SharedComputeHeld)
+        .try_fold(0u64, |sum, row| sum.checked_add(row.bytes))
+}
+
 /// A loaded seat, under the optimizer and workspace leases the trainer took for it.
 pub struct Seat {
     pub seat: SeatId,
     /// A non-owning view of the optimizer's lease: native code asks it before each allocation.
     pub lease: Box<dyn OptimizerLease>,
+}
+
+/// A fresh shadow's shape, all of it explicit: the engine writes it on her resident weights from
+/// exactly these fields and fills none in.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FreshShadow {
+    pub name: String,
+    pub rank: u32,
+    pub alpha: f32,
+    pub targets: Vec<String>,
+    pub top_layers: u32,
+    pub seed: u32,
 }
 
 /// Where a seat's shadow comes from (Cormac on #6254). Either way the engine makes it on her resident
@@ -103,6 +161,9 @@ pub struct Learn {
     pub seat: SeatId,
     pub step: StepId,
     pub lesson: Lesson,
+    /// The lesson rows the seat was loaded within ([`SeatState::Loaded`]'s `lesson_rows`): the port
+    /// renders the lesson within them, so it learns exactly what the seat was measured for.
+    pub within: std::num::NonZeroU32,
     /// A non-owning view of this step's workspace lease: native code asks it before the workspace grows.
     pub admission: Box<dyn ReplyAdmission>,
 }
@@ -135,9 +196,10 @@ pub enum SeatState {
     /// Measured: lease `weights`, then tell Load. Nothing is allocated yet.
     Measured { weights: Vec<MemoryRow> },
     /// Loaded (its weights held) and measured: lease `optimizer` and `workspace`, then tell Seat.
-    /// `workspace` is sized for a lesson of up to `reply_rows` tokens; a longer one is
-    /// [`StepOutcome::TooLong`].
-    Loaded { optimizer: Vec<MemoryRow>, workspace: Vec<MemoryRow>, reply_rows: std::num::NonZeroU32 },
+    /// `workspace` is sized for a reply of up to `reply_rows` tokens in a lesson of `lesson_rows`
+    /// (within the Load's fit); a longer reply is [`StepOutcome::TooLong`], and every Learn carries
+    /// `lesson_rows` as its `within`.
+    Loaded { optimizer: Vec<MemoryRow>, workspace: Vec<MemoryRow>, reply_rows: std::num::NonZeroU32, lesson_rows: std::num::NonZeroU32 },
     /// Retained: lessons may be learned into it.
     Seated { optimizer: OptimizerStart },
     /// Ended with nothing held: the trainer may release every guard for the seat. Said only once

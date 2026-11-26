@@ -68,6 +68,10 @@ pub enum Priced {
         at_window: Option<(f64, f64)>,
         measured: (u32, u32),
     },
+    /// Her choice sat at the top of the contexts measured, with window above it: this act holds a
+    /// window past them (the top plus what her acts add there), so the next choice is made over a range
+    /// that includes it.
+    Trial { held: u32, measured: (u32, u32) },
 }
 
 /// `claims` as a price choice may show them: each actionable head no epoch holds without its
@@ -192,7 +196,18 @@ pub(super) fn hold(window: u32, claims: ActClaims) -> ActPlan {
     // measured context, at most the largest plus her reply's whole want.
     let lo = floor.max(measured.0);
     let hi = window.min(measured.1.saturating_add(claims.reply.max_tokens));
-    let outside = ActPlan { priced: Priced::OutsideMeasured { measured }, ..served.clone() };
+    // Outside what was measured the price says nothing, and nothing says fill: her window grows by
+    // the same bounded step an upward trial takes (the top measured plus the spread measured, at
+    // least her reply's want), never to the whole window at once. Filling it was bounded only by
+    // windows being small; given the whole 262,144, two minds' contexts went to 180k and 230k tokens
+    // and their acts took most of the Core (the M5, 2026-11-25 23:30Z to 00:10Z, throughput down 3x).
+    // One step past the measured top: what her acts add there (her fresh tokens per act at that context,
+    // fitted on warm acts), at least her reply's want, so a step advances at the pace she grows. The
+    // spread of everything measured was a step that could jump to the whole window (Benchy, the M5,
+    // 2026-11-26 01:48Z: measured 9,952..159,015, a trial of 262,144).
+    let grows = time.fresh.at(f64::from(measured.1)).max(0.0) as u32;
+    let step = measured.1.saturating_add(grows.max(claims.reply.max_tokens));
+    let outside = ActPlan { priced: Priced::OutsideMeasured { measured }, ..plan_at(window.min(step.max(floor)), claims.clone()) };
     if lo > hi {
         // What her view already sent lies past every context measured: holding it cannot be
         // priced, and serving the whole window let it grow to the ceiling (the M5, 2026-11-11). Her
@@ -222,6 +237,22 @@ pub(super) fn hold(window: u32, claims: ActClaims) -> ActPlan {
     }
     if !best.is_finite() {
         return outside;
+    }
+    // A peak at the top of what was measured is not a peak: the measurement is censored there, and
+    // holding it forever is a control that can only step down (CLAUDE.md, "Control both ways"). Aris
+    // on the M5, 2026-11-25 22:30Z: measured over 12,264..18,030 tokens, held 19,218 of a 66,209
+    // window, her view granted 5 to 7k, a turnover every act or two, 50k of her window unused. So an
+    // act whose choice sits at that top, with window above it, holds an upward trial: the top plus
+    // the spread measured so far (at least her reply's want), never past the window. Its act
+    // measures that context; the next choice is made over the wider range, and comes back down if
+    // the larger window priced worse.
+    if held_context(&plan).saturating_add(2) >= measured.1 && window > plan.window {
+        let trial = window.min(step);
+        if trial > plan.window {
+            let need = need_past(window, &plan, best, beyond(window, &time, &claims), &probe, trained).grown(view_sent(&claims), trained);
+            let tried = plan_at(trial, priced_claims);
+            return ActPlan { priced: Priced::Trial { held: trial, measured }, need, limits: served.limits, hard_limits: served.hard_limits, ..tried };
+        }
     }
     // Her need carries her view's growth: a reserve as large as what it already sent, as her
     // view's start leaves one, so her next acts append into a granted window instead of turning

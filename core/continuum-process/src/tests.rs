@@ -318,21 +318,3 @@
         assert_eq!((read.bytes.as_slice(), read.end), (b"prefix".as_slice(), CaptureEnd::Failed("the pipe broke".into())));
     }
 
-    // what this catches: reading tasklist's NO-MATCH prose as an image name.
-    // tasklist exits 0 and prints "INFO: No tasks are running..." on stdout, so
-    // status success does NOT imply a hit; parsing that line as a name would make
-    // is_llama_server true for a dead pid and authorise a kill.
-    #[test]
-    fn tasklist_parses_the_image_name_and_refuses_the_no_match_line() {
-        let hit = "\"llama-server.exe\",\"3852\",\"Console\",\"2\",\"14,254,876 K\"
-";
-        assert_eq!(
-            parse_tasklist_image_name(hit).as_deref(),
-            Some("llama-server.exe")
-        );
-        let miss = "INFO: No tasks are running which match the specified criteria.
-";
-        assert_eq!(parse_tasklist_image_name(miss), None);
-        assert_eq!(parse_tasklist_image_name(""), None);
-    }
-

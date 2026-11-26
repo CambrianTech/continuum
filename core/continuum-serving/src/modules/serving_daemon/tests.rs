@@ -151,7 +151,7 @@ impl LlamaServerControl for FakeServer {
     }
     async fn served_geometry(&self) -> Result<crate::inference::weight_residency::ContextGeometry, LlamaServerError> {
         // One sequence's worth of the fixed window above: the share these tests publish.
-        Ok(crate::inference::weight_residency::ContextGeometry { allocated_tokens: 11008, max_tokens_per_sequence: 11008, sequence_capacity: 1 })
+        Ok(crate::inference::weight_residency::ContextGeometry { allocated_tokens: 11008, max_tokens_per_sequence: 11008, sequence_capacity: 1, holding: crate::inference::weight_residency::KvHolding::Shared })
     }
     async fn served_lanes(&self) -> Result<u32, LlamaServerError> {
         // 0 = "this fake's /props names no slot count", i.e. nothing to compare
