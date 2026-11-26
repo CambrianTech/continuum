@@ -245,6 +245,8 @@ pub struct LlamaCppBackend {
     pub(super) chat: OnceLock<Result<Mutex<llama::ChatTemplates>, llama::ChatRefusal>>,
     pub(super) model: Arc<Model>,
     pub(super) config: LlamaCppConfig,
+    /// Each persona's view tokens from her last act: her next act tokenizes only past them.
+    pub(super) held_views: super::super::persona_scheduler::HeldViews,
     pub(super) model_id: String,
     /// Native weight buffer allocations reported by the loaded model.
     pub(super) weights: llama::WeightAllocation,

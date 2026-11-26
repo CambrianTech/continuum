@@ -19,6 +19,7 @@
 
 mod driver;
 mod emit;
+mod held_view;
 mod preserve;
 mod record;
 mod reuse;
@@ -160,6 +161,8 @@ fn rate(tokens: usize, took: std::time::Duration) -> f64 {
     }
     tokens as f64 / took.as_secs_f64()
 }
+
+pub use held_view::HeldViews;
 
 /// A turn's prompt as token ids and where her view ends in them, computed by the submitter on its
 /// own thread (each act runs on its own), so many acts tokenize at once and the engine thread never

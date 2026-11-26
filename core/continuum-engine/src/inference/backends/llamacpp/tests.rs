@@ -430,3 +430,36 @@
         let (tokens_apart, end_apart) = crate::inference::backends::persona_scheduler::prepare(&backend.model, &prompt, Some(&apart)).expect("test: prepare"); // expect: the test's own precondition
         assert_eq!((tokens_apart, end_apart), (whole, Some(held_view.len())), "a view rendered apart takes the other path to the same answer");
     }
+
+    // what this catches (the M5, 2026-11-26: a whole-prompt tokenization every act, 4.2 to 7.1 s at 100k
+    // to 233k tokens under a busy Core): her next act tokenizing what her last act's view already held.
+    // Kept per persona, her view's tokens are reused and only what follows is tokenized; the result is
+    // exactly the whole prompt's tokens, and a prompt that no longer begins with the kept view (a new
+    // epoch) is tokenized whole, never fed her old tokens.
+    #[test]
+    #[ignore = "requires qwen2.5-0.5b-instruct under ~/.continuum/genome/models; run explicitly"]
+    fn her_next_act_tokenizes_only_past_the_view_her_last_act_held() {
+        let path = dirs::home_dir().expect("test: a home").join(".continuum/genome/models/qwen2.5-0.5b-instruct/qwen2.5-0.5b-instruct-q4_k_m.gguf"); // expect: the test's own precondition
+        if !path.exists() {
+            eprintln!("SKIPPED: {} not present", path.display());
+            return;
+        }
+        let backend = LlamaCppBackend::load(LlamaCppConfig { model_path: path, ..Default::default() }).expect("test: the 0.5B loads"); // expect: the test's own precondition
+        let views = crate::inference::backends::persona_scheduler::HeldViews::default();
+        let her = uuid::Uuid::new_v4();
+        let generation = "<|im_start|>assistant\n";
+        let act = |view: &str| format!("{view}{generation}");
+        let whole = |prompt: &str| backend.model.tokenize(prompt, true, true).expect("test: tokenizes"); // expect: the test's own precondition
+        let first_view = "<|im_start|>system\nYou are Aris.<|im_end|>\n<|im_start|>user\nRead lib.rs<|im_end|>\n";
+        let first = act(first_view);
+        let (tokens, end) = views.prepare(&backend.model, Some(her), &first, Some(&first[..first_view.len()])).expect("test: prepare"); // expect: the test's own precondition
+        assert_eq!((tokens, end), (whole(&first), Some(whole(first_view).len())));
+        let second_view = format!("{first_view}<|im_start|>assistant\nIt owns the lane. ünï — ok.<|im_end|>\n<|im_start|>user\n[result #1] fn main() {{}}<|im_end|>\n");
+        let second = act(&second_view);
+        let (tokens, end) = views.prepare(&backend.model, Some(her), &second, Some(&second[..second_view.len()])).expect("test: prepare"); // expect: the test's own precondition
+        assert_eq!((tokens, end), (whole(&second), Some(whole(&second_view).len())), "past her kept view only, the same tokens as whole");
+        let turned_view = "<|im_start|>system\nYou are Aris, a new epoch.<|im_end|>\n";
+        let turned = act(turned_view);
+        let (tokens, end) = views.prepare(&backend.model, Some(her), &turned, Some(&turned[..turned_view.len()])).expect("test: prepare"); // expect: the test's own precondition
+        assert_eq!((tokens, end), (whole(&turned), Some(whole(turned_view).len())), "a prompt that no longer begins with her kept view is tokenized whole");
+    }

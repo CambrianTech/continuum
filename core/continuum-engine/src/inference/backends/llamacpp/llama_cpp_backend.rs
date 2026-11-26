@@ -66,6 +66,7 @@ impl LlamaCppBackend {
 
         Ok(Self {
             embedding_lane: super::embedding_lane::EmbeddingLane::new(),
+            held_views: super::super::persona_scheduler::HeldViews::default(),
             chat: OnceLock::new(),
             model: Arc::new(model),
             config,
@@ -555,7 +556,7 @@ impl LlamaCppBackend {
         };
 
         // Tokenized here, on this act's own thread, so the engine thread never tokenizes.
-        let (prompt, view_end) = super::super::persona_scheduler::prepare(&self.model, prompt, turn.stable_prefix)?;
+        let (prompt, view_end) = self.held_views.prepare(&self.model, persona_id, prompt, turn.stable_prefix)?;
         let prompt_tokens = prompt.len();
         let req = GenerationRequest {
             prompt,
