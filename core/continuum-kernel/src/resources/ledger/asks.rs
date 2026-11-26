@@ -75,6 +75,8 @@ impl ResourceLeaseLedger {
     /// the reserve is of another kind or holds less.
     pub fn carve(&mut self, reserve: &str, req: &LeaseRequest, lease_id: &str, now_ms: u64) -> Result<ResourceLease, LeaseError> {
         let (kind, bytes, claim) = match self.leases.get(reserve) {
+            // a lapsed reserve stays charged for its fenced release; nothing is carved from it into a fresh term
+            Some(held) if held.lease.is_expired(now_ms) => return Err(LeaseError::ExpiredLease { lease_id: reserve.to_owned() }),
             Some(held) => (held.lease.kind, held.lease.bytes, held.claim),
             None => return Err(LeaseError::MissingLease { lease_id: reserve.to_owned() }),
         };
@@ -88,7 +90,7 @@ impl ResourceLeaseLedger {
         // (the kind's and its pool's) unchanged, so nothing can come between
         let stage = self
             .place
-            .split(claim, kind, Bytes(req.bytes), told::owner_of(&req.consumer_id), Generation(1))
+            .split(claim, Need { place: kind, amount: Bytes(req.bytes) }, told::owner_of(&req.consumer_id), Generation(1))
             .map_err(|_refused| LeaseError::MissingLease { lease_id: reserve.to_owned() })?;
         let left = bytes - req.bytes;
         if left == 0 {
