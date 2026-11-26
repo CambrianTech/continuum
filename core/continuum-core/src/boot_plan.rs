@@ -254,6 +254,51 @@ fn spawn_eye_logged(command: std::process::Command, log: &std::fs::File) -> std:
     }
 }
 
+/// Beside: self-exercise battery — runs after deploy to verify the core end-to-end.
+/// Connects to the running core via IPC and exercises ping, runtime/metrics, ai/generate.
+/// Spawned fire-and-forget like eye-node; its output is logged for later inspection
+/// but does not block boot completion. The receipt records that it was spawned;
+/// success/failure is visible in the log file.
+fn step_self_exercise() -> Outcome {
+    let ctm = match continuum_base::shell_portable::locate_executable("ctm") {
+        Some(path) => path,
+        None => return Outcome::Skipped("ctm binary not found on PATH".into()),
+    };
+
+    // Create a log file for the exercise output so results survive.
+    let start_log = crate::ipc::endpoint_paths::core_start_logfile();
+    let log_path = std::path::PathBuf::from(start_log)
+        .with_file_name("continuum-self-exercise.log");
+    let log_file = match std::fs::File::create(&log_path) {
+        Ok(f) => f,
+        Err(e) => return Outcome::Skipped(format!("cannot create {}: {e}", log_path.display())),
+    };
+
+    match std::process::Command::new(&ctm)
+        .arg("self-exercise")
+        .stdout(log_file.try_clone().unwrap_or_else(|_| {
+            // If try_clone fails (rare), fall back to /dev/null — don't block boot.
+            #[cfg(unix)]
+            return std::fs::File::create(std::path::Path::new("/dev/null")).unwrap();
+            #[cfg(windows)]
+            return std::process::Stdio::null();
+        }))
+        .stderr(log_file.try_clone().unwrap_or_else(|_| {
+            #[cfg(unix)]
+            return std::fs::File::create(std::path::Path::new("/dev/null")).unwrap();
+            #[cfg(windows)]
+            return std::process::Stdio::null();
+        }))
+        .spawn()
+    {
+        Ok(child) => Outcome::Ok(format!(
+            "self-exercise spawned pid {}; log {}",
+            child.id(),
+            log_path.display()
+        )),
+        Err(e) => Outcome::Skipped(format!("ctm self-execute failed: {e}")),
+    }
+}
 /// Run slice 1 of the typed boot plan. `repo_root` is `Some` in a source tree
 /// (Beside dev rails apply) and `None` for an installed user (they skip with
 /// a stated reason — the receipt never has silent holes).
@@ -310,6 +355,9 @@ pub fn run_beside_phase(receipt: &mut BootReceipt, repo_root: Option<&std::path:
                 let t = Instant::now();
                 receipt.push("eye-node-beside", t, step_eye_node_beside(root));
             }
+            // Self-exercise runs after all beside steps in source-tree mode.
+            let t = Instant::now();
+            receipt.push("self-exercise", t, step_self_exercise());
         }
         None => {
             let t = Instant::now();
@@ -318,6 +366,8 @@ pub fn run_beside_phase(receipt: &mut BootReceipt, repo_root: Option<&std::path:
                 t,
                 Outcome::Skipped("installed user — dist ships with the install".into()),
             );
+            let t = Instant::now();
+            receipt.push("self-exercise", t, step_self_exercise());
         }
     }
 }

@@ -31,6 +31,7 @@ use uuid::Uuid;
 
 mod grid_smoke;
 
+mod self_exercise;
 #[derive(Parser, Debug)]
 #[command(
     name = "ctm",
@@ -117,6 +118,12 @@ enum Command {
     /// modality chains land in v2 when probe-sink trace ingestion is
     /// wired.
     GridSmoke,
+
+    /// Run the self-exercise battery after deploy. Exercises the core end-to-end
+    /// (ping, gpu/stats, runtime/metrics/all, ai/generate) and reports pass/fail.
+    /// Designed to be called from boot_plan.rs run_beside_phase() so every deploy
+    /// ends with a verdict — no agent in the loop.
+    SelfExercise,
 }
 
 // CLI is a one-shot binary: parse args, open airc, fire one command,
@@ -170,6 +177,7 @@ async fn main() -> Result<()> {
             json,
         } => run_generate(conn, prompt, model, provider, max_tokens, temperature, json).await,
         Command::GridSmoke => grid_smoke::run(conn, peer).await,
+        Command::SelfExercise => self_exercise::run(conn).await,
     }
 }
 
