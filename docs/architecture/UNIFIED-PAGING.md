@@ -1183,38 +1183,34 @@ unchanged; then Kimi's 64 GB, 91 GB and 1.9 TB lessons learned on the 5090 besid
   - the Core's layout, a stream per mind, is made the only one by construction, checked where the plan is chosen (Codex, 22:36Z);
   - so the layout the walk cannot read never reaches it, and the refusal and its fallback are both deleted.
 
-### Time divides as well as space: learning is PWM (2026-11-26, for review before code)
+### Learning is a thread on the Core: time divides as space does (2026-11-26, for review before code)
 
-Joel: "Yeah or time divided. We never need to abort. If it doesn't fit now, it can in some duty cycle. The goal is everything fed back like sage does graphics. Learning for example is truly pwm like. It can all fit. You just need to have these levers and contracts under centralized intelligent control."
+Joel: "Yeah or time divided. We never need to abort. If it doesn't fit now, it can in some duty cycle. The goal is everything fed back like sage does graphics. Learning for example is truly pwm like. It can all fit. You just need to have these levers and contracts under centralized intelligent control." Then: "It's how threads work on one core or many really. They're all given their time. This is an rtos."
 
-**The lever that is missing.**
-- A holder's `Ways` today are all space: `resize`, `cache_out`, `collapse`.
-- A holding whose floor cannot fit beside the others right now has no way left but `Fixed` or a refusal. That is where every "too big" in the learner comes from.
-- The missing way is time: `duty: Option<Cost>`. The holding runs part of each period and holds its place only while on; while off it gives the place back, nothing allocated, its state where it was left.
-- A learning seat's state between tiles is already resumable: the walk's checkpoints, its host accumulator, the reply's cursor. So off costs it only the wait.
+**The scheduler already exists; learning becomes one of its threads.**
+- The lane (THE-LANE-ON-SAGE.md) is the RTOS: one Core, one thread on it at a time, preempted at every step under the wait bound, chosen by its `decide` use case with history.
+- A mind is a thread today. A learning seat becomes one more, with no mechanism of its own:
+  - **Runnable** while it owes a lesson (its to-learn queue is not empty).
+  - **Priority**: Background, with aging, so it is never starved. The learning cadence's guarantee is the queue kept in check, never a fixed rate.
+  - **Time slice**: one tile, one unit of the walk (a forward tile or a reverse tile). A slice is never longer than the wait bound allows, because the tile is sized to it.
+  - **Context**: what it keeps between slices, the walk's checkpoints, its host K/V-gradient accumulator, the reply's cursor and the optimizer. This is its memory as a resident, paged by the block layer like a mind's KV.
+  - **Scratch**: the tile's graph workspace, held only while its slice runs, like a stack frame in use. The placer grants it for the step and takes it back when the step lands.
+- The share of the Core that learning gets (Joel's PWM width) is nobody's setting. It is what the scheduler's choices add up to: wider while the queue grows and serving has slack, narrower under serving's demand.
 
-**Every lever, one controller.**
-- The levers are space (the tile, a resize, a cache out) and time (the duty). Each holder declares its levers in its `Report` rows, measured, with its contract (floor, QoS, what it requires beside it).
-- No holder decides alone that it cannot run.
-- The centralized control is the two controllers that already exist, fed back every period:
-  - **The placer** shares each place's room among the rows that are on, by the flexbox at their QoS (space).
-  - **The lane** chooses what each engine step runs: a mind's decode, a batch, or a learning tile. It decides by its `decide` use case with history, under the wait bound's envelope (time).
-- The duty is the lane's: the share of steps it gives learning tiles, the PWM width. The placer's grant to a learning seat is in force only for the steps it is on.
-
-**What sets the width.**
-- The feedback is what the learner owes: its to-learn queue (learning cadence: keep the queue in check, never a fixed rate).
-- The cost is what serving gives up for it: the measured wait the lane's envelope already bounds.
-- The lane widens the duty when the queue grows and serving has slack, and narrows it under serving's demand. It never goes to zero while a lesson is owed, because the queue is the guarantee. It never lets serving miss its bound.
-- A tile too large for the room serving leaves during an on-step splits in place (above). A duty too narrow for the queue is the signal to widen, never a refusal.
+**Space and time, under the same two controllers.**
+- **The lane** decides when each thread runs (time).
+- **The placer** shares each place's room among what runs and what stays resident (space).
+- Each holder declares its levers and its contract in its `Report` rows: floor, QoS, the ways it gives back, what it requires beside it. Feedback comes up every period, and no holder decides alone that it cannot run.
+- A tile too large for the room left at its slice splits in place (above). A queue the scheduler is not draining is its signal to give learning more slices, never a refusal.
 
 **What this deletes.**
-- Every refusal path in learning that means "not now": `measure_defect` for a lesson past the card, a seat `Refused` for no room, a tile that fails its step.
-- In their place: a row with an `Elastic` floor of one ubatch tile and ways `resize` (the tile) and `duty`, under the placer and the lane.
+- Every refusal path in learning that means "not now": `measure_defect` for a lesson past the card, a seat `Refused` for no room, a tile that fails its step, and the shrink that finishes and releases.
+- The learner's separate admission waits become the scheduler's runnable queue.
 - A typed refusal remains only for a broken contract: a layout the walk cannot read, made impossible at plan selection.
 
 **Gates.**
 - The 5090's gate 5 below: zero `measure_defect`, every learning wait naming its tile.
-- Plus: over a window with serving loaded, the learner's queue stays in check while no resident's wait passes its bound, with the duty the lane chose recorded each period.
+- Plus: over a window with serving loaded, the learner's queue stays in check while no resident's wait passes its bound. Each period records the slices learning was given, and why.
 
 **Gates, in order.**
 1. The fork's `test-walk-exact`: the tile measure is at least the workspace each tile actually admits (`workspace_admission`'s bytes per tile). Run at 64, 128 and 512 rows, f16 and q8_0, flash on.
