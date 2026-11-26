@@ -7,6 +7,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 
 use super::quantity::Quantity;
 
@@ -38,6 +39,7 @@ pub struct Claim<P, Q> {
     pub(super) owner: Owner,
     pub(super) generation: Generation,
     pub(super) prepared: Arc<[(Need<P, Q>, AtomicU64)]>,
+    pub(super) expiry: Expiry,
 }
 
 impl<P: Copy + PartialEq, Q: Quantity> Claim<P, Q> {
@@ -50,16 +52,51 @@ impl<P: Copy + PartialEq, Q: Quantity> Claim<P, Q> {
     }
 
     /// Spend `amount` on `place` from what this claim had prepared there. Answers at once, never
-    /// waits: false when the claim has no such place or not that much left, and nothing is spent.
+    /// waits: false when the claim has no such place, not that much left, or has lapsed, and nothing
+    /// is spent.
     pub fn consume(&self, place: P, amount: Q) -> bool {
+        if self.expiry.lapsed(Instant::now()) {
+            return false; // a lapsed claim is not spent
+        }
         let Some((_, left)) = self.prepared.iter().find(|(need, _)| need.place == place) else {
             return false;
         };
         left.fetch_update(Ordering::AcqRel, Ordering::Acquire, |left| left.checked_sub(amount.units())).is_ok()
     }
 
-    /// What is prepared on `place` and not yet consumed, if this claim holds that place.
+    /// What is prepared on `place` and not yet consumed, if this claim holds that place: nothing once
+    /// it has lapsed.
     pub fn left(&self, place: P) -> Option<Q> {
-        self.prepared.iter().find(|(need, _)| need.place == place).map(|(_, left)| Q::of(left.load(Ordering::Acquire)))
+        let lapsed = self.expiry.lapsed(Instant::now());
+        self.prepared.iter().find(|(need, _)| need.place == place).map(|(_, left)| Q::of(if lapsed { 0 } else { left.load(Ordering::Acquire) }))
+    }
+}
+
+/// When a claim lapses, readable from any thread without the ledger: nanoseconds past `origin`,
+/// `u64::MAX` for none. Past it the claim is overdue: its remainder reads nothing and cannot be spent,
+/// and the ledger lists it for reclaim, but its holding is freed only by a release (a lease that
+/// lapsed has not yet given its memory back).
+#[derive(Debug, Clone)]
+pub(super) struct Expiry {
+    origin: Instant,
+    until: Arc<AtomicU64>,
+}
+
+impl Expiry {
+    pub(super) fn never() -> Self {
+        Self { origin: Instant::now(), until: Arc::new(AtomicU64::new(u64::MAX)) }
+    }
+
+    /// Lapse at `until` (an instant before the claim was made lapses at once).
+    pub(super) fn set(&self, until: Instant) {
+        let nanos = until.saturating_duration_since(self.origin).as_nanos();
+        // a term past u64 nanoseconds (584 years) still ends: it is held just below "none"
+        self.until.store(nanos.min(u128::from(u64::MAX - 1)) as u64, Ordering::Release);
+    }
+
+    /// Whether it has lapsed at `now`.
+    pub(super) fn lapsed(&self, now: Instant) -> bool {
+        let until = self.until.load(Ordering::Acquire);
+        until != u64::MAX && u128::from(until) <= now.saturating_duration_since(self.origin).as_nanos()
     }
 }
