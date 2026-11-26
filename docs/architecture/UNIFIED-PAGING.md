@@ -1183,6 +1183,39 @@ unchanged; then Kimi's 64 GB, 91 GB and 1.9 TB lessons learned on the 5090 besid
   - the Core's layout, a stream per mind, is made the only one by construction, checked where the plan is chosen (Codex, 22:36Z);
   - so the layout the walk cannot read never reaches it, and the refusal and its fallback are both deleted.
 
+### Time divides as well as space: learning is PWM (2026-11-26, for review before code)
+
+Joel: "Yeah or time divided. We never need to abort. If it doesn't fit now, it can in some duty cycle. The goal is everything fed back like sage does graphics. Learning for example is truly pwm like. It can all fit. You just need to have these levers and contracts under centralized intelligent control."
+
+**The lever that is missing.**
+- A holder's `Ways` today are all space: `resize`, `cache_out`, `collapse`.
+- A holding whose floor cannot fit beside the others right now has no way left but `Fixed` or a refusal. That is where every "too big" in the learner comes from.
+- The missing way is time: `duty: Option<Cost>`. The holding runs part of each period and holds its place only while on; while off it gives the place back, nothing allocated, its state where it was left.
+- A learning seat's state between tiles is already resumable: the walk's checkpoints, its host accumulator, the reply's cursor. So off costs it only the wait.
+
+**Every lever, one controller.**
+- The levers are space (the tile, a resize, a cache out) and time (the duty). Each holder declares its levers in its `Report` rows, measured, with its contract (floor, QoS, what it requires beside it).
+- No holder decides alone that it cannot run.
+- The centralized control is the two controllers that already exist, fed back every period:
+  - **The placer** shares each place's room among the rows that are on, by the flexbox at their QoS (space).
+  - **The lane** chooses what each engine step runs: a mind's decode, a batch, or a learning tile. It decides by its `decide` use case with history, under the wait bound's envelope (time).
+- The duty is the lane's: the share of steps it gives learning tiles, the PWM width. The placer's grant to a learning seat is in force only for the steps it is on.
+
+**What sets the width.**
+- The feedback is what the learner owes: its to-learn queue (learning cadence: keep the queue in check, never a fixed rate).
+- The cost is what serving gives up for it: the measured wait the lane's envelope already bounds.
+- The lane widens the duty when the queue grows and serving has slack, and narrows it under serving's demand. It never goes to zero while a lesson is owed, because the queue is the guarantee. It never lets serving miss its bound.
+- A tile too large for the room serving leaves during an on-step splits in place (above). A duty too narrow for the queue is the signal to widen, never a refusal.
+
+**What this deletes.**
+- Every refusal path in learning that means "not now": `measure_defect` for a lesson past the card, a seat `Refused` for no room, a tile that fails its step.
+- In their place: a row with an `Elastic` floor of one ubatch tile and ways `resize` (the tile) and `duty`, under the placer and the lane.
+- A typed refusal remains only for a broken contract: a layout the walk cannot read, made impossible at plan selection.
+
+**Gates.**
+- The 5090's gate 5 below: zero `measure_defect`, every learning wait naming its tile.
+- Plus: over a window with serving loaded, the learner's queue stays in check while no resident's wait passes its bound, with the duty the lane chose recorded each period.
+
 **Gates, in order.**
 1. The fork's `test-walk-exact`: the tile measure is at least the workspace each tile actually admits (`workspace_admission`'s bytes per tile). Run at 64, 128 and 512 rows, f16 and q8_0, flash on.
 2. The same on a hybrid model: the 5090 serves Qwen3.8-27B, and the hybrid path has an open `k_idxs` abort.
