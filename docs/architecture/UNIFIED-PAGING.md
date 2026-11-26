@@ -85,7 +85,11 @@ stops working. So `Topology`, a SAGE component, keeps every quantity current, ea
 source that is true now:
 - **Free memory per tier:** the resource authority's `resources/free`, which already follows the OS
   (free and compressed RAM, swap, pressure on macOS; device free memory from the backend for VRAM).
-  `Topology` subscribes and never samples on its own.
+  `Topology` subscribes and never samples on its own. On unified memory, GPU allocations do not show
+  in the OS's free or available counters (measured elsewhere on Apple and Linux iGPUs; SPEED-BRAINSTORM,
+  "Lessons: inference-optimisation-skill"), so the authority's unified number must include the
+  driver's resident GPU bytes (`ioreg`/`vm_stat` on Apple), or the ledger's budget is a number that
+  is not true.
 - **Link and drive rates, passively:** every move a link makes is itself a measurement (bytes over
   measured time, by direction and volume), so the rates follow contention and thermal throttling at
   no cost. An active probe runs only for a volume no move has used within its staleness window, and
