@@ -400,3 +400,27 @@ fn room_if_released_repays_an_over_budget_place_and_never_passes_capacity() {
     assert_eq!(ledger.room_if(TRAINER, Tier::Vram, &[(Tier::Vram, Bytes(40))]), Some(Bytes(30)), "the 10 over is repaid first");
     assert_eq!(ledger.room_if(TRAINER, Tier::Vram, &[(Tier::Vram, Bytes(500))]), Some(Bytes(100)), "never past capacity");
 }
+
+// what this catches (Codex on 7e348e827): a backing that changes under live claims. Each tier holds 40;
+// the GPU tier is then backed by the host pool and its claim released: the release must come off where
+// the charge was posted, never off the pool's own owner's 40.
+#[test]
+fn a_backing_change_moves_what_is_charged_with_it() {
+    let mut ledger = Ledger::default();
+    ledger.place(Tier::Vram, Bytes(100), Bytes(100), &mut Vec::new());
+    ledger.place(Tier::Pinned, Bytes(100), Bytes(100), &mut Vec::new());
+    let held = |ledger: &mut Ledger<Tier, Bytes>, owner, place| {
+        let claim = granted(ledger.prepare(owner, FIRST, &[Need { place, amount: Bytes(40) }]));
+        assert!(claim.consume(place, Bytes(40)));
+        assert_eq!(ledger.commit(claim.id()), Ok(()));
+        claim.id()
+    };
+    let gpu = held(&mut ledger, TRAINER, Tier::Vram);
+    held(&mut ledger, SERVING, Tier::Pinned);
+    ledger.back(Tier::Vram, Some(Tier::Pinned));
+    assert_eq!(ledger.accounts(Tier::Pinned).map(|a| a.held), Some(Bytes(80)), "the pool carries the GPU tier's charge once backed");
+    assert_eq!(ledger.release(gpu), Ok(()));
+    assert_eq!(ledger.accounts(Tier::Pinned).map(|a| a.held), Some(Bytes(40)), "the pool's own owner still holds its 40");
+    ledger.back(Tier::Vram, None);
+    assert_eq!(ledger.accounts(Tier::Pinned).map(|a| a.held), Some(Bytes(40)), "unbacking moves nothing that is not there");
+}

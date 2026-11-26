@@ -23,11 +23,33 @@ pub(super) struct Floor<P, Q> {
 
 impl<P: Copy + PartialEq + std::fmt::Debug, Q: Quantity> Ledger<P, Q> {
     /// `place` draws on `pool`'s physical memory (`None`: its own). Tell it before granting on it.
+    /// A change moves what `place` already has charged from the pool it drew on to the new one, so a
+    /// later release returns it where it was posted (Codex on 7e348e827: a release after the backing
+    /// changed took 40 from a pool that never held it).
     pub fn back(&mut self, place: P, pool: Option<P>) {
-        self.pools.retain(|(at, _)| *at != place);
-        if let Some(pool) = pool.filter(|pool| *pool != place) {
-            self.pools.push((place, pool));
+        let pool = pool.filter(|pool| *pool != place);
+        let was = self.pool_of(place);
+        if was == pool {
+            return;
         }
+        let Some(charged) = self.accounts(place) else {
+            self.pools.retain(|(at, _)| *at != place);
+            self.pools.extend(pool.map(|pool| (place, pool)));
+            return;
+        };
+        let (held, prepared) = (charged.held.units(), charged.prepared.units());
+        for (at, accounts) in self.places.iter_mut() {
+            if Some(*at) == was {
+                accounts.held = Q::of(accounts.held.units().saturating_sub(held));
+                accounts.prepared = Q::of(accounts.prepared.units().saturating_sub(prepared));
+            }
+            if Some(*at) == pool {
+                accounts.held = Q::of(accounts.held.units().saturating_add(held));
+                accounts.prepared = Q::of(accounts.prepared.units().saturating_add(prepared));
+            }
+        }
+        self.pools.retain(|(at, _)| *at != place);
+        self.pools.extend(pool.map(|pool| (place, pool)));
     }
 
     /// Guarantee `owner` `amount` of `place` (zero withdraws the floor).
