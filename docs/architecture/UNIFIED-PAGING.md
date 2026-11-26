@@ -1167,12 +1167,18 @@ unchanged; then Kimi's 64 GB, 91 GB and 1.9 TB lessons learned on the 5090 besid
 - It shrinks the tile instead: halving from `min(reply, one tile past which Fit overshoots)` down to one ubatch, the floor.
 - `Loaded` reports the tile beside `reply_rows` and `lesson_rows`. The Learn step calls `llama_opt_learn_tile(tile)` after begin.
 - The seat's Resident row is `Elastic { floor: one ubatch tile, ways: Resize(tile) }`, as above.
+- **A shrink resizes before it releases** (Cormac, 22:34Z).
+  - A shrink whose target is at or above the floor tile's workspace is answered by a resize: she learns at the smaller tile from her next lesson boundary, and her lease shrinks to it. The holder answers `Partial` once the resize lands.
+  - Only a target below the floor finishes, checkpoints and releases.
+  - This needs the tile measure on a seated shadow without reloading it: a `Measure { tile }` verb beside Load. Cormac builds the trainer half (`Elastic.floor` = the floor tile's bytes).
+- **The walk's host budget is the seat's Ram lease, never a constant** (Cormac). The host row is leased as Ram by `lease_memory_within`, and the walk reads its budget (`opt_walk_host_budget`, which sets the plan's stride) from that lease. The device workspace reads its admission view the same way, so the stride and the lease cannot drift.
 
 **Gates, in order.**
 1. The fork's `test-walk-exact`: the tile measure is at least the workspace each tile actually admits (`workspace_admission`'s bytes per tile). Run at 64, 128 and 512 rows, f16 and q8_0, flash on.
 2. The same on a hybrid model: the 5090 serves Qwen3.8-27B, and the hybrid path has an open `k_idxs` abort.
 3. The open device-refusal case: a refused tile names itself and the seat learns at a smaller tile, never an abort.
 4. Kimi's 64 GB, 91 GB and 1.9 TB lessons measured, admitted and learned on the 5090 beside serving.
+5. On the 5090 over a window, zero `measure_defect` (four today) and every learning wait naming the tile it waits for (Cormac). That proves the whole-reply path is gone from the live driver, not only from the fork's test.
 
 **Questions for Codex.**
 1. **The accumulator's tensors in a host buffer that is never allocated.** One option is a CPU buffer from `ggml_backend_cpu_buffer_from_ptr` over a pointer that is never read. Is that sound under ggml's allocator? Or should `walk_acc_rows` take a graph input that the measure marks host-resident?

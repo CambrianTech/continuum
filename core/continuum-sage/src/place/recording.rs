@@ -65,7 +65,7 @@ pub fn replay<D: Domain>(recording: &Recording<D::Place, D::Quantity>) -> Result
     for entry in &recording.entries {
         match entry {
             Recorded::Act(act) => {
-                core.apply(act.clone());
+                core.apply(act);
                 core.settle();
             }
             Recorded::Spent { ask, spent } => {

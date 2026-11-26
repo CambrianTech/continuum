@@ -9,6 +9,7 @@
 
 use std::collections::HashMap;
 use std::hash::Hash;
+use std::num::NonZeroU64;
 use std::time::{Duration, Instant};
 
 use crate::component::Need;
@@ -232,8 +233,8 @@ pub fn run<K: Copy + Eq + Hash + Ord>(slicer: &mut Slicer<K>, load: &Workload<K>
 }
 
 impl<K: Copy + Eq + Hash + Ord> Workload<K> {
-    /// A room of `capacity` bytes holding this load's minds (`u64::MAX`: every one), reading times against `bound`.
-    pub fn room(&self, capacity: u64, bound: Duration) -> Room<K> {
+    /// A room of `capacity` bytes holding this load's minds (`NonZeroU64::MAX`: every one), reading times against `bound`.
+    pub fn room(&self, capacity: NonZeroU64, bound: Duration) -> Room<K> {
         Room::new(capacity, self.minds.iter().map(|m| (m.mind, m.kv)), bound)
     }
 
@@ -364,9 +365,9 @@ mod tests {
     fn control_laws_compare_on_one_workload() {
         let load = residents();
         let length = Duration::from_secs(300);
-        let (climb, _) = simulate(&mut Slicer::new(policy()), &load, &M5, u64::MAX, "baseline", length);
-        let (every_step, _) = simulate(&mut Slicer::with(policy(), Box::new(Fixed(0.0))), &load, &M5, u64::MAX, "baseline", length);
-        let (long, _) = simulate(&mut Slicer::with(policy(), Box::new(Fixed(5.0))), &load, &M5, u64::MAX, "baseline", length);
+        let (climb, _) = simulate(&mut Slicer::new(policy()), &load, Day { device: &M5, capacity: NonZeroU64::MAX, algorithm: "baseline", length });
+        let (every_step, _) = simulate(&mut Slicer::with(policy(), Box::new(Fixed(0.0))), &load, Day { device: &M5, capacity: NonZeroU64::MAX, algorithm: "baseline", length });
+        let (long, _) = simulate(&mut Slicer::with(policy(), Box::new(Fixed(5.0))), &load, Day { device: &M5, capacity: NonZeroU64::MAX, algorithm: "baseline", length });
         assert!(climb.throughput > every_step.throughput * 1.3, "climb {:.1} vs every step {:.1}", climb.throughput, every_step.throughput);
         assert!(climb.worst().is_none_or(|w| w <= Duration::from_secs(1)), "climb waited {:?}", climb.worst());
         // The wall caps even a fixed law: the slicer, not the law, keeps the bound.
@@ -378,7 +379,7 @@ mod tests {
     // order). A recorded run replays decision for decision.
     #[test]
     fn a_trace_replays_exactly() {
-        let (_, trace) = simulate(&mut Slicer::new(policy()), &residents(), &M5, u64::MAX, "baseline", Duration::from_secs(120));
+        let (_, trace) = simulate(&mut Slicer::new(policy()), &residents(), Day { device: &M5, capacity: NonZeroU64::MAX, algorithm: "baseline", length: Duration::from_secs(120) });
         let decisions = replay(&trace, &mut Slicer::new(policy()));
         assert!(matches!(decisions, Ok(n) if n > 1_000), "replayed {decisions:?}");
     }
@@ -388,7 +389,7 @@ mod tests {
     #[test]
     fn a_trace_fits_back_into_its_workload() {
         let load = residents();
-        let (_, trace) = simulate(&mut Slicer::new(policy()), &load, &M5, u64::MAX, "baseline", Duration::from_secs(300));
+        let (_, trace) = simulate(&mut Slicer::new(policy()), &load, Day { device: &M5, capacity: NonZeroU64::MAX, algorithm: "baseline", length: Duration::from_secs(300) });
         let fitted = Workload::fit(&trace);
         assert_eq!(fitted.switch, load.switch);
         for (want, got) in load.minds.iter().zip(&fitted.minds) {
@@ -408,9 +409,9 @@ mod tests {
         let load = day(&[('k', 175_195), ('s', 68_583)]);
         let five_090 = Dedicated::rtx_5090(25.0e9);
         let unified = Unified { prefill: five_090.prefill };
-        let (shared, _) = simulate(&mut Slicer::new(policy()), &load, &unified, u64::MAX, "baseline", DAY);
-        let (both, _) = simulate(&mut Slicer::new(policy()), &load, &five_090, 2 * KV, "baseline", DAY);
-        let (one, _) = simulate(&mut Slicer::new(policy()), &load, &five_090, KV, "baseline", DAY);
+        let (shared, _) = simulate(&mut Slicer::new(policy()), &load, Day { device: &unified, capacity: NonZeroU64::MAX, algorithm: "baseline", length: DAY });
+        let (both, _) = simulate(&mut Slicer::new(policy()), &load, Day { device: &five_090, capacity: room(2 * KV), algorithm: "baseline", length: DAY });
+        let (one, _) = simulate(&mut Slicer::new(policy()), &load, Day { device: &five_090, capacity: room(KV), algorithm: "baseline", length: DAY });
         for (label, report) in [("unified", &shared), ("room for both", &both), ("room for one", &one)] {
             println!("{label}: prefilling {:.0} s, switching {:.2} s over {} switches", report.prefilling.as_secs_f64(), report.switching.as_secs_f64(), report.switches);
         }
@@ -427,7 +428,7 @@ mod tests {
     fn a_learned_prefetch_hides_copies_a_fixed_rule_pays() {
         let load = day(&[('k', 175_195), ('s', 68_583), ('a', 32_000)]);
         let five_090 = Dedicated::rtx_5090(25.0e9);
-        let run_with = |algorithm| simulate(&mut Slicer::new(policy()), &load, &five_090, 2 * KV, algorithm, DAY).0;
+        let run_with = |algorithm| simulate(&mut Slicer::new(policy()), &load, Day { device: &five_090, capacity: room(2 * KV), algorithm, length: DAY }).0;
         let (at_need, eager, learned) = (run_with("at-need"), run_with("baseline"), run_with("linear-ucb"));
         for (label, report) in [("at-need", &at_need), ("baseline", &eager), ("linear-ucb", &learned)] {
             println!("{label}: switching {:.2} s over {} switches, work {} tokens", report.switching.as_secs_f64(), report.switches, report.prefilled + report.decoded);
@@ -463,9 +464,25 @@ const KV: u64 = 8_704 << 20;
 #[cfg(test)]
 const DAY: Duration = Duration::from_secs(900);
 
-/// Run `slicer` through `load` on `device` with `capacity` bytes of KV room and the prefetch `algorithm` by name.
+/// One simulated day's setting: the device, its KV room, the prefetch algorithm by name, and how long it runs.
 #[cfg(test)]
-pub(crate) fn simulate(slicer: &mut Slicer<char>, load: &Workload<char>, device: &dyn Device, capacity: u64, algorithm: &'static str, length: Duration) -> (Report<char>, Trace<char>) {
+pub(crate) struct Day<'a> {
+    pub device: &'a dyn Device,
+    pub capacity: NonZeroU64,
+    pub algorithm: &'static str,
+    pub length: Duration,
+}
+
+/// A room of `bytes`, for a test's literal sizes.
+#[cfg(test)]
+pub(crate) fn room(bytes: u64) -> NonZeroU64 {
+    NonZeroU64::new(bytes).expect("test: a room of some bytes") // expect: the test's own sizes
+}
+
+/// Run `slicer` through `load` for one `day`.
+#[cfg(test)]
+pub(crate) fn simulate(slicer: &mut Slicer<char>, load: &Workload<char>, day: Day<'_>) -> (Report<char>, Trace<char>) {
+    let Day { device, capacity, algorithm, length } = day;
     let bound = Duration::from_secs(1);
     let mut room = load.room(capacity, bound);
     let policy = crate::decide::cases::prefetch::algorithms().and_then(|a| a.create(algorithm)).expect("test: a registered prefetch algorithm"); // expect: the test's own names

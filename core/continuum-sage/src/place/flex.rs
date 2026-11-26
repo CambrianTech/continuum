@@ -132,7 +132,7 @@ impl Flexbox {
             let mut moved = 0u64;
             for &i in active.iter() {
                 let part = u128::from(remaining) * u128::from(claims[i].priority) / u128::from(weights);
-                let grant = u64::try_from(part).unwrap_or(u64::MAX).min(claims[i].max.units() - held[i]); // unwrap_or: a share is at most `remaining`, a u64
+                let grant = u64::try_from(part).unwrap_or(remaining).min(claims[i].max.units() - held[i]); // unwrap_or: a share is at most `remaining` (priority over the weights it is part of), the bound it already keeps
                 held[i] += grant;
                 moved += grant;
             }

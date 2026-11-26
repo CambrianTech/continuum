@@ -693,7 +693,7 @@ impl Driver<'_, '_> {
         } else {
             turn.spent.prefill += took;
         }
-        prefill_rate::observe(turn.id, prefill_from, &turn.phase, turn.prompt.len(), turn.spent.shared_prefix_tokens, turn.spent.prefill);
+        prefill_rate::observe(turn, prefill_from);
         self.record.send(record::Fact::Busy { started: stepping, ended: stepped });
         if turn.spent.milestones.step(advanced.is_ok()) {
             let progress = transition::At::FirstProgress { since_admit_ms: record::whole_ms(turn.submitted.elapsed()), step_ms: record::whole_ms(took), prefill: !decoding };

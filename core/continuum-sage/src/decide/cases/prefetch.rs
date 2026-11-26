@@ -12,6 +12,7 @@
 //! why: 129 s of 900 waiting on whole copies, 34 s with a prefetch started when the next mind was known, most of
 //! the rest switches whose need nobody predicted.
 
+use std::num::NonZeroU64;
 use std::time::Duration;
 
 use super::super::linear_ucb::Featured;
@@ -28,8 +29,10 @@ pub struct Situation {
     pub until: Measured<Duration>,
     /// How far that prediction has measured wrong (a typical miss).
     pub spread: Measured<Duration>,
-    /// Device room beside what is in use now.
+    /// Device room beside what is in use now: whether she fits at all.
     pub room: u64,
+    /// The device's whole KV room: what her share of it is read against.
+    pub capacity: NonZeroU64,
     /// The lane's wait bound: every time is read against it.
     pub bound: Duration,
 }
@@ -56,7 +59,8 @@ pub struct Outcome {
     /// Link time or room spent on a move that never served her.
     pub wasted: Duration,
     pub bytes: u64,
-    pub room: u64,
+    /// The device's whole KV room, which her share of the waste is read against.
+    pub capacity: NonZeroU64,
     pub bound: Duration,
 }
 
@@ -106,23 +110,23 @@ impl UseCase for Prefetch {
     }
 
     fn empty() -> Situation {
-        Situation { bytes: 0, copy: Measured::Unmeasured, until: Measured::Unmeasured, spread: Measured::Unmeasured, room: 0, bound: Duration::ZERO }
+        Situation { bytes: 0, copy: Measured::Unmeasured, until: Measured::Unmeasured, spread: Measured::Unmeasured, room: 0, capacity: NonZeroU64::MIN, bound: Duration::ZERO }
     }
 }
 
 /// The features: bias; the lead against the bound; the predicted lateness (copy past the lead) and the predicted
-/// early hold (lead past the copy) weighed by her share of the room; the spread; and whether nothing is prefetched.
+/// early hold (lead past the copy) weighed by her share of the device's room; the spread; and whether nothing is prefetched.
 pub const FEATURES: usize = 6;
 /// The targets: minus the lateness against the bound (maximized), and the waste against the bound weighed by
-/// her share of the room (kept at or under one).
+/// her share of the device's room (kept at or under one).
 pub const TARGETS: usize = 2;
 
 fn against(time: Duration, bound: Duration) -> f64 {
     time.as_secs_f64() / bound.as_secs_f64().max(f64::MIN_POSITIVE)
 }
 
-fn share(bytes: u64, room: u64) -> f64 {
-    bytes as f64 / (room.max(1)) as f64
+fn share(bytes: u64, capacity: NonZeroU64) -> f64 {
+    bytes as f64 / capacity.get() as f64
 }
 
 impl Featured<FEATURES, TARGETS> for Prefetch {
@@ -134,14 +138,14 @@ impl Featured<FEATURES, TARGETS> for Prefetch {
             1.0,
             against(lead, bound),
             against(copy.saturating_sub(lead), bound),
-            against(lead.saturating_sub(copy), bound) * share(situation.bytes, situation.room),
+            against(lead.saturating_sub(copy), bound) * share(situation.bytes, situation.capacity),
             against(situation.spread.value().unwrap_or(Duration::ZERO), bound), // unwrap_or: an unmeasured spread is none seen
             f64::from(u8::from(action == Action::AtNeed)),
         ]
     }
 
     fn measured(outcome: &Outcome) -> Option<[f64; TARGETS]> {
-        Some([-against(outcome.late, outcome.bound), against(outcome.wasted, outcome.bound) * share(outcome.bytes, outcome.room)])
+        Some([-against(outcome.late, outcome.bound), against(outcome.wasted, outcome.bound) * share(outcome.bytes, outcome.capacity)])
     }
 }
 

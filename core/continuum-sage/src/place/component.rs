@@ -146,7 +146,7 @@ impl<D: Domain> Component for Placer<D> {
 
     async fn handle(&mut self, act: Self::Input, ctx: &mut Ctx<Self>) {
         if self.sayable(&act) {
-            self.core.apply(act);
+            self.core.apply(&act);
         }
         let short_changed = self.core.settle();
         self.core.changed(&mut self.changed);

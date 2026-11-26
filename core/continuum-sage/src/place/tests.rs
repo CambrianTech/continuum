@@ -804,14 +804,14 @@ mod residents {
 #[test]
 fn the_core_is_driven_synchronously_with_no_bus() {
     let mut core = PlacerCore::<Memory>::default();
-    core.apply(Act::Room { place: Tier::Vram, capacity: Bytes(32 * GB), budget: Bytes(5 * MB) });
+    core.apply(&Act::Room { place: Tier::Vram, capacity: Bytes(32 * GB), budget: Bytes(5 * MB) });
     let seat = AskId { owner: TRAINER, seq: 1 };
-    core.apply(Act::Prepare { ask: seat, generation: FIRST, needs: vec![Need { place: Tier::Vram, amount: Bytes(12 * MB) }] });
+    core.apply(&Act::Prepare { ask: seat, generation: FIRST, needs: vec![Need { place: Tier::Vram, amount: Bytes(12 * MB) }] });
     assert!(core.settle(), "the shortfall changed: the seat lacks 7 MB");
     let mut changed = Vec::new();
     core.changed(&mut changed);
     assert!(matches!(changed.as_slice(), [(TRAINER, Asks(rows))] if matches!(rows.as_slice(), [(1, Status::Waiting { .. })])));
-    core.apply(Act::Room { place: Tier::Vram, capacity: Bytes(32 * GB), budget: Bytes(GB) });
+    core.apply(&Act::Room { place: Tier::Vram, capacity: Bytes(32 * GB), budget: Bytes(GB) });
     core.settle();
     core.changed(&mut changed);
     assert!(matches!(changed.as_slice(), [(TRAINER, Asks(rows))] if matches!(rows.as_slice(), [(1, Status::Granted(_))])), "granted once room is told");
@@ -831,7 +831,7 @@ fn a_field_recording_replays_into_the_same_tables_anywhere() {
         Act::Prepare { ask: workspace, generation: FIRST, needs: vec![Need { place: Tier::Vram, amount: Bytes(4 * GB) }] },
     ];
     for act in acts {
-        field.apply(act);
+        field.apply(&act);
         field.settle();
     }
     let mut changed = Vec::new();
@@ -845,7 +845,7 @@ fn a_field_recording_replays_into_the_same_tables_anywhere() {
         Act::Prepare { ask: seat, generation: FIRST, needs: vec![Need { place: Tier::Vram, amount: Bytes(12 * MB) }] },
         Act::Prioritize { ask: seat, priority: 7 },
     ] {
-        field.apply(act);
+        field.apply(&act);
         field.settle();
     }
     let mut simulated = replay::<Memory>(field.recorded()).expect("test: a whole recording replays"); // expect: the test's own precondition
@@ -857,7 +857,7 @@ fn a_field_recording_replays_into_the_same_tables_anywhere() {
     assert_eq!(field.shortfall(), simulated.shortfall(), "the same shortfall");
     let mut short = PlacerCore::<Memory>::recording(2);
     for act in [Act::Room { place: Tier::Vram, capacity: Bytes(GB), budget: Bytes(GB) }, Act::Forget(seat), Act::Forget(seat)] {
-        short.apply(act);
+        short.apply(&act);
     }
     assert_eq!(replay::<Memory>(short.recorded()).err(), Some(Partial { first: 1 }), "a rolled-off ring never passes for the field");
 }

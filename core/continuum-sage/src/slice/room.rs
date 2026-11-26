@@ -11,6 +11,7 @@
 
 use std::collections::HashMap;
 use std::hash::Hash;
+use std::num::NonZeroU64;
 use std::time::Duration;
 
 use crate::decide::cases::prefetch::{Action, Outcome, Prefetch, Situation};
@@ -48,7 +49,7 @@ pub struct Brought {
 
 /// The device's KV room and its one link.
 pub struct Room<K> {
-    capacity: u64,
+    capacity: NonZeroU64,
     minds: HashMap<K, Held>,
     link_free: Duration,
     bound: Duration,
@@ -61,13 +62,13 @@ fn smooth(old: Option<Duration>, sample: Duration) -> Duration {
 }
 
 impl<K: Copy + Eq + Hash + Ord> Room<K> {
-    /// `capacity` bytes of KV on the device (`u64::MAX`: room for every mind), each mind's `bytes`, and the lane's
+    /// `capacity` bytes of KV on the device (`NonZeroU64::MAX`: room for every mind), each mind's `bytes`, and the lane's
     /// wait bound every decision reads its times against. Every mind starts resident while she fits, else parked.
-    pub fn new(capacity: u64, minds: impl IntoIterator<Item = (K, u64)>, bound: Duration) -> Self {
+    pub fn new(capacity: NonZeroU64, minds: impl IntoIterator<Item = (K, u64)>, bound: Duration) -> Self {
         let mut used = 0u64;
         let mut room = Self { capacity, minds: HashMap::new(), link_free: Duration::ZERO, bound };
         for (mind, bytes) in minds {
-            let fits = used.saturating_add(bytes) <= capacity;
+            let fits = used.saturating_add(bytes) <= capacity.get();
             if fits {
                 used = used.saturating_add(bytes);
             }
@@ -95,7 +96,7 @@ impl<K: Copy + Eq + Hash + Ord> Room<K> {
     /// flight wasted its whole copy of link time, a prefetch landed and parked unused wasted the time it sat.
     fn make_room(&mut self, bytes: u64, keep: &[K], by: Option<Duration>, now: Duration, prefetch: &mut Decider<Prefetch>) -> bool {
         loop {
-            if self.used().saturating_add(bytes) <= self.capacity {
+            if self.used().saturating_add(bytes) <= self.capacity.get() {
                 return true;
             }
             let victim = self
@@ -117,7 +118,7 @@ impl<K: Copy + Eq + Hash + Ord> Room<K> {
                     Where::Parked => Duration::ZERO,
                 };
                 if let Some((id, _)) = held.plan.take() {
-                    prefetch.outcome(id, Outcome { late: Duration::ZERO, wasted, bytes: held.bytes, room: capacity, bound });
+                    prefetch.outcome(id, Outcome { late: Duration::ZERO, wasted, bytes: held.bytes, capacity, bound });
                 }
                 held.at = Where::Parked;
             }
@@ -157,7 +158,6 @@ impl<K: Copy + Eq + Hash + Ord> Room<K> {
                 (lands.saturating_sub(now), Some(copy))
             }
         };
-        let room = self.capacity.saturating_sub(self.used().saturating_sub(bytes));
         if let Some(held) = self.minds.get_mut(&mind) {
             if let Some(copy) = fetched {
                 held.copy = Some(copy);
@@ -165,7 +165,7 @@ impl<K: Copy + Eq + Hash + Ord> Room<K> {
             held.at = Where::Resident { since: now + waited };
             if let Some((id, _)) = held.plan.take() {
                 // she served: whatever she waited is the lead's lateness, and nothing was wasted
-                prefetch.outcome(id, Outcome { late: waited, wasted: Duration::ZERO, bytes, room: room.min(self.capacity), bound: self.bound });
+                prefetch.outcome(id, Outcome { late: waited, wasted: Duration::ZERO, bytes, capacity: self.capacity, bound: self.bound });
             }
         }
         Brought { waited, fetched }
@@ -189,13 +189,14 @@ impl<K: Copy + Eq + Hash + Ord> Room<K> {
                 Some(plan) => plan,
                 None => {
                     let until = self.predicted(&mind).map(|need| need.saturating_sub(now));
-                    let free = self.capacity.saturating_sub(self.used());
+                    let free = self.capacity.get().saturating_sub(self.used());
                     let situation = Situation {
                         bytes,
                         copy: measured.map_or(Measured::Unmeasured, Measured::Value), // map_or: never moved, never measured
                         until: until.map_or(Measured::Unmeasured, Measured::Value), // map_or: never away, never predicted
                         spread: spread.map_or(Measured::Unmeasured, Measured::Value), // map_or: never predicted, never wrong
-                        room: free.max(bytes.min(self.capacity)), // the room she could have once a later mind parks
+                        room: free.max(bytes.min(self.capacity.get())), // the room she could have once a later mind parks
+                        capacity: self.capacity,
                         bound: self.bound,
                     };
                     let Decided::Act(id, action) = prefetch.decide(&situation, &[]) else { continue };

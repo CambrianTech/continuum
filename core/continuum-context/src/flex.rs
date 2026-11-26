@@ -100,7 +100,7 @@ pub fn flex_allocate(available: u32, claims: &[FlexClaim]) -> FlexAllocation {
         .collect();
     let mut shares = Vec::with_capacity(claims.len());
     let shared = Flexbox::default().share(tokens(available), &flex, |a, b| claims[a].source_id.cmp(&claims[b].source_id), &mut shares);
-    let narrow = |t: Tokens| u32::try_from(t.0).unwrap_or(u32::MAX); // unwrap_or: a share never exceeds `available`, a u32
+    let narrow = |t: Tokens| u32::try_from(t.0).unwrap_or(available); // unwrap_or: a share never exceeds `available`, the bound it already keeps
     let allocations = claims
         .iter()
         .zip(&shares)

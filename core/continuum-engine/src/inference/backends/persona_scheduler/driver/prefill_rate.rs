@@ -3,18 +3,17 @@
 //! prefill crosses a mark, and one when it lands: fresh tokens and milliseconds so far, so a slow prefill
 //! can be set beside the learning jobs (`learning.job`) that shared the engine thread with it.
 
-use std::time::Duration;
 
-use continuum_persona_engine::persona::PersonaId;
 
 use super::Phase;
 
 /// How many fresh tokens between progress rows: a 162k prefill says ten rows, a short one none.
 const MARK: usize = 16_384;
 
-/// After a step of `mind`'s turn that began at `from` (`None`: it decoded) and left her at `phase`, with
-/// `shared` tokens of her prompt reused and `spent` prefilling so far.
-pub(super) fn observe(mind: PersonaId, from: Option<usize>, phase: &Phase, prompt: usize, shared: usize, spent: Duration) {
+/// After a step of `turn` that began at `from` (`None`: it decoded): her phase, her prompt, the tokens of it reused
+/// and the time spent prefilling so far are the turn's own.
+pub(super) fn observe(turn: &super::Turn, from: Option<usize>) {
+    let (mind, phase, prompt, shared, spent) = (turn.id, &turn.phase, turn.prompt.len(), turn.spent.shared_prefix_tokens, turn.spent.prefill);
     let Some(from) = from else { return };
     let ms = spent.as_millis() as u64;
     match phase {

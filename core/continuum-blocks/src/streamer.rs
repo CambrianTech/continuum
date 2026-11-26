@@ -164,7 +164,8 @@ impl<K: Copy + Eq + Hash + Debug + Send + Sync + 'static, L: Links<K>> Streamer<
 
     /// Every key's row: its newest block, moving if that block is the one in flight.
     fn placements(&self) -> Placements<K> {
-        let rank = |key: &K| self.demand.soonest.iter().position(|k| k == key).unwrap_or(usize::MAX); // unwrap_or: an undemanded block sorts last
+        // an undemanded block (no rank) sorts after every demanded one
+        let rank = |key: &K| self.demand.soonest.iter().position(|k| k == key);
         let last = |key: &K| self.last.get(key).copied();
         let mut rows: Vec<Row<K>> = self.blocks.iter().map(|(key, block)| Row { key: *key, placement: block.placement(), moving: false, last: last(key) }).collect();
         if let Some(InFlight { key, block, .. }) = &self.moving {
@@ -172,7 +173,7 @@ impl<K: Copy + Eq + Hash + Debug + Send + Sync + 'static, L: Links<K>> Streamer<
                 rows.push(Row { key: *key, placement: block.placement(), moving: true, last: last(key) });
             }
         }
-        rows.sort_by_key(|row| rank(&row.key));
+        rows.sort_by_key(|row| { let at = rank(&row.key); (at.is_none(), at) });
         Placements(rows)
     }
 }

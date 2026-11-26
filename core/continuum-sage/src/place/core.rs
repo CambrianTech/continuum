@@ -80,31 +80,31 @@ impl<D: Domain> PlacerCore<D> {
     }
 
     /// Apply one act. Call [`Self::settle`] after it, before anyone reads the tables.
-    pub fn apply(&mut self, act: Act<D::Place, D::Quantity>) {
+    pub fn apply(&mut self, act: &Act<D::Place, D::Quantity>) {
         if self.recording.on() {
-            if let Act::Commit(ask) = &act {
+            if let Act::Commit(ask) = act {
                 let spent = match self.status(*ask) { Some(Status::Granted(claim)) => Some(claim.spent().collect()), _ => None };
                 if let Some(spent) = spent {
                     self.recording.record(Recorded::Spent { ask: *ask, spent });
                 }
             }
-            self.recording.record(Recorded::Act(act.clone()));
+            self.recording.record(Recorded::Act(act.clone())); // the recording owns its copy: the replay reads it back
         }
         match act {
-            Act::Prepare { ask, generation, needs } => self.prepare(ask, generation, &needs),
-            Act::Commit(ask) => self.settle_ask(ask, |ledger, id| ledger.commit(id), Some(Status::Committed)),
-            Act::Unwind(ask) => self.settle_ask(ask, |ledger, id| ledger.unwind(id), None),
-            Act::Release(ask) => self.settle_ask(ask, |ledger, id| ledger.release(id), None),
-            Act::Forget(ask) => {
+            &Act::Prepare { ask, generation, ref needs } => self.prepare(ask, generation, needs),
+            &Act::Commit(ask) => self.settle_ask(ask, |ledger, id| ledger.commit(id), Some(Status::Committed)),
+            &Act::Unwind(ask) => self.settle_ask(ask, |ledger, id| ledger.unwind(id), None),
+            &Act::Release(ask) => self.settle_ask(ask, |ledger, id| ledger.release(id), None),
+            &Act::Forget(ask) => {
                 if let Some(table) = self.owners.get_mut(&ask.owner) {
                     table.entries.retain(|entry| entry.seq != ask.seq || entry.claim.is_some());
                     table.changed = true;
                 }
             }
-            Act::Room { place, capacity, budget } => self.ledger.place(place, capacity, budget, &mut self.never),
-            Act::Elastic { ask, place, floor, priority } => self.told(ask, |ledger, id| ledger.elastic(id, place, floor, priority)),
-            Act::Prioritize { ask, priority } => self.told(ask, |ledger, id| ledger.prioritize(id, priority)),
-            Act::Shrunk { ask, place, by } => {
+            &Act::Room { place, capacity, budget } => self.ledger.place(place, capacity, budget, &mut self.never),
+            &Act::Elastic { ask, place, floor, priority } => self.told(ask, |ledger, id| ledger.elastic(id, place, floor, priority)),
+            &Act::Prioritize { ask, priority } => self.told(ask, |ledger, id| ledger.prioritize(id, priority)),
+            &Act::Shrunk { ask, place, by } => {
                 let freed = by.units();
                 self.settle_ask(ask, |ledger, id| ledger.shrink(id, place, by).map(|_left| ()), Some(Status::Committed));
                 continuum_base::probe!(class = "place.shrunk", placer = D::NAME, owner = ask.owner.0, place = ?place, freed,

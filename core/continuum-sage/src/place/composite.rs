@@ -94,42 +94,36 @@ impl<P: Copy + PartialEq, Q: Quantity> Resident<P, Q> for Composite<P, Q> {
     }
 }
 
-/// The parts' answers, folded: what was done in all, the longest it took, and whether any is still pending.
+/// The parts' answers, folded into the one state they make: any part still pending makes the whole pending; else
+/// any part that did its share makes it done, with the total moved and the longest it took; else a refusal.
 #[derive(Default)]
-struct Answers {
-    amount: u64,
-    took: Duration,
-    way: Option<Way>,
-    pending: Option<Way>,
-    asked: usize,
-    refused: Option<&'static str>,
+enum Answers {
+    /// No part was asked, or none differed from what it holds: done, with nothing moved.
+    #[default]
+    Nothing,
+    Refused { why: &'static str },
+    Done { way: Way, amount: u64, took: Duration },
+    Pending { way: Way },
 }
 
 impl Answers {
     fn add<Q: Quantity>(&mut self, given: Given<Q>) {
-        self.asked += 1;
-        match given {
-            Given::Done { way, amount, took } => {
-                self.amount += amount.units();
-                self.took = self.took.max(took);
-                self.way.get_or_insert(way);
-            }
-            Given::Pending { way } => {
-                self.pending.get_or_insert(way);
-            }
-            Given::Refused { why } => {
-                self.refused.get_or_insert(why);
-            }
-        }
+        *self = match (std::mem::take(self), given) {
+            (Self::Pending { way }, _) | (_, Given::Pending { way }) => Self::Pending { way },
+            (Self::Done { way, amount, took }, Given::Done { amount: more, took: also, .. }) => Self::Done { way, amount: amount + more.units(), took: took.max(also) },
+            (Self::Nothing | Self::Refused { .. }, Given::Done { way, amount, took }) => Self::Done { way, amount: amount.units(), took },
+            (done @ Self::Done { .. }, Given::Refused { .. }) => done,
+            (refused @ Self::Refused { .. }, Given::Refused { .. }) => refused,
+            (Self::Nothing, Given::Refused { why }) => Self::Refused { why },
+        };
     }
 
     fn into_given<Q: Quantity>(self) -> Given<Q> {
-        match (self.pending, self.way, self.refused) {
-            (Some(way), _, _) => Given::Pending { way },
-            (None, Some(way), _) => Given::Done { way, amount: Q::of(self.amount), took: self.took },
-            (None, None, Some(why)) => Given::Refused { why },
-            // nothing differed from what the parts hold: done, with nothing moved
-            (None, None, None) => Given::Done { way: Way::Resize, amount: Q::of(0), took: Duration::ZERO },
+        match self {
+            Self::Pending { way } => Given::Pending { way },
+            Self::Done { way, amount, took } => Given::Done { way, amount: Q::of(amount), took },
+            Self::Refused { why } => Given::Refused { why },
+            Self::Nothing => Given::Done { way: Way::Resize, amount: Q::of(0), took: Duration::ZERO },
         }
     }
 }
