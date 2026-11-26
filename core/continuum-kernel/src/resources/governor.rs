@@ -362,6 +362,30 @@ impl ResourceGovernor {
 
     // ---- reporting ---------------------------------------------------------
 
+    /// Mark a lease elastic (the ledger's `make_elastic`).
+    pub fn make_elastic(&mut self, lease_id: &str, elastic: super::ledger::Elastic) -> Result<(), LeaseError> {
+        self.ledger.make_elastic(lease_id, elastic)
+    }
+
+    /// The core entry of a held lease, and whether an entry is still a held lease (the ledger's).
+    pub fn ask_of(&self, lease_id: &str) -> Option<continuum_sage::place::AskId> {
+        self.ledger.ask_of(lease_id)
+    }
+
+    pub fn holds_ask(&self, ask: continuum_sage::place::AskId) -> bool {
+        self.ledger.holds_ask(ask)
+    }
+
+    /// Give a waiting ask a priority (the ledger's `prioritize`).
+    pub fn prioritize(&mut self, ask: continuum_sage::place::AskId, priority: u8) {
+        self.ledger.prioritize(ask, priority);
+    }
+
+    /// The law's shrink asks due for this authority's leases (the ledger's `shrinks_due`).
+    pub fn shrinks_due(&mut self, out: &mut Vec<super::ledger::ShrinkDue>) {
+        self.ledger.shrinks_due(out);
+    }
+
     /// The live lease by id, from the ledger the board is built from (card 26df).
     pub fn lease(&self, lease_id: &str) -> Option<&ResourceLease> {
         self.ledger.lease(lease_id)

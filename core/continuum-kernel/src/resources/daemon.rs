@@ -192,6 +192,8 @@ pub struct ResourceDaemon {
     /// what it decides. Grows after startup (no restart), like `consumers`; each observer is
     /// panic-isolated so one broken consumer can't abort the reconcile tick.
     tick_observers: RwLock<Vec<Arc<dyn Fn(&LeaseBoard) + Send + Sync>>>,
+    /// The holders of elastic leases, by their lease's core entry: who the law's shrink asks are delivered to.
+    holders: Mutex<std::collections::HashMap<continuum_sage::place::AskId, Arc<dyn shrink::ShrinkHolder>>>,
     /// What is free, said on the node bus once boot gives it one ([`Self::say_on`]).
     said: Mutex<Option<said::Said>>,
 }
@@ -248,6 +250,7 @@ impl ResourceDaemon {
             config,
             last_drift_bytes: Mutex::new([0; 3]),
             tick_observers: RwLock::new(Vec::new()),
+            holders: Mutex::new(std::collections::HashMap::new()),
             said: Mutex::new(None),
         });
 
@@ -844,6 +847,7 @@ impl Daemon for ResourceDaemon {
 
     async fn tick(&self) {
         self.reconcile().await;
+        self.deliver_shrinks();
     }
 }
 
@@ -940,6 +944,7 @@ fn drift_should_report(drift: u64, last: &mut u64) -> bool {
 }
 
 pub mod ask;
+pub mod shrink;
 mod said;
 pub use said::{Free, KindFree, FREE};
 
