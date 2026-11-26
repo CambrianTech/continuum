@@ -439,12 +439,12 @@ fn a_split_moves_held_bytes_without_freeing_them() {
     assert_eq!(ledger.commit(reserve.id()), Ok(()));
     assert!(matches!(ledger.prepare(SERVING, FIRST, &[Need { place: Tier::Vram, amount: Bytes(10) }]), Answer::Waiting { .. }));
     let before = (ledger.accounts(Tier::Vram), ledger.accounts(Tier::Pinned));
-    let stage = ledger.split(reserve.id(), Tier::Vram, Bytes(60), TRAINER, FIRST).expect("test: split");
+    let stage = ledger.split(reserve.id(), Need { place: Tier::Vram, amount: Bytes(60) }, TRAINER, FIRST).expect("test: split"); // expect: the test's own precondition
     assert_eq!((ledger.accounts(Tier::Vram), ledger.accounts(Tier::Pinned)), before, "every charge unchanged");
     let mut out = Vec::new();
     ledger.grant_waiting(&mut out);
     assert!(out.is_empty(), "nothing was freed for the wait");
-    assert_eq!(ledger.split(reserve.id(), Tier::Vram, Bytes(41), TRAINER, FIRST), Err(Refusal::NotOnPlace(reserve.id())), "never past what it holds");
+    assert_eq!(ledger.split(reserve.id(), Need { place: Tier::Vram, amount: Bytes(41) }, TRAINER, FIRST), Err(Refusal::NotOnPlace(reserve.id())), "never past what it holds");
     assert_eq!(ledger.release(stage), Ok(()));
     assert_eq!(ledger.accounts(Tier::Pinned).map(|a| a.held), Some(Bytes(40)), "the stage releases its own 60");
 }

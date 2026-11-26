@@ -954,3 +954,19 @@
         l.release("reserve").expect("test: the rest goes back");
         assert!(l.take_granted(ask).is_some(), "what the reserve gives back is granted to the wait");
     }
+
+    // what this catches (Codex on 07427e2fe): a stage carved from a reserve past its term, given a fresh term
+    // while the lapsed reserve's charge waits for its fenced release: refused, changing nothing.
+    #[test]
+    fn nothing_is_carved_from_a_lapsed_reserve() {
+        let mut l = ResourceLeaseLedger::new();
+        l.set_capacity(ResourceKind::Vram, 10_000);
+        let reserve = LeaseRequest { ttl_ms: 100, ..req("learning:her", ResourceKind::Vram, 5_000, ReclaimPolicy::Graceful) };
+        l.acquire(&reserve, "reserve".into(), 0).expect("test: the reserve fits");
+        let before = l.available(ResourceKind::Vram);
+        let stage = req("learning:her", ResourceKind::Vram, 1_000, ReclaimPolicy::Graceful);
+        assert!(matches!(l.carve("reserve", &stage, "weights", 100), Err(LeaseError::ExpiredLease { .. })), "at its term");
+        assert!(matches!(l.carve("reserve", &stage, "weights", 500), Err(LeaseError::ExpiredLease { .. })), "after it");
+        assert_eq!((l.lease("reserve").map(|lease| lease.bytes), l.available(ResourceKind::Vram)), (Some(5_000), before), "the charge is unchanged");
+        assert!(l.lease("weights").is_none());
+    }

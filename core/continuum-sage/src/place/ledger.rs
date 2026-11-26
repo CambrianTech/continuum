@@ -323,11 +323,12 @@ impl<P: Copy + PartialEq + std::fmt::Debug, Q: Quantity> Ledger<P, Q> {
         }
     }
 
-    /// Move `amount` of committed claim `id`'s holding on `place` to a new committed claim of `owner`'s
+    /// Move `moved` (an amount on a place) of committed claim `id`'s holding to a new committed claim of `owner`'s
     /// `generation`, as one transition: nothing is freed or taken, so every place's and pool's charge stays
     /// exactly what it was and no wait or other taker can come between (Codex on 66c1fb471: a seat's stage
     /// carved from its reserve). A claim moved to nothing is gone. Answers the new claim.
-    pub fn split(&mut self, id: ClaimId, place: P, amount: Q, owner: Owner, generation: Generation) -> Result<ClaimId, Refusal> {
+    pub fn split(&mut self, id: ClaimId, moved: Need<P, Q>, owner: Owner, generation: Generation) -> Result<ClaimId, Refusal> {
+        let Need { place, amount } = moved;
         let Some(Stage::Committed { held, .. }) = self.claims.get_mut(&id) else {
             return Err(match self.claims.get(&id) {
                 Some(Stage::Prepared(_)) => Refusal::NotCommitted(id),
