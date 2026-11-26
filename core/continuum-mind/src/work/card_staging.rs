@@ -269,6 +269,14 @@ impl CloneError {
 /// How long one managed clone may run before its process tree is killed.
 const CLONE_BOUND: std::time::Duration = std::time::Duration::from_secs(900);
 
+/// One clone of a repo at a time, keyed by the repo: each repo's clone is its own, so claims of
+/// different repos proceed in parallel (Fable's live-path audit, 2026-11-22: one static lock for
+/// every repo held a claim of repo B behind repo A's clone for up to CLONE_BOUND).
+fn clone_gates() -> &'static crate::runtime::PerKeyGate<String> {
+    static GATES: std::sync::OnceLock<crate::runtime::PerKeyGate<String>> = std::sync::OnceLock::new();
+    GATES.get_or_init(crate::runtime::PerKeyGate::new)
+}
+
 /// Clone `repo` into its managed checkout and record it, so this and every later claim
 /// of its cards cuts a per-card worktree from it. Idempotent: a clone another claim made
 /// first, or one whose registry entry was lost, is adopted rather than cloned again.
@@ -280,12 +288,12 @@ const CLONE_BOUND: std::time::Duration = std::time::Duration::from_secs(900);
 /// [`CLONE_BOUND`] has its tree killed and its partial KEPT (the tree may still be writing),
 /// while a clone `gh` itself refused has its partial removed.
 async fn ensure_managed_clone(home: &Path, repo: &str) -> Result<PathBuf, CloneError> {
-    static CLONING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     let repo = CloneableRepo::try_from(repo)?;
     let key = repo.to_string();
     let target = repo.managed_path(home);
-    // Two citizens claiming cards of the same new repo at once must not clone twice.
-    let _one_clone_at_a_time = CLONING.lock().await;
+    // Two citizens claiming cards of the same new repo at once must not clone twice; a claim of
+    // another repo never waits behind this clone (it was one lock for every repo: up to CLONE_BOUND).
+    let _one_clone_of_this_repo = clone_gates().acquire(&key).await;
     if let Some(existing) = crate::code::repo_registry::path_for(&key) {
         return Ok(existing);
     }
@@ -432,8 +440,8 @@ async fn stage_swe(workspace: &Path, instance: &crate::cognition::swe_bench::Swe
             continuum_base::probe!(
                 class = "benchmark.staging.reset_after_verdict",
                 instance = %instance.instance_id,
-                verdict_ms = verdict_ms.unwrap_or(0),
-                work_ms = work_ms.unwrap_or(0),
+                verdict_ms = ?verdict_ms,
+                work_ms = ?work_ms,
                 "the checkout carried work older than the instance's RESOLVED verdict — settled \
                  work from a finished round; restaging pristine for this claim"
             );
@@ -488,6 +496,19 @@ fn failed(claimer: Uuid, title: &str, stage: &'static str, error: String) -> Sta
 mod tests {
     use super::*;
     use crate::code::card_branch::is_card_branch;
+
+    // what this catches (Fable's live-path audit, 2026-11-22): one lock for every repo's clone, so a
+    // claim of repo B waited behind repo A's clone for up to CLONE_BOUND. While repo A clones, repo B's
+    // clone proceeds; a second clone of repo A waits for the first.
+    #[tokio::test]
+    async fn a_clone_holds_only_its_own_repo() {
+        let (a, b) = (format!("test-org/a-{}", Uuid::new_v4()), format!("test-org/b-{}", Uuid::new_v4()));
+        let cloning_a = clone_gates().acquire(&a).await;
+        assert!(clone_gates().try_acquire(&b).is_some(), "another repo's clone proceeds");
+        assert!(clone_gates().try_acquire(&a).is_none(), "the same repo's second clone waits for the first");
+        drop(cloning_a);
+        assert!(clone_gates().try_acquire(&a).is_some(), "and runs once the first is done");
+    }
 
     // what this catches: the dispatch→pull inversion at its seam. A card claimed by a
     // citizen who was NEVER its assignee must be staged into HER workspace (keyed by her
