@@ -24,6 +24,7 @@ mod outbox;
 mod qos;
 mod scheduler;
 pub mod decide;
+pub mod place;
 pub mod slice;
 mod stage;
 pub mod clock;

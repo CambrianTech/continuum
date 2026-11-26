@@ -5,7 +5,7 @@
 
 use std::time::{Duration, Instant};
 
-use super::super::capacity::{Capacity, Lease};
+use super::super::capacity::{Capacity, Lease, Rate};
 use super::super::measured::Measured;
 use super::super::use_case::{Gate, UseCase, Violation};
 
@@ -59,14 +59,14 @@ pub struct Outcome {
 /// Whether `lease` carries `work` to its end from `now` within its budget: in force for the work's
 /// whole predicted run (plus its transfer and queue), and priced within what may be spent. Observed
 /// capacity is never enough; neither is a lease that ends mid-run or costs past the budget.
-fn carries(lease: &Lease, holder: &Holder, work: &Work, now: Instant) -> bool {
+fn carries(lease: &Lease<Rate>, holder: &Holder, work: &Work, now: Instant) -> bool {
     let (Some(predicted), Some(transfer), Some(queue)) = (work.predicted.value(), holder.transfer.value(), holder.queue.value()) else {
         return false; // an unmeasured term cannot be shown to fit
     };
     // The lease's guaranteed rate bounds how long the work takes there, whatever was predicted: a
     // zero or non-finite rate carries nothing (Codex on #6278).
-    let Ok(guaranteed) = Duration::try_from_secs_f64(work.units / lease.rate) else { return false };
-    if !(lease.rate.is_finite() && lease.rate > 0.0) {
+    let Ok(guaranteed) = Duration::try_from_secs_f64(work.units / lease.amount.0) else { return false };
+    if !(lease.amount.0.is_finite() && lease.amount.0 > 0.0) {
         return false;
     }
     let run = predicted.max(guaranteed) + transfer + queue;
