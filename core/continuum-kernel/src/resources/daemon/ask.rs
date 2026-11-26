@@ -64,6 +64,16 @@ impl ResourceDaemon {
         })
     }
 
+    /// Spend `req.bytes` of `reserve` (a granted ask held as a seat's reserve) as a lease of their own, under
+    /// one lock: nobody can take those bytes between the reserve shrinking and the lease taking them. The
+    /// reserve keeps what is left, and is released when its guard drops.
+    pub fn carve(self: &Arc<Self>, reserve: &LeaseGuard, req: &LeaseRequest) -> Result<LeaseGuard, LeaseError> {
+        let mut governor = self.governor.lock();
+        let lease = governor.carve(reserve.lease_id(), req, EpochMs::now().millis())?;
+        self.publish_locked(&governor);
+        Ok(LeaseGuard { daemon: Arc::clone(self), lease_id: lease.lease_id, released: false })
+    }
+
     /// The governor, locked, after every source was measured and ingested now: an admission between ticks
     /// never reads a sample up to a tick old. The sources are read outside the lock (a slow reader never
     /// stalls other allocations), then ingested in order under it, so the grant is decided against the

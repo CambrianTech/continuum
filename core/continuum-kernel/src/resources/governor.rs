@@ -187,6 +187,12 @@ impl ResourceGovernor {
         self.ledger.ask(req, &lease_id, now_ms)
     }
 
+    /// Spend part of the lease `reserve` as a lease of its own (the ledger's `carve`).
+    pub fn carve(&mut self, reserve: &str, req: &LeaseRequest, now_ms: u64) -> Result<ResourceLease, LeaseError> {
+        let lease_id = self.mint_id(&req.consumer_id);
+        self.ledger.carve(reserve, req, &lease_id, now_ms)
+    }
+
     pub fn withdraw(&mut self, ask: continuum_sage::place::ClaimId) -> bool {
         self.ledger.withdraw(ask)
     }

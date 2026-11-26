@@ -934,3 +934,23 @@
         assert!(l.withdraw(ask), "a granted, untaken ask is withdrawn");
         assert!(l.lease("seat-2").is_none() && l.available(ResourceKind::Vram) == 100, "and its lease released");
     }
+
+    // what this catches: a seat's stage lease carved from its granted reserve losing the bytes to a waiting
+    // ask in between (the shrink told place and the wait took them), or a carve past the reserve.
+    #[test]
+    fn a_stage_carved_from_its_reserve_keeps_the_bytes_from_every_wait() {
+        let mut l = ResourceLeaseLedger::new();
+        l.set_capacity(ResourceKind::Vram, 10_000);
+        l.acquire(&req("learning:her", ResourceKind::Vram, 5_000, ReclaimPolicy::Graceful), "reserve".into(), 0).expect("test: the reserve fits");
+        l.acquire(&req("serving", ResourceKind::Vram, 5_000, ReclaimPolicy::Pinned), "serving-1".into(), 0).expect("test: serving fits");
+        let Ok(Asked::Waiting { ask, .. }) = l.ask(&req("learning:him", ResourceKind::Vram, 1_000, ReclaimPolicy::Graceful), "his", 1) else {
+            panic!("test: his seat waits")
+        };
+        let stage = l.carve("reserve", &req("learning:her", ResourceKind::Vram, 3_000, ReclaimPolicy::Graceful), "weights", 2).expect("test: carved");
+        assert_eq!(stage.bytes, 3_000);
+        assert_eq!(l.lease("reserve").map(|lease| lease.bytes), Some(2_000), "the reserve keeps the rest");
+        assert!(l.take_granted(ask).is_none(), "the wait never saw the carved bytes");
+        assert!(l.carve("reserve", &req("learning:her", ResourceKind::Vram, 2_001, ReclaimPolicy::Graceful), "over", 3).is_err(), "never past the reserve");
+        l.release("reserve").expect("test: the rest goes back");
+        assert!(l.take_granted(ask).is_some(), "what the reserve gives back is granted to the wait");
+    }
