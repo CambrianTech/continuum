@@ -1195,6 +1195,14 @@ Joel: "Yeah or time divided. We never need to abort. If it doesn't fit now, it c
   - **Time slice**: one tile, one unit of the walk (a forward tile or a reverse tile). A slice is never longer than the wait bound allows, because the tile is sized to it.
   - **Context**: what it keeps between slices, the walk's checkpoints, its host K/V-gradient accumulator, the reply's cursor and the optimizer. This is its memory as a resident, paged by the block layer like a mind's KV.
   - **Scratch**: the tile's graph workspace, held only while its slice runs, like a stack frame in use. The placer grants it for the step and takes it back when the step lands.
+- **The lane's types need nothing new** (answering Cormac, 22:55Z). The Slicer is generic over its thread key `K`, and the engine's key becomes `enum Thread { Mind(PersonaId), Learner(SeatId) }`:
+  - `Ready(Learner(seat))` and `Done` come from the trainer's typed `learning/owed` (pending examples, rows and oldest age per bucket, said on change). The lane never reads the journal.
+  - `Need { urgency: Background }` with aging is its priority.
+  - `Next::Switch(Learner(seat))` then `Continue` runs one tile per step, where a mind's step decodes. The driver calls the fork's one walk unit.
+  - `Stepped(Learner(seat), took)` is the tile's measured time, which the slicer learns as that thread's step.
+  - `Fetched` is its context paged back in.
+- **Off gives back only the scratch** (Cormac). The shadow and its optimizer state (Kimi's: 36,176,000 B) are the thread's context and stay seated. They are cached out to pinned only when the lane parks the thread for long, priced like any park.
+- **The ledger acts per period, never per step** (Cormac). The lane holds one elastic Vram lease for learning scratch, sized to the on-tile, and resizes it only when the tile or the share changes. A decode step is milliseconds, and an ask, grant and release through the authority's lock on every edge would cost more than it saves. Every grant, shrink and change is still a `decide` observation, recorded per period.
 - The share of the Core that learning gets (Joel's PWM width) is nobody's setting. It is what the scheduler's choices add up to: wider while the queue grows and serving has slack, narrower under serving's demand.
 
 **Space and time, under the same two controllers.**
