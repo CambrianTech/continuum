@@ -54,6 +54,18 @@ pub(crate) struct Lesson {
 }
 
 impl Job {
+    /// What kind of job this is, for its timing probe.
+    pub(crate) fn kind(&self) -> &'static str {
+        match self {
+            Job::Learn(_) | Job::Told(Told::Learn(_)) => "learn",
+            Job::Measure(_) | Job::Unmeasured { .. } | Job::Told(Told::Measure(_)) => "measure",
+            Job::Told(Told::Load { .. }) => "load",
+            Job::Told(Told::Seat(_)) => "seat",
+            Job::Told(Told::Checkpoint { .. }) => "checkpoint",
+            Job::Told(Told::Release { .. }) => "release",
+        }
+    }
+
     /// Say this job refused for `why`, nothing having been done.
     pub(crate) fn refuse(self, why: &str) {
         let why: Arc<str> = Arc::from(why);
@@ -134,8 +146,14 @@ impl Driver<'_, '_> {
     pub(super) fn learn_next(&mut self, go_on: &mut dyn FnMut() -> bool) {
         // timed whole: the lane's background class counts it as service and learns a job's cost
         let started = std::time::Instant::now();
+        let kind = self.learning.waiting.front().map(Job::kind);
         self.work_next(go_on);
-        self.lane.learned(started.elapsed());
+        let took = started.elapsed();
+        self.lane.learned(took);
+        // each job's engine-thread time, by kind: how much of a slow turn was learning (Cormac, the 5090's
+        // 4c3e window: a cold 162,435-token prefill unfinished at 854 s beside 13 Loads)
+        continuum_base::probe!(class = "learning.job", kind = kind.unwrap_or("none"), ms = took.as_millis() as u64, // unwrap_or: no job was waiting, the pass did nothing
+            "one learning job on the engine thread");
         // a job may grow the workspace or add or free a seat's buffers: the board holds what the Core holds now
         self.on_board.read(self.engine.tier());
     }

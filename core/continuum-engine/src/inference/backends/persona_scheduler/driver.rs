@@ -104,6 +104,7 @@ mod divergence;
 use basis::Basis;
 mod prefix;
 mod on_board;
+mod prefill_rate;
 pub(crate) use learning::{Job as LearningJob, Lesson as LearningLesson, Measuring as LearningMeasuring};
 
 use ending::{Ending, Stop, Suspension};
@@ -692,6 +693,7 @@ impl Driver<'_, '_> {
         } else {
             turn.spent.prefill += took;
         }
+        prefill_rate::observe(turn.id, prefill_from, &turn.phase, turn.prompt.len(), turn.spent.shared_prefix_tokens, turn.spent.prefill);
         self.record.send(record::Fact::Busy { started: stepping, ended: stepped });
         if turn.spent.milestones.step(advanced.is_ok()) {
             let progress = transition::At::FirstProgress { since_admit_ms: record::whole_ms(turn.submitted.elapsed()), step_ms: record::whole_ms(took), prefill: !decoding };
