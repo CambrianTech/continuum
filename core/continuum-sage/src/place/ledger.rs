@@ -64,6 +64,14 @@ pub enum Answer<P, Q> {
     Stale { owner: Owner, generation: Generation },
 }
 
+/// Why a [`Ledger::take`] granted nothing: short now (what it lacks on each place), or an answer that is
+/// never a grant (never here, unknown, stale). Nothing was queued.
+#[derive(Debug)]
+pub enum Untaken<P, Q> {
+    Short(Vec<Need<P, Q>>),
+    Answered(Answer<P, Q>),
+}
+
 /// Why a commit, unwind or release was refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Refusal {
@@ -156,24 +164,10 @@ impl<P: Copy + PartialEq + std::fmt::Debug, Q: Quantity> Ledger<P, Q> {
     /// Ask for `needs` (at most one per place; repeats are summed) as one claim of `owner`'s
     /// `generation`. A later generation than the ledger knows retires the earlier one's claims first.
     pub fn prepare(&mut self, owner: Owner, generation: Generation, needs: &[Need<P, Q>]) -> Answer<P, Q> {
-        if let Some(stale) = self.generation_is_stale(owner, generation) {
-            return stale;
-        }
-        let mut merged: Vec<Need<P, Q>> = Vec::with_capacity(needs.len());
-        for need in needs {
-            match merged.iter_mut().find(|at| at.place == need.place) {
-                Some(at) => at.amount = Q::of(at.amount.units().saturating_add(need.amount.units())),
-                None => merged.push(*need),
-            }
-        }
-        for need in &merged {
-            if self.pooled_capacity(need.place).is_none() {
-                return Answer::Unknown { place: need.place };
-            }
-        }
-        if let Some((place, need, capacity)) = self.past_capacity(&merged) {
-            return Answer::Never { place, need, capacity };
-        }
+        let merged = match self.admissible(owner, generation, needs) {
+            Ok(merged) => merged,
+            Err(answer) => return answer,
+        };
         let id = self.issue();
         // in order of asking, per place: a newcomer waits only behind an earlier wait short on a place
         // it also needs, so a wait on one place never holds up another
@@ -188,6 +182,44 @@ impl<P: Copy + PartialEq + std::fmt::Debug, Q: Quantity> Ledger<P, Q> {
         let short = self.short(owner, &merged);
         self.waiting.push_back(Waiting { id, owner, generation, needs: merged });
         Answer::Waiting { id, short }
+    }
+
+    /// Take `needs` now if they fit what is free, ahead of any wait, or not at all: the foreground's
+    /// no-wait path (the kernel authority's acquire, a turn's allocation), which never queues. A wait
+    /// is granted from what is free after it; which waits a foreground take may pass is the law's to
+    /// weigh, never a queue's. Any answer but a grant (short, never here, unknown, stale) leaves nothing
+    /// prepared and is returned.
+    pub fn take(&mut self, owner: Owner, generation: Generation, needs: &[Need<P, Q>]) -> Result<Claim<P, Q>, Untaken<P, Q>> {
+        let merged = self.admissible(owner, generation, needs).map_err(Untaken::Answered)?;
+        if !self.fits(owner, &merged) {
+            return Err(Untaken::Short(self.short(owner, &merged)));
+        }
+        let id = self.issue();
+        Ok(self.grant(id, owner, generation, merged))
+    }
+
+    /// `needs` merged one per place (repeats summed), checked against the owner's generation, the places
+    /// the ledger knows and their capacity: the answer to give instead when they cannot be asked for.
+    fn admissible(&mut self, owner: Owner, generation: Generation, needs: &[Need<P, Q>]) -> Result<Vec<Need<P, Q>>, Answer<P, Q>> {
+        if let Some(stale) = self.generation_is_stale(owner, generation) {
+            return Err(stale);
+        }
+        let mut merged: Vec<Need<P, Q>> = Vec::with_capacity(needs.len());
+        for need in needs {
+            match merged.iter_mut().find(|at| at.place == need.place) {
+                Some(at) => at.amount = Q::of(at.amount.units().saturating_add(need.amount.units())),
+                None => merged.push(*need),
+            }
+        }
+        for need in &merged {
+            if self.pooled_capacity(need.place).is_none() {
+                return Err(Answer::Unknown { place: need.place });
+            }
+        }
+        if let Some((place, need, capacity)) = self.past_capacity(&merged) {
+            return Err(Answer::Never { place, need, capacity });
+        }
+        Ok(merged)
     }
 
     /// Grant every wait that fits now, in order of asking per place. Granted claims are pushed to

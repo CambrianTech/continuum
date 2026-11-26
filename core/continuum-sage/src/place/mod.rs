@@ -21,7 +21,7 @@ mod quantity;
 
 pub use claim::{Claim, ClaimId, Generation, Need, Owner};
 pub use component::{key_of, Act, AskId, Asks, Domain, Placer, Shortfall, Status};
-pub use ledger::{Accounts, Answer, Ledger, NeverNow, Refusal};
+pub use ledger::{Accounts, Answer, Ledger, NeverNow, Refusal, Untaken};
 pub use quantity::{Bytes, Quantity, Slots};
 
 #[cfg(test)]

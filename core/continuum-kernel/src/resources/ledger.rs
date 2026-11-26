@@ -21,7 +21,9 @@ use std::sync::{Arc, Weak};
 use std::sync::atomic::{AtomicU64, Ordering};
 use ts_rs::TS;
 
-use continuum_sage::place::{Answer, Bytes, ClaimId, Generation, Ledger, Need};
+use continuum_sage::place::{Bytes, ClaimId, Generation, Ledger, Need};
+
+pub use asks::Asked;
 
 use super::arbiter::{ArbiterContext, LeaseArbiter};
 use super::consumer::ConsumerFootprint;
@@ -165,6 +167,10 @@ pub struct ResourceLeaseLedger {
     /// a backed kind is charged once on its pool, and the floors above are its floors. The readings in
     /// this struct are what it is told from; `available`, `available_for` and `committed` read it.
     place: Ledger<ResourceKind, Bytes>,
+    /// Each ask `place` holds as a wait, by its claim: the lease it becomes when granted (`asks.rs`).
+    asks: BTreeMap<ClaimId, asks::Asking>,
+    /// Asks granted and not yet taken by their owners ([`Self::take_granted`]).
+    granted: BTreeMap<ClaimId, ResourceLease>,
 }
 
 /// A live lease and when its holder declared it landed (Codex on #6124). Landing is never inferred from
@@ -522,20 +528,19 @@ impl ResourceLeaseLedger {
                 available,
             });
         }
-        // a lease is a claim spent whole at once and held until its release: the authority keeps no
-        // waits (a refusal goes back to the caller), so a claim that is not granted is withdrawn
-        let owner = told::owner_of(&req.consumer_id);
-        let refused = LeaseError::InsufficientCapacity { kind: req.kind, requested: req.bytes, available };
-        let claim = match self.place.prepare(owner, Generation(1), &[Need { place: req.kind, amount: Bytes(req.bytes) }]) {
-            Answer::Granted(claim) => claim,
-            Answer::Waiting { id, .. } => {
-                if self.place.unwind(id).is_err() {
-                    continuum_base::probe!(class = "resources.ledger.unwind_refused", lease = %lease_id, "a wait the authority withdrew was already gone");
-                }
-                return Err(refused);
-            }
-            Answer::Never { .. } | Answer::Unknown { .. } | Answer::Stale { .. } => return Err(refused),
+        // a lease is a claim taken now, ahead of any wait, spent whole and held until its release; one
+        // not taken now is refused, never queued (an ask queues: `asks.rs`)
+        let claim = match self.place.take(told::owner_of(&req.consumer_id), Generation(1), &[Need { place: req.kind, amount: Bytes(req.bytes) }]) {
+            Ok(claim) => claim,
+            Err(_untaken) => return Err(LeaseError::InsufficientCapacity { kind: req.kind, requested: req.bytes, available }),
         };
+        let lease = self.hold(claim, req, lease_id, now_ms)?;
+        self.tell();
+        Ok(lease)
+    }
+
+    /// Spend `claim` whole and commit it, and keep it as the lease `lease_id` for `req`.
+    fn hold(&mut self, claim: continuum_sage::place::Claim<ResourceKind, Bytes>, req: &LeaseRequest, lease_id: String, now_ms: u64) -> Result<ResourceLease, LeaseError> {
         if !claim.consume(req.kind, Bytes(req.bytes)) || self.place.commit(claim.id()).is_err() {
             return Err(LeaseError::MissingLease { lease_id }); // a fresh claim spent whole: only a ledger defect lands here
         }
@@ -549,7 +554,6 @@ impl ResourceLeaseLedger {
             reclaim_policy: req.reclaim_policy,
         };
         self.leases.insert(lease_id, Held { lease: lease.clone(), landed_from: None, view: None, claim: claim.id() });
-        self.tell();
         Ok(lease)
     }
 
@@ -800,6 +804,7 @@ fn bytes_of(answer: Option<Bytes>) -> u64 {
     }
 }
 
+mod asks;
 mod told;
 
 #[cfg(test)]
