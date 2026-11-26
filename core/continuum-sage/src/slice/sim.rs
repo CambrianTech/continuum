@@ -146,7 +146,10 @@ pub fn run<K: Copy + Eq + Hash + Ord>(slicer: &mut Slicer<K>, load: &Workload<K>
                     report.switches += 1;
                 }
                 // her KV comes back on the device: free on unified memory, a copy over the link on a discrete card
-                let bind = load.minds.iter().find(|m| m.mind == mind).map_or(Duration::ZERO, |m| device.bind(Bind { bytes: m.kv, ahead: now.saturating_sub(slice_since) })); // map_or: the slicer switches only to minds this load fed it
+                // the device can fetch her only from when the lane knew she comes next: the later of the slice's start and
+                // the moment she became ready
+                let known = load.minds.iter().position(|m| m.mind == mind).and_then(|i| states[i].waiting_since).map_or(slice_since, |ready| ready.max(slice_since)); // map_or: a mind with no wait open was known from the slice's start
+                let bind = load.minds.iter().find(|m| m.mind == mind).map_or(Duration::ZERO, |m| device.bind(Bind { bytes: m.kv, ahead: now.saturating_sub(known) })); // map_or: the slicer switches only to minds this load fed it
                 let took = load.switch + bind;
                 now += took;
                 busy += took;
@@ -421,7 +424,7 @@ mod tests {
         assert!(discrete.switching > shared.switching * 10, "binds on the discrete card cost the lane an order of magnitude more");
         assert!(discrete.switching.as_secs_f64() > length.as_secs_f64() / 10.0, "over a tenth of the window: the switch decision must price the bind");
         // the remedy the design names: fetch her while the slice before her runs, so the switch waits only for the rest
-        // simulated 2026-11-26: 129 s synchronous, 36 s with prefetch, 33 s with the slice floored at the next mind's
+        // simulated 2026-11-26: 129 s synchronous, 36 s with prefetch, 34 s with the slice floored at the next mind's
         // fetch. Of what is left, 76 switches pay the whole copy: the incoming mind was not waiting during the slice
         // before (the running turn had just ended), so nothing was prefetched. The next lever: fetch the next mind when
         // the running turn's predicted end is near.
