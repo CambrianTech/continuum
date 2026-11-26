@@ -1035,15 +1035,28 @@ tile sized by memory, not by the batch.
 - **What it costs is measured, not guessed.** Smaller tiles add one forward per tile over the cached lesson
   (no re-prefill: the lesson's KV stays in place) and more kernel launches. Each Learned row says its tile and
   milliseconds per labelled token, the cost the policy weighs against waiting for room.
-- **Exactness.** A tile's backward reaches the earlier tiles of the reply through their cached K/V only when
-  `Walk::exact` carries it (the fork's existing path); otherwise the gradient stops at the tile boundary, as
-  chunked training does everywhere. Which one is measured on quality (the held-out loss after a lesson), the
-  same receipt every learning change carries.
+- **Exactness: the exact walk, never detached tiles** (Codex, 16:46Z, source review of 45e05f176). The
+  whole-reply graph exists for correctness, not only speed: a later reply token's loss flows back through the
+  earlier reply tokens' K/V and recurrent state, and independent tiles with detached caches lose that, even
+  with one denominator and one update. The fork's exact walk (`llama-context-opt.cpp`, the xc path below the
+  ordinary reply at :638) carries gradients into earlier cached K/V and recurrent state across chunks. The
+  tiles reuse it across the reply, stopping at the served-prefix boundary. In an OS's terms this is paging
+  with write-back, never dropping a dirty page; in RAGE's, the page cache streams what the frame needs and
+  keeps every page the frame still depends on.
 
-Order: (1) the fork's learn step takes a tile (rows per graph) from its caller; `measure` sizes a tile, not
-the reply; (2) the driver picks the tile from the seat's share and reports it; (3) the seat as a Resident with
-the tile as its resize. Gate: Kimi's 64 GB, 91 GB and 1.9 TB lessons learned on the 5090 beside serving, with
-the held-out loss no worse than the whole-reply graph on lessons that fit both ways.
+**How the engines we borrow from solve it** (Joel, 2026-11-26: "Look at how operating systems and gaming
+engines work, particularly rage... Always streams, contracts, trees, caches"). An OS never needs a process's
+whole address space resident: only its working set, demand paged, with dirty pages written back. RAGE never
+needs the world in VRAM: fixed-size pages, a feedback pass naming what the view needs, a page cache filled by
+priority, a lower mip for a frame rather than a hole. A lesson is the world, the tile is the page, the seat's
+flexbox share is the page cache's size, and the exact walk is the write-back that keeps every gradient.
+
+Order: (1) the fork's learn step walks the reply in tiles through the exact walk, the tile given by its
+caller; `measure` sizes a tile, not the reply; (2) the driver picks the tile from the seat's share and
+reports it; (3) the seat as a Resident with the tile as its resize. Gates: the live hybrid path's adapter
+update matches the full graph's by cosine and norm (`tests/test-walk-exact.cpp`, extended: a label only in
+the last tile, uneven labels, a partial final tile), one optimizer update, the restored serving state
+unchanged; then Kimi's 64 GB, 91 GB and 1.9 TB lessons learned on the 5090 beside serving, held-out loss kept.
 
 ## Questions for review
 
