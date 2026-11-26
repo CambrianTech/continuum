@@ -261,19 +261,6 @@ pub(crate) fn locate_cli(user_home: &Path) -> PathBuf {
     PathBuf::from(name)
 }
 
-/// A log handle a child can be handed as stdout/stderr on every platform: full write
-/// access positioned at the end (an append-only Windows handle makes a bash child exit
-/// 1 before its first line — #4233, a day of empty logs on the 5090).
-fn open_log_for_child(path: &Path) -> std::io::Result<std::fs::File> {
-    use std::io::Seek;
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let mut file = std::fs::OpenOptions::new().create(true).write(true).open(path)?;
-    file.seek(std::io::SeekFrom::End(0))?;
-    Ok(file)
-}
-
 // Platform-specific callback factories — thin adapters selected at the module boundary so
 // deploy_actuator.rs itself carries no OS branches; all spawn logic lives in continuum-host.
 #[cfg_attr(unix, path = "spawner_callbacks_unix.rs")]
