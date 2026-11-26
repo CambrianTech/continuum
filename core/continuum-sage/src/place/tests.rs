@@ -611,15 +611,15 @@ mod residents {
         fn report(&self, into: &mut Report<Tier, Bytes>) {
             into.row(Row { place: Tier::Vram, held: Bytes(self.held), want: Bytes(self.held), varies: self.varies, qos: self.qos, waited: Duration::ZERO });
         }
-        fn shrink(&mut self, _: Tier, to: Bytes) -> Given<Bytes> {
+        fn shrink(&mut self, ask: ShrinkAsk<Tier, Bytes>) -> Given<Bytes> {
             if matches!(self.varies, Varies::Fixed { .. }) {
                 return Given::Refused { why: "fixed" };
             }
-            let freed = self.held.saturating_sub(to.0);
+            let freed = self.held.saturating_sub(ask.to.0);
             self.held -= freed;
             Given::Done { way: Way::Resize, amount: Bytes(freed), took: Duration::ZERO }
         }
-        fn grow(&mut self, _: Tier, _: Bytes) -> Given<Bytes> {
+        fn grow(&mut self, _: GrowGrant<Tier, Bytes>) -> Given<Bytes> {
             Given::Refused { why: "a leaf in this test does not grow" }
         }
     }
@@ -637,7 +637,8 @@ mod residents {
                 part.report(into);
             }
         }
-        fn shrink(&mut self, place: Tier, to: Bytes) -> Given<Bytes> {
+        fn shrink(&mut self, ask: ShrinkAsk<Tier, Bytes>) -> Given<Bytes> {
+            let ShrinkAsk { place, to, for_qos } = ask;
             self.rows.clear();
             for part in &self.parts {
                 part.report(&mut self.rows);
@@ -647,14 +648,14 @@ mod residents {
             let mut freed = 0;
             for ((part, row), target) in self.parts.iter_mut().zip(self.rows.rows()).zip(targets) {
                 if let Some(target) = target.filter(|target| *target < row.held) {
-                    if let Given::Done { amount, .. } = part.shrink(place, target) {
+                    if let Given::Done { amount, .. } = part.shrink(ShrinkAsk { place, to: target, for_qos }) {
                         freed += amount.0;
                     }
                 }
             }
             Given::Done { way: Way::Resize, amount: Bytes(freed), took: Duration::ZERO }
         }
-        fn grow(&mut self, _: Tier, _: Bytes) -> Given<Bytes> {
+        fn grow(&mut self, _: GrowGrant<Tier, Bytes>) -> Given<Bytes> {
             Given::Refused { why: "not in this test" }
         }
     }
@@ -682,7 +683,7 @@ mod residents {
         core.report(&mut report);
         assert_eq!(report.rows().len(), 3, "the parent's report is its children's, folded");
         let total: u64 = report.rows().iter().map(|row| row.held.0).sum();
-        let given = core.shrink(Tier::Vram, Bytes(total - 512 * MB));
+        let given = core.shrink(ShrinkAsk { place: Tier::Vram, to: Bytes(total - 512 * MB), for_qos: crate::Qos::Utility });
         assert_eq!(given, Given::Done { way: Way::Resize, amount: Bytes(512 * MB), took: Duration::ZERO });
         report.clear();
         core.report(&mut report);

@@ -26,7 +26,7 @@ pub use component::{key_of, Act, AskId, Asks, Domain, Placer, Shortfall, Status}
 pub use ledger::{Accounts, Answer, Ledger, NeverNow, Refusal, ShrinkTo, Untaken};
 pub use flex::{Flex, Flexbox, Landed, Share, Shared};
 pub use quantity::{Bytes, Quantity, Slots, Tokens};
-pub use resident::{Cost, Given, Report, Resident, Row, Sharing, Varies, Way, Ways};
+pub use resident::{Cost, Given, GrowGrant, Report, Resident, Row, Sharing, ShrinkAsk, Varies, Way, Ways};
 
 #[cfg(test)]
 mod tests;

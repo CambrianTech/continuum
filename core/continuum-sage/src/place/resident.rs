@@ -115,18 +115,38 @@ pub enum Given<Q> {
     Refused { why: &'static str },
 }
 
-/// A holder of what a placer places.
+/// What the law asks a holder to give back: on `place`, down to `to`, so that a wait of class `for_qos`
+/// fits. One struct, so the contract grows (a deadline, the wait's id) without changing any holder's
+/// signature, and every ask is a record the replay log keeps beside its answer.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ShrinkAsk<P, Q> {
+    pub place: P,
+    pub to: Q,
+    /// The class of the wait it makes room for: why it is asked.
+    pub for_qos: Qos,
+}
+
+/// Room the law grants a holder: on `place`, up to `to`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GrowGrant<P, Q> {
+    pub place: P,
+    pub to: Q,
+}
+
+/// A holder of what a placer places. Each method takes one params struct and returns one result struct
+/// (the command shape, `Commands.execute<P, R>`): the contract every holder implements, and the record
+/// of every exchange.
 pub trait Resident<P, Q> {
     /// Every place it holds on, one row each, written into `into` (cleared by the caller). Required: a
     /// holder states what it holds and how it varies, or it is not a Resident.
     fn report(&self, into: &mut Report<P, Q>);
 
-    /// Give back on `place` down to `to`, the cheapest way it has. Answers at once; never waits.
-    fn shrink(&mut self, place: P, to: Q) -> Given<Q>;
+    /// Give back as asked, the cheapest way it has. Answers at once; never waits.
+    fn shrink(&mut self, ask: ShrinkAsk<P, Q>) -> Given<Q>;
 
-    /// Room granted on `place` up to `to`: expand a collapsed level, page a cached copy back in. Answers
-    /// at once; a grow that could not fit is `Refused`, never silence.
-    fn grow(&mut self, place: P, to: Q) -> Given<Q>;
+    /// Take the room granted: expand a collapsed level, page a cached copy back in. Answers at once; a grow
+    /// that could not fit is `Refused`, never silence.
+    fn grow(&mut self, grant: GrowGrant<P, Q>) -> Given<Q>;
 }
 
 /// How a parent shares a shrink it received among its children: the one flexbox over their rows on the
