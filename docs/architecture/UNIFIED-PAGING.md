@@ -1051,6 +1051,30 @@ needs the world in VRAM: fixed-size pages, a feedback pass naming what the view 
 priority, a lower mip for a frame rather than a hole. A lesson is the world, the tile is the page, the seat's
 flexbox share is the page cache's size, and the exact walk is the write-back that keeps every gradient.
 
+**The join: the exact walk made preemptible, one tile per call** (read from the fork, 2026-11-26). Today the
+exact walk (`opt_walk::run_exact`) runs a whole window in one synchronous call over sequence 0 from position
+0: a forward pass over every chunk under the shadow with recurrent checkpoints, then a reverse pass training
+each chunk with its K/V gradient accumulated for the chunks before it. It can be stopped (`yield_point`) but
+not resumed. The live reply (`llama-context-learn.cpp`) is resumable, one unit per call, so serving decodes
+between, on a live serving sequence from its served prefix. The join is the walk as a state machine on the
+live reply, the way an OS makes a long job preemptible at page boundaries:
+
+- *Tiles.* The reply `[prefix, prefix + n_train)` is cut into tiles of `tile` rows (a whole number of
+  ubatches), the tile given by the caller from the seat's share.
+- *Forward, one tile per call.* Checkpoint the recurrent state at the tile's start (every `stride` tiles,
+  the walk's host budget rule), decode the tile under the shadow, forward only.
+- *Reverse, one tile per call, last to first.* Rewind to the tile's checkpoint, train it with the walk's
+  graph flags (`grad_from` never below the served prefix: no gradient enters what was served), accumulate
+  its K/V and state gradient for the tiles before it. The first tile's step ends the period: one optimizer
+  update with the whole reply's denominator.
+- *Restore.* The existing restoration: back to the served-prefix snapshot, the restore tokens decoded under
+  her stable set, so serving finds her exactly as it left her.
+- *Memory, as Residents.* Device: one tile's graph (the seat's elastic workspace). Host: the walk's K/V
+  gradient accumulator, which grows with the reply (layers x reply x (k + v)); it is the seat's host row,
+  sized by measurement and placed like any other, never assumed.
+- *Preemption.* Every call is one tile, so a turn waiting is never more than one tile behind; a drain between
+  calls takes the existing path (accumulated gradients cleared, moments and completed updates kept).
+
 Order: (1) the fork's learn step walks the reply in tiles through the exact walk, the tile given by its
 caller; `measure` sizes a tile, not the reply; (2) the driver picks the tile from the seat's share and
 reports it; (3) the seat as a Resident with the tile as its resize. Gates: the live hybrid path's adapter
