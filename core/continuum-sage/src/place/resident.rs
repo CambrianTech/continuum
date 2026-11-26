@@ -68,29 +68,58 @@ pub struct Row<P, Q> {
     pub waited: Duration,
 }
 
-/// What a resident reported: its rows, in a buffer the placer reuses.
+/// What one of a report's rows needs beside it to run at what it holds (Joel, 2026-11-26: "ask you what
+/// other parts you need"): a live call at its level needs the encoder's memory; a mind's paged KV restores
+/// only with her genes attached at the same revision; a mind runs only with her base model loaded. The
+/// controller shrinks a row's requirement only with the row: freeing the genes while keeping the KV
+/// saves nothing, so the two are one decision.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Requires<P, Q> {
+    /// The index of the row in this report that needs it.
+    pub row: usize,
+    pub place: P,
+    pub amount: Q,
+    pub why: &'static str,
+}
+
+/// What a resident reported: its rows, and what each needs beside it, in buffers the placer reuses. A
+/// question the controller needs answered next is a new kind of entry here, never a new protocol.
 #[derive(Debug)]
 pub struct Report<P, Q> {
     rows: Vec<Row<P, Q>>,
+    requires: Vec<Requires<P, Q>>,
 }
 
 impl<P, Q> Default for Report<P, Q> {
     fn default() -> Self {
-        Self { rows: Vec::new() }
+        Self { rows: Vec::new(), requires: Vec::new() }
     }
 }
 
 impl<P, Q> Report<P, Q> {
-    pub fn row(&mut self, row: Row<P, Q>) {
+    /// Add a row; answers its index, for what it requires.
+    pub fn row(&mut self, row: Row<P, Q>) -> usize {
         self.rows.push(row);
+        self.rows.len() - 1
+    }
+
+    /// Row `row` needs `amount` on `place` beside it.
+    pub fn requires(&mut self, row: usize, place: P, amount: Q, why: &'static str) {
+        self.requires.push(Requires { row, place, amount, why });
     }
 
     pub fn rows(&self) -> &[Row<P, Q>] {
         &self.rows
     }
 
+    /// What `row` needs beside it.
+    pub fn requirements(&self, row: usize) -> impl Iterator<Item = &Requires<P, Q>> + '_ {
+        self.requires.iter().filter(move |requires| requires.row == row)
+    }
+
     pub fn clear(&mut self) {
         self.rows.clear();
+        self.requires.clear();
     }
 }
 
@@ -160,13 +189,15 @@ pub struct Sharing<Q> {
 }
 
 impl<Q: super::Quantity> Sharing<Q> {
-    /// Share `to` on `place` among `rows`. A `Fixed` or `Whole` child keeps all it holds (a whole holding is
-    /// asked as a whole, by the law, never split here); an elastic child runs on its floor and keeps what it
-    /// holds in priority order, so the lowest give first. `priority` is the law's (QoS aged by wait,
-    /// learned), never this function's. Answers each row's target in row order: `None` for a row on
-    /// another place.
-    pub fn shrink<P: Copy + PartialEq>(&mut self, rows: &[Row<P, Q>], place: P, to: Q, priority: impl Fn(&Row<P, Q>) -> u8) -> &[Option<Q>] {
+    /// Share `to` on `place` among `report`'s rows. A `Fixed` or `Whole` child keeps all it holds (a whole
+    /// holding is asked as a whole, by the law, never split here); an elastic child runs on its floor and
+    /// keeps what it holds in priority order, so the lowest give first; what a held row requires on this
+    /// place stays with it, charged like a fixed holding (freeing it would leave the row useless).
+    /// `priority` is the law's (QoS aged by wait, learned), never this function's. Answers each row's
+    /// target in row order: `None` for a row on another place.
+    pub fn shrink<P: Copy + PartialEq>(&mut self, report: &Report<P, Q>, place: P, to: Q, priority: impl Fn(&Row<P, Q>) -> u8) -> &[Option<Q>] {
         self.claims.clear();
+        let rows = report.rows();
         for row in rows.iter().filter(|row| row.place == place) {
             let floor = match row.varies {
                 Varies::Elastic { floor, .. } => floor,
@@ -174,9 +205,14 @@ impl<Q: super::Quantity> Sharing<Q> {
             };
             self.claims.push(super::Flex { priority: priority(row), floor, min: row.held, max: row.held, required: true });
         }
+        let on_rows = self.claims.len();
+        let required = report.requires.iter().filter(|requires| requires.place == place && rows.get(requires.row).is_some_and(|row| row.held.units() > 0));
+        for requires in required {
+            self.claims.push(super::Flex { priority: u8::MAX, floor: requires.amount, min: requires.amount, max: requires.amount, required: true });
+        }
         self.flexbox.share(to, &self.claims, |a, b| a.cmp(&b), &mut self.shares);
         self.targets.clear();
-        let mut on = self.shares.iter();
+        let mut on = self.shares[..on_rows].iter();
         for row in rows {
             self.targets.push(if row.place == place { on.next().map(|share| share.amount) } else { None });
         }

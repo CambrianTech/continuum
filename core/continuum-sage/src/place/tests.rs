@@ -644,7 +644,7 @@ mod residents {
                 part.report(&mut self.rows);
             }
             // the law's priority: the class first (the system's point of view); age would refine it
-            let targets = self.sharing.shrink(self.rows.rows(), place, to, |row| row.qos as u8 * 64).to_vec();
+            let targets = self.sharing.shrink(&self.rows, place, to, |row| row.qos as u8 * 64).to_vec();
             let mut freed = 0;
             for ((part, row), target) in self.parts.iter_mut().zip(self.rows.rows()).zip(targets) {
                 if let Some(target) = target.filter(|target| *target < row.held) {
@@ -689,5 +689,54 @@ mod residents {
         core.report(&mut report);
         let held: Vec<u64> = report.rows().iter().map(|row| row.held.0 / MB).collect();
         assert_eq!(held, vec![17_402, 8_704, 3_124 - 512], "the Background workspace gave it all; the weights and the turn's KV kept theirs");
+    }
+
+    /// A live call: its video at a level (elastic down to audio's floor), needing the encoder's memory
+    /// beside it for as long as it holds any.
+    struct Call {
+        held: u64,
+        encoder: u64,
+    }
+
+    impl Resident<Tier, Bytes> for Call {
+        fn report(&self, into: &mut Report<Tier, Bytes>) {
+            let ways = Ways { resize: None, cache_out: None, collapse: Some(Cost::default()) };
+            let row = into.row(Row { place: Tier::Vram, held: Bytes(self.held), want: Bytes(self.held), varies: Varies::Elastic { floor: Bytes(64 * MB), ways }, qos: crate::Qos::Interactive, waited: Duration::ZERO });
+            into.requires(row, Tier::Vram, Bytes(self.encoder), "the encoder its level streams through");
+        }
+        fn shrink(&mut self, ask: ShrinkAsk<Tier, Bytes>) -> Given<Bytes> {
+            let freed = self.held.saturating_sub(ask.to.0);
+            self.held -= freed;
+            Given::Done { way: Way::Collapse, amount: Bytes(freed), took: Duration::ZERO } // a lower level, never a dropped call
+        }
+        fn grow(&mut self, _: GrowGrant<Tier, Bytes>) -> Given<Bytes> {
+            Given::Refused { why: "not in this test" }
+        }
+    }
+
+    // what this catches (Joel, 2026-11-26: "ask you what other parts you need (live video example)"): a
+    // shrink freeing what a held row requires, which saves nothing and breaks the row, or dropping the call
+    // instead of lowering its level. With 3 GiB to find and a Background workspace that can give 1.5 GiB of
+    // its 2 GiB, the call gives the rest by a lower level, and the encoder it requires is never counted as
+    // room.
+    #[test]
+    fn a_shrink_keeps_what_a_held_row_requires_and_lowers_a_level_instead_of_dropping() {
+        let mut core = Core {
+            parts: vec![
+                Box::new(Call { held: 4 * GB, encoder: 512 * MB }),
+                Box::new(Leaf { held: 2 * GB, varies: elastic(512 * MB), qos: crate::Qos::Background }),
+            ],
+            sharing: Sharing::default(),
+            rows: Report::default(),
+        };
+        // what the card holds of them: their rows and the encoder the call requires
+        let card = 4 * GB + 2 * GB + 512 * MB;
+        let given = core.shrink(ShrinkAsk { place: Tier::Vram, to: Bytes(card - 3 * GB), for_qos: crate::Qos::Interactive });
+        assert_eq!(given, Given::Done { way: Way::Resize, amount: Bytes(3 * GB), took: Duration::ZERO });
+        let mut report = Report::default();
+        core.report(&mut report);
+        let held: Vec<u64> = report.rows().iter().map(|row| row.held.0 / MB).collect();
+        assert_eq!(held, vec![4_096 - 1_536, 512], "the workspace to its floor first, then the call a level lower; the encoder untouched");
+        assert_eq!(report.requirements(0).map(|requires| requires.amount.0 / MB).collect::<Vec<_>>(), vec![512]);
     }
 }
