@@ -193,11 +193,11 @@ impl ResourceGovernor {
         self.ledger.carve(reserve, req, &lease_id, now_ms)
     }
 
-    pub fn withdraw(&mut self, ask: continuum_sage::place::ClaimId) -> bool {
+    pub fn withdraw(&mut self, ask: continuum_sage::place::AskId) -> bool {
         self.ledger.withdraw(ask)
     }
 
-    pub fn take_granted(&mut self, ask: continuum_sage::place::ClaimId) -> Option<ResourceLease> {
+    pub fn take_granted(&mut self, ask: continuum_sage::place::AskId) -> Option<ResourceLease> {
         self.ledger.take_granted(ask)
     }
 

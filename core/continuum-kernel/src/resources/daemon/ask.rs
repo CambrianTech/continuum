@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use continuum_base::time::EpochMs;
-use continuum_sage::place::ClaimId;
+use continuum_sage::place::AskId;
 
 use super::super::ledger::Asked;
 use super::super::governor::ResourceGovernor;
@@ -25,7 +25,7 @@ pub enum Ask {
 /// A waiting ask, owned by the one who asked.
 pub struct AskTicket {
     daemon: Arc<ResourceDaemon>,
-    ask: ClaimId,
+    ask: AskId,
     taken: bool,
 }
 
