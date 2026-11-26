@@ -40,9 +40,11 @@ impl LearnPort for LlamaCppBackend {
                 }
             }
             Learning::Measure(measure) => {
-                // Sized at the whole rendered lesson: the most a reply on it can be (from no prefix).
+                // Sized at the lesson's reply rows: the step prefills its context forward-only (no gradient)
+                // and trains only her reply, so a seat is her reply against her context, never the whole
+                // lesson from scratch (the 5090, 2026-11-26: whole-lesson sizing quoted 244 GB to 48.8 TB).
                 let rows = lesson::render(&measure.sized_for, |request| self.rendered_prompt(request), |text| self.model.tokenize(text, true, true).map_err(LessonRefusal::Template))
-                    .map(|rendered| u32::try_from(rendered.tokens.len()).ok().and_then(std::num::NonZeroU32::new));
+                    .map(|rendered| u32::try_from((rendered.tokens.len() + 1).saturating_sub(rendered.reply_from)).ok().and_then(std::num::NonZeroU32::new));
                 // A render refusal goes to the driver, which alone knows whether this seat holds anything.
                 match rows {
                     Ok(Some(reply_rows)) => LearningJob::Measure(LearningMeasuring { seat: measure.seat, mind: measure.mind, shadow: measure.shadow, optimizer: measure.optimizer, reply_rows }),

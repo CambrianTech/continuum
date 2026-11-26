@@ -177,6 +177,22 @@ pub struct ContextGeometry {
     pub allocated_tokens: u64,
     pub max_tokens_per_sequence: u64,
     pub sequence_capacity: u64,
+    pub holding: KvHolding,
+}
+
+/// How an engine holds its minds' KV: what a window grant divides.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KvHolding {
+    /// One context the minds occupy together (llama-server's slots or unified pool): their grants
+    /// share `allocated_tokens`.
+    Shared,
+    /// Each mind holds her own block of `max_tokens_per_sequence` (the in-process Core: one mind on
+    /// it at a time, every other mind's KV in her own mapped file, a switch a pointer). No mind's
+    /// window is taken from another's: each may be granted up to the per-sequence limit, and what
+    /// holding it costs is her block's memory, which the block layer pages (the M5, 2026-11-25: five
+    /// files of 1.47 GiB each, every one sized for the full 262,144 tokens, while the grants divided
+    /// one stream's 262,144 among the minds and served them 18,898 to 35,238).
+    PerMind,
 }
 
 impl ContextGeometry {
@@ -201,6 +217,7 @@ impl ContextGeometry {
             allocated_tokens: read("allocated_tokens")?,
             max_tokens_per_sequence: read("max_tokens_per_sequence")?,
             sequence_capacity: read("sequence_capacity")?,
+            holding: KvHolding::Shared,
         };
         (reported.allocated_tokens > 0
             && reported.sequence_capacity > 0

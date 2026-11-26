@@ -16,7 +16,7 @@ use std::time::Instant;
 
 use continuum_persona_engine::persona::{Epoch, MindId, PersonaId};
 use continuum_persona_engine::residency::{Direction, Execute, Tier};
-use continuum_persona_llama::{base_genes, Blocks, KvHome, Step, UnifiedTier};
+use continuum_persona_llama::{base_genes, Blocks, KvHome, Step, Tokens, UnifiedTier};
 use llama::{ContextParams, FlashAttn, Model, ModelParams, Pos};
 
 fn argmax(logits: &[f32]) -> i32 {
@@ -61,14 +61,14 @@ fn run_turn(tier: &mut UnifiedTier<'_, '_>, mind: MindId, blocks: &mut Blocks, t
     tier.begin(mind, blocks, Direction::In).map_err(|e| e.to_string())?;
     let Turn { prompt, at: Cursor { mut pos, mut last }, decode: n } = turn;
     for chunk in prompt.chunks(BATCH) {
-        tier.submit(mind, Step { tokens: chunk.to_vec(), from: pos, logits_at_end: true, genes: base_genes() }).map_err(|e| e.to_string())?;
+        tier.submit(mind, Step { tokens: Tokens::copied(chunk), from: pos, logits_at_end: true, genes: base_genes() }).map_err(|e| e.to_string())?;
         tier.settle().map_err(|e| e.to_string())?;
         pos = pos.advanced(chunk.len()).map_err(|e| e.to_string())?;
         last = argmax(tier.logits_ith(chunk.len() as i32 - 1));
     }
     let mut out = Vec::with_capacity(n);
     for _ in 0..n {
-        tier.submit(mind, Step { tokens: vec![last], from: pos, logits_at_end: true, genes: base_genes() }).map_err(|e| e.to_string())?;
+        tier.submit(mind, Step { tokens: Tokens::One(last), from: pos, logits_at_end: true, genes: base_genes() }).map_err(|e| e.to_string())?;
         tier.settle().map_err(|e| e.to_string())?;
         pos = pos.advanced(1).map_err(|e| e.to_string())?;
         last = argmax(tier.logits_ith(0));

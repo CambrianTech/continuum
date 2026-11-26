@@ -140,9 +140,22 @@ impl ServingDaemonModule {
         // The pool the grants share is the engine's as the host's room has moved it: the value the
         // pool step publishes (`live_pool`), never below what the minds need, never above what the
         // engine holds. This publisher is its one reader; the step never publishes grants itself.
-        let floor = super::live_pool::need_floor(&demands, self.grants_tx.borrow().as_ref());
+        // An engine that holds each mind's KV in her own block (`KvHolding::PerMind`: the in-process
+        // Core) takes no mind's window from another's: each is offered the whole of one sequence,
+        // her block already sized for it, and the time price of context decides how much of it she
+        // holds. Divided as one shared stream, five minds whose blocks each held 262,144 tokens were
+        // served 18,898 to 35,238 and turned over every act or two (the M5, 2026-11-25 22:45Z).
+        let per_mind = self.served_per_mind.load(Ordering::Relaxed);
+        let floor_of = |demands: &[Demand<uuid::Uuid>]| super::live_pool::need_floor(demands, self.grants_tx.borrow().as_ref());
         let engine = self.server.served_incarnation();
-        let pool = self.live_pool.borrow().pool(pool_tokens, floor, engine);
+        let (pool, floor) = if per_mind {
+            let pool = offer_whole_sequences(&mut demands, per_sequence_cap);
+            let floor = floor_of(&demands);
+            (pool.max(floor), floor)
+        } else {
+            let floor = floor_of(&demands);
+            (self.live_pool.borrow().pool(pool_tokens, floor, engine), floor)
+        };
         Ok(GrantInputs { demands, pool, cap: per_sequence_cap, excluded, floor })
     }
 }
@@ -159,6 +172,17 @@ fn waiting_reason(d: &Demand<uuid::Uuid>, pool: u32, waits: Option<DispatchWait>
         Some(DispatchWait::BehindActs { acting }) => Waiting::BehindActs { acting },
         None => Waiting::Unplaced,
     }
+}
+
+/// Under per-mind holding: every demand's target and wish is the whole of one sequence (her block is
+/// sized for it; the price decides what she holds), and the pool holds every one of them.
+fn offer_whole_sequences(demands: &mut [Demand<uuid::Uuid>], per_sequence_cap: u32) -> u32 {
+    if let Some(whole) = crate::inference::planning::window_allocator::Tokens::new(per_sequence_cap) {
+        for demand in demands.iter_mut() {
+            (demand.target, demand.wish) = (whole, whole);
+        }
+    }
+    per_sequence_cap.saturating_mul(u32::try_from(demands.len()).unwrap_or(u32::MAX)) // unwrap_or: more minds than u32 counts is no smaller pool
 }
 
 #[cfg(test)]
@@ -192,5 +216,20 @@ mod tests {
         let declared = Demand::of(&LaneRequirement::declared(her, t(100_000)), trained, ceiling, false).expect("test: a declaration is a demand"); // expect: a declared requirement always has a need, target and wish
         assert_eq!(declared.need.get(), 100_000, "a declared size is an authored floor, never clamped");
         assert!(matches!(waiting_reason(&declared, pool, None), Waiting::NeedAboveCeiling { .. }), "a declared floor past the ceiling waits, as an authored requirement");
+    }
+
+    // what this catches (the M5, 2026-11-25 22:45Z: five per-mind KV blocks of 262,144 tokens each,
+    // grants dividing one stream's 262,144 among the minds, served 18,898 to 35,238): an engine that
+    // holds each mind's KV in her own block granted as if the minds shared one context. Each is
+    // offered the whole sequence, her need left as measured.
+    #[test]
+    fn per_mind_blocks_each_offer_the_whole_sequence() {
+        let tokens = t;
+        let demand = |need| Demand { mind: uuid::Uuid::new_v4(), need: tokens(need), target: tokens(need + 4_000), wish: tokens(need), in_flight: false, settled: true, ceiling: 262_144 };
+        let mut demands = vec![demand(20_000), demand(30_000), demand(150_000)];
+        let pool = offer_whole_sequences(&mut demands, 262_144);
+        assert_eq!(pool, 3 * 262_144, "the pool holds every mind's whole sequence");
+        assert!(demands.iter().all(|d| d.target.get() == 262_144 && d.wish.get() == 262_144), "each targets the whole sequence");
+        assert_eq!(demands.iter().map(|d| d.need.get()).collect::<Vec<_>>(), vec![20_000, 30_000, 150_000], "needs stay as measured");
     }
 }

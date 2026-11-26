@@ -5,13 +5,13 @@
 //! the rest of it is prefilled again under the genes she was served with. A checkpoint at her view's end
 //! usually sits exactly there, so the common case prefills nothing.
 
-use continuum_persona_llama::Step;
+use continuum_persona_llama::{Step, Tokens};
 use llama::Pos;
 
 use super::{Driver, TurnError};
 
 impl Driver<'_, '_> {
-    pub(super) fn to_served_prefix(&mut self, served: usize) -> Result<(), TurnError> {
+    pub(super) fn reposition_to_served_prefix(&mut self, served: usize) -> Result<(), TurnError> {
         if !self.model.has_recurrent_state() {
             return Ok(());
         }
@@ -22,7 +22,8 @@ impl Driver<'_, '_> {
         }
         // never under genes she was not served with: a mind resumed from disk kept only their identity
         let genes = her.parts().genome.served_genes().ok_or(TurnError::GenesNotHeld)?;
-        let prefix = history.held.get(..served).ok_or(TurnError::TooLong)?.to_vec();
+        // one copy, shared by every chunk below (the engine borrow ends before they are submitted)
+        let prefix: std::sync::Arc<[i32]> = std::sync::Arc::from(history.held.get(..served).ok_or(TurnError::TooLong)?);
         let mut pos = match history.deepest_at_or_below(served) {
             Some(end) => {
                 self.rewind_to_checkpoint(end)?;
@@ -37,12 +38,13 @@ impl Driver<'_, '_> {
                 0
             }
         };
-        for chunk in prefix[pos..].chunks(self.batch.get()) {
+        while pos < prefix.len() {
+            let end = prefix.len().min(pos + self.batch.get());
             let at = Pos::try_from(pos).map_err(|_| TurnError::TooLong)?;
-            self.engine.submit(Step { tokens: chunk.to_vec(), from: at, logits_at_end: false, genes: std::sync::Arc::clone(&genes) })?;
+            self.engine.submit(Step { tokens: Tokens::Span { of: std::sync::Arc::clone(&prefix), from: pos, to: end }, from: at, logits_at_end: false, genes: std::sync::Arc::clone(&genes) })?;
             self.engine.settle()?;
-            self.record(|her| her.tokens.held.extend_from_slice(chunk))?;
-            pos += chunk.len();
+            self.record(|her| her.tokens.held.extend_from_slice(&prefix[pos..end]))?;
+            pos = end;
         }
         Ok(())
     }

@@ -110,3 +110,23 @@ fn a_measured_whole_act_prices_when_its_parts_are_noise() {
     assert!((time.seconds_per_token(40_000.0) - time.observed.slope).abs() < 1e-12);
     assert!(time.seconds(60_000.0) > time.seconds(20_000.0), "the act costs more holding more");
 }
+
+// what this catches (the M5, 2026-11-25: Aris's price held her at 19k of a 66k window): a cold act (a
+// restart, a lost cache) read as evidence that holding context brings fresh tokens. It prefills her
+// whole prompt whatever she holds; folded into the fresh line it steepened it toward one, so the price
+// held her window small. Cold acts still measure what a token costs; they leave the fresh line alone.
+#[test]
+fn a_cold_act_is_no_evidence_that_context_brings_fresh_tokens() {
+    let decode = |c: f64| 0.05 + 2e-6 * c;
+    let prefill = |c: f64| 0.004 + 1e-7 * c;
+    let mut fit = ActTimeFit::default();
+    for input in [10_000u32, 20_000, 35_000, 50_000, 75_000] {
+        fit.observe(&act(input, 1_000 + input / 10, 400, decode, prefill));
+    }
+    for input in [40_000u32, 60_000, 80_000] {
+        fit.observe(&act(input, input, 400, decode, prefill)); // cold: nothing resumed
+    }
+    let ContextPrice::Measured(time) = fit.price() else { panic!("eight acts over a spread fit") };
+    assert!((time.fresh.slope - 0.1).abs() < 1e-9, "the warm acts' line, untouched by the cold ones: {time:?}");
+    assert!((time.prefill.slope - 1e-7).abs() < 1e-12, "cold acts still measure prefill per token: {time:?}");
+}

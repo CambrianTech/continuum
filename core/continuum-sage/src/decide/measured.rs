@@ -28,6 +28,16 @@ impl<T: Copy> Measured<T> {
 pub struct Fraction(f64);
 
 impl Fraction {
+    /// One half: a median, an even split.
+    pub const HALF: Self = Self(0.5);
+    /// One quarter: an EWMA weight that remembers about the last four samples.
+    pub const QUARTER: Self = Self(0.25);
+
+    /// One over `n`: an EWMA weight that remembers about the last `n` samples.
+    pub fn reciprocal(n: std::num::NonZeroUsize) -> Self {
+        Self(1.0 / n.get() as f64)
+    }
+
     /// In [0, 1]; `None` otherwise (and for NaN).
     pub fn of(value: f64) -> Option<Self> {
         (0.0..=1.0).contains(&value).then_some(Self(value))
@@ -109,5 +119,52 @@ impl Window {
         let last = self.sorted.len().saturating_sub(1);
         let rank = (q.get() * last as f64).round() as usize;
         self.sorted.get(rank).map_or(Measured::Unmeasured, |&value| Measured::Value(value))
+    }
+}
+
+/// A line `y = intercept + slope · x` fitted to a series by least squares, each sample's weight decaying
+/// by its smoothing as newer ones arrive (an EWMA of the sufficient statistics): what a step's time is
+/// as a fixed part and a per-token part, when its steps vary in size. It retains five numbers.
+#[derive(Debug, Clone, Copy)]
+pub struct LineFit {
+    smoothing: Fraction,
+    weight: f64,
+    x: f64,
+    y: f64,
+    xx: f64,
+    xy: f64,
+}
+
+impl LineFit {
+    pub fn new(smoothing: Fraction) -> Self {
+        Self { smoothing, weight: 0.0, x: 0.0, y: 0.0, xx: 0.0, xy: 0.0 }
+    }
+
+    pub fn observe(&mut self, x: f64, y: f64) {
+        if !(x.is_finite() && y.is_finite()) {
+            return;
+        }
+        let keep = 1.0 - self.smoothing.get();
+        self.weight = keep * self.weight + 1.0;
+        self.x = keep * self.x + x;
+        self.y = keep * self.y + y;
+        self.xx = keep * self.xx + x * x;
+        self.xy = keep * self.xy + x * y;
+    }
+
+    /// `(intercept, slope)` once the samples it holds vary in `x` and give a line with a positive slope
+    /// and a part that is not negative; `Unmeasured` before, never a guess.
+    pub fn fit(&self) -> Measured<(f64, f64)> {
+        if self.weight <= 1.0 {
+            return Measured::Unmeasured;
+        }
+        let (mean_x, mean_y) = (self.x / self.weight, self.y / self.weight);
+        let spread = self.xx / self.weight - mean_x * mean_x;
+        if !(spread > f64::EPSILON * mean_x.abs().max(1.0)) {
+            return Measured::Unmeasured;
+        }
+        let slope = (self.xy / self.weight - mean_x * mean_y) / spread;
+        let intercept = mean_y - slope * mean_x;
+        if slope > 0.0 && intercept >= 0.0 { Measured::Value((intercept, slope)) } else { Measured::Unmeasured }
     }
 }

@@ -20,8 +20,29 @@ pub struct Choice {
     pub expected: Option<f64>,
 }
 
-/// A way of choosing for one use case. Many may exist for the same use case; they are compared on
-/// recorded history (`replay`) and then live, inside the use case's envelope.
+/// One parameter's value: typed, never text.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Param {
+    Real(f64),
+    Count(u64),
+    Flag(bool),
+}
+
+/// Why a parameter or a saved state was refused. The algorithm is unchanged.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Refused {
+    /// No parameter by this name.
+    Unknown(&'static str),
+    /// The value is not of this parameter's type, or outside its range.
+    Value { param: &'static str, value: Param },
+    /// A saved state of another algorithm, another version, or truncated.
+    State { algorithm: &'static str, bytes: usize },
+}
+
+/// A way of choosing for one use case: an algorithm in the OpenCV sense. Many exist for one use case,
+/// each created by name from its [`super::Algorithms`] registry, with typed parameters to read and set
+/// and a learned state to save and load as bytes. They are compared on recorded history (`replay`)
+/// and then live, inside the use case's envelope.
 pub trait Policy<U: UseCase>: Send {
     fn id(&self) -> PolicyId;
 
@@ -33,6 +54,30 @@ pub trait Policy<U: UseCase>: Send {
     /// learn ignores it.
     fn learn(&mut self, record: &Record<U>) {
         let _ = record;
+    }
+
+    /// The names of its parameters, for whoever tunes or reports it.
+    fn params(&self) -> &'static [&'static str] {
+        &[]
+    }
+
+    fn param(&self, name: &str) -> Option<Param> {
+        let _ = name;
+        None
+    }
+
+    fn set_param(&mut self, name: &'static str, value: Param) -> Result<(), Refused> {
+        let _ = value;
+        Err(Refused::Unknown(name))
+    }
+
+    /// Its learned state as bytes (appended to `into`), so a restart resumes what it learned.
+    fn save(&self, into: &mut Vec<u8>) {
+        let _ = into;
+    }
+
+    fn load(&mut self, from: &[u8]) -> Result<(), Refused> {
+        if from.is_empty() { Ok(()) } else { Err(Refused::State { algorithm: self.id().name, bytes: from.len() }) }
     }
 }
 

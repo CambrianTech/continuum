@@ -367,6 +367,9 @@ pub struct ServingDaemonModule {
     /// The pool the running engine reports (`served_geometry`, its `context_geometry`), as
     /// the launch's ready path last read it; `0` = not read. The grants' one source for the pool.
     served_pool: Arc<std::sync::atomic::AtomicU32>,
+    /// Whether that engine holds each mind's KV in her own block (`KvHolding::PerMind`): then no
+    /// grant is taken from another's, each is capped by one sequence alone.
+    served_per_mind: Arc<std::sync::atomic::AtomicBool>,
     /// The most one sequence may hold, from the same report (`max_tokens_per_sequence`); `0` =
     /// not read. The grants' one source for a mind's limit (CONTINUUM-ENGINE.md, serving engine: admission (4.8)).
     served_sequence: Arc<std::sync::atomic::AtomicU32>,
@@ -566,6 +569,7 @@ impl ServingDaemonModule {
             evaluations_tx: watch::channel(None).0,
             fair_grants: Arc::new(parking_lot::Mutex::new(crate::capacity::window_grant::DispatchState::default())),
             served_pool: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            served_per_mind: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             served_sequence: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             model_change_streak: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             pending_model_change: Arc::new(std::sync::Mutex::new(None)),

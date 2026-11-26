@@ -98,6 +98,7 @@ impl EngineLaunch {
             type_k: self.kv.k,
             type_v: self.kv.v,
             mmproj_path,
+            lane_algorithm: continuum_sage::decide::cases::lane::SERVING,
         }
     }
 }

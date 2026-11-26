@@ -281,6 +281,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
         let render_body = |body: &serde_json::Value| -> Result<llama::ChatRender, super::chat_turn::ChatTurnError> {
             Ok(backend.render_chat_turn(&body.to_string(), &registry_template, llama::ReasoningFormat::Auto)?)
         };
+        let render_started = Instant::now();
         let (prompt, collected_media, chat_render) = if !super::chat_turn::carries_media(&request) {
             let rendered = continuum_base::time_sync!("inference.render_chat", {
                 super::chat_turn::thinking_request(&request, thinking).and_then(|body| render_body(&body))
@@ -372,10 +373,16 @@ impl AIProviderAdapter for LlamaCppAdapter {
         let sampling = sampling_config_from_request(&request);
         // Where her next act stops matching this prompt (her view, CONTINUUM-ENGINE 4.15): the engine
         // checkpoints her there and her next act prefills only what follows.
+        let rendered_at = Instant::now();
         let stable_prefix = match &chat_render {
             Some((_, described)) => super::chat_turn::view_text(&request, described, thinking, &render_body).map_err(|refused| refused.to_string())?,
             None => None,
         };
+        // Where an act's submit time goes before her turn reaches the Core (the M5, 2026-11-26: submit to
+        // queue 0.6 to 9.5 s at 70k to 226k tokens): her prompt's render, and her view's second render.
+        continuum_base::probe!(class = "inference.submit.render", request = ?request.request_id, prompt_chars = prompt.len() as u64,
+            view_chars = stable_prefix.as_ref().map_or(0, super::chat_turn::View::chars) as u64, render_ms = render_started.elapsed().saturating_sub(rendered_at.elapsed()).as_millis() as u64,
+            view_render_ms = rendered_at.elapsed().as_millis() as u64, "an act's prompt rendered, and her view rendered again");
         // Stop sequences = caller-supplied + model's registry-declared
         // text-form stops. Some GGUFs (the forged qwen3.5 included) carry
         // the wrong tokenizer.ggml.eos_token_id, so is_eog_token never
@@ -400,7 +407,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
         let gen_start = Instant::now();
         let backend_for_blocking = backend.clone();
         let prompt_for_blocking = prompt.clone();
-        let stable_for_blocking = stable_prefix.clone();
+        let stable_for_blocking = stable_prefix;
         let stop_for_closure = stop_owned.clone();
         let request_for_blocking = request.request_id.clone();
         // Her need rides this call's scope; read here, before the blocking hop leaves it.
@@ -477,7 +484,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
                         .collect();
                     backend_for_blocking.submit_for_persona(
                         allocation, persona_id,
-                        crate::inference::backends::llamacpp::TurnPrompt { text: &prompt_for_blocking, stable_prefix: stable_for_blocking.as_deref(), urgency, request: request_for_blocking.as_deref() },
+                        crate::inference::backends::llamacpp::TurnPrompt { text: &prompt_for_blocking, stable_prefix: stable_for_blocking.as_ref().and_then(|view| view.of(&prompt_for_blocking)), urgency, request: request_for_blocking.as_deref() },
                         max_tokens,
                         sampler,
                         &stop_refs,

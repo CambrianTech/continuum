@@ -19,15 +19,6 @@ pub(super) enum Reuse {
     Restart(Miss),
 }
 
-impl Reuse {
-    /// The prompt tokens she does not prefill.
-    pub(super) fn reused(&self) -> usize {
-        match self {
-            Reuse::Append { from } | Reuse::Rewind { from } => *from,
-            Reuse::Restart(_) => 0,
-        }
-    }
-}
 
 /// Why nothing she holds could be reused: each is a loud probe reason, never a silent re-prefill.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

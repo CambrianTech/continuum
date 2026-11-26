@@ -51,11 +51,17 @@ pub struct EngineGeometry {
     /// Sequences held beside the decoding one for the next mind, staged as data, never decoding.
     pub staging: u32,
     pub requested: Requested,
+    /// Each mind's KV is a block over her own host-mapped file that the device views in place (unified
+    /// memory): holding a mind's whole window costs her file, not device memory, so every mind may be
+    /// offered it. False where KV moves by row copy (a discrete GPU): there a mind's window is device
+    /// memory reserved while she holds it, and offering every mind the whole window filled the device
+    /// (the 5090, 2026-11-26: 8,026,980,352 KV bytes for one mind, learning's 12 to 36 MB seats refused).
+    pub blocks_mapped: bool,
 }
 
 impl EngineGeometry {
     /// Read from the created context; only what it cannot report comes from the request.
-    pub(super) fn applied(incarnation: Incarnation, ctx: &llama::Context<'_>, config: &SchedulerConfig) -> Self {
+    pub(super) fn applied(incarnation: Incarnation, ctx: &mut llama::Context<'_>, config: &SchedulerConfig) -> Self {
         let n_seq_max = ctx.n_seq_max();
         Self {
             incarnation,
@@ -67,6 +73,7 @@ impl EngineGeometry {
             decoding: 1,
             staging: n_seq_max.saturating_sub(1),
             requested: Requested { type_k: config.type_k, type_v: config.type_v },
+            blocks_mapped: llama::PersonaBlocks::storage_bytes(ctx) > 0 && llama::PersonaBlocks::storage_viewable(ctx),
         }
     }
 }

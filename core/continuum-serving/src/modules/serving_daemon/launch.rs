@@ -266,6 +266,7 @@ impl ServingDaemonModule {
         let force_relaunch = self.force_relaunch.clone();
         let server = self.server.clone();
         let served_pool = Arc::clone(&self.served_pool);
+        let served_per_mind = Arc::clone(&self.served_per_mind);
         let served_sequence = Arc::clone(&self.served_sequence);
         let serving_tx = self.serving_tx.clone();
         let verified_target = self.verified_target.clone();
@@ -422,12 +423,13 @@ impl ServingDaemonModule {
                     .served_geometry()
                     .await
                     .map_err(|e| e.to_string())
-                    .and_then(|g| g.pool_tokens().zip(g.sequence_tokens()).ok_or_else(|| "geometry past the grants' token width".to_string())),
+                    .and_then(|g| g.pool_tokens().zip(g.sequence_tokens()).map(|(pool, sequence)| (pool, sequence, g.holding)).ok_or_else(|| "geometry past the grants' token width".to_string())),
             };
             let (served_window, served_lanes) = match geometry {
-                Ok((pool, sequence)) => {
+                Ok((pool, sequence, holding)) => {
                     served_pool.store(pool, Ordering::Relaxed);
                     served_sequence.store(sequence, Ordering::Relaxed);
+                    served_per_mind.store(holding == crate::inference::weight_residency::KvHolding::PerMind, Ordering::Relaxed);
                     crate::inference::proven_pool::observe(
                         &target.model.id,
                         u64::from(pool),

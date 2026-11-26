@@ -1,7 +1,7 @@
 //! The lane: who takes the Core's next step (THE-LANE-ON-SAGE.md, "When to switch"). How long a mind
-//! hot-path: the lane decides at every Core step (THE-LANE-ON-SAGE.md, "The types").
 //! keeps the Core is an outcome of these choices, never a parameter: a deep mind whose pages went cold
 //! costs more to bring in, and a policy that sees her features finds that out.
+//! hot-path: the lane decides at every Core step (THE-LANE-ON-SAGE.md, "The types").
 //!
 //! It decides at every step, so it allocates nothing past its buffers' high-water mark: actions name ready minds by
 //! slot (their index in `ready`) and a batch by a bitmask of slots; a mind's key is `Copy`.
@@ -13,6 +13,7 @@ use std::time::Duration;
 use crate::component::Urgency;
 
 use super::super::measured::Measured;
+use super::super::policy::{Choice, Policy, PolicyId};
 use super::super::use_case::{Gate, UseCase, Violation};
 
 /// A ready mind's index in [`Situation::ready`]. Only the first [`SLOTS`] ready minds are offered.
@@ -28,7 +29,7 @@ pub const SLOTS: usize = Mask::BITS as usize;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
     /// Tokens of her prompt still to prefill.
-    Prefill { remaining: u32 },
+    Prefill { remaining: u64 },
     Decode,
 }
 
@@ -40,19 +41,38 @@ pub struct Mind<K> {
     pub urgency: Urgency,
     /// Ready and waiting for the Core this long.
     pub waited: Duration,
-    /// Her wait bound at this urgency: past it, the envelope steps her next.
-    pub deadline: Duration,
+    /// Her wait bound at this urgency (`Urgency::wait_bound`): before the next step would carry her past
+    /// it, the envelope steps her. `None` for background work, whose guarantee is its class's queue
+    /// staying in check (`Situation::background_owed`).
+    pub deadline: Option<Duration>,
     pub phase: Phase,
     /// Her KV's depth in bytes, and how much of it is not resident (the block layer knows exactly).
-    pub kv_bytes: u64,
-    pub cold_bytes: u64,
+    pub kv_bytes: Measured<u64>,
+    pub cold_bytes: Measured<u64>,
     /// Tokens left in her turn, predicted from her own history in this activity.
-    pub remaining: Measured<u32>,
+    pub remaining: Measured<u64>,
     /// Her step time, and the cost of bringing her in from where she is now.
     pub step: Measured<Duration>,
     pub switch_in: Measured<Duration>,
+    /// The fixed time a step of hers costs whatever its tokens (a prefill chunk's submit and its pass
+    /// over her context), apart from `step`, her time a token; `Unmeasured` until her steps vary in size.
+    pub overhead: Measured<Duration>,
     /// Her prefix cache's hit rate: how much of her work reuses what is warm.
     pub prefix_hit: Measured<f64>,
+}
+
+impl<K> Mind<K> {
+    /// What is left of her bound once her wait and her measured switch cost are spent (an unmeasured
+    /// switch is a cost not yet seen); `None` when she has no per-item bound (background work).
+    pub fn slack(&self) -> Option<Duration> {
+        self.deadline.map(|bound| bound.saturating_sub(self.waited).saturating_sub(self.switch_in.value().unwrap_or(Duration::ZERO))) // unwrap_or: an unmeasured switch is a cost not yet seen
+    }
+
+    /// The time her features are measured against: her bound, or for background work the bound acts
+    /// are held to, so every mind's times are on one scale.
+    pub fn scale(&self) -> Duration {
+        self.deadline.unwrap_or_else(Urgency::act_bound)
+    }
 }
 
 /// The Core at a step boundary: who holds it, and who is ready.
@@ -62,6 +82,9 @@ pub struct Situation<K> {
     pub ready: Vec<Mind<K>>,
     /// The widest batch the Core can step now (1: no batching).
     pub batch_width: u32,
+    /// The background class (minds with no per-item bound) is owed a step: its served rate has fallen
+    /// behind its arrival rate, so its queue would grow (`lane_history::LaneHistory::background`).
+    pub background_owed: bool,
 }
 
 /// The lane's actions: slots and masks, never owned keys.
@@ -77,11 +100,74 @@ pub enum Action {
 /// What a decision window measured.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Outcome {
-    pub tokens: u64,
+    pub tokens: Measured<u64>,
     pub engine: Duration,
     /// The longest any ready mind waited in the window, against her deadline.
     pub worst_wait: Duration,
     pub worst_deadline: Duration,
+    /// Of `engine`, the time spent bringing a mind in (zero when no one was): the Core's transition
+    /// time, which serves no mind.
+    pub switching: Duration,
+    /// The share of the stepped mind's remaining phase this decision finished ([`served`]):
+    /// `Unmeasured` when no one mind stepped or her remainder was not predicted.
+    pub served: Measured<f64>,
+}
+
+/// How long the next step may take and still leave every bounded waiter (other than `stepping`) her
+/// turn inside her bound: waiters are reached one a step, so a waiter with `k` ahead of her (less slack,
+/// or as little and earlier) is reached after `k` turns, each as long as the longest waiter's measured
+/// step and switch. Her room is her slack less those turns; the queue's room is the least of them.
+/// `None` when no bounded mind waits. Counting only one step ahead, or the running mind's time a token
+/// for a step, let a crowd overrun by a step apiece (the M5, 2026-11-25 21:45 to 21:55Z: 1,005 act
+/// violations at p50 1.02 of the bound).
+pub fn room<K: PartialEq>(situation: &Situation<K>, stepping: Option<&K>) -> Option<Duration> {
+    let waiting = || situation.running.iter().chain(situation.ready.iter().take(SLOTS)).filter(move |mind| stepping != Some(&mind.mind)).filter_map(|mind| mind.slack().map(|left| (mind, left)));
+    let turn = waiting().map(|(mind, _)| mind.step.value().unwrap_or(Duration::ZERO) + mind.switch_in.value().unwrap_or(Duration::ZERO)).max()?; // unwrap_or: an unmeasured step or switch is a cost not yet seen
+    waiting()
+        .enumerate()
+        .map(|(at, (_, left))| {
+            let ahead = waiting().enumerate().filter(|&(other_at, (_, other))| (other, other_at) < (left, at)).count() as u32;
+            left.saturating_sub(turn * ahead)
+        })
+        .min()
+}
+
+/// The least a step of hers is worth taking: a decode step, or a prefill chunk long enough that its
+/// tokens take at least as long as its fixed part (twice that part), so the envelope serves the queue
+/// before her room shrinks to chunks that pay a full step for a token. A step or part not yet measured
+/// is a cost not yet seen.
+fn worthwhile_step<K>(mind: &Mind<K>) -> Duration {
+    match (mind.overhead.value(), mind.step.value()) {
+        (Some(fixed), _) => fixed * 2,
+        (None, Some(step)) => step,
+        (None, None) => Duration::ZERO,
+    }
+}
+
+/// How many tokens one step of `stepped` may move, at most `most` (the engine's batch). A step cannot
+/// be preempted, so the bound every other mind is promised is kept only if the step ends inside the
+/// queue's room (`room`: every waiter's slack less the turns ahead of her) at the
+/// stepped mind's measured time a token. With no one else ready, or her time a token not yet measured
+/// (her first step, which measures it), the whole batch. At least one token, so she always advances.
+/// The M5, 2026-11-25 19:40 to 19:50Z: prefill chunks a whole batch long left other minds 7 to 9 s
+/// without a step under a 1 s bound.
+pub fn step_tokens<K: PartialEq>(situation: &Situation<K>, stepped: &Mind<K>, most: u64) -> u64 {
+    let room = room(situation, Some(&stepped.mind));
+    // the chunk's fixed part comes off the room first; what is left buys tokens at her part a token
+    let fixed = stepped.overhead.value().unwrap_or(Duration::ZERO); // unwrap_or: an unmeasured fixed part is a cost not yet seen
+    match (room, stepped.step.value()) {
+        (Some(room), Some(per_token)) if per_token > Duration::ZERO => ((room.saturating_sub(fixed).as_secs_f64() / per_token.as_secs_f64()) as u64).clamp(1, most.max(1)),
+        _ => most.max(1),
+    }
+}
+
+/// The share of her remaining phase a decision finished: `moved` of the `left` tokens she had when
+/// it was made (at most all of it; a remainder predicted short is finished, not exceeded).
+pub fn served(moved: u64, left: Measured<u64>) -> Measured<f64> {
+    match left {
+        Measured::Value(left) if left > 0 => Measured::Value(moved.min(left) as f64 / left as f64),
+        _ => Measured::Unmeasured,
+    }
 }
 
 /// The lane as a use case, over any `Copy` mind key.
@@ -96,29 +182,64 @@ impl<K: Copy + Debug + PartialEq + Send + 'static> UseCase for Lane<K> {
 
     fn envelope(situation: &Situation<K>, admissible: &mut Vec<Action>) -> Gate<Action> {
         let ready = &situation.ready[..situation.ready.len().min(SLOTS)];
-        // A mind past her deadline goes next: the most overdue, whatever any policy prefers.
-        let overdue = ready.iter().enumerate().filter(|(_, mind)| mind.waited >= mind.deadline).max_by_key(|(_, mind)| mind.waited.saturating_sub(mind.deadline));
+        // A mind the next step would carry past her deadline goes next (the most pressed), whatever
+        // any policy prefers: a step cannot be preempted, so forcing her only once she is past it
+        // misses the bound by a step every time (the M5, 2026-11-25 19:56 to 20:06Z: 1,037 violations,
+        // p50 1.014 of the bound). The next step is the running mind's measured one; a step not yet
+        // measured is a cost not yet seen.
+        //
+        // Waiters are served one a step, so a waiter with `k` more pressed ahead of her is reached only
+        // after `k + 1` steps: the most pressed goes next as soon as any waiter's slack is within her
+        // rank's steps (earliest deadline first, counting the queue). Checked one at a time, a crowd
+        // nearing the bound together each looked safe and overran by a step apiece (the M5, 2026-11-25
+        // 20:54 to 21:04Z: 929 violations, p50 1.02 of the bound, twelve resident turns at once).
+        let next = situation.running.as_ref().map_or(Duration::ZERO, worthwhile_step); // map_or: no one running takes no step
+        // Only minds with a per-item bound crowd it (`room`); background work has none.
+        let crowded = room(situation, situation.running.as_ref().map(|running| &running.mind)).is_some_and(|room| room <= next);
+        let overdue = ready.iter().enumerate().filter(|_| crowded).filter_map(|(slot, mind)| mind.slack().map(|left| (slot, left))).min_by_key(|&(_, left)| left);
         if let Some((slot, _)) = overdue {
             return Gate::Forced(Action::Switch(slot as Slot));
         }
+        // Background work's guarantee: when its class is owed (served behind arrival, its queue would
+        // grow), it takes this step, the one running it continuing or its longest waiter brought in.
+        if situation.background_owed {
+            if situation.running.as_ref().is_some_and(|running| running.deadline.is_none()) {
+                return Gate::Forced(Action::Continue);
+            }
+            if let Some((slot, _)) = ready.iter().enumerate().filter(|(_, mind)| mind.deadline.is_none()).max_by_key(|(_, mind)| mind.waited) {
+                return Gate::Forced(Action::Switch(slot as Slot));
+            }
+        }
+        // Priority classes, the bound as aging (CLAUDE.md goal 9): a policy chooses only among the most
+        // urgent minds present; a less urgent one steps when none is ready, or when her bound forces
+        // her above. A policy's objective (finish the least work left first) would otherwise serve
+        // short background work ahead of a mind's act (the M5, 2026-11-25 21:09 to 21:19Z: dream
+        // consolidation at Content took 62% of the Core from residents at Want).
+        let top = ready.iter().map(|mind| mind.urgency).chain(situation.running.iter().map(|running| running.urgency)).max();
+        let in_class = |mind: &Mind<K>| Some(mind.urgency) == top;
+        let switches = ready.iter().enumerate().filter(|(_, mind)| in_class(mind)).map(|(slot, _)| Action::Switch(slot as Slot));
         let Some(running) = &situation.running else {
             if ready.is_empty() {
                 return Gate::Forced(Action::Idle);
             }
-            admissible.extend((0..ready.len()).map(|slot| Action::Switch(slot as Slot)));
+            admissible.extend(switches);
             return Gate::Choose;
         };
         // Finish first: her measured remainder costs less than bringing anyone in.
         let cheapest_switch = ready.iter().filter_map(|mind| mind.switch_in.value()).min();
-        let finishing = matches!((running.remaining.value(), running.step.value(), cheapest_switch), (Some(left), Some(step), Some(switch)) if step * left < switch);
-        if finishing || ready.is_empty() {
+        let finishing = matches!((running.remaining.value(), running.step.value(), cheapest_switch), (Some(left), Some(step), Some(switch)) if step.mul_f64(left as f64) < switch);
+        let outranked = !in_class(running);
+        if (finishing && !outranked) || ready.is_empty() || !ready.iter().any(in_class) {
             return Gate::Forced(Action::Continue);
         }
-        admissible.push(Action::Continue);
-        admissible.extend((0..ready.len()).map(|slot| Action::Switch(slot as Slot)));
-        // the running mind and the first `others` ready minds: the lowest `others` bits (1..=SLOTS)
+        if !outranked {
+            admissible.push(Action::Continue);
+        }
+        admissible.extend(switches);
+        // the running mind and the first `others` ready minds (the lowest `others` bits, 1..=SLOTS),
+        // when all of them are of the top class
         let others = (situation.batch_width as usize).saturating_sub(1).min(ready.len());
-        if others > 0 {
+        if others > 0 && !outranked && ready[..others].iter().all(in_class) {
             admissible.push(Action::Batch(!0 >> (SLOTS - others)));
         }
         Gate::Choose
@@ -136,9 +257,59 @@ impl<K: Copy + Debug + PartialEq + Send + 'static> UseCase for Lane<K> {
         slot.running = from.running;
         slot.ready.clone_from(&from.ready);
         slot.batch_width = from.batch_width;
+        slot.background_owed = from.background_owed;
     }
 
     fn empty() -> Situation<K> {
-        Situation { running: None, ready: Vec::new(), batch_width: 1 } // cold: an empty slot is built once, at the decider's construction
+        Situation { running: None, ready: Vec::new(), batch_width: 1, background_owed: false } // cold: an empty slot is built once, at the decider's construction
     }
+}
+
+/// Need first: the most urgent ready mind is switched in when she needs the Core more than the running
+/// one (an addressed mind takes the next step); otherwise the running one continues; with nobody
+/// running, the most urgent, longest-waiting mind starts. The envelope keeps every wait inside its
+/// bound whatever this prefers. The baseline the cost model is measured against.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NeedFirst;
+
+impl<K: Copy + Debug + PartialEq + Send + 'static> Policy<Lane<K>> for NeedFirst {
+    fn id(&self) -> PolicyId {
+        PolicyId { name: "need-first", parameters: 0 }
+    }
+
+    fn choose(&mut self, situation: &Situation<K>, admissible: &[Action]) -> Choice {
+        let best = situation.ready.iter().take(SLOTS).enumerate().max_by(|(_, a), (_, b)| a.urgency.cmp(&b.urgency).then(a.waited.cmp(&b.waited)));
+        let wanted = match (&situation.running, best) {
+            (Some(running), Some((slot, mind))) if mind.urgency > running.urgency => Action::Switch(slot as Slot),
+            (Some(_), _) => Action::Continue,
+            (None, Some((slot, _))) => Action::Switch(slot as Slot),
+            (None, None) => Action::Idle,
+        };
+        // The envelope offered what it allows; a wanted action it did not offer yields its first.
+        let index = admissible.iter().position(|action| *action == wanted).unwrap_or(0); // unwrap_or: not offered means the envelope decided; its first is its choice
+        Choice { index, expected: None }
+    }
+}
+
+/// The algorithm serving runs unless its configuration names another: the stock linear UCB over the
+/// lane's features (on trial live against the cost model, which it matched in simulation).
+pub const SERVING: &str = super::super::linear_ucb::NAME;
+
+/// How many decisions the lane keeps for replay, and how many a learner remembers: one per step, so
+/// at 26 ms a step about three and a half minutes, what replay can check a learner against.
+pub const DECISIONS: std::num::NonZeroUsize = match std::num::NonZeroUsize::new(8_192) {
+    Some(decisions) => decisions,
+    None => std::num::NonZeroUsize::MIN,
+};
+
+/// The lane's algorithms by name: the baseline, need-first, the cost model over the lane's history,
+/// and the stock linear UCB over the lane's features. A caller (the Core's driver) creates the one
+/// its configuration names.
+pub fn algorithms<K: Copy + Debug + PartialEq + Send + 'static>() -> Result<super::super::Algorithms<Lane<K>>, super::super::Unknown> {
+    use super::lane_features::{FEATURES, TARGETS};
+    super::super::Algorithms::default()
+        .register("baseline", || Box::new(super::super::Baseline))? // cold: the registry is built once, when the lane is
+        .register("need-first", || Box::new(NeedFirst))? // cold: the registry is built once, when the lane is
+        .register("cost-model", || Box::new(super::lane_cost::CostModel::default()))? // cold: the registry is built once, when the lane is
+        .register(super::super::linear_ucb::NAME, || Box::new(super::super::LinearUcb::<Lane<K>, FEATURES, TARGETS>::new(DECISIONS))) // cold: the registry is built once, when the lane is
 }

@@ -21,6 +21,30 @@ pub enum Urgency {
     Urgent,
 }
 
+impl Urgency {
+    /// The longest a ready subject at this urgency may wait for a scarce capacity's next turn: the
+    /// guarantee every scheduling policy is held to, never a tuning a policy trades (Joel, 2026-11-24:
+    /// "Any over 2 s are wrong. Probably over 1 s"). A subject that wants or needs to act has it; a
+    /// more urgent one is served sooner by preference, not by a looser bound for the others.
+    ///
+    /// `Content` work (dreaming, learning in the background) has no per-item bound: its guarantee is
+    /// its class's queue staying in check, its served rate keeping up with its arrival rate, like a
+    /// person who learns through the day and dreams at night (Joel, 2026-11-25). A 1 s bound on each
+    /// of twenty dreams made the Core rotate through them every second (the M5, 21:24 to 21:34Z:
+    /// 2,509 bound violations, all background).
+    pub fn act_bound() -> std::time::Duration {
+        std::time::Duration::from_secs(1)
+    }
+
+    /// Her per-item bound, at her urgency: the act bound, or none for background work.
+    pub fn wait_bound(self) -> Option<std::time::Duration> {
+        match self {
+            Self::Content => None,
+            Self::Want | Self::Urgent => Some(Self::act_bound()),
+        }
+    }
+}
+
 /// A component's need as published: its own urgency, and the engine's facts beside it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Need {

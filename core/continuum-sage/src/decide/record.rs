@@ -101,6 +101,21 @@ impl<U: UseCase> Decider<U> {
         self.policy.id()
     }
 
+    /// One of the policy's parameters by name, as it stands now.
+    pub fn param(&self, name: &str) -> Option<super::Param> {
+        self.policy.param(name)
+    }
+
+    /// The policy's learned state, appended to `into`, for its owner's saved state.
+    pub fn save(&self, into: &mut Vec<u8>) {
+        self.policy.save(into);
+    }
+
+    /// Resume what the policy learned before; refused bytes leave it as it was.
+    pub fn load(&mut self, from: &[u8]) -> Result<(), super::Refused> {
+        self.policy.load(from)
+    }
+
     fn slot(&self, id: DecisionId) -> usize {
         (id.0 % self.ring.len() as u64) as usize
     }

@@ -500,6 +500,75 @@ about 1.8 GB per parked mind at the 262k window.
 tok/s for 1/2/4 minds): 194/389/784 at 2k, 208/447/603 at 8k, 156/203/264 at 30k. Batching wins at
 every depth measured. The 35B's rows need serving down.
 
+**The lane in serving** (#6280; `driver/lane.rs`, `continuum_sage::decide`):
+- The pick is an algorithm created by name (OpenCV's `Algorithm::create`):
+  `cases::lane::algorithms()` registers `baseline`, `need-first` and `cost-model`; the scheduler's
+  configuration names one (`lane_algorithm`, default `cases::lane::SERVING`), and an unknown name
+  refuses the engine's start. Each algorithm has typed parameters (`params`, `param`, `set_param`,
+  refused out of range, never clamped) and saves and loads its learned state as bytes.
+- The history is the lane's own (`cases::lane_history`). The driver is only the executor: it reports
+  each switch-in, reuse, step (tokens and time, prefill and decode apart), turn end, residency and
+  departure. The history fills every mind's features; what it has not measured stays `Unmeasured`.
+- `cost-model` (the serving default until the `linear-ucb` live trial; its `margin` is learned, below): the running mind continues while her next step, or her whole
+  predicted remainder, fits a `margin` share of the tightest waiter's slack (her bound, less her wait,
+  less her measured switch cost); otherwise that waiter is brought in, and a more urgent one at once.
+  So a mind whose switch is costly is served before her bound arrives, and a long turn runs while it
+  can.
+- The margin is a control loop both ways (Rprop): a closed decision with a mind waiting reads down
+  when a wait passed its bound, up when every waiter stayed inside hers; the step grows while
+  readings agree and halves when they flip, and never grows while the margin is pinned at the whole
+  slack. It is never a constant: a node resumes what it learned on the served model (a Rebuildable
+  saved-state kind, `lane-learned/<v5 uuid of the model>.json`, contract = algorithm and model, saved
+  at every stop). With nothing learned for that model it is seeded by a procedure at the first
+  contended decision with a measured step: one of the running mind's measured steps kept as headroom,
+  `(slack - step) / slack`, the first step being that headroom. Unseeded, it switches, which keeps
+  the bound.
+- `linear-ucb` is a stock learner, not a lane algorithm: `decide::Ridge` (online ridge regression of
+  several targets, forgetting toward its prior over `memory` observations, so it never winds up) under
+  `decide::LinearUcb`, a constrained upper-confidence bandit over any use case that implements
+  `Featured` (features of a candidate action, physical targets of an outcome). The lane implements
+  it in `cases::lane_features`: 14 features (times against the wait bound, phase indicators, and each
+  candidate's predicted finishing rate, one over her remaining time) and two targets: the share of the
+  stepped mind's remaining phase finished per second of the Core (maximized, so the mind with the
+  least work left is finished first, which minimizes mean time to finish) and the worst wait against
+  its bound (kept at or under one by its pessimistic prediction). No weight trades one against the
+  other, and the exploration width is one standard error in the target's own units (Codex's
+  alternative: predict physical outcomes, never a fixed penalty). It remembers what the lane keeps for
+  replay (`lane::DECISIONS`) and saves its Gram matrix and moments like any algorithm.
+- Two value targets lost first. Tokens per second, in simulation: a prefill token costs a fraction of
+  a decode step, so it rewarded switching to whoever prefilled. The Core's share not spent on
+  transitions, live on the M5 (2026-11-25 19:24 to 19:33Z, build 82750a4e27): a switch by pointer is
+  about 1 ms, so switching looked free and lowered the worst wait, and the learner rotated minds every
+  step (25 to 378 switches a turn). Waits fell (wait p50 2.6 s, max 5.8 s, against 5.3 s and 49 s on
+  the whole-turn rule at 19:00 to 19:15Z), but turn p50 rose to 117 s, against 17 s.
+
+Simulated, `the_stock_linear_learner_learns_the_lane_and_keeps_the_bound` (four minds, turns of 512
+to 4,096 prompt and 50 to 400 decoded tokens, a 2 s tool call between turns, 5 ms a switch, 300 s
+of Core, the same turns for each):
+
+| | tok/s of Core | worst wait / bound | turn p50 | turns |
+|---|---|---|---|---|
+| need-first | 357.4 | 1.13 | 26.3 s | 41 |
+| cost-model | 357.0 | 1.08 | 27.4 s | 41 |
+| linear-ucb | 356.1 | 1.04 | 15.3 s | 41 |
+
+The learner's relative prediction error on its chosen actions falls from 0.014 to 0.001 between its
+first and last tenth of 10,714 choices (Codex: grade a learner by chronological prediction error on
+what it chose, never by scoring unchosen actions from a log).
+
+Measured on the M5, 2026-11-25, qwen2.5-0.5b, serving live beside it (load average 10),
+`a_short_turn_never_waits_out_another_minds_long_one`, alternating runs:
+
+| | need-first | cost-model |
+|---|---|---|
+| Short turn (8 tokens), engine time | 1.52, 1.53 s | 2.06, 2.09 s |
+| Finishes first | short | short |
+
+The long turn's time (3.2 to 14.7 s for both) is the live residents' load, not the algorithm. Under
+`frame::pick`, the short turn waited out all 256 of the long turn's tokens. Open: per-step switch
+counts and the 15-minute live read with four residents, and a replay comparison of the two algorithms
+on recorded lane decisions.
+
 ## The order, one PR each, merged before the next
 
 | # | Slice | Gate (validator, then the 15-minute live read) |

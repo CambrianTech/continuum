@@ -66,6 +66,7 @@ impl LlamaCppBackend {
 
         Ok(Self {
             embedding_lane: super::embedding_lane::EmbeddingLane::new(),
+            held_views: super::super::persona_scheduler::HeldViews::default(),
             chat: OnceLock::new(),
             model: Arc::new(model),
             config,
@@ -482,6 +483,7 @@ impl LlamaCppBackend {
                         n_ubatch: self.config.n_ubatch,
                         type_k: self.config.type_k,
                         type_v: self.config.type_v,
+                        lane_algorithm: self.config.lane_algorithm,
                     },
                 ),
             )
@@ -554,7 +556,7 @@ impl LlamaCppBackend {
         };
 
         // Tokenized here, on this act's own thread, so the engine thread never tokenizes.
-        let (prompt, view_end) = super::super::persona_scheduler::prepare(&self.model, prompt, turn.stable_prefix)?;
+        let (prompt, view_end) = self.held_views.prepare(&self.model, persona_id, prompt, turn.stable_prefix)?;
         let prompt_tokens = prompt.len();
         let req = GenerationRequest {
             prompt,
@@ -602,6 +604,17 @@ pub struct Answer {
 }
 
 impl TurnAnswer {
+    /// Until her first token arrives (a test's proof that her turn is running, never a timed guess).
+    /// The token is consumed; a test that waits on it does not read the answer's text.
+    #[cfg(test)]
+    pub(crate) async fn until_first_token(&mut self) {
+        while let Some(event) = self.events.recv().await {
+            if matches!(event, TokenEvent::Token(_)) {
+                return;
+            }
+        }
+    }
+
     pub async fn collect(mut self) -> Result<Answer, InferenceError> {
         let mut output = String::new();
         loop {
