@@ -435,7 +435,7 @@ impl PipelineExecutor {
             run.invocations[slot].state = InvocationState::Dispatching { attempt };
             // WRITE-AHEAD: after a crash, this row is the proof a dispatch may have happened.
             self.persist(run).await?;
-            let dispatch = self.executor.execute_classified(step.command.as_str(), params.clone(), self.caller.clone());
+            let dispatch = self.executor.execute_classified(step.command.as_str(), params.clone(), self.caller.clone(), self.origin.room);
             let outcome = match step.timeout_ms {
                 Some(ms) => match tokio::time::timeout(std::time::Duration::from_millis(ms), dispatch).await {
                     Ok(r) => r,
