@@ -105,3 +105,11 @@ impl<D: Domain> std::fmt::Debug for PlacerCore<D> {
         f.debug_struct("PlacerCore").field("ledger", &self.ledger).field("owners", &self.owners.len()).field("asks", &self.asks_of.len()).finish()
     }
 }
+
+impl<D: Domain> PlacerCore<D> {
+    /// How many asks the core holds across every owner's table, and how many claims it maps back to asks:
+    /// what a churn test reads to prove nothing is left behind.
+    pub fn held_entries(&self) -> (usize, usize) {
+        (self.owners.values().map(|table| table.entries.len()).sum(), self.asks_of.len())
+    }
+}
