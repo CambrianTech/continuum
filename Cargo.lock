@@ -2734,6 +2734,7 @@ dependencies = [
  "airc-core",
  "airc-protocol",
  "positron-core",
+ "rmp-serde",
  "serde",
  "serde_json",
  "ts-rs 12.0.1",

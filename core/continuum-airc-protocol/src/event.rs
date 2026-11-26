@@ -34,8 +34,11 @@
 
 use airc_core::{Body, MentionTarget, PeerId, TranscriptEvent};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use uuid::Uuid;
+
+// Value retained for gist/SOS edge compatibility; wire serialization uses rmp_serde.
+#[allow(unused_imports)]
+use serde_json::Value;
 
 use crate::command::HEADER_CONTINUUM_BODY_HINT;
 
@@ -152,9 +155,9 @@ pub fn resolve_subscribe(
         topic: topic.to_string(),
         filter,
     };
-    let body_value = serde_json::to_value(&req)
-        .map_err(|e| format!("airc event subscribe: serialize AircEventSubscribe to JSON: {e}"))?;
-    let body = Body::Json(body_value);
+    let body = rmp_serde::to_vec(&req)
+        .map_err(|e| format!("airc event subscribe: serialize AircEventSubscribe to MessagePack: {e}"))
+        .map(Body::Binary)?;
 
     let mut headers = airc_core::Headers::new();
     headers.insert(HEADER_EVENT_TOPIC.to_string(), topic.to_string());
@@ -173,10 +176,9 @@ pub fn resolve_unsubscribe(
     subscription_id: Uuid,
 ) -> Result<(MentionTarget, airc_core::Headers, Body), String> {
     let req = AircEventUnsubscribe { subscription_id };
-    let body_value = serde_json::to_value(&req).map_err(|e| {
-        format!("airc event unsubscribe: serialize AircEventUnsubscribe to JSON: {e}")
-    })?;
-    let body = Body::Json(body_value);
+    let body = rmp_serde::to_vec(&req)
+        .map_err(|e| format!("airc event unsubscribe: serialize AircEventUnsubscribe to MessagePack: {e}"))
+        .map(Body::Binary)?;
 
     let mut headers = airc_core::Headers::new();
     headers.insert(HEADER_EVENT_KIND.to_string(), "unsubscribe".to_string());
@@ -212,9 +214,9 @@ pub fn resolve_publish(
         topic: topic.to_string(),
         payload,
     };
-    let body_value = serde_json::to_value(&req)
-        .map_err(|e| format!("airc event publish: serialize AircEventPublish to JSON: {e}"))?;
-    let body = Body::Json(body_value);
+    let body = rmp_serde::to_vec(&req)
+        .map_err(|e| format!("airc event publish: serialize AircEventPublish to MessagePack: {e}"))
+        .map(Body::Binary)?;
 
     let mut headers = airc_core::Headers::new();
     headers.insert(HEADER_EVENT_TOPIC.to_string(), topic.to_string());
@@ -231,85 +233,69 @@ pub fn resolve_publish(
 pub fn decode_publish_ack(reply_body: Option<Body>) -> Result<AircEventPublishAck, String> {
     let body = reply_body.ok_or_else(|| {
         "airc event publish: reply has no body (peer-side publisher must \
-         attach Body::Json(AircEventPublishAck))"
+         attach Body::Binary(AircEventPublishAck))"
             .to_string()
     })?;
-    let value = match body {
-        Body::Json(v) => v,
-        Body::Binary(_) => {
-            return Err("airc event publish: reply body was Binary; expected Json \
-                 (AircEventPublishAck is a JSON envelope)"
-                .to_string());
-        }
-    };
-    serde_json::from_value(value)
-        .map_err(|e| format!("airc event publish: deserialize reply as AircEventPublishAck: {e}"))
+    match body {
+        Body::Binary(bytes) => rmp_serde::from_slice(&bytes)
+            .map_err(|e| format!("airc event publish: deserialize reply as AircEventPublishAck: {e}")),
+        Body::Json(_) => Err("airc event publish: reply body was JSON; expected Binary \
+             (AircEventPublishAck is a MessagePack-encoded struct)"
+            .to_string()),
+    }
 }
 
 /// Decode a subscribe-reply body as [`AircEventSubscribeAck`].
 ///
-/// Every error path (no body, binary body, malformed JSON) is
+/// Every error path (no body, binary body, malformed MessagePack) is
 /// testable without airc.
 pub fn decode_subscribe_ack(reply_body: Option<Body>) -> Result<AircEventSubscribeAck, String> {
     let body = reply_body.ok_or_else(|| {
         "airc event subscribe: reply has no body (peer-side publisher must \
-         attach Body::Json(AircEventSubscribeAck))"
+         attach Body::Binary(AircEventSubscribeAck))"
             .to_string()
     })?;
-    let value = match body {
-        Body::Json(v) => v,
-        Body::Binary(_) => {
-            return Err(
-                "airc event subscribe: reply body was Binary; expected Json \
-                 (AircEventSubscribeAck is a JSON envelope)"
-                    .to_string(),
-            );
-        }
-    };
-    serde_json::from_value(value).map_err(|e| {
-        format!("airc event subscribe: deserialize reply as AircEventSubscribeAck: {e}")
-    })
+    match body {
+        Body::Binary(bytes) => rmp_serde::from_slice(&bytes)
+            .map_err(|e| format!("airc event subscribe: deserialize reply as AircEventSubscribeAck: {e}")),
+        Body::Json(_) => Err(
+            "airc event subscribe: reply body was JSON; expected Binary \
+             (AircEventSubscribeAck is a MessagePack-encoded struct)"
+                .to_string(),
+        ),
+    }
 }
 
 /// Decode an unsubscribe-reply body.
 pub fn decode_unsubscribe_ack(reply_body: Option<Body>) -> Result<AircEventUnsubscribeAck, String> {
     let body = reply_body.ok_or_else(|| {
         "airc event unsubscribe: reply has no body (peer-side publisher must \
-         attach Body::Json(AircEventUnsubscribeAck))"
+         attach Body::Binary(AircEventUnsubscribeAck))"
             .to_string()
     })?;
-    let value = match body {
-        Body::Json(v) => v,
-        Body::Binary(_) => {
-            return Err("airc event unsubscribe: reply body was Binary; expected Json".to_string());
-        }
-    };
-    serde_json::from_value(value).map_err(|e| {
-        format!("airc event unsubscribe: deserialize reply as AircEventUnsubscribeAck: {e}")
-    })
+    match body {
+        Body::Binary(bytes) => rmp_serde::from_slice(&bytes)
+            .map_err(|e| format!("airc event unsubscribe: deserialize reply as AircEventUnsubscribeAck: {e}")),
+        Body::Json(_) => Err("airc event unsubscribe: reply body was JSON; expected Binary"
+            .to_string()),
+    }
 }
 
 /// Decode an inbound `TranscriptEvent` as an [`AircEventDeliver`]
 /// frame. Returns a typed error if the event isn't a valid Deliver
-/// (no body, binary body, malformed JSON).
-///
-/// The per-subscription filter loop calls this AFTER
-/// [`matches_subscription`] has already cheaply rejected non-matching
-/// frames, so this only runs on frames the caller actually wants.
+/// (no body, binary body not MessagePack-encodable).
 pub fn decode_deliver_frame(event: &TranscriptEvent) -> Result<AircEventDeliver, String> {
     let body = event.body.as_ref().ok_or_else(|| {
         "airc event Deliver frame has no body (peer-side publisher must attach \
-         Body::Json(AircEventDeliver))"
+         Body::Binary(AircEventDeliver))"
             .to_string()
     })?;
-    let value = match body {
-        Body::Json(v) => v.clone(),
-        Body::Binary(_) => {
-            return Err("airc event Deliver frame body was Binary; expected Json".to_string());
-        }
-    };
-    serde_json::from_value(value)
-        .map_err(|e| format!("airc event Deliver: deserialize as AircEventDeliver: {e}"))
+    match body {
+        Body::Binary(bytes) => rmp_serde::from_slice(bytes)
+            .map_err(|e| format!("airc event Deliver: deserialize as AircEventDeliver: {e}")),
+        Body::Json(_) => Err("airc event Deliver frame body was JSON; expected Binary"
+            .to_string()),
+    }
 }
 
 /// Pure predicate: does this `TranscriptEvent` belong to the given
@@ -480,10 +466,10 @@ mod tests {
             headers.get(HEADER_EVENT_KIND).map(String::as_str),
             Some("publish")
         );
-        let Body::Json(v) = body else {
-            panic!("publish body must be JSON")
+        let Body::Binary(bytes) = body else {
+            panic!("publish body must be MessagePack binary")
         };
-        let decoded: AircEventPublish = serde_json::from_value(v).expect("decode body");
+        let decoded: AircEventPublish = rmp_serde::from_slice(&bytes).expect("decode body");
         assert_eq!(decoded.topic, "events/x");
     }
 
@@ -500,7 +486,7 @@ mod tests {
             topic: "events/x".into(),
             delivered: 7,
         };
-        let body = Body::Json(serde_json::to_value(&ack).unwrap());
+        let body = Body::Binary(rmp_serde::to_vec(&ack).unwrap());
         let decoded = decode_publish_ack(Some(body)).expect("decodes");
         assert_eq!(decoded.delivered, 7);
     }
