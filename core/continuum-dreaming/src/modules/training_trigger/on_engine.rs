@@ -300,6 +300,17 @@ fn why_of(said: &Said) -> &str {
     }
 }
 
+/// What a learned step or a saved generation counted: the optimizer steps, and a step's loss when
+/// native code read one. Nothing for any other answer.
+fn progress_of(said: &Said) -> (Option<u64>, Option<f64>) {
+    use crate::inference::learning::{GenerationOutcome, StepOutcome};
+    match said {
+        Said::Step { outcome: StepOutcome::Learned { steps, loss }, .. } => (Some(steps.get()), *loss),
+        Said::Generation { outcome: GenerationOutcome::Saved { steps, .. }, .. } => (Some(*steps), None),
+        _ => (None, None),
+    }
+}
+
 /// The seat a `said` is about.
 fn seat_of(said: &Said) -> SeatId {
     match said {
@@ -454,7 +465,8 @@ impl TrainingTriggerState {
             let Some(held) = seats.get_mut(&seat) else { return };
             held.run.hear(port.as_ref(), &said)
         };
-        continuum_base::probe!(class = "training.on_engine.said", persona = %key.persona_id, seat = %seat.0, said = ?said_kind(&said), why = why_of(&said), acted = heard.is_some(),
+        let (steps, loss) = progress_of(&said);
+        continuum_base::probe!(class = "training.on_engine.said", persona = %key.persona_id, seat = %seat.0, said = ?said_kind(&said), why = why_of(&said), steps = ?steps, loss = ?loss, acted = heard.is_some(),
             "the node engine answered one of the trainer's seats");
         let Some(heard) = heard else { return };
         let saved = matches!(heard, Heard::Saved { .. });
