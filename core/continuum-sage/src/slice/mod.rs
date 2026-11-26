@@ -33,6 +33,7 @@ use crate::component::{Need, Urgency};
 pub mod lane;
 pub mod control;
 pub mod device;
+pub mod room;
 pub mod sim;
 pub mod trace;
 pub mod tuner;
@@ -481,7 +482,7 @@ pub(crate) mod tests {
         pub(crate) const ENGINE: Costs = Costs { step: Duration::from_millis(20), switch: Duration::from_millis(26) };
     }
 
-    use super::sim::{run, MindLoad, Workload};
+    use super::sim::{simulate, MindLoad, Workload};
     use super::*;
     use crate::slice::device::Unified;
     /// The lane's own tests decode only (their minds' prompts are 0), on the M5's measured prefill.
@@ -509,7 +510,7 @@ pub(crate) mod tests {
     #[test]
     fn equal_minds_take_turns_inside_the_bound() {
         let load = Workload { minds: ['a', 'b', 'c'].map(|m| decoding(m, Urgency::Want, Duration::ZERO)).to_vec(), switch: ENGINE.switch, chunk: CHUNK };
-        let (report, _) = run(&mut Slicer::new(policy()), &load, &M5, Duration::from_secs(60));
+        let (report, _) = simulate(&mut Slicer::new(policy()), &load, &M5, u64::MAX, "baseline", Duration::from_secs(60));
         for mind in ['a', 'b', 'c'] {
             assert!((report.share[&mind] - 1.0 / 3.0).abs() < 0.02, "{mind} got {:.3} of the engine", report.share[&mind]);
         }
@@ -541,10 +542,10 @@ pub(crate) mod tests {
         let mut b = decoding('b', Urgency::Content, Duration::ZERO);
         b.changes = vec![(Duration::from_secs(60), need(Urgency::Urgent))];
         let load = Workload { minds: vec![decoding('a', Urgency::Want, Duration::ZERO), b], switch: ENGINE.switch, chunk: CHUNK };
-        let (before, _) = run(&mut Slicer::new(policy()), &load, &M5, Duration::from_secs(60));
+        let (before, _) = simulate(&mut Slicer::new(policy()), &load, &M5, u64::MAX, "baseline", Duration::from_secs(60));
         let ratio = before.share[&'a'] / before.share[&'b'];
         assert!((ratio - 2.0).abs() < 0.25, "want got {ratio:.2}x of content");
-        let (whole, _) = run(&mut Slicer::new(policy()), &load, &M5, Duration::from_secs(180));
+        let (whole, _) = simulate(&mut Slicer::new(policy()), &load, &M5, u64::MAX, "baseline", Duration::from_secs(180));
         // 60 s at 2:1 for a, then 120 s at 1:2: b's share over the whole run is (1/3 + 2 * 2/3) / 3.
         assert!((whole.share[&'b'] - 5.0 / 9.0).abs() < 0.04, "b's share {:.3} follows the rise", whole.share[&'b']);
         assert!(whole.worst().is_none_or(|w| w <= Duration::from_secs(1)), "through the rise nobody waited past the bound: {:?}", whole.worst());
@@ -586,7 +587,7 @@ pub(crate) mod tests {
             switch: ENGINE.switch,
             chunk: CHUNK,
         };
-        let (report, _) = run(&mut Slicer::new(policy()), &load, &M5, Duration::from_secs(70));
+        let (report, _) = simulate(&mut Slicer::new(policy()), &load, &M5, u64::MAX, "baseline", Duration::from_secs(70));
         assert!(report.worst_wait.get(&'a').is_some_and(|w| *w <= Duration::from_secs(1)), "a waited {:?}", report.worst_wait.get(&'a'));
         assert!(report.share[&'b'] > 0.0);
     }

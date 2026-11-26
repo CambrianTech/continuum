@@ -246,6 +246,20 @@ The law, once, at every rung:
 - A pinned block never moves. A block under `InFlight` moves only after its `Completion`.
 - Transfers run on the Streamer's own workers. The engine thread never waits on one: it reads
   `Placement`, and a block not resident when needed is a loud, counted miss.
+- **When a move starts is learned, never a fixed lead** (Joel: "If it's by a learning algorithm with feedback
+  it'll figure it out"; "super important to use our extensible algorithms"). Each parked mind's move is a
+  decision of the `prefetch` use case (`continuum-sage/src/decide/cases/prefetch.rs`): start now, her copy plus k
+  spreads of the need prediction before her need, or only at need. Its outcome is measured both ways: late (the
+  lane waited on her) and wasted (a move abandoned for a mind needed sooner, or landed and parked again unused).
+  The stock `linear-ucb` learns it; `baseline` and `at-need` are registered beside it for comparison. In the
+  simulator (`slice/room.rs`, the Streamer's law against a lane), three minds in room for two on the 5090's day:
+  82.9 s of switching never prefetching, 71.7 s starting each move when parked, 68.0 s learned. Two minds the room
+  holds switch by pointer (6.4 s, as unified); room for one copies at every switch (129 s).
+- **The Dedicated block, per Codex's review (2026-11-26):** one device buffer per mind is compatible with
+  `persona_view` and the listed layer order, with aligned backend offsets and one tensor descriptor per K, V and
+  recurrent tensor. The stream assumes full-sized tensors today, so a window-sized binding must first constrain cell
+  indexing, strides, child views and clears to the allocated extent before it is published, and a landing is never
+  published while a prior decode still reads that buffer.
 
 **The law is pluggable, as the Lane's is.** The Streamer's decisions come from a `PlacementLaw`, the
 same shape as `continuum_sage::slice::Control`. The Streamer around it stays the same: budgets,

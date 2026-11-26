@@ -7,5 +7,6 @@ pub mod lane_cost;
 pub mod lane_features;
 pub mod lane_history;
 pub mod placement;
+pub mod prefetch;
 pub mod residency;
 pub mod volume;

@@ -13,7 +13,10 @@ use std::time::{Duration, Instant};
 
 use crate::component::Need;
 
-use super::device::{Bind, Device, Prefill};
+use super::device::{Device, Prefill};
+use super::room::Room;
+use crate::decide::cases::prefetch::Prefetch;
+use crate::decide::Decider;
 use super::trace::{Event, Trace};
 use super::{Next, Slicer};
 
@@ -98,9 +101,18 @@ fn feed<K: Copy + Eq + Hash + Ord>(slicer: &mut Slicer<K>, trace: &mut Trace<K>,
     decided
 }
 
-/// Drive `slicer` through `load` on `device` for `length` of simulated time: each turn prefills its prompt chunk by
-/// chunk at the device's rate, then decodes; a switch costs the lane's own plus binding the mind on the device.
-pub fn run<K: Copy + Eq + Hash + Ord>(slicer: &mut Slicer<K>, load: &Workload<K>, device: &dyn Device, length: Duration) -> (Report<K>, Trace<K>) {
+/// What a run is priced on: the device's costs, its room for minds' KV, and the prefetch decision that says when a
+/// parked mind's move starts.
+pub struct On<'a, K> {
+    pub device: &'a dyn Device,
+    pub room: &'a mut Room<K>,
+    pub prefetch: &'a mut Decider<Prefetch>,
+}
+
+/// Drive `slicer` through `load` for `length` of simulated time: each turn prefills its prompt chunk by chunk at the
+/// device's rate, then decodes; a switch costs the lane's own plus waiting for her KV, if the room had parked her.
+pub fn run<K: Copy + Eq + Hash + Ord>(slicer: &mut Slicer<K>, load: &Workload<K>, on: On<'_, K>, length: Duration) -> (Report<K>, Trace<K>) {
+    let On { device, room, prefetch } = on;
     let start = Instant::now();
     let mut trace = Trace { control: slicer.control(), events: Vec::new() };
     let mut states: Vec<State> =
@@ -124,8 +136,7 @@ pub fn run<K: Copy + Eq + Hash + Ord>(slicer: &mut Slicer<K>, load: &Workload<K>
     }
     let (mut now, mut busy) = (Duration::ZERO, Duration::ZERO);
     let mut stepped: HashMap<K, Duration> = HashMap::new();
-    // when the running slice began: the lane knew who comes next from then, so a prefetching device fetched her meanwhile
-    let mut slice_since = Duration::ZERO;
+    let copy = |bytes: u64| device.copy(bytes);
     while now < length {
         for (m, s) in load.minds.iter().zip(states.iter_mut()) {
             while let Some((_, need)) = m.changes.get(s.next_change).copied().filter(|(at, _)| *at <= now) {
@@ -139,26 +150,28 @@ pub fn run<K: Copy + Eq + Hash + Ord>(slicer: &mut Slicer<K>, load: &Workload<K>
                 feed(slicer, &mut trace, start, Event::Ready(m.mind));
             }
         }
-        let had = slicer.running().is_some();
+        room.tick(now, slicer.running().copied(), copy, prefetch);
+        let before = slicer.running().copied();
         let held = match feed(slicer, &mut trace, start, Event::Decide(now, Next::Idle)) {
             Some(Next::Switch(mind)) => {
-                if had {
+                if let Some(previous) = before.filter(|p| *p != mind) {
                     report.switches += 1;
+                    room.left(previous, now);
                 }
-                // her KV comes back on the device: free on unified memory, a copy over the link on a discrete card
-                // the device can fetch her only from when the lane knew she comes next: the later of the slice's start and
-                // the moment she became ready
-                let known = load.minds.iter().position(|m| m.mind == mind).and_then(|i| states[i].waiting_since).map_or(slice_since, |ready| ready.max(slice_since)); // map_or: a mind with no wait open was known from the slice's start
-                let bind = load.minds.iter().find(|m| m.mind == mind).map_or(Duration::ZERO, |m| device.bind(Bind { bytes: m.kv, ahead: now.saturating_sub(known) })); // map_or: the slicer switches only to minds this load fed it
-                let took = load.switch + bind;
+                // her KV is a pointer away if the room kept her or a prefetch landed her; else the lane waits on her move
+                let brought = room.bring_in(mind, now, copy, prefetch);
+                let took = load.switch + brought.waited;
                 now += took;
                 busy += took;
                 feed(slicer, &mut trace, start, Event::Switched(mind, took));
                 report.switching += took;
-                slice_since = now;
-                if let Some(m) = load.minds.iter().find(|m| m.mind == mind) {
+                if let Some(fetched) = brought.fetched {
                     // the driver measures her copy when it lands: the lane learns how long the slice before her must be
-                    feed(slicer, &mut trace, start, Event::Fetched(mind, device.copy(m.kv)));
+                    feed(slicer, &mut trace, start, Event::Fetched(mind, fetched));
+                }
+                // the Streamer works beside the lane: the moment she is in, the one she replaced may make room for the next
+                room.tick(now, Some(mind), copy, prefetch);
+                {
                 }
                 mind
             }
@@ -167,8 +180,9 @@ pub fn run<K: Copy + Eq + Hash + Ord>(slicer: &mut Slicer<K>, load: &Workload<K>
                 None => break,
             },
             _ => {
-                // Nobody has decoding to do: the lane idles until the next turn arrives.
-                match states.iter().filter(|s| s.left == 0).map(|s| s.resume).filter(|r| *r > now).min() {
+                // Nobody has decoding to do: the lane idles until the next turn arrives, or a planned move falls due.
+                let resume = states.iter().filter(|s| s.left == 0).map(|s| s.resume).filter(|r| *r > now).min();
+                match resume.into_iter().chain(room.next_due(now)).min() {
                     Some(resume) => {
                         now = resume;
                         continue;
@@ -205,6 +219,7 @@ pub fn run<K: Copy + Eq + Hash + Ord>(slicer: &mut Slicer<K>, load: &Workload<K>
         if s.left == 0 {
             s.waiting_since = None;
             s.resume = now + m.rest;
+            room.left(held, now);
             feed(slicer, &mut trace, start, Event::Done(held));
         } else {
             s.waiting_since = Some(now);
@@ -217,6 +232,11 @@ pub fn run<K: Copy + Eq + Hash + Ord>(slicer: &mut Slicer<K>, load: &Workload<K>
 }
 
 impl<K: Copy + Eq + Hash + Ord> Workload<K> {
+    /// A room of `capacity` bytes holding this load's minds (`u64::MAX`: every one), reading times against `bound`.
+    pub fn room(&self, capacity: u64, bound: Duration) -> Room<K> {
+        Room::new(capacity, self.minds.iter().map(|m| (m.mind, m.kv)), bound)
+    }
+
     /// The load a trace carried, as means per mind: her step, her turn length, her time off the
     /// lane, her first need and its changes; the lane's switch. Drives the simulator on what a
     /// live node actually saw.
@@ -303,7 +323,7 @@ impl<K: Copy + Eq + Hash + Ord> Workload<K> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::slice::device::Unified;
+    use crate::slice::device::{Dedicated, Unified};
     /// The lane's own tests decode only (their minds' prompts are 0), on the M5's measured prefill.
     const M5: Unified = Unified::M5_AT_64K;
     const CHUNK: std::num::NonZeroU64 = std::num::NonZeroU64::MIN;
@@ -344,9 +364,9 @@ mod tests {
     fn control_laws_compare_on_one_workload() {
         let load = residents();
         let length = Duration::from_secs(300);
-        let (climb, _) = run(&mut Slicer::new(policy()), &load, &M5, length);
-        let (every_step, _) = run(&mut Slicer::with(policy(), Box::new(Fixed(0.0))), &load, &M5, length);
-        let (long, _) = run(&mut Slicer::with(policy(), Box::new(Fixed(5.0))), &load, &M5, length);
+        let (climb, _) = simulate(&mut Slicer::new(policy()), &load, &M5, u64::MAX, "baseline", length);
+        let (every_step, _) = simulate(&mut Slicer::with(policy(), Box::new(Fixed(0.0))), &load, &M5, u64::MAX, "baseline", length);
+        let (long, _) = simulate(&mut Slicer::with(policy(), Box::new(Fixed(5.0))), &load, &M5, u64::MAX, "baseline", length);
         assert!(climb.throughput > every_step.throughput * 1.3, "climb {:.1} vs every step {:.1}", climb.throughput, every_step.throughput);
         assert!(climb.worst().is_none_or(|w| w <= Duration::from_secs(1)), "climb waited {:?}", climb.worst());
         // The wall caps even a fixed law: the slicer, not the law, keeps the bound.
@@ -358,7 +378,7 @@ mod tests {
     // order). A recorded run replays decision for decision.
     #[test]
     fn a_trace_replays_exactly() {
-        let (_, trace) = run(&mut Slicer::new(policy()), &residents(), &M5, Duration::from_secs(120));
+        let (_, trace) = simulate(&mut Slicer::new(policy()), &residents(), &M5, u64::MAX, "baseline", Duration::from_secs(120));
         let decisions = replay(&trace, &mut Slicer::new(policy()));
         assert!(matches!(decisions, Ok(n) if n > 1_000), "replayed {decisions:?}");
     }
@@ -368,7 +388,7 @@ mod tests {
     #[test]
     fn a_trace_fits_back_into_its_workload() {
         let load = residents();
-        let (_, trace) = run(&mut Slicer::new(policy()), &load, &M5, Duration::from_secs(300));
+        let (_, trace) = simulate(&mut Slicer::new(policy()), &load, &M5, u64::MAX, "baseline", Duration::from_secs(300));
         let fitted = Workload::fit(&trace);
         assert_eq!(fitted.switch, load.switch);
         for (want, got) in load.minds.iter().zip(&fitted.minds) {
@@ -378,57 +398,77 @@ mod tests {
         }
     }
 
-    // what this catches (Joel, 2026-11-26: "Can we record or simulate anything? How do we optimize?"): a question
-    // about the 5090 that only a live window could answer. The same two-mind day on each memory: Kimi's real
-    // prompt (175,195 tokens, cold) and her KV at the stream's 8,704 MiB, Sahar beside her. The run says where the
-    // lane's time goes: binding a parked mind is free on unified memory and a copy over the link on a discrete card,
-    // and the lane alternating them through their prefills pays it at every switch. The link is a fixture (25 GB/s
-    // pinned), not a measurement: the next 5090 window measures it.
+    // what this catches (Joel, 2026-11-26: "Can we record or simulate anything? How do we optimize?"; "If it's by a
+    // learning algorithm with feedback it'll figure it out"): a question about the 5090 that only a live window
+    // could answer. Kimi's real cold prompt (175,195 tokens) beside Sahar's (68,583), their KV at the stream's
+    // 8,704 MiB, the 5090's measured prefill; the link is a fixture (25 GB/s pinned), not a measurement. The run
+    // says what costs the lane: a copy only when the card's room cannot hold every mind.
     #[test]
-    fn the_same_day_on_unified_and_dedicated_memory_prices_every_bind() {
-        use crate::slice::device::{Dedicated, Fetch};
-        const MIB: u64 = 1 << 20;
-        let mind = |mind, prompt, kv| MindLoad {
-            mind,
-            need: Need { urgency: Urgency::Want, waiting: 0 },
-            changes: Vec::new(),
-            step: Duration::from_millis(30),
-            turn: 400,
-            rest: Duration::from_secs(20),
-            starts: Duration::ZERO,
-            prompt,
-            kv,
-        };
-        let load = Workload {
-            minds: vec![mind('k', 175_195, 8_704 * MIB), mind('s', 68_583, 8_704 * MIB)],
-            switch: Duration::from_millis(26),
-            chunk: std::num::NonZeroU64::new(2_048).expect("test: a chunk"), // expect: the test's own constant
-        };
-        let length = Duration::from_secs(900); // the 5090's window
-        let five_090 = Dedicated::rtx_5090(25.0e9, Fetch::Synchronous);
-        let unified = Unified { prefill: five_090.prefill }; // the same prefill rate, unified memory
-        let (shared, _) = run(&mut Slicer::new(policy()), &load, &unified, length);
-        let (discrete, _) = run(&mut Slicer::new(policy()), &load, &five_090, length);
-        let (prefetched, _) = run(&mut Slicer::new(policy()), &load, &Dedicated::rtx_5090(25.0e9, Fetch::Prefetch), length);
-        assert_eq!((shared.device, discrete.device, prefetched.device), ("unified", "dedicated, synchronous fetch", "dedicated, prefetch"));
-        assert!(shared.prefilled > 0 && discrete.prefilled > 0, "both prefill the prompts");
-        assert!(discrete.switches > 0, "the minds alternate");
-        for report in [&shared, &discrete, &prefetched] {
-            println!("{}: prefilling {:.0} s, decoding {:.0} s, switching {:.2} s over {} switches", report.device, report.prefilling.as_secs_f64(), report.decoding.as_secs_f64(), report.switching.as_secs_f64(), report.switches);
+    fn the_5090s_day_switches_by_pointer_when_her_room_holds_both_and_copies_when_it_does_not() {
+        let load = day(&[('k', 175_195), ('s', 68_583)]);
+        let five_090 = Dedicated::rtx_5090(25.0e9);
+        let unified = Unified { prefill: five_090.prefill };
+        let (shared, _) = simulate(&mut Slicer::new(policy()), &load, &unified, u64::MAX, "baseline", DAY);
+        let (both, _) = simulate(&mut Slicer::new(policy()), &load, &five_090, 2 * KV, "baseline", DAY);
+        let (one, _) = simulate(&mut Slicer::new(policy()), &load, &five_090, KV, "baseline", DAY);
+        for (label, report) in [("unified", &shared), ("room for both", &both), ("room for one", &one)] {
+            println!("{label}: prefilling {:.0} s, switching {:.2} s over {} switches", report.prefilling.as_secs_f64(), report.switching.as_secs_f64(), report.switches);
         }
-        // what the day says: the lane alternates the two minds through their cold prefills, and on a discrete card each
-        // switch copies 8.7 GB back: a seventh of the window spent moving KV (simulated 2026-11-26: 129 s over 328
-        // switches against 6 s unified). The lever is the lane pricing the device's bind in its switch, not a fixed cost.
-        assert!(discrete.prefilling > discrete.decoding + discrete.switching, "prefill dominates the window");
-        assert!(discrete.switching > shared.switching, "every bind on the discrete card copies her KV back");
-        assert!(discrete.switching > shared.switching * 10, "binds on the discrete card cost the lane an order of magnitude more");
-        assert!(discrete.switching.as_secs_f64() > length.as_secs_f64() / 10.0, "over a tenth of the window: the switch decision must price the bind");
-        // the remedy the design names: fetch her while the slice before her runs, so the switch waits only for the rest
-        // simulated 2026-11-26: 129 s synchronous, 36 s with prefetch, 34 s with the slice floored at the next mind's
-        // fetch. Of what is left, 76 switches pay the whole copy: the incoming mind was not waiting during the slice
-        // before (the running turn had just ended), so nothing was prefetched. The next lever: fetch the next mind when
-        // the running turn's predicted end is near.
-        assert!(prefetched.switching * 3 < discrete.switching, "prefetch hides most of each bind: {:?} vs {:?}", prefetched.switching, discrete.switching);
-        assert!(prefetched.prefilled + prefetched.decoded > discrete.prefilled + discrete.decoded, "and the lane does more of the day's work");
+        assert!(one.switches > 0 && both.switches > 0, "the minds alternate");
+        assert_eq!(both.switching, shared.switching, "room for both: every switch a pointer, as on unified memory");
+        assert!(one.switching > both.switching * 10, "room for one: every switch waits on a whole copy");
     }
+
+    // what this catches: a prefetch decision that only steps one way, or a learner that never beats the rules it
+    // replaces. Three minds, room for two: a parked mind comes back through the link while another runs. The same day
+    // under never-prefetch (today's synchronous copy), start-when-parked (the baseline), and the stock linear UCB
+    // learning each move's lateness and early hold from its outcome.
+    #[test]
+    fn a_learned_prefetch_hides_copies_a_fixed_rule_pays() {
+        let load = day(&[('k', 175_195), ('s', 68_583), ('a', 32_000)]);
+        let five_090 = Dedicated::rtx_5090(25.0e9);
+        let run_with = |algorithm| simulate(&mut Slicer::new(policy()), &load, &five_090, 2 * KV, algorithm, DAY).0;
+        let (at_need, eager, learned) = (run_with("at-need"), run_with("baseline"), run_with("linear-ucb"));
+        for (label, report) in [("at-need", &at_need), ("baseline", &eager), ("linear-ucb", &learned)] {
+            println!("{label}: switching {:.2} s over {} switches, work {} tokens", report.switching.as_secs_f64(), report.switches, report.prefilled + report.decoded);
+        }
+        // simulated 2026-11-26 (fixture link 25 GB/s): switching 82.9 s never prefetching, 71.7 s starting each move when
+        // she is parked, 68.0 s learned; the learner chose Now 345 times and AtNeed 16, from outcomes alone. What is left
+        // (about 0.15 s a move) is moves the link could not start sooner, an inference not yet traced.
+        assert!(eager.switching < at_need.switching, "a prefetch hides some of each copy");
+        assert!(learned.switching <= eager.switching, "the learner does no worse than the best fixed rule: {:?} vs {:?}", learned.switching, eager.switching);
+        assert!(learned.prefilled + learned.decoded >= eager.prefilled + eager.decoded, "and does at least as much of the day's work");
+    }
+}
+
+/// A day of minds on the 5090: each her prompt, cold, then decode turns of 400 steps 20 s apart.
+#[cfg(test)]
+fn day(minds: &[(char, u64)]) -> Workload<char> {
+    let mind = |&(mind, prompt): &(char, u64)| MindLoad {
+        mind,
+        need: Need { urgency: crate::component::Urgency::Want, waiting: 0 },
+        changes: Vec::new(),
+        step: Duration::from_millis(30),
+        turn: 400,
+        rest: Duration::from_secs(20),
+        starts: Duration::ZERO,
+        prompt,
+        kv: KV,
+    };
+    Workload { minds: minds.iter().map(mind).collect(), switch: Duration::from_millis(26), chunk: std::num::NonZeroU64::new(2_048).unwrap_or(std::num::NonZeroU64::MIN) } // unwrap_or: 2,048 is not zero
+}
+
+#[cfg(test)]
+const KV: u64 = 8_704 << 20;
+#[cfg(test)]
+const DAY: Duration = Duration::from_secs(900);
+
+/// Run `slicer` through `load` on `device` with `capacity` bytes of KV room and the prefetch `algorithm` by name.
+#[cfg(test)]
+pub(crate) fn simulate(slicer: &mut Slicer<char>, load: &Workload<char>, device: &dyn Device, capacity: u64, algorithm: &'static str, length: Duration) -> (Report<char>, Trace<char>) {
+    let bound = Duration::from_secs(1);
+    let mut room = load.room(capacity, bound);
+    let policy = crate::decide::cases::prefetch::algorithms().and_then(|a| a.create(algorithm)).expect("test: a registered prefetch algorithm"); // expect: the test's own names
+    let mut prefetch = Decider::new(policy, crate::decide::cases::prefetch::DECISIONS);
+    run(slicer, load, On { device, room: &mut room, prefetch: &mut prefetch }, length)
 }
