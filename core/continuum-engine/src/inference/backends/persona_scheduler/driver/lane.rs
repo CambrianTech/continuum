@@ -152,6 +152,7 @@ fn mind(turn: &Turn, history: &LaneHistory<PersonaId>) -> Mind<PersonaId> {
         remaining: Measured::Unmeasured,
         step: Measured::Unmeasured,
         switch_in: Measured::Unmeasured,
+        overhead: Measured::Unmeasured,
         prefix_hit: Measured::Unmeasured,
     };
     history.fill(&mut mind, Fraction::HALF);

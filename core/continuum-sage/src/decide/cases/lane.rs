@@ -54,6 +54,9 @@ pub struct Mind<K> {
     /// Her step time, and the cost of bringing her in from where she is now.
     pub step: Measured<Duration>,
     pub switch_in: Measured<Duration>,
+    /// The fixed time a step of hers costs whatever its tokens (a prefill chunk's submit and its pass
+    /// over her context), apart from `step`, her time a token; `Unmeasured` until her steps vary in size.
+    pub overhead: Measured<Duration>,
     /// Her prefix cache's hit rate: how much of her work reuses what is warm.
     pub prefix_hit: Measured<f64>,
 }
@@ -129,6 +132,18 @@ pub fn room<K: PartialEq>(situation: &Situation<K>, stepping: Option<&K>) -> Opt
         .min()
 }
 
+/// The least a step of hers is worth taking: a decode step, or a prefill chunk long enough that its
+/// tokens take at least as long as its fixed part (twice that part), so the envelope serves the queue
+/// before her room shrinks to chunks that pay a full step for a token. A step or part not yet measured
+/// is a cost not yet seen.
+fn worthwhile_step<K>(mind: &Mind<K>) -> Duration {
+    match (mind.overhead.value(), mind.step.value()) {
+        (Some(fixed), _) => fixed * 2,
+        (None, Some(step)) => step,
+        (None, None) => Duration::ZERO,
+    }
+}
+
 /// How many tokens one step of `stepped` may move, at most `most` (the engine's batch). A step cannot
 /// be preempted, so the bound every other mind is promised is kept only if the step ends inside the
 /// queue's room (`room`: every waiter's slack less the turns ahead of her) at the
@@ -137,9 +152,11 @@ pub fn room<K: PartialEq>(situation: &Situation<K>, stepping: Option<&K>) -> Opt
 /// The M5, 2026-11-25 19:40 to 19:50Z: prefill chunks a whole batch long left other minds 7 to 9 s
 /// without a step under a 1 s bound.
 pub fn step_tokens<K: PartialEq>(situation: &Situation<K>, stepped: &Mind<K>, most: u64) -> u64 {
-    let slack = room(situation, Some(&stepped.mind));
-    match (slack, stepped.step.value()) {
-        (Some(slack), Some(per_token)) if per_token > Duration::ZERO => ((slack.as_secs_f64() / per_token.as_secs_f64()) as u64).clamp(1, most.max(1)),
+    let room = room(situation, Some(&stepped.mind));
+    // the chunk's fixed part comes off the room first; what is left buys tokens at her part a token
+    let fixed = stepped.overhead.value().unwrap_or(Duration::ZERO); // unwrap_or: an unmeasured fixed part is a cost not yet seen
+    match (room, stepped.step.value()) {
+        (Some(room), Some(per_token)) if per_token > Duration::ZERO => ((room.saturating_sub(fixed).as_secs_f64() / per_token.as_secs_f64()) as u64).clamp(1, most.max(1)),
         _ => most.max(1),
     }
 }
@@ -176,7 +193,7 @@ impl<K: Copy + Debug + PartialEq + Send + 'static> UseCase for Lane<K> {
         // rank's steps (earliest deadline first, counting the queue). Checked one at a time, a crowd
         // nearing the bound together each looked safe and overran by a step apiece (the M5, 2026-11-25
         // 20:54 to 21:04Z: 929 violations, p50 1.02 of the bound, twelve resident turns at once).
-        let next = situation.running.as_ref().and_then(|running| running.step.value()).unwrap_or(Duration::ZERO); // unwrap_or: an unmeasured step is a cost not yet seen
+        let next = situation.running.as_ref().map_or(Duration::ZERO, worthwhile_step); // map_or: no one running takes no step
         // Only minds with a per-item bound crowd it (`room`); background work has none.
         let crowded = room(situation, situation.running.as_ref().map(|running| &running.mind)).is_some_and(|room| room <= next);
         let overdue = ready.iter().enumerate().filter(|_| crowded).filter_map(|(slot, mind)| mind.slack().map(|left| (slot, left))).min_by_key(|&(_, left)| left);

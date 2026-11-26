@@ -29,7 +29,7 @@ mod ridge;
 mod use_case;
 
 pub use capacity::{Capacity, Lease, Price};
-pub use measured::{Ewma, Fraction, Measured, Window};
+pub use measured::{Ewma, Fraction, LineFit, Measured, Window};
 pub use algorithms::{Algorithms, Factory, Unknown};
 pub use linear_ucb::{Featured, LinearUcb};
 pub use ridge::{Predicted, Ridge};

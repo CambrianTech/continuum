@@ -137,6 +137,7 @@ fn mind(id: u8, waited_ms: u64) -> Mind<u8> {
         remaining: Measured::Unmeasured,
         step: Measured::Value(Duration::from_millis(26)),
         switch_in: Measured::Value(Duration::from_micros(10)),
+        overhead: Measured::Unmeasured,
         prefix_hit: Measured::Unmeasured,
     }
 }
@@ -406,6 +407,8 @@ fn the_cost_models_margin_is_seeded_from_the_first_measurements_it_needs() {
 fn simulate(policy: Box<dyn Policy<Lane<u8>>>, seconds: u64) -> (f64, f64, u128, usize, Decider<Lane<u8>>) {
     const CHUNK: u64 = 256;
     let prefill_token = Duration::from_micros(200);
+    // what every prefill chunk pays whatever its tokens (the 35B: ~6 ms submit plus a pass over her context)
+    let chunk_fixed = Duration::from_millis(12);
     let decode = Duration::from_millis(26);
     let switch = Duration::from_millis(5);
     let think = Duration::from_secs(2);
@@ -435,6 +438,7 @@ fn simulate(policy: Box<dyn Policy<Lane<u8>>>, seconds: u64) -> (f64, f64, u128,
             remaining: Measured::Value(if prompt > 0 { prompt } else { left }),
             step: Measured::Value(if prompt > 0 { prefill_token } else { decode }),
             switch_in: Measured::Value(switch),
+            overhead: if prompt > 0 { Measured::Value(chunk_fixed) } else { Measured::Unmeasured },
             prefix_hit: Measured::Unmeasured,
         }),
         State::Thinking(_) => None,
@@ -483,7 +487,7 @@ fn simulate(policy: Box<dyn Policy<Lane<u8>>>, seconds: u64) -> (f64, f64, u128,
         }
         let State::Ready { prompt, decode: left, began, .. } = &mut minds[who] else { panic!("test: a stepped mind is ready") };
         let left_before = if *prompt > 0 { *prompt } else { *left };
-        let moved = if *prompt > 0 { let chunk = (*prompt).min(allowed); *prompt -= chunk; engine += prefill_token * chunk as u32; chunk } else { *left -= 1; engine += decode; 1 };
+        let moved = if *prompt > 0 { let chunk = (*prompt).min(allowed); *prompt -= chunk; engine += chunk_fixed + prefill_token * chunk as u32; chunk } else { *left -= 1; engine += decode; 1 };
         let finished = *prompt == 0 && *left == 0;
         let began = *began;
         now += engine;
@@ -609,4 +613,24 @@ fn background_work_keeps_its_queue_in_check_instead_of_a_wait_bound() {
     assert_eq!(envelope::<Lane<u8>>(&owed).0, Gate::Forced(lane::Action::Switch(0)), "its queue would grow: it takes the step");
     let pressed = lane::Situation { ready: vec![dream, mind(2, 990)], background_owed: true, ..quiet };
     assert_eq!(envelope::<Lane<u8>>(&pressed).0, Gate::Forced(lane::Action::Switch(1)), "an act at her bound still comes first");
+}
+
+// what this catches (the M5, 2026-11-26: under a crowd, chunks sized by a per-token rate shrank toward
+// one token, each paying a full step: Benchy prefilled 3,197 tokens in 57.6 s): a step's fixed part
+// ignored. The line recovers a step's fixed part and its part a token; a chunk is sized by what its room
+// buys after the fixed part; and the queue is served before the room is too small for a chunk worth its
+// fixed part.
+#[test]
+fn a_prefill_chunk_pays_its_fixed_part_and_is_never_too_small_to_be_worth_it() {
+    let mut line = LineFit::new(Fraction::QUARTER);
+    for tokens in [256.0, 1_024.0, 64.0, 2_048.0, 512.0] {
+        line.observe(tokens, 0.012 + 0.0002 * tokens);
+    }
+    let Measured::Value((fixed, per_token)) = line.fit() else { panic!("test: five chunks of different sizes fit a line") };
+    assert!((fixed - 0.012).abs() < 1e-9 && (per_token - 0.0002).abs() < 1e-12, "{fixed} {per_token}");
+    let prefilling = Mind { phase: Phase::Prefill { remaining: 30_000 }, step: Measured::Value(Duration::from_micros(200)), overhead: Measured::Value(Duration::from_millis(12)), ..mind(1, 0) };
+    let roomy = lane::Situation { running: Some(prefilling), ready: vec![mind(2, 900)], batch_width: 1, background_owed: false };
+    assert_eq!(lane::step_tokens(&roomy, &prefilling, 4_096), 439, "(100 ms of room less 12 ms fixed) at 0.2 ms a token");
+    let tight = lane::Situation { running: Some(prefilling), ready: vec![mind(2, 980)], batch_width: 1, background_owed: false };
+    assert_eq!(envelope::<Lane<u8>>(&tight).0, Gate::Forced(lane::Action::Switch(0)), "20 ms of room cannot buy a chunk worth its 12 ms: the waiter goes first");
 }

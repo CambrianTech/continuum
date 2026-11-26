@@ -31,14 +31,20 @@ pub const FEATURES: usize = 14;
 /// (maximized), and the worst wait against its bound (kept at or under one).
 pub const TARGETS: usize = 2;
 
-/// Her remaining phase finished per second, as her history predicts it: one over her remaining time
-/// (her remaining tokens, at least the one this step moves, at her measured time a token). Unmeasured
-/// when either is.
-fn finishing<K>(mind: &Mind<K>) -> f64 {
-    match (mind.remaining.value(), mind.step.value()) {
-        (Some(left), Some(step)) if step > Duration::ZERO => 1.0 / (step.as_secs_f64() * left.max(1) as f64),
-        _ => 0.0, // an unpredicted remainder: no rate claimed; the learner's width carries it
-    }
+/// Her remaining phase finished per second by this step, as her history predicts it: the chunk this
+/// step would move (`lane::step_tokens`, a decode step one token) as a share of what she has left,
+/// over its time (her fixed part a step, when measured, plus the chunk at her time a token). Without the
+/// fixed part and the chunk the prediction was a per-token rate that a chunk's fixed cost made wrong
+/// (relative error 1.6 to 2.1 in the simulation once a chunk paid 12 ms). 0 when unpredicted.
+fn finishing<K: Copy + PartialEq>(situation: &Situation<K>, mind: &Mind<K>) -> f64 {
+    let (Some(left), Some(per_token)) = (mind.remaining.value(), mind.step.value()) else { return 0.0 };
+    let chunk = match mind.phase {
+        Phase::Prefill { .. } => super::lane::step_tokens(situation, mind, left.max(1)),
+        Phase::Decode => 1,
+    };
+    let fixed = mind.overhead.value().unwrap_or(Duration::ZERO); // unwrap_or: an unmeasured fixed part is a cost not yet seen
+    let time = fixed + per_token.mul_f64(chunk as f64);
+    if time.is_zero() { 0.0 } else { (chunk as f64 / left.max(1) as f64) / time.as_secs_f64() }
 }
 
 fn against(time: Duration, bound: Duration) -> f64 {
@@ -70,7 +76,7 @@ impl<K: Copy + Debug + PartialEq + Send + 'static> Featured<FEATURES, TARGETS> f
                     x[2] = against(measured(running.step), waiter.scale());
                     x[3] = pressure(waiter);
                     x[4] = prefilling(running);
-                    x[12] = finishing(running);
+                    x[12] = finishing(situation, running);
                 }
             }
             Action::Switch(slot) => {
@@ -80,7 +86,7 @@ impl<K: Copy + Debug + PartialEq + Send + 'static> Featured<FEATURES, TARGETS> f
                     x[7] = pressure(target);
                     x[8] = against(measured(target.step), target.scale());
                     x[9] = prefilling(target);
-                    x[13] = finishing(target);
+                    x[13] = finishing(situation, target);
                     x[10] = ready.iter().enumerate().filter(|(other, _)| *other != usize::from(slot)).map(|(_, mind)| pressure(mind)).fold(0.0, f64::max);
                 }
             }

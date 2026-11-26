@@ -6,7 +6,7 @@
 use std::num::NonZeroUsize;
 use std::time::Duration;
 
-use super::super::measured::{Ewma, Fraction, Measured, Window};
+use super::super::measured::{Ewma, Fraction, LineFit, Measured, Window};
 use super::lane::{Mind, Phase};
 
 /// What the executor saw happen to one mind.
@@ -75,6 +75,10 @@ struct Track<K> {
     decode: Ewma,
     /// The same over her steps that followed no switch: what a switched step is compared with.
     plain: [Ewma; 2],
+    /// Her prefill steps' seconds against their tokens: a fixed part every chunk pays and a part a
+    /// token, so a chunk is sized by what it buys (the M5, 2026-11-26: chunks sized by a per-token rate
+    /// shrank under a crowd toward one token, each paying a full step: 3,197 tokens in 57.6 s).
+    chunks: LineFit,
     switch_in: Ewma,
     /// What a switched step took beyond her plain steps at the same count of tokens: the rest of a
     /// switch's cost (the M5, 2026-11-25: binds 0.28 ms, the graph rebuild after them 5.6 ms a step).
@@ -105,12 +109,14 @@ pub struct LaneHistory<K> {
     /// Decoded tokens per finished turn on this Core, every mind's: a mind with no finished turn of her
     /// own (a one-off: a dream, a warmup) is predicted from it, so her remainder is counted.
     turns: Window,
+    /// Every mind's prefill steps on this Core, the same line: a mind not yet measured is sized by it.
+    chunks: LineFit,
 }
 
 impl<K: Copy + PartialEq> LaneHistory<K> {
     pub fn new(views: Views) -> Self {
         let rate = || Ewma::new(views.rates);
-        Self { views, tracks: Vec::new(), core: [Ewma::new(views.smoothing); 2], background: Background { backlog: Duration::ZERO, arrived: rate(), served: rate() }, turns: Window::new(views.turns) } // cold: built once, with the lane
+        Self { views, tracks: Vec::new(), core: [Ewma::new(views.smoothing); 2], background: Background { backlog: Duration::ZERO, arrived: rate(), served: rate() }, turns: Window::new(views.turns), chunks: LineFit::new(views.smoothing) } // cold: built once, with the lane
     }
 
     fn track(&mut self, mind: K) -> &mut Track<K> {
@@ -119,7 +125,7 @@ impl<K: Copy + PartialEq> LaneHistory<K> {
             Some(at) => at,
             None => {
                 let ewma = || Ewma::new(views.smoothing);
-                self.tracks.push(Track { mind, prefill: ewma(), decode: ewma(), plain: [ewma(), ewma()], switch_in: ewma(), rebuild: ewma(), prefix_hit: ewma(), turn_tokens: Window::new(views.turns), decoded: 0, kv_bytes: Measured::Unmeasured, cold_bytes: Measured::Unmeasured });
+                self.tracks.push(Track { mind, prefill: ewma(), decode: ewma(), plain: [ewma(), ewma()], chunks: LineFit::new(views.smoothing), switch_in: ewma(), rebuild: ewma(), prefix_hit: ewma(), turn_tokens: Window::new(views.turns), decoded: 0, kv_bytes: Measured::Unmeasured, cold_bytes: Measured::Unmeasured });
                 self.tracks.len() - 1
             }
         };
@@ -147,6 +153,9 @@ impl<K: Copy + PartialEq> LaneHistory<K> {
                 let phase = usize::from(!prefill);
                 if tokens > 0 {
                     self.core[phase].observe(took.as_secs_f64() / tokens as f64);
+                    if prefill {
+                        self.chunks.observe(tokens as f64, took.as_secs_f64());
+                    }
                 }
                 let track = self.track(mind);
                 if !prefill {
@@ -157,6 +166,9 @@ impl<K: Copy + PartialEq> LaneHistory<K> {
                 }
                 let per_token = took.as_secs_f64() / tokens as f64;
                 (if prefill { &mut track.prefill } else { &mut track.decode }).observe(per_token);
+                if prefill {
+                    track.chunks.observe(tokens as f64, took.as_secs_f64());
+                }
                 // A switched step is not one of her plain steps: what it took beyond them, at her plain
                 // time a token, is the switch's rebuild. Before a plain step is measured there is
                 // nothing to compare it with, so it waits for one.
@@ -215,6 +227,17 @@ impl<K: Copy + PartialEq> LaneHistory<K> {
             Phase::Prefill { remaining } => (seconds(rate), Measured::Value(remaining)),
             Phase::Decode => (seconds(rate), turn.value().map_or(Measured::Unmeasured, |turn| Measured::Value((turn as u64).saturating_sub(decoded)))),
         };
+        // A prefilling mind's chunk: its fixed part and its part a token, from her own chunks once they
+        // vary in size, else this Core's; her step is then the part a token, never the two mixed.
+        if matches!(mind.phase, Phase::Prefill { .. }) {
+            let line = match track.map(|track| track.chunks.fit()) {
+                Some(Measured::Value(fit)) => Measured::Value(fit),
+                _ => self.chunks.fit(),
+            };
+            if let Measured::Value((fixed, per_token)) = line {
+                (mind.overhead, mind.step) = (seconds(Measured::Value(fixed)), seconds(Measured::Value(per_token)));
+            }
+        }
         let Some(track) = track else { return };
         // her bind and the rebuild her next step pays after it; a part not yet seen adds nothing yet
         mind.switch_in = match (track.switch_in.mean(), track.rebuild.mean()) {
