@@ -144,6 +144,7 @@ impl<G: Send> SeatRun<G> {
         Ok(Self { seat, phase: Phase::Measuring, before: Phase::Measuring, in_flight: None, progress: HashMap::new(), checkpoints: VecDeque::new(), guards: Vec::new(), workspace: None, within: None })
     }
 
+    #[cfg(test)] // the trainer keys a seat by the id it measured with; only its tests read it back
     pub(crate) fn id(&self) -> SeatId {
         self.seat
     }
