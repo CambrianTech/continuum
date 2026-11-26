@@ -6,7 +6,7 @@
 # runner converges the machine: each module is idempotent (skip when its accept
 # check already passes), so "run the installer again" is install + update +
 # repair. See docs/architecture/GPU-CONTRACT.md (zero-CPU GPU contract +
-# per-subsystem acceptance) and docs/CARL-INSTALL-SMOKE-HANDOFF.md.
+# per-subsystem acceptance) and install/README.md.
 #
 # Per-module schema:
 #   id        unique name

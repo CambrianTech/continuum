@@ -143,5 +143,5 @@ The premise (PR891): CI is not the primary builder. Dev machines are ~10× faste
 - `feedback_support_all_features_no_cheating.md` — no degradation, UDP is solved for low-latency video
 - `feedback_udp_sidecar_fallback.md` — the UDP sidecar pattern (Linux contingency)
 - `feedback_docker_fast_ephemeral.md` — Carl's 60-second budget
-- `docs/infrastructure/INSTALL-ARCHITECTURE.md` — the one install script / module shape contract
+- `install/README.md` — the one install owner (engine, manifest, per-OS differences)
 - `docs/infrastructure/RESTORE-FULL-PARITY-PLAN.md` — sensory capability restoration plan

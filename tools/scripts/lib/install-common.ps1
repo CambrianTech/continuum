@@ -9,7 +9,7 @@
 #   - The ONE elevation prompt source: Ensure-Elevated (gsudo credential cache)
 #   - Install-IfMissing -- idempotent, auto-updating, scope-aware winget install
 #
-# Contract (mirrors install-common.sh / docs/infrastructure/INSTALL-ARCHITECTURE.md):
+# Contract (mirrors install-common.sh / install/README.md):
 #   - A fresh install that needs admin N times prompts for UAC EXACTLY ONCE.
 #     Every subsequent elevated command reuses the gsudo cache. Re-runs that do
 #     no work prompt zero times. This is the Windows twin of ensure_sudo_warmed.

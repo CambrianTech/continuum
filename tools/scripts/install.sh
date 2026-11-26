@@ -38,7 +38,7 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
 source "$SCRIPT_DIR/shared/preflight.sh"
 # Shared primitives (logs, module_*, ensure_sudo_warmed) — see
-# docs/infrastructure/INSTALL-ARCHITECTURE.md for the module contract.
+# install/README.md for the module contract.
 source "$SCRIPT_DIR/lib/install-common.sh"
 
 cd "$PROJECT_DIR"
@@ -71,7 +71,7 @@ case "$PLATFORM" in
 esac
 
 # ============================================================================
-# Modular install steps (new pattern — see INSTALL-ARCHITECTURE.md)
+# Modular install steps (new pattern — see install/README.md)
 # ============================================================================
 # Module functions live in tools/scripts/lib/install-common.sh (already sourced
 # above). Each mod_* is idempotent self-guarded; steps needing sudo call
@@ -301,7 +301,7 @@ install_system_deps() {
           echo -e "  Installing: ${needed[*]}"
           # One-prompt-contract: ensure_sudo_warmed prompts ONCE if needed,
           # arms keepalive, every subsequent sudo within the run is silent.
-          # See docs/infrastructure/INSTALL-ARCHITECTURE.md.
+          # See install/README.md.
           ensure_sudo_warmed
           $SUDO apt-get update -qq
           $SUDO apt-get install -y "${needed[@]}"

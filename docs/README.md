@@ -33,6 +33,7 @@ How the whole thing composes. Read these first; on architecture questions they w
 | How does work move between nodes? | [Grid addressing and routing](architecture/GRID-ADDRESSING-AND-ROUTING.md) and [grid capacity](architecture/GRID-ELASTIC-CAPABILITY.md). |
 | How do voice and video reach a resident? | [Live call architecture](live/LIVE-CALL-ARCHITECTURE.md) and [perception facts](architecture/PERCEPTION-FACTS.md). |
 | Where is a slow turn losing time? | [Flow implementation plan](architecture/FLOW-IMPLEMENTATION-PLAN.md) and [runtime probes](architecture/RTOS-DEBUGGER-PROBES.md). |
+| How does Continuum install, update and repair itself on each OS, including dependencies added later? | [Install](../install/README.md), with [macOS](../install/macos/README.md), [Linux](../install/linux/README.md) and [Windows](../install/windows/README.md) holding only their differences. |
 
 Revise the chapter that owns the contract and link to it from its callers. When a failure changes the design, link the fixing change and its evidence from the affected rule. Mark proposed behavior until the implementation and live result establish it.
 

@@ -3,7 +3,7 @@
 Pre-merge dry-run for `feat(inference): own the substrate — vendored llama.cpp +
 continuous-batching scheduler + cross-machine chat`.
 
-Per [INSTALL-ARCHITECTURE.md](INSTALL-ARCHITECTURE.md) invariant 5: BigMama
+Per the install design ([install/README.md](../../install/README.md)), formerly invariant 5: BigMama
 (RTX 5090, Windows/WSL2, Tailscale-reachable) is the staging target. This run
 must pass before #891 flips ready-for-review.
 

@@ -721,7 +721,7 @@ fi
 
 # ── 4. Shared modules (same code that Dev runs via npm start) ────
 PHASE="shared modules"
-# docs/infrastructure/INSTALL-ARCHITECTURE.md §Module-shape: the canonical
+# install/README.md: the canonical
 # module library at tools/scripts/lib/install-common.sh defines
 # mod_submodules_init + mod_docker_wsl_integration + log/sudo primitives.
 # Carl and Dev call the SAME functions so there's no drift.
