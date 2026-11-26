@@ -13,7 +13,17 @@ use super::{ResourceKind, ResourceLeaseLedger};
 impl ResourceLeaseLedger {
     /// Tell `place` everything it reads from: pools first (a budget is checked against them), then each
     /// kind's capacity and budget, then every floor.
+    /// Then grant every waiting ask that now fits; a grant can change a floor, so tell again until none is.
     pub(super) fn tell(&mut self) {
+        loop {
+            self.tell_place();
+            if !self.grant_asks() {
+                return;
+            }
+        }
+    }
+
+    fn tell_place(&mut self) {
         for kind in ResourceKind::ALL {
             let pool = self.backing.get(&kind).copied();
             self.place.back(kind, pool);

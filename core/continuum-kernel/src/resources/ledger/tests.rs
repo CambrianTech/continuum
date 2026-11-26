@@ -889,3 +889,48 @@
             }
         }
     }
+
+    // what this catches (the 5090, 2026-11-26: a learning seat refused 5.7 GB with 5 MB free, and nothing
+    // ever woke it): an ask waits instead, a foreground acquire still takes what is free now without
+    // queueing behind it, and releasing what serving holds grants the ask as its lease, unasked again.
+    #[test]
+    fn an_ask_waits_and_becomes_its_lease_when_room_is_released() {
+        let mut l = ResourceLeaseLedger::new();
+        l.set_capacity(ResourceKind::Vram, 10_000);
+        l.acquire(&req("serving", ResourceKind::Vram, 9_980, ReclaimPolicy::Pinned), "serving-1".into(), 0).expect("test: serving fits");
+        let Ok(Asked::Waiting { ask, short }) = l.ask(&req("learning:her", ResourceKind::Vram, 5_000, ReclaimPolicy::Graceful), "seat", 1) else {
+            panic!("test: the seat waits")
+        };
+        assert_eq!(short, 4_980, "the wait names what it lacks");
+        assert!(l.take_granted(ask).is_none(), "nothing granted yet");
+        assert!(l.acquire(&req("vision", ResourceKind::Vram, 10, ReclaimPolicy::Graceful), "vision".into(), 2).is_ok(), "the foreground is never queued behind an ask");
+        l.release("serving-1").expect("test: serving lets go");
+        let granted = l.take_granted(ask).expect("test: granted on the release, without being asked again");
+        assert_eq!((granted.lease_id.as_str(), granted.bytes), ("seat", 5_000));
+        assert!(l.lease("seat").is_some(), "it is a lease like any other");
+        assert_eq!(l.available(ResourceKind::Vram), 10_000 - 10 - 5_000);
+    }
+
+    // what this catches: a seat that stopped wanting its memory still granted it, holding memory no one
+    // uses.
+    #[test]
+    fn a_withdrawn_ask_is_never_granted() {
+        let mut l = ResourceLeaseLedger::new();
+        l.set_capacity(ResourceKind::Vram, 100);
+        l.acquire(&req("serving", ResourceKind::Vram, 100, ReclaimPolicy::Pinned), "serving-1".into(), 0).expect("test: serving fits");
+        let Ok(Asked::Waiting { ask, .. }) = l.ask(&req("learning:her", ResourceKind::Vram, 50, ReclaimPolicy::Graceful), "seat", 1) else {
+            panic!("test: the seat waits")
+        };
+        assert!(l.withdraw(ask));
+        l.release("serving-1").expect("test: serving lets go");
+        assert!(l.take_granted(ask).is_none());
+        assert_eq!(l.available(ResourceKind::Vram), 100);
+        // granted, then withdrawn before its owner took it: released, never held for no one
+        l.acquire(&req("serving", ResourceKind::Vram, 100, ReclaimPolicy::Pinned), "serving-2".into(), 2).expect("test: serving fits");
+        let Ok(Asked::Waiting { ask, .. }) = l.ask(&req("learning:her", ResourceKind::Vram, 50, ReclaimPolicy::Graceful), "seat-2", 3) else {
+            panic!("test: the seat waits")
+        };
+        l.release("serving-2").expect("test: serving lets go");
+        assert!(l.withdraw(ask), "a granted, untaken ask is withdrawn");
+        assert!(l.lease("seat-2").is_none() && l.available(ResourceKind::Vram) == 100, "and its lease released");
+    }
