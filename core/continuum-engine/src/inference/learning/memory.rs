@@ -87,8 +87,18 @@ impl LearningMemory {
 
 impl ReplyAdmission for LearningMemory {
     fn workspace(&self, buffer: BufferType, required: u64, held: u64) -> bool {
-        self.row(buffer, MemoryRole::SharedComputeRequired)
-            .is_some_and(|(row, _)| required.max(held) <= row.bytes && self.covered(row.host))
+        let row = self.row(buffer, MemoryRole::SharedComputeRequired);
+        let fits = row.is_some_and(|(row, _)| required.max(held) <= row.bytes);
+        let covered = row.is_some_and(|(row, _)| self.covered(row.host));
+        if !(fits && covered) {
+            // a refusal names which bound refused: no measured row for this buffer, a graph past the row
+            // measured for it, or a lease no longer covering it (the M5 06:20Z: "optimizer workspace
+            // allocation was refused" said none of these)
+            continuum_base::probe!(class = "learning.workspace.refused", buffer = ?buffer.name(), required, held,
+                measured = row.map_or(0, |(row, _)| row.bytes), has_row = row.is_some(), fits, covered,
+                "a reply's workspace was refused before it allocated");
+        }
+        fits && covered
     }
 }
 
