@@ -595,3 +595,98 @@ async fn a_holder_reads_its_shrink_and_the_seat_its_grant_after_the_fenced_relea
     };
     assert!(granted.consume(Tier::Vram, Bytes(12 * MB)), "the seat spends what the workspace gave back");
 }
+
+mod residents {
+    use super::*;
+    use std::time::Duration;
+
+    /// A leaf holder on the card: what it holds, how it varies, its class.
+    struct Leaf {
+        held: u64,
+        varies: Varies<Tier, Bytes>,
+        qos: crate::Qos,
+    }
+
+    impl Resident<Tier, Bytes> for Leaf {
+        fn report(&self, into: &mut Report<Tier, Bytes>) {
+            into.row(Row { place: Tier::Vram, held: Bytes(self.held), want: Bytes(self.held), varies: self.varies, qos: self.qos, waited: Duration::ZERO });
+        }
+        fn shrink(&mut self, _: Tier, to: Bytes) -> Given<Bytes> {
+            if matches!(self.varies, Varies::Fixed { .. }) {
+                return Given::Refused { why: "fixed" };
+            }
+            let freed = self.held.saturating_sub(to.0);
+            self.held -= freed;
+            Given::Done { way: Way::Resize, amount: Bytes(freed), took: Duration::ZERO }
+        }
+        fn grow(&mut self, _: Tier, _: Bytes) -> Given<Bytes> {
+            Given::Refused { why: "a leaf in this test does not grow" }
+        }
+    }
+
+    /// The Core: a Resident of mixed children, folding their reports and sharing a shrink among them.
+    struct Core {
+        parts: Vec<Box<dyn Resident<Tier, Bytes>>>,
+        sharing: Sharing<Bytes>,
+        rows: Report<Tier, Bytes>,
+    }
+
+    impl Resident<Tier, Bytes> for Core {
+        fn report(&self, into: &mut Report<Tier, Bytes>) {
+            for part in &self.parts {
+                part.report(into);
+            }
+        }
+        fn shrink(&mut self, place: Tier, to: Bytes) -> Given<Bytes> {
+            self.rows.clear();
+            for part in &self.parts {
+                part.report(&mut self.rows);
+            }
+            // the law's priority: the class first (the system's point of view); age would refine it
+            let targets = self.sharing.shrink(self.rows.rows(), place, to, |row| row.qos as u8 * 64).to_vec();
+            let mut freed = 0;
+            for ((part, row), target) in self.parts.iter_mut().zip(self.rows.rows()).zip(targets) {
+                if let Some(target) = target.filter(|target| *target < row.held) {
+                    if let Given::Done { amount, .. } = part.shrink(place, target) {
+                        freed += amount.0;
+                    }
+                }
+            }
+            Given::Done { way: Way::Resize, amount: Bytes(freed), took: Duration::ZERO }
+        }
+        fn grow(&mut self, _: Tier, _: Bytes) -> Given<Bytes> {
+            Given::Refused { why: "not in this test" }
+        }
+    }
+
+    fn elastic(floor: u64) -> Varies<Tier, Bytes> {
+        Varies::Elastic { floor: Bytes(floor), ways: Ways { resize: Some(Cost::default()), cache_out: None, collapse: None } }
+    }
+
+    // what this catches (Joel, 2026-11-26: "you do this with objects"; "A host of a base model can't just
+    // shrink"): a composite that cannot hold mixed children, a shrink that reaches a fixed holding, or the
+    // system's need ignored (an Interactive turn's KV giving before a Background workspace). The Core folds
+    // its parts' reports and shares a shrink so the lowest class gives first and the weights are never asked.
+    #[test]
+    fn a_composite_shares_a_shrink_lowest_class_first_and_never_asks_the_fixed() {
+        let mut core = Core {
+            parts: vec![
+                Box::new(Leaf { held: 17_402 * MB, varies: Varies::Fixed { why: "the base model serves live minds" }, qos: crate::Qos::Interactive }),
+                Box::new(Leaf { held: 8_704 * MB, varies: elastic(2_048 * MB), qos: crate::Qos::Interactive }),
+                Box::new(Leaf { held: 3_124 * MB, varies: elastic(1_024 * MB), qos: crate::Qos::Background }),
+            ],
+            sharing: Sharing::default(),
+            rows: Report::default(),
+        };
+        let mut report = Report::default();
+        core.report(&mut report);
+        assert_eq!(report.rows().len(), 3, "the parent's report is its children's, folded");
+        let total: u64 = report.rows().iter().map(|row| row.held.0).sum();
+        let given = core.shrink(Tier::Vram, Bytes(total - 512 * MB));
+        assert_eq!(given, Given::Done { way: Way::Resize, amount: Bytes(512 * MB), took: Duration::ZERO });
+        report.clear();
+        core.report(&mut report);
+        let held: Vec<u64> = report.rows().iter().map(|row| row.held.0 / MB).collect();
+        assert_eq!(held, vec![17_402, 8_704, 3_124 - 512], "the Background workspace gave it all; the weights and the turn's KV kept theirs");
+    }
+}

@@ -19,12 +19,14 @@ mod flex;
 mod component;
 mod ledger;
 mod quantity;
+mod resident;
 
 pub use claim::{Claim, ClaimId, Generation, Need, Owner};
 pub use component::{key_of, Act, AskId, Asks, Domain, Placer, Shortfall, Status};
 pub use ledger::{Accounts, Answer, Ledger, NeverNow, Refusal, ShrinkTo, Untaken};
 pub use flex::{Flex, Flexbox, Landed, Share, Shared};
 pub use quantity::{Bytes, Quantity, Slots, Tokens};
+pub use resident::{Cost, Given, Report, Resident, Row, Sharing, Varies, Way, Ways};
 
 #[cfg(test)]
 mod tests;
