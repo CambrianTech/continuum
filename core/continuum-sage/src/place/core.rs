@@ -10,6 +10,7 @@ use super::claim::{Claim, ClaimId, Generation, Need, Owner};
 use super::component::{Act, AskId, Asks, Domain, Shortfall, Status};
 use super::ledger::{Answer, Ledger, NeverNow, Refusal, ShrinkTo};
 use super::quantity::Quantity;
+use super::recording::{Recorded, Recording};
 
 struct Entry<P, Q> {
     seq: u64,
@@ -33,6 +34,8 @@ pub struct PlacerCore<D: Domain> {
     granted: Vec<Claim<D::Place, D::Quantity>>,
     never: Vec<NeverNow<D::Place, D::Quantity>>,
     shrinks: Vec<ShrinkTo<D::Place, D::Quantity>>,
+    /// The last acts applied, for a field recording (capacity 0 by default: recording is the owner's choice).
+    recording: Recording<D::Place, D::Quantity>,
 }
 
 impl<D: Domain> Default for PlacerCore<D> {
@@ -45,14 +48,30 @@ impl<D: Domain> Default for PlacerCore<D> {
             granted: Vec::new(),
             never: Vec::new(),
             shrinks: Vec::new(),
+            recording: Recording::new(0),
         }
     }
 }
 
 impl<D: Domain> PlacerCore<D> {
+    /// A core that keeps its last `capacity` acts as a field recording ([`super::replay`] reproduces it anywhere).
+    pub fn recording(capacity: usize) -> Self {
+        Self { recording: Recording::new(capacity), ..Self::default() }
+    }
+
+    /// The acts recorded so far.
+    pub fn recorded(&self) -> &Recording<D::Place, D::Quantity> {
+        &self.recording
+    }
+
     /// The ledger, for a synchronous reader (the authority's board).
     pub fn ledger(&self) -> &Ledger<D::Place, D::Quantity> {
         &self.ledger
+    }
+
+    /// Where `ask` stands now, if its owner's table holds it.
+    pub fn status(&self, ask: AskId) -> Option<&Status<D::Place, D::Quantity>> {
+        self.owners.get(&ask.owner)?.entries.iter().find(|entry| entry.seq == ask.seq).map(|entry| &entry.status)
     }
 
     /// Whether `owner` has a table (its first ask has been prepared).
@@ -62,6 +81,15 @@ impl<D: Domain> PlacerCore<D> {
 
     /// Apply one act. Call [`Self::settle`] after it, before anyone reads the tables.
     pub fn apply(&mut self, act: Act<D::Place, D::Quantity>) {
+        if self.recording.on() {
+            if let Act::Commit(ask) = &act {
+                let spent = match self.status(*ask) { Some(Status::Granted(claim)) => Some(claim.spent().collect()), _ => None };
+                if let Some(spent) = spent {
+                    self.recording.record(Recorded::Spent { ask: *ask, spent });
+                }
+            }
+            self.recording.record(Recorded::Act(act.clone()));
+        }
         match act {
             Act::Prepare { ask, generation, needs } => self.prepare(ask, generation, &needs),
             Act::Commit(ask) => self.settle_ask(ask, |ledger, id| ledger.commit(id), Some(Status::Committed)),

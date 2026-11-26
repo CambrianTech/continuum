@@ -817,3 +817,47 @@ fn the_core_is_driven_synchronously_with_no_bus() {
     assert!(matches!(changed.as_slice(), [(TRAINER, Asks(rows))] if matches!(rows.as_slice(), [(1, Status::Granted(_))])), "granted once room is told");
 
 }
+
+// what this catches (Joel, 2026-11-26: "take what you know in the field and diagnose or even simulate"): a field
+// run that can only be read from probes. The core records its acts; replayed into a fresh core anywhere, they give
+// the same tables, grants and shrink asks; a ring that rolled off refuses to pass for the field.
+#[test]
+fn a_field_recording_replays_into_the_same_tables_anywhere() {
+    let mut field = PlacerCore::<Memory>::recording(64);
+    let workspace = AskId { owner: SERVING, seq: 1 };
+    let seat = AskId { owner: TRAINER, seq: 1 };
+    let acts = vec![
+        Act::Room { place: Tier::Vram, capacity: Bytes(32 * GB), budget: Bytes(4 * GB) },
+        Act::Prepare { ask: workspace, generation: FIRST, needs: vec![Need { place: Tier::Vram, amount: Bytes(4 * GB) }] },
+    ];
+    for act in acts {
+        field.apply(act);
+        field.settle();
+    }
+    let mut changed = Vec::new();
+    field.changed(&mut changed);
+    let Some((_, Asks(rows))) = changed.iter().find(|(owner, _)| *owner == SERVING) else { panic!("test: the workspace's table") };
+    let [(1, Status::Granted(claim))] = rows.as_slice() else { panic!("test: granted, got {rows:?}") };
+    assert!(claim.consume(Tier::Vram, Bytes(4 * GB)));
+    for act in [
+        Act::Commit(workspace),
+        Act::Elastic { ask: workspace, place: Tier::Vram, floor: Bytes(GB), priority: 6 },
+        Act::Prepare { ask: seat, generation: FIRST, needs: vec![Need { place: Tier::Vram, amount: Bytes(12 * MB) }] },
+        Act::Prioritize { ask: seat, priority: 7 },
+    ] {
+        field.apply(act);
+        field.settle();
+    }
+    let mut simulated = replay::<Memory>(field.recorded()).expect("test: a whole recording replays"); // expect: the test's own precondition
+    let mut tables = Vec::new();
+    simulated.changed(&mut tables);
+    assert_eq!(tables.len(), 2, "both owners' tables, rebuilt whole by the replay");
+    assert!(tables.iter().any(|(owner, Asks(rows))| *owner == SERVING && matches!(rows.as_slice(), [(1, Status::Shrink { to: Bytes(t), .. })] if *t == 4 * GB - 12 * MB)), "the field's shrink ask, simulated: {tables:?}");
+    assert!(tables.iter().any(|(owner, Asks(rows))| *owner == TRAINER && matches!(rows.as_slice(), [(1, Status::Waiting { .. })])), "the seat waits, as in the field");
+    assert_eq!(field.shortfall(), simulated.shortfall(), "the same shortfall");
+    let mut short = PlacerCore::<Memory>::recording(2);
+    for act in [Act::Room { place: Tier::Vram, capacity: Bytes(GB), budget: Bytes(GB) }, Act::Forget(seat), Act::Forget(seat)] {
+        short.apply(act);
+    }
+    assert_eq!(replay::<Memory>(short.recorded()).err(), Some(Partial { first: 1 }), "a rolled-off ring never passes for the field");
+}

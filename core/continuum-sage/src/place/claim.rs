@@ -64,6 +64,12 @@ impl<P: Copy + PartialEq, Q: Quantity> Claim<P, Q> {
         left.fetch_update(Ordering::AcqRel, Ordering::Acquire, |left| left.checked_sub(amount.units())).is_ok()
     }
 
+    /// What it has consumed on each place so far, read from its atomics (a recording keeps it at commit, so a
+    /// replay spends what the field spent).
+    pub(super) fn spent(&self) -> impl Iterator<Item = Need<P, Q>> + '_ {
+        self.prepared.iter().map(|(need, left)| Need { place: need.place, amount: Q::of(need.amount.units().saturating_sub(left.load(Ordering::Acquire))) })
+    }
+
     /// What is prepared on `place` and not yet consumed, if this claim holds that place: nothing once
     /// it has lapsed.
     pub fn left(&self, place: P) -> Option<Q> {

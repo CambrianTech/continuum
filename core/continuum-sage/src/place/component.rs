@@ -50,7 +50,7 @@ pub fn key_of(owner: Owner) -> Key {
 }
 
 /// What the placer is told.
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Act<P, Q> {
     Prepare { ask: AskId, generation: Generation, needs: Vec<Need<P, Q>> },
     /// The claim's spending is over: what it consumed is held.

@@ -23,6 +23,7 @@ mod component;
 mod core;
 mod ledger;
 mod quantity;
+mod recording;
 mod resident;
 
 pub use claim::{Claim, ClaimId, Generation, Need, Owner};
@@ -34,6 +35,7 @@ pub use flex::{Flex, Flexbox, Landed, Share, Shared};
 pub use holding::{Answered, Asked, Holding, Landing, Receipt, Ticket};
 pub use levels::{Facts, Fixed, Moved, Resize, ResizeTo, Resizing};
 pub use quantity::{Bytes, Quantity, Slots, Tokens};
+pub use recording::{replay, Partial, Recorded, Recording};
 pub use resident::{Cost, Given, GrowGrant, Report, Requires, Resident, Row, Sharing, ShrinkAsk, Varies, Way, Ways};
 
 #[cfg(test)]
