@@ -613,6 +613,50 @@ cost (the quality or speed a resize loses; a move's time and the tier it lands o
 the priorities, and the way taken and what it cost is the receipt the policy learns from. A refusal stays
 only for a proven "never here".
 
+**Holders are objects: one interface, control down and feedback up, prioritized by QoS** (Joel, 2026-11-26:
+"you do this with objects. The interface like the lifecycle one, allows feedback and control, both
+directions. Point being the safe system, like rage did for the pov user seeing content, prioritized by
+QOS, to meet the needs of the system. Later this works well with grid"). RAGE streams the world around
+the player's point of view: what is in front of the camera is resident at full detail, what is behind
+drops a level or pages out, and nothing the player looks at is ever missing. Here the point of view is the
+system's need, in the QoS classes SAGE already schedules by (`Qos`: Interactive, Work, Utility,
+Background): the turn someone waits on is in front of the camera, learning and idle caches behind it.
+
+The interface has the shape of `persona::Lifecycle` (a trait with a typed report, composed over parts by
+one declaration, every child's report folded into its parent's):
+
+```rust
+/// One holder of memory on a placer's places. Up: what it holds, needs and could give. Down: the room it
+/// is granted, or asked to give back. A parent is a Resident of its children: its report folds theirs, and a
+/// shrink it receives is shared among them by the same flexbox at their QoS.
+pub trait Resident<P, Q> {
+    /// Up, every place it holds on: held now (measured), floor (cannot run below), want (what its measured
+    /// use would take), its QoS and how long it has waited, and its ways to give back with their costs.
+    fn report(&self, into: &mut Report<P, Q>);
+    /// Down: give back on `place` down to `to`, the cheapest way it has. Pending until its fence lands.
+    fn shrink(&mut self, place: P, to: Q) -> impl Future<Output = Given<P, Q>> + Send;
+    /// Down: room granted on `place` up to `to`: expand a collapsed level, page a cached copy back in.
+    fn grow(&mut self, place: P, to: Q);
+}
+// a report row: { place, held, floor, want, qos: Qos, waited, ways: [Way] }
+// Way: Resize { loses } | CacheOut { to: P, takes } | Collapse { loses }  (each cost measured)
+// Given: Released { way, freed, took } | Pending | Refused(why)  (Preservation's shape)
+```
+
+- *Priority is QoS, then age.* The law's priority for a row is its class, aged by its wait within the
+  class (Cormac's term, measured by `resources.ask.passed`), capped so an Interactive floor is never shrunk
+  for anything below it. The same classes order the lane's steps, so memory and compute agree on what
+  the system needs.
+- *Safe by construction.* A holder never loses memory it did not give: nothing is taken, everything is
+  asked and fenced; a holder that cannot give answers `Refused` with why, and the law asks the next.
+- *Feedback both ways.* Every `report` is a measurement (held from the allocator, want from use); every
+  `shrink` and `grow` answers with what was done, which way, and what it took. The law's replay log is
+  those rows, and the policy trains on them.
+- *Composes up to the grid.* A part (her KV, her genes) is a Resident; a mind is one over her parts; the
+  Core over its minds and its workspace; a node over its engines, embedder and builds; the grid's placer
+  over nodes, with a node's report its capacity and wants. One interface at every level: a grid shrink is
+  a node moving work or caching it out, answered the same way.
+
 **Everything feeds back** (Joel, 2026-11-26: "everything memory related needs to feed back"). No holder's
 `floor`, `want` or `priority` is a constant someone picked; each is the last measurement of what it is, and
 every decision writes the receipt the next one reads:
