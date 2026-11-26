@@ -145,6 +145,11 @@ impl<'c, 'm> UnifiedTier<'c, 'm> {
         Self { ctx, streams: [None; STREAMS], last_rebind: None, in_flight: None, applied_genes: None, home, batch }
     }
 
+    /// What the context holds now, per allocator (UNIFIED-PAGING.md, slice 3b).
+    pub fn held(&self, into: &mut llama::Held) -> Result<(), llama::Unaccounted> {
+        self.ctx.held(into)
+    }
+
     /// Her KV memory: a block over her own file, attached so the stream views it, where this node's
     /// device can view host memory; the fork's own otherwise (the fork's `storage_bytes` is 0 then, and
     /// the tier keeps that answer for every later mind).

@@ -136,6 +136,8 @@ impl Driver<'_, '_> {
         let started = std::time::Instant::now();
         self.work_next(go_on);
         self.lane.learned(started.elapsed());
+        // a job may grow the workspace or add or free a seat's buffers: the board holds what the Core holds now
+        self.on_board.read(self.engine.tier());
     }
 
     fn work_next(&mut self, go_on: &mut dyn FnMut() -> bool) {

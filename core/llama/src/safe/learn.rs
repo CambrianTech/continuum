@@ -32,36 +32,7 @@ pub use shadow::{FreshGeometry, ShadowMeasure};
 
 use super::*;
 
-/// One allocator a buffer comes from: the physical device it lives on, as the backend names it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BufferType(pub(super) NonNull<sys::ggml_backend_buffer_type>);
-
-// SAFETY: a ggml buffer type is a backend-owned singleton that lives for the process and is only
-// read through its query functions, so its pointer may cross threads with the slot that names it.
-unsafe impl Send for BufferType {}
-unsafe impl Sync for BufferType {}
-
-impl BufferType {
-    /// The backend's own name for this buffer type ("CUDA0", "Metal", "CPU", ...).
-    pub fn name(&self) -> Result<&str, std::str::Utf8Error> {
-        unsafe { CStr::from_ptr(sys::ggml_backend_buft_name(self.0.as_ptr())) }.to_str()
-    }
-
-    /// The device's own name ("CUDA0", "MTL0", "CPU", ...), when the buffer type has a device.
-    pub fn device(&self) -> Option<Result<&str, std::str::Utf8Error>> {
-        let device = unsafe { sys::ggml_backend_buft_get_device(self.0.as_ptr()) };
-        if device.is_null() {
-            return None;
-        }
-        let name = unsafe { sys::ggml_backend_dev_name(device) };
-        (!name.is_null()).then(|| unsafe { CStr::from_ptr(name) }.to_str())
-    }
-
-    /// Whether these bytes are host memory (RAM), not device memory.
-    pub fn is_host(&self) -> bool {
-        unsafe { sys::ggml_backend_buft_is_host(self.0.as_ptr()) }
-    }
-}
+pub use super::held::BufferType;
 
 /// The memory owner's answer for one reply's shared workspace. Native code asks it before it
 /// allocates; it must not allocate itself.
