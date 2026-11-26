@@ -23,7 +23,7 @@ use ts_rs::TS;
 
 use continuum_sage::place::{Bytes, ClaimId, Generation, Ledger, Need};
 
-pub use asks::Asked;
+pub use asks::{Asked, CarveError};
 
 use super::arbiter::{ArbiterContext, LeaseArbiter};
 use super::consumer::ConsumerFootprint;
@@ -535,6 +535,7 @@ impl ResourceLeaseLedger {
             Err(_untaken) => return Err(LeaseError::InsufficientCapacity { kind: req.kind, requested: req.bytes, available }),
         };
         let lease = self.hold(claim, req, lease_id, now_ms)?;
+        self.note_passed(req, now_ms);
         self.tell();
         Ok(lease)
     }

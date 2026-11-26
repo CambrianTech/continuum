@@ -77,7 +77,7 @@ pub fn ask_training_memory(daemon: &std::sync::Arc<ResourceDaemon>, consumer: &s
 /// [`try_training_memory`], spent from `reserve` (a granted ask its owner keeps) instead of asked for:
 /// the bytes move from the reserve to the new lease in one transition. A serving gate that refuses now
 /// leaves the reserve as it was, for the caller to try again or let go.
-pub fn try_carve(daemon: &std::sync::Arc<ResourceDaemon>, admission: Admission<'_>, stage: Carve<'_>) -> Result<Result<LeaseGuard, TrainingWait>, LeaseError> {
+pub fn try_carve(daemon: &std::sync::Arc<ResourceDaemon>, admission: Admission<'_>, stage: Carve<'_>) -> Result<Result<LeaseGuard, TrainingWait>, crate::resources::CarveError> {
     let Carve { reserve, consumer, bytes } = stage;
     let decided = match admission {
         Admission::Free(gate) => gate.hold_for_admission().map(Some),
@@ -87,7 +87,7 @@ pub fn try_carve(daemon: &std::sync::Arc<ResourceDaemon>, admission: Admission<'
         Ok(hold) => hold,
         Err(refusal) => return Ok(Err(TrainingWait::Serving(refusal))),
     };
-    let Some(kind) = reserve.kind() else { return Err(LeaseError::MissingLease { lease_id: reserve.lease_id().to_owned() }) };
+    let Some(kind) = reserve.kind() else { return Err(LeaseError::MissingLease { lease_id: reserve.lease_id().to_owned() }.into()) };
     let carved = daemon.carve(reserve, &request(consumer, kind, bytes));
     drop(hold);
     carved.map(Ok)

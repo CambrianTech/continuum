@@ -965,8 +965,8 @@
         l.acquire(&reserve, "reserve".into(), 0).expect("test: the reserve fits");
         let before = l.available(ResourceKind::Vram);
         let stage = req("learning:her", ResourceKind::Vram, 1_000, ReclaimPolicy::Graceful);
-        assert!(matches!(l.carve("reserve", &stage, "weights", 100), Err(LeaseError::ExpiredLease { .. })), "at its term");
-        assert!(matches!(l.carve("reserve", &stage, "weights", 500), Err(LeaseError::ExpiredLease { .. })), "after it");
+        assert!(matches!(l.carve("reserve", &stage, "weights", 100), Err(CarveError::Lease(LeaseError::ExpiredLease { .. }))), "at its term");
+        assert!(matches!(l.carve("reserve", &stage, "weights", 500), Err(CarveError::Lease(LeaseError::ExpiredLease { .. }))), "after it");
         assert_eq!((l.lease("reserve").map(|lease| lease.bytes), l.available(ResourceKind::Vram)), (Some(5_000), before), "the charge is unchanged");
         assert!(l.lease("weights").is_none());
     }
