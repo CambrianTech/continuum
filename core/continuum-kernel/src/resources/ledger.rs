@@ -21,6 +21,8 @@ use std::sync::{Arc, Weak};
 use std::sync::atomic::{AtomicU64, Ordering};
 use ts_rs::TS;
 
+use continuum_sage::place::{Answer, Bytes, ClaimId, Generation, Ledger, Need};
+
 use super::arbiter::{ArbiterContext, LeaseArbiter};
 use super::consumer::ConsumerFootprint;
 #[cfg(test)]
@@ -158,6 +160,11 @@ pub struct ResourceLeaseLedger {
     ///
     /// [`CapacitySource::backed_by`]: super::capacity::CapacitySource::backed_by
     backing: BTreeMap<ResourceKind, ResourceKind>,
+    /// The one picture of what each kind can still grant (UNIFIED-PAGING.md slice 3a): every lease is a
+    /// claim on it, each kind's budget is its capacity less what is resident beyond our landed leases,
+    /// a backed kind is charged once on its pool, and the floors above are its floors. The readings in
+    /// this struct are what it is told from; `available`, `available_for` and `committed` read it.
+    place: Ledger<ResourceKind, Bytes>,
 }
 
 /// A live lease and when its holder declared it landed (Codex on #6124). Landing is never inferred from
@@ -172,6 +179,8 @@ struct Held {
     /// When its holder declared it landed: only a reading observed at or after this can show it. None while
     /// undeclared.
     landed_from: Option<super::observed::Observed>,
+    /// Its claim on the ledger's `place`.
+    claim: ClaimId,
 }
 
 #[derive(Debug)]
@@ -215,6 +224,7 @@ impl ResourceLeaseLedger {
     /// DiskPressureMonitor).
     pub fn set_capacity(&mut self, kind: ResourceKind, bytes: u64) {
         self.capacity.insert(kind, bytes);
+        self.tell();
     }
 
     pub fn capacity(&self, kind: ResourceKind) -> u64 {
@@ -238,6 +248,7 @@ impl ResourceLeaseLedger {
     /// Sibling of `set_capacity`; the ground-truth axis of the un-inversion.
     pub fn set_physical_used(&mut self, kind: ResourceKind, bytes: u64) {
         self.physical_used.insert(kind, bytes);
+        self.tell();
     }
 
     /// Ingest `sample` only if it was observed after the reading this kind holds. Returns whether it was accepted.
@@ -247,6 +258,7 @@ impl ResourceLeaseLedger {
         }
         self.sampled.insert(kind, sample.observed);
         self.physical_used.insert(kind, sample.used);
+        self.tell();
         true
     }
 
@@ -266,6 +278,7 @@ impl ResourceLeaseLedger {
                 self.backing.remove(&kind);
             }
         }
+        self.tell();
     }
 
     /// What is REALLY spoken for of this kind: the larger of what we have granted
@@ -281,7 +294,12 @@ impl ResourceLeaseLedger {
     /// grants together. So each grant, on either axis, spends the shared headroom the moment it is
     /// made, once, and the next sample takes over as its bytes land (Codex on #6124).
     pub fn committed(&self, kind: ResourceKind) -> u64 {
-        self.remaining_commitment(&self.pool_kinds(kind), self.physical_used(kind), 0)
+        let root = self.pool_root(kind);
+        let claimed = match self.place.accounts(root) {
+            Some(accounts) => accounts.held.0.saturating_add(accounts.prepared.0),
+            None => 0, // tell() names every kind
+        };
+        self.external(root).saturating_add(claimed)
     }
 
     fn remaining_commitment(&self, kinds: &[ResourceKind], resident: u64, released_grant: u64) -> u64 {
@@ -328,6 +346,7 @@ impl ResourceLeaseLedger {
     pub fn landed(&mut self, lease_id: &str, from: super::observed::Observed) -> Result<(), LeaseError> {
         let held = self.leases.get_mut(lease_id).ok_or_else(|| LeaseError::MissingLease { lease_id: lease_id.to_string() })?;
         held.landed_from.get_or_insert(from);
+        self.tell();
         Ok(())
     }
 
@@ -341,7 +360,7 @@ impl ResourceLeaseLedger {
     /// its backing's availability, so the shared bytes are never spent twice and a process outside
     /// ours is charged to the host, never to the GPU's working set.
     pub fn available(&self, kind: ResourceKind) -> u64 {
-        self.headroom_after_release(kind, 0, |_, resident| resident)
+        bytes_of(self.place.free(kind))
     }
 
     fn headroom_after_release(&self, kind: ResourceKind, released_grant: u64, project: impl Fn(&[ResourceKind], u64) -> u64) -> u64 {
@@ -376,6 +395,7 @@ impl ResourceLeaseLedger {
         } else {
             self.reservations.insert(key, min_bytes);
         }
+        self.tell();
     }
 
     pub fn reservation(&self, consumer_id: &str, kind: ResourceKind) -> u64 {
@@ -399,6 +419,7 @@ impl ResourceLeaseLedger {
         } else {
             self.measured.insert(consumer_id.to_string(), footprints);
         }
+        self.tell();
     }
 
     /// Total self-declared residency of a kind across every measured consumer —
@@ -452,8 +473,7 @@ impl ResourceLeaseLedger {
     /// reservation never counts against it. This is what `acquire` enforces so
     /// inference cannot eat into the video call's guaranteed floor.
     pub fn available_for(&self, consumer_id: &str, kind: ResourceKind) -> u64 {
-        self.available(kind)
-            .saturating_sub(self.reserved_headroom_excluding(consumer_id, kind))
+        bytes_of(self.place.room_for(told::owner_of(consumer_id), kind))
     }
 
     /// What `consumer_id` could have **if it released what it is already holding** —
@@ -564,6 +584,23 @@ impl ResourceLeaseLedger {
                 available,
             });
         }
+        // a lease is a claim spent whole at once and held until its release: the authority keeps no
+        // waits (a refusal goes back to the caller), so a claim that is not granted is withdrawn
+        let owner = told::owner_of(&req.consumer_id);
+        let refused = LeaseError::InsufficientCapacity { kind: req.kind, requested: req.bytes, available };
+        let claim = match self.place.prepare(owner, Generation(1), &[Need { place: req.kind, amount: Bytes(req.bytes) }]) {
+            Answer::Granted(claim) => claim,
+            Answer::Waiting { id, .. } => {
+                if self.place.unwind(id).is_err() {
+                    continuum_base::probe!(class = "resources.ledger.unwind_refused", lease = %lease_id, "a wait the authority withdrew was already gone");
+                }
+                return Err(refused);
+            }
+            Answer::Never { .. } | Answer::Unknown { .. } | Answer::Stale { .. } => return Err(refused),
+        };
+        if !claim.consume(req.kind, Bytes(req.bytes)) || self.place.commit(claim.id()).is_err() {
+            return Err(LeaseError::MissingLease { lease_id }); // a fresh claim spent whole: only a ledger defect lands here
+        }
         let lease = ResourceLease {
             lease_id: lease_id.clone(),
             consumer_id: req.consumer_id.clone(),
@@ -573,7 +610,8 @@ impl ResourceLeaseLedger {
             expires_at_ms: now_ms.saturating_add(req.ttl_ms),
             reclaim_policy: req.reclaim_policy,
         };
-        self.leases.insert(lease_id, Held { lease: lease.clone(), landed_from: None, view: None });
+        self.leases.insert(lease_id, Held { lease: lease.clone(), landed_from: None, view: None, claim: claim.id() });
+        self.tell();
         Ok(lease)
     }
 
@@ -607,15 +645,13 @@ impl ResourceLeaseLedger {
     /// that reduces `granted`. Missing lease is a fail-loud error, never a
     /// silent no-op (a double-release or stale id is a real bug to surface).
     pub fn release(&mut self, lease_id: &str) -> Result<ResourceLease, LeaseError> {
-        self.leases
-            .remove(lease_id)
-            .map(|held| {
-                if let Some(view) = held.view { view.bytes.store(0, Ordering::Release); }
-                held.lease
-            })
-            .ok_or_else(|| LeaseError::MissingLease {
-                lease_id: lease_id.to_string(),
-            })
+        let held = self.leases.remove(lease_id).ok_or_else(|| LeaseError::MissingLease { lease_id: lease_id.to_string() })?;
+        if let Some(view) = held.view { view.bytes.store(0, Ordering::Release); }
+        if self.place.release(held.claim).is_err() {
+            continuum_base::probe!(class = "resources.ledger.release_unknown", lease = %lease_id, "a released lease had no claim left on place (shrunk to nothing already)");
+        }
+        self.tell();
+        Ok(held.lease)
     }
 
     /// Reduce a lease's footprint by `freed_bytes` without ending it — the
@@ -636,10 +672,14 @@ impl ResourceLeaseLedger {
         let lease = &mut held.lease;
         lease.bytes = lease.bytes.saturating_sub(freed_bytes);
         if let Some(view) = &held.view { view.bytes.store(lease.bytes, Ordering::Release); }
-        let remaining = lease.bytes;
+        let (remaining, kind, claim) = (lease.bytes, lease.kind, held.claim);
         if remaining == 0 {
             self.leases.remove(lease_id);
         }
+        if self.place.shrink(claim, kind, Bytes(freed_bytes)).is_err() {
+            continuum_base::probe!(class = "resources.ledger.shrink_unknown", lease = %lease_id, "a shrunk lease had no claim left on place");
+        }
+        self.tell();
         Ok(remaining)
     }
 
@@ -812,6 +852,17 @@ impl ResourceLeaseLedger {
         }
     }
 }
+
+/// An amount `place` answers for a kind. `tell` names every kind, so no answer means a kind with no
+/// capacity: nothing to grant.
+fn bytes_of(answer: Option<Bytes>) -> u64 {
+    match answer {
+        Some(Bytes(bytes)) => bytes,
+        None => 0,
+    }
+}
+
+mod told;
 
 #[cfg(test)]
 mod tests;

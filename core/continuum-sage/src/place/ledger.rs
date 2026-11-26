@@ -342,7 +342,7 @@ impl<P: Copy + PartialEq + std::fmt::Debug, Q: Quantity> Ledger<P, Q> {
     /// What waits are short on `place`: their needs there past what is free. The placement law's
     /// demand on that place. `None` for a place the ledger has not been told of.
     pub fn shortfall(&self, place: P) -> Option<Q> {
-        let free = self.pooled_free(place)?.units();
+        let free = self.free(place)?.units();
         let wanted = self
             .waiting
             .iter()
