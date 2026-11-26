@@ -1173,6 +1173,16 @@ unchanged; then Kimi's 64 GB, 91 GB and 1.9 TB lessons learned on the 5090 besid
   - This needs the tile measure on a seated shadow without reloading it: a `Measure { tile }` verb beside Load. Cormac builds the trainer half (`Elastic.floor` = the floor tile's bytes).
 - **The walk's host budget is the seat's Ram lease, never a constant** (Cormac). The host row is leased as Ram by `lease_memory_within`, and the walk reads its budget (`opt_walk_host_budget`, which sets the plan's stride) from that lease. The device workspace reads its admission view the same way, so the stride and the lease cannot drift.
 
+**Never a refusal, never another path** (Joel, 2026-11-26: "Don't just abort, or give up, you optimize to fit without abandoning or defaulting").
+- **A tile that does not fit at its full horizon splits in place.** Today `opt_tiles_unit` fails the step with "learn this reply at a smaller tile". Instead:
+  - its rows are already decoded and its recurrent checkpoint is held, so its reverse trains it as sub-tiles of half its rows, last to first;
+  - each sub-tile rewinds to the tile's checkpoint and decodes forward to its start, the walk's own rewind;
+  - each sub-tile's gradient is accumulated into the rows before it, as the walk already does between tiles.
+  - The gradient is the same exact step, and only the graph is smaller. Halving repeats down to one ubatch. The measure's floor is one ubatch tile, so admission never seats a tile that cannot reach it.
+- **A shared cache is never sent to the whole-reply graph.** Today `opt_learn_tile` refuses `kv_unified && n_seq_max > 1` and the reply learns by its ordinary path (e4d811bf9). That ordinary path is the one that measured 1.9 TB. Instead:
+  - the Core's layout, a stream per mind, is made the only one by construction, checked where the plan is chosen (Codex, 22:36Z);
+  - so the layout the walk cannot read never reaches it, and the refusal and its fallback are both deleted.
+
 **Gates, in order.**
 1. The fork's `test-walk-exact`: the tile measure is at least the workspace each tile actually admits (`workspace_admission`'s bytes per tile). Run at 64, 128 and 512 rows, f16 and q8_0, flash on.
 2. The same on a hybrid model: the 5090 serves Qwen3.8-27B, and the hybrid path has an open `k_idxs` abort.
