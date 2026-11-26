@@ -174,11 +174,14 @@ pub struct WebRtcVAD {
     // Your state
 }
 
+impl Part for WebRtcVAD {
+    fn identity(&self) -> Identity {
+        Identity { name: "webrtc", description: "Google WebRTC VAD" }
+    }
+}
+
 #[async_trait]
 impl VoiceActivityDetection for WebRtcVAD {
-    fn name(&self) -> &'static str { "webrtc" }
-    fn description(&self) -> &'static str { "Google WebRTC VAD" }
-
     async fn detect(&self, samples: &[i16]) -> Result<VADResult, VADError> {
         // Your implementation
     }

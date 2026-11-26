@@ -7,6 +7,7 @@ use super::{SynthesisResult, TTSError, TextToSpeech, VoiceInfo};
 use continuum_base::audio_constants::AUDIO_SAMPLE_RATE;
 use crate::{clog_debug, clog_info};
 use async_trait::async_trait;
+use continuum_base::part::{Identity, Part};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Duration per character (milliseconds)
@@ -55,16 +56,14 @@ impl SilenceTTS {
     }
 }
 
+impl Part for SilenceTTS {
+    fn identity(&self) -> Identity {
+        Identity { name: "silence", description: "Silence TTS adapter for testing (generates silent audio)" }
+    }
+}
+
 #[async_trait]
 impl TextToSpeech for SilenceTTS {
-    fn name(&self) -> &'static str {
-        "silence"
-    }
-
-    fn description(&self) -> &'static str {
-        "Silence TTS adapter for testing (generates silent audio)"
-    }
-
     fn is_initialized(&self) -> bool {
         self.initialized.load(Ordering::Relaxed)
     }

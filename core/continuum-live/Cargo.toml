@@ -39,6 +39,10 @@ candle-core.workspace = true
 candle-transformers.workspace = true
 tokenizers = { workspace = true, features = ["onig"] }
 pocket-tts = { version = "0.6", default-features = false, optional = true }  # behind feature `pocket-tts`: 0.6 pulls intel-mkl-src even without its mkl feature
+# pocket-tts's own HuggingFace client and HTTP layer (its versions), so a refused download is
+# read by its typed HTTP status, never by its error text.
+pocket-tts-hf-hub = { package = "hf-hub", version = "0.4.3", default-features = false, features = ["ureq"], optional = true }
+pocket-tts-ureq = { package = "ureq", version = "2.12", default-features = false, optional = true }
 earshot = { workspace = true }  # Fast VAD (WebRTC-style)
 tracing.workspace = true
 rand.workspace = true  # For test audio generation
@@ -90,7 +94,7 @@ avatar-3d = ["dep:bevy", "dep:wgpu", "dep:wgpu-hal"]
 coreml = []
 livekit-webrtc = ["dep:livekit"]
 metal = ["continuum-engine/metal"]
-pocket-tts = ["dep:pocket-tts"]
+pocket-tts = ["dep:pocket-tts", "dep:pocket-tts-hf-hub", "dep:pocket-tts-ureq"]
 test-fixtures = ["continuum-engine/test-fixtures"]
 
 [lints.rust]

@@ -1,26 +1,23 @@
 //! Speech-to-Text (STT) Adapter System
 //!
 //! Modular STT with swappable backends:
-//! - Whisper (local, default)
+//! - Moonshine (local, default)
 //! - OpenAI Realtime (streaming, semantic VAD)
-//! - Deepgram
-//! - Google Cloud Speech
-//! - Azure Cognitive Services
+//! - Stub (tests and keyless hosts)
 //!
 //! Uses trait-based polymorphism (OpenCV-style) for runtime flexibility.
 
 mod moonshine;
 mod openai_realtime;
 mod stub;
-// mod whisper;  // TEMPORARY: disabled with whisper-rs dep to test ggml collision
 
 pub use moonshine::MoonshineStt;
-pub use openai_realtime::{OpenAIRealtimeSTT, TurnDetection, TurnDetectionType};
+pub use openai_realtime::{OpenAIApiKey, OpenAIRealtimeSTT, TurnDetection, TurnDetectionType};
 pub use stub::StubSTT;
-// pub use whisper::WhisperSTT;
 
 use crate::clog_info;
 use async_trait::async_trait;
+use continuum_base::part::{Identity, Part};
 use once_cell::sync::OnceCell;
 use parking_lot::RwLock;
 use std::collections::HashMap;
@@ -47,6 +44,26 @@ pub enum STTError {
 
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
+
+    /// The model's vocabulary has no such sequence marker, so decoding could not begin or end.
+    #[error("the model's tokens.txt has no '{0}' piece")]
+    VocabLacksPiece(&'static str),
+
+    /// The decoder produced no logits to choose a token from.
+    #[error("decoder returned empty logits")]
+    EmptyLogits,
+
+    /// The engine could not say which language it decoded in.
+    #[error("language detection failed: {0}")]
+    LanguageDetection(#[source] Box<dyn std::error::Error + Send + Sync>),
+
+    /// The engine named a language id it has no code for.
+    #[error("engine returned unknown language id {0}")]
+    UnknownLanguage(i32),
+
+    /// A model path the engine's C API cannot take, because it is not UTF-8.
+    #[error("model path {0:?} is not UTF-8")]
+    NonUtf8ModelPath(std::path::PathBuf),
 }
 
 /// Transcription result
@@ -70,13 +87,7 @@ pub struct TranscriptSegment {
 ///
 /// Implement this for each STT backend (Whisper, Deepgram, etc.)
 #[async_trait]
-pub trait SpeechToText: Send + Sync {
-    /// Adapter name (e.g., "whisper", "deepgram")
-    fn name(&self) -> &'static str;
-
-    /// Human-readable description
-    fn description(&self) -> &'static str;
-
+pub trait SpeechToText: Part + Send + Sync {
     /// Check if adapter is ready for use
     fn is_initialized(&self) -> bool;
 
@@ -137,7 +148,7 @@ impl STTRegistry {
 
     /// Register an adapter
     pub fn register(&mut self, adapter: Arc<dyn SpeechToText>) {
-        let name = adapter.name();
+        let name = adapter.identity().name;
         clog_info!("STT: Registering adapter '{}'", name);
         self.adapters.insert(name, adapter);
 
@@ -178,11 +189,17 @@ impl STTRegistry {
             .collect()
     }
 
-    /// Check if any adapter is initialized
+    /// Every registered adapter's identity and whether it is loaded, read in one pass.
+    pub fn identities(&self) -> Vec<(Identity, bool)> {
+        self.adapters
+            .values()
+            .map(|adapter| (adapter.identity(), adapter.is_initialized()))
+            .collect()
+    }
+
+    /// Is there an active adapter, and is it loaded?
     pub fn is_initialized(&self) -> bool {
-        self.get_active()
-            .map(|a| a.is_initialized())
-            .unwrap_or(false)
+        self.get_active().is_some_and(|a| a.is_initialized())
     }
 }
 
@@ -201,13 +218,13 @@ pub fn init_registry() -> Arc<RwLock<STTRegistry>> {
     let registry = STT_REGISTRY.get_or_init(|| {
         let mut reg = STTRegistry::new();
 
-        // TEMPORARY: Whisper registration disabled — whisper-rs dep is gated off
-        // while we debug the ggml backend registry collision with our llama crate.
-        // reg.register(Arc::new(WhisperSTT::new()));
 
-        // Register OpenAI Realtime adapter - streaming + semantic VAD
-        // Will be used when OPENAI_API_KEY is set and fast response needed
-        reg.register(Arc::new(OpenAIRealtimeSTT::new()));
+        // Register OpenAI Realtime adapter - streaming + semantic VAD. It exists only with
+        // its API key: a keyless adapter is never registered, so it never complains later.
+        match OpenAIRealtimeSTT::from_env() {
+            Ok(adapter) => reg.register(Arc::new(adapter)),
+            Err(e) => clog_info!("STT: openai-realtime unavailable (OPENAI_API_KEY: {e})"),
+        }
 
         // Register Moonshine adapter - fast local ONNX, sub-100ms on short audio
         reg.register(Arc::new(MoonshineStt::new()));
@@ -274,11 +291,13 @@ pub async fn initialize() -> Result<(), STTError> {
     let mut misses: Vec<String> = Vec::new();
     for name in INIT_PREFERENCE {
         let Some(adapter) = get_registry().read().get(name) else {
-            continue; // not registered in this build (whisper is gated off)
+            // Not registered: gated off in this build, or (openai-realtime) no API key.
+            misses.push(format!("{name}: not registered"));
+            continue;
         };
         match adapter.initialize().await {
             Ok(()) => {
-                get_registry().write().set_active(adapter.name())?;
+                get_registry().write().set_active(adapter.identity().name)?;
                 if !misses.is_empty() {
                     clog_info!(
                         "STT: '{}' active (earlier engines unavailable: {})",
