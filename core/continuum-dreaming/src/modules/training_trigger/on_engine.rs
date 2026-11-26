@@ -431,8 +431,17 @@ impl TrainingTriggerState {
         if self.on_engine.seated(key) || self.on_engine.holds(key, port) {
             return Ok(());
         }
-        let rows = self.rows_of(key).await?;
-        self.seat_on_engine(port, key, &rows).await
+        let rows = self.rows_of(key).await;
+        let seated = match rows {
+            Ok(rows) => self.seat_on_engine(port, key, &rows).await,
+            Err(why) => Err(why),
+        };
+        // a reserve only ever serves a seat: a pass that seated nothing (nothing pending, not now, a
+        // refusal) gives it back, or it is held from everyone with nothing to spend it on
+        if !self.on_engine.seated(key) {
+            self.on_engine.release_reserve(key);
+        }
+        seated
     }
 
     /// Decide and measure `key`'s seat, sized for her next lesson.
