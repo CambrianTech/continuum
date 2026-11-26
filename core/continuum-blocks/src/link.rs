@@ -33,9 +33,13 @@ pub struct Moved {
 }
 
 /// Whether a transfer's every byte has landed (UNIFIED-PAGING.md, `Completion`). A link that moves synchronously
-/// (the OS's paging) is landed when it starts; a DMA's is its device event, polled off the engine thread.
+/// (the OS's paging) is landed when it starts; a DMA's is its device event, which tells the Streamer itself.
 pub trait Completion: Send {
     fn landed(&self) -> bool;
+    /// Block until the device is done with both regions (a CUDA event synchronize). Only a transfer dropped before
+    /// it landed calls this (its owner shutting down or letting the block go): the device may still read the
+    /// source and write the destination, so neither returns to its tier first (Codex, 2026-11-26).
+    fn settle(&self);
 }
 
 /// A transfer done when it started.
@@ -45,6 +49,7 @@ impl Completion for Landed {
     fn landed(&self) -> bool {
         true
     }
+    fn settle(&self) {}
 }
 
 /// One transfer a link started: one block's bytes, when it began, its completion, and the region it fills when the
@@ -76,15 +81,26 @@ impl Transfer {
 
     /// Give `block` what landed: its new region (if the move filled one) and placement, and what it moved. A
     /// transfer not yet landed is handed back untouched.
-    pub fn land<K>(self, block: &mut Block<K>, now: Instant) -> Result<Moved, Self> {
+    pub fn land<K>(mut self, block: &mut Block<K>, now: Instant) -> Result<Moved, Self> {
         if !self.landed() {
             return Err(self);
         }
-        if let Some(into) = self.into {
+        if let Some(into) = self.into.take() {
             drop(std::mem::replace(block.region_mut(), into)); // the source goes back to its tier only now
         }
         block.set_placement(self.to);
         Ok(Moved { bytes: self.bytes, took: now.saturating_duration_since(self.started) })
+    }
+}
+
+impl Drop for Transfer {
+    /// A transfer let go before it landed waits for its device, so its destination (held here) and its source (held
+    /// beside it by its owner, dropped after it) never return to their tiers under a live copy.
+    fn drop(&mut self) {
+        if !self.done.landed() {
+            continuum_base::probe!(class = "blocks.transfer.settled_on_drop", bytes = self.bytes, "a transfer dropped before its fence: waiting for the device before its regions go");
+            self.done.settle();
+        }
     }
 }
 
@@ -202,5 +218,28 @@ mod tests {
         assert_eq!(parked.region().as_slice()[0], 7, "her bytes went with her memory, not copied");
         parked.pins_for_test(1);
         assert!(matches!(Exchange.swap(&mut stream, &mut parked), Err(LinkRefusal::Pinned)));
+    }
+
+    /// A device the test finishes: records whether it was asked to settle.
+    struct Device(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+    impl Completion for Device {
+        fn landed(&self) -> bool {
+            false
+        }
+        fn settle(&self) {
+            self.0.store(true, std::sync::atomic::Ordering::Release);
+        }
+    }
+
+    // what this catches (Codex, 2026-11-26): a DMA let go before its fence (its owner shutting down, the block let
+    // go) returning its destination, and the source after it, to their tiers while the device still copies.
+    #[test]
+    fn a_transfer_dropped_before_its_fence_waits_for_the_device() {
+        let settled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let into = Region::host(TierKind::Vram, 4096, 64).expect("test: a destination");
+        let transfer = Transfer::into_region(Instant::now(), Placement::Resident(TierKind::Vram), Box::new(Device(std::sync::Arc::clone(&settled))), into);
+        drop(transfer);
+        assert!(settled.load(std::sync::atomic::Ordering::Acquire), "the destination went back only after the device settled");
     }
 }

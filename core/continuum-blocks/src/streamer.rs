@@ -9,6 +9,7 @@
 //! Never a copy loop, a staging copy or an encoding: those are not links. One move per link at a time, soonest first;
 //! a block's source stays where it is, charged and valid, until its move lands.
 
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::hash::Hash;
@@ -68,39 +69,61 @@ pub const DEMAND: TopicName = TopicName("blocks/demand");
 /// Every block's placement, state keyed [`Key::ONE`].
 pub const PLACEMENTS: TopicName = TopicName("blocks/placements");
 
+/// The one move in flight: its block travels with it, out of the Streamer's map, so a newer block held for the same
+/// key while it moves can never drop the source a device still reads (Codex, 2026-11-26). Fields drop in order: the
+/// transfer first (an unlanded one waits for its device), then the block's source.
+struct InFlight<K> {
+    transfer: Transfer,
+    key: K,
+    block: Block<K>,
+}
+
 /// The streaming system beside its consumer.
 pub struct Streamer<K, L> {
+    /// First, so at shutdown a move in flight settles before anything else of the Streamer's goes.
+    moving: Option<InFlight<K>>,
     links: L,
     /// Where a demanded block must be for its consumer to use it (the device's own tier on this node).
     use_at: Placement,
     demand: Arc<Demand<K>>,
+    /// Every block at rest, by key: the newest held for its key.
     blocks: HashMap<K, Block<K>>,
-    /// The one move in flight, and whose.
-    moving: Option<(K, Transfer)>,
     last: HashMap<K, Duration>,
     says: Publisher<Placements<K>>,
 }
 
 impl<K: Copy + Eq + Hash + Debug + Send + Sync + 'static, L: Links<K>> Streamer<K, L> {
     pub fn new(links: L, use_at: Placement, says: Publisher<Placements<K>>) -> Self {
-        Self { links, use_at, demand: Arc::new(Demand { soonest: Vec::new() }), blocks: HashMap::new(), moving: None, last: HashMap::new(), says }
+        Self { moving: None, links, use_at, demand: Arc::new(Demand { soonest: Vec::new() }), blocks: HashMap::new(), last: HashMap::new(), says }
     }
 
-    /// Land the move in flight if its fence fired.
+    /// Hold `block`. One held for a key whose move is in flight waits beside it: the moving block stays leased to its
+    /// transfer until its fence, and is superseded only then.
+    fn hold(&mut self, block: Block<K>) {
+        self.blocks.insert(*block.key(), block);
+    }
+
+    /// Land the move in flight if its fence fired. Its block returns to the map unless a newer one was held for its
+    /// key meanwhile; then the landed one is let go, now that the device is done with both its regions.
     fn land(&mut self, key: K, now: Instant) {
-        let Some((moving, transfer)) = self.moving.take() else { return };
+        let Some(InFlight { transfer, key: moving, mut block }) = self.moving.take() else { return };
         if moving != key {
-            self.moving = Some((moving, transfer));
+            self.moving = Some(InFlight { transfer, key: moving, block });
             return;
         }
-        let Some(block) = self.blocks.get_mut(&key) else {
-            return; // its block was let go while it moved: the transfer drops with its destination
-        };
-        match transfer.land(block, now) {
+        match transfer.land(&mut block, now) {
             Ok(moved) => {
                 self.last.insert(key, moved.took);
+                match self.blocks.entry(key) {
+                    Entry::Occupied(_) => {
+                        continuum_base::probe!(class = "blocks.stream.superseded", key = ?key, "a newer block was held for this key while its move was in flight: the landed one goes");
+                    }
+                    Entry::Vacant(rest) => {
+                        rest.insert(block);
+                    }
+                }
             }
-            Err(unlanded) => self.moving = Some((key, unlanded)), // told early: it is still in flight
+            Err(unlanded) => self.moving = Some(InFlight { transfer: unlanded, key, block }), // told early: still in flight
         }
     }
 
@@ -110,7 +133,8 @@ impl<K: Copy + Eq + Hash + Debug + Send + Sync + 'static, L: Links<K>> Streamer<
             return;
         }
         let use_at = self.use_at;
-        for key in self.demand.soonest.clone() {
+        let demand = Arc::clone(&self.demand);
+        for &key in &demand.soonest {
             let Some(block) = self.blocks.get_mut(&key) else { continue };
             let from = block.placement();
             if from == use_at {
@@ -124,7 +148,8 @@ impl<K: Copy + Eq + Hash + Debug + Send + Sync + 'static, L: Links<K>> Streamer<
                 Ok(transfer) => {
                     let name = link.name();
                     continuum_base::probe!(class = "blocks.stream.started", key = ?key, link = name, bytes = transfer.bytes, "a demanded block's move started");
-                    self.moving = Some((key, transfer));
+                    let Some(block) = self.blocks.remove(&key) else { continue }; // looked up above: it is there
+                    self.moving = Some(InFlight { transfer, key, block });
                     self.land(key, now); // a link that moved when it started (paging, a retag) lands at once
                     if self.moving.is_some() {
                         return;
@@ -137,13 +162,16 @@ impl<K: Copy + Eq + Hash + Debug + Send + Sync + 'static, L: Links<K>> Streamer<
         }
     }
 
+    /// Every key's row: its newest block, moving if that block is the one in flight.
     fn placements(&self) -> Placements<K> {
         let rank = |key: &K| self.demand.soonest.iter().position(|k| k == key).unwrap_or(usize::MAX); // unwrap_or: an undemanded block sorts last
-        let mut rows: Vec<Row<K>> = self
-            .blocks
-            .iter()
-            .map(|(key, block)| Row { key: *key, placement: block.placement(), moving: self.moving.as_ref().is_some_and(|(k, _)| k == key), last: self.last.get(key).copied() })
-            .collect();
+        let last = |key: &K| self.last.get(key).copied();
+        let mut rows: Vec<Row<K>> = self.blocks.iter().map(|(key, block)| Row { key: *key, placement: block.placement(), moving: false, last: last(key) }).collect();
+        if let Some(InFlight { key, block, .. }) = &self.moving {
+            if !self.blocks.contains_key(key) {
+                rows.push(Row { key: *key, placement: block.placement(), moving: true, last: last(key) });
+            }
+        }
         rows.sort_by_key(|row| rank(&row.key));
         Placements(rows)
     }
@@ -162,9 +190,7 @@ impl<K: Copy + Eq + Hash + Debug + Send + Sync + 'static, L: Links<K>> Component
         let now = Instant::now();
         match input {
             Stream::Demand(demand) => self.demand = demand.value,
-            Stream::Hold(block) => {
-                self.blocks.insert(*block.key(), block);
-            }
+            Stream::Hold(block) => self.hold(block),
             Stream::Landed(key) => self.land(key, now),
         }
         self.feed(now);
@@ -178,8 +204,8 @@ mod tests {
     use super::*;
     use crate::link::{Completion, LinkRefusal};
     use crate::{Region, TierKind};
-    use continuum_sage::component::{start, Bus};
-    use continuum_sage::dataflow::{OwnerId, Provenance, Reader, RunId, StageId, StageIncarnation};
+    use continuum_sage::component::{start, Bus, Running};
+    use continuum_sage::dataflow::{OwnerId, Provenance, Publisher, Reader, RunId, StageId, StageIncarnation};
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Mutex;
 
@@ -193,11 +219,14 @@ mod tests {
         fn landed(&self) -> bool {
             self.0.load(Ordering::Acquire)
         }
+        fn settle(&self) {
+            self.0.store(true, Ordering::Release); // the test is the device: asked to finish, it does
+        }
     }
 
     /// A DMA-shaped link: reserves the destination, starts, and lands on its fence.
     struct Dma {
-        fences: Arc<Mutex<Vec<(char, Arc<AtomicBool>)>>>,
+        fences: Fences,
     }
 
     impl Link<char> for Dma {
@@ -218,6 +247,30 @@ mod tests {
         fn between(&self, from: Placement, to: Placement) -> Option<&dyn Link<char>> {
             (from == PINNED && to == VRAM).then_some(&self.0 as &dyn Link<char>)
         }
+    }
+
+    type Fences = Arc<Mutex<Vec<(char, Arc<AtomicBool>)>>>;
+
+    /// A Streamer on a card with one DMA link, its placements, the consumer's demand, and every fence it started.
+    struct Rig {
+        streamer: Running<Streamer<char, Card>>,
+        placements: Reader<Placements<char>>,
+        demand: Publisher<Demand<char>>,
+        fences: Fences,
+    }
+
+    fn card(bus: &'static Bus) -> Rig {
+        let fences: Fences = Arc::new(Mutex::new(Vec::new()));
+        let says = bus.publisher(PLACEMENTS, Key::ONE).expect("test: the topic is free"); // expect: the test's own precondition
+        let streamer = start(Streamer::new(Card(Dma { fences: Arc::clone(&fences) }), VRAM, says), bus, OwnerId(uuid::Uuid::from_u128(9)), 1);
+        let placements = bus.reader::<Placements<char>>(PLACEMENTS, Key::ONE);
+        let demand = bus.publisher::<Demand<char>>(DEMAND, Key::ONE).expect("test: the topic is free"); // expect: the test's own precondition
+        Rig { streamer, placements, demand, fences }
+    }
+
+    fn fence(fences: &Fences, i: usize) -> (char, Arc<AtomicBool>) {
+        let all = fences.lock().expect("test: the record"); // expect: the test's own lock
+        (all[i].0, Arc::clone(&all[i].1))
     }
 
     fn by() -> Provenance {
@@ -248,23 +301,43 @@ mod tests {
     #[tokio::test]
     async fn the_streamer_moves_demanded_blocks_soonest_first_one_dma_at_a_time() {
         let bus: &'static Bus = Box::leak(Box::new(Bus::new()));
-        let fences = Arc::new(Mutex::new(Vec::new()));
-        let says = bus.publisher(PLACEMENTS, Key::ONE).expect("test: the topic is free"); // expect: the test's own precondition
-        let streamer = start(Streamer::new(Card(Dma { fences: Arc::clone(&fences) }), VRAM, says), bus, OwnerId(uuid::Uuid::from_u128(9)), 1);
-        let mut placements = bus.reader::<Placements<char>>(PLACEMENTS, Key::ONE);
+        let Rig { streamer, mut placements, mut demand, fences } = card(bus);
         assert!(streamer.tell(Stream::Hold(parked('b', 0xb))).await);
         assert!(streamer.tell(Stream::Hold(parked('c', 0xc))).await);
-        let mut demand = bus.publisher::<Demand<char>>(DEMAND, Key::ONE).expect("test: the topic is free"); // expect: the test's own precondition
         demand.publish(Demand { soonest: vec!['c', 'b'] }, by());
         until(&mut placements, &[('c', PINNED, true), ('b', PINNED, false)]).await;
-        let fence = |i: usize| Arc::clone(&fences.lock().expect("test: the record")[i].1); // expect: the test's own lock
         assert_eq!(fences.lock().expect("test: the record").len(), 1, "one move per link, the soonest first"); // expect: the test's own lock
         assert!(streamer.tell(Stream::Landed('c')).await);
         until(&mut placements, &[('c', PINNED, true), ('b', PINNED, false)]).await; // told before its fence fired: still moving, still at its source
-        fence(0).store(true, Ordering::Release);
+        let (first, landed) = fence(&fences, 0);
+        assert_eq!(first, 'c');
+        landed.store(true, Ordering::Release);
         assert!(streamer.tell(Stream::Landed('c')).await);
         until(&mut placements, &[('c', VRAM, false), ('b', PINNED, true)]).await;
         let row = placements.latest().and_then(|now| now.value.0.first().copied());
         assert!(row.and_then(|r| r.last).is_some(), "her measured move is said with her, for the lane's slice floor");
+    }
+
+    // what this catches (Codex, 2026-11-26, review of 15fcba918c): a block held again for a key whose DMA is in
+    // flight dropping the source the device still reads, and the old move's destination installed into the newer
+    // block when its fence fires. The moving block stays leased to its transfer; the newer one keeps its own bytes
+    // and gets its own move once the old one settles.
+    #[tokio::test]
+    async fn a_block_held_again_mid_move_never_takes_the_old_moves_landing() {
+        let bus: &'static Bus = Box::leak(Box::new(Bus::new()));
+        let Rig { streamer, mut placements, mut demand, fences } = card(bus);
+        assert!(streamer.tell(Stream::Hold(parked('c', 0xa))).await);
+        demand.publish(Demand { soonest: vec!['c'] }, by());
+        until(&mut placements, &[('c', PINNED, true)]).await;
+        assert!(streamer.tell(Stream::Hold(parked('c', 0xb))).await);
+        until(&mut placements, &[('c', PINNED, false)]).await; // her row is the newest block, at rest where it was held
+        let (_, old) = fence(&fences, 0);
+        old.store(true, Ordering::Release);
+        assert!(streamer.tell(Stream::Landed('c')).await);
+        until(&mut placements, &[('c', PINNED, true)]).await; // the newer block starts its own move: it never took the old landing
+        assert_eq!(fences.lock().expect("test: the record").len(), 2, "the newer block moves by its own DMA"); // expect: the test's own lock
+        fence(&fences, 1).1.store(true, Ordering::Release);
+        assert!(streamer.tell(Stream::Landed('c')).await);
+        until(&mut placements, &[('c', VRAM, false)]).await;
     }
 }
