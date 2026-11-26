@@ -807,12 +807,22 @@ branch is the defect.
   device.
 - **Adapters, chosen once at start from the node's measured topology** (`continuum-host`, the per-OS files
   pattern): `Unified` (her storage a block over her mapped file; parked, the OS pages it; a cheap Elastic row
-  whose way is cache-out to flash), `Dedicated` (her storage device memory leased on the ledger, sized to her
+  whose way is cache-out to flash), `Dedicated` (her storage ONE device allocation leased on the ledger, sized to her
   window, never the stream; parked, cached out to pinned host memory by DMA overlapped with decode and back on her
-  next step; an Elastic row with resize to her window and cache-out to pinned), and `RowCopy` (a context that is
-  not the Core's shape: the fork's own memory, its own named adapter, never a fallback inside another).
+  next step; an Elastic row with resize to her window and cache-out to pinned). A context that is not the Core's
+  shape is not a third adapter: it is refused at start (row copy is deleted, below).
 - **The levels do the work.** Each adapter's rows sit on the `Resizing`/cache-out levels, so an adapter writes
   only how its bytes move (map, lease, DMA); the floor, want, fences and receipts are the parent's.
+- **A move is one DMA of one block, never iteration** (Joel: "The transfer itself should be DMA or block not
+  iteration or any calculation or it'll be slow"). Today's fallback (`llama-kv-cache-persona.cpp:115`, "she moves
+  by row copy") is synchronous `ggml_backend_tensor_get` per layer, into pageable `std::vector` buffers the
+  driver stages through, of each layer's whole stream tensor (all its positions, used or not). The Dedicated
+  adapter instead holds her storage as ONE device allocation (every layer's K and V for her window, viewed as the
+  layers' tensors) and her parked copy as ONE pinned host block of the same layout: park is one device-to-host
+  async copy, restore one host-to-device, each fenced by its own event (the fetcher's `Landed`). No per-layer
+  calls, no staging, no `state_seq_get_data` (a serializer) on this path, only her window's bytes. Row copy is
+  deleted, not kept as a fallback: a mind with no device room stays parked in pinned memory until the placer makes
+  room.
 - **Deleted with it:** the viewable branch in `unified_tier.rs` and `DeviceRoom` (its lease becomes the
   `Dedicated` adapter's).
 

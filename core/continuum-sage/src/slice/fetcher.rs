@@ -71,7 +71,10 @@ pub enum Moving {
     Refused { why: &'static str },
 }
 
-/// The one thing a memory does differently: start moving a mind's KV onto the device. Its completion is the
+/// The one thing a memory does differently: start moving a mind's KV onto the device. A move is ONE transfer of ONE
+/// contiguous block by DMA (pinned host to device, one async copy with a completion event), never a loop over layers
+/// or cells, never a pageable staging copy or a serialization (Joel, 2026-11-26: "DMA or block not iteration or any
+/// calculation"); on unified memory it is a pointer and nothing moves. Its completion is the
 /// device's fence, told back to the fetcher; it never waits.
 pub trait Mover<K>: Send + 'static {
     fn start(&mut self, ask: MoveAsk<K>) -> Moving;
