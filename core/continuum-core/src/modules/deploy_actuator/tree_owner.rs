@@ -159,8 +159,12 @@ impl TreeOwner for GitTreeOwner {
             }
 
             let actual_head = String::from_utf8(head_sha.stdout)
-                .map(|s| s.trim().to_string())
-                .unwrap_or_default();
+                .map_err(|e| TreeRefusal::Create {
+                    tip: tip.into(),
+                    stderr: format!("HEAD output is not valid UTF-8: {e}"),
+                })?
+                .trim()
+                .to_string();
 
             if actual_head != tip {
                 return Err(TreeRefusal::WrongHead {
@@ -225,7 +229,7 @@ impl TestTreeOwner {
         let dir = tempfile::tempdir().expect("test: create tempdir for TreeOwner");
         // Leak the TempDir so it lives as long as this TestTreeOwner.
         // In tests, the owner is short-lived and drops with the actuator fixture.
-        guard.insert(dir.path().to_path_buf());
+        let _ = guard.insert(dir.path().to_path_buf());
         std::mem::forget(dir);
         guard.as_ref().unwrap().clone()
     }
@@ -238,10 +242,3 @@ impl TreeOwner for TestTreeOwner {
     }
 }
 
-/// Verify that `.git` exists as either a directory (normal repo) or a file (worktree).
-/// Returns true if it looks like a git repository root.
-pub(crate) fn has_git_root(path: &Path) -> bool {
-    // Check for .git as a directory (normal checkout) OR as a file (worktree pointer).
-    // This is the correct check — the old code only checked `.is_dir()` which fails for worktrees.
-    path.join(".git").metadata().is_ok()
-}

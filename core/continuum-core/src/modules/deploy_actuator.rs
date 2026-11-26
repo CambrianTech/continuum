@@ -28,13 +28,12 @@
 //! bounds its own attempts per tip, then runs the reboot — one action, one place.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
 use continuum_cli_lifecycle::deploy_tracker::{same_commit, DeployRequest, STRANDED_GRACE_MS};
-use continuum_cli_lifecycle::deploy_claim::{in_flight, DeployClaim};
+use continuum_cli_lifecycle::deploy_claim::in_flight;
 
 /// The receipt, beside the request it answered: `<state>/deploy-actuation.json`.
 pub(crate) const ACTUATION_FILE: &str = "deploy-actuation.json";

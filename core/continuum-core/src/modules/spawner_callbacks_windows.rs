@@ -1,6 +1,5 @@
 //! Windows callbacks for deploy spawning — wired to bounded_command::probe and StartupPermit.
 
-use std::path::Path;
 use std::time::Duration;
 
 const DEPLOY_TASK: &str = "ContinuumDeploy";
