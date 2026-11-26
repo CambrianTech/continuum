@@ -74,6 +74,11 @@ pub fn start_server(
 ) -> std::io::Result<()> {
     install_kernel_extensions();
     continuum_base::probe!(class = "boot.step", step = "kernel_extensions_installed", "kernel extensions installed; the socket path and the model registry are next");
+    prepare_unix_socket_path(socket_path)?;
+    let init_started = std::time::Instant::now();
+    let listener = listeners::bind_ipc_listener(socket_path, init_started)?;
+    listeners::announce_ipc_ready(socket_path);
+
     let phase_started =
         model_registry_boot::prepare_socket_and_load_model_registry(socket_path, boot_mode)?;
 
@@ -249,10 +254,10 @@ pub fn start_server(
         &call_plane.live_registrar_executor,
     );
 
-    // BIND BEFORE INITIALIZE SETTLES: initialize starts here and runs beside the socket, so no
-    // module can wedge boot. Everything after this until the bind is the pre-bind window the
-    // 300 s boot deadline in main.rs still guards (construction, the registered-set check, the
-    // bind itself); a module's initialize is no longer in it.
+    // BIND EARLY: the socket is bound above (right after kernel extensions), before any cold-storage I/O.
+    // verify_and_begin_initialize starts async module init beside the already-bound socket, so no
+    // module can wedge boot. Everything from here until settle_then_release runs in a window where
+    // the IPC endpoint is live but serving-not-ready — clients connect immediately and get honest answers.
     let runtime_start::InitializeStarted { phase_started: init_started, settle } =
         runtime_start::verify_and_begin_initialize(
             &runtime,
@@ -261,9 +266,6 @@ pub fn start_server(
             boot_mode,
             phase_started,
         )?;
-
-    let listener = listeners::bind_ipc_listener(socket_path, init_started)?;
-    listeners::announce_ipc_ready(socket_path);
 
     runtime_start::settle_then_release(
         &rt_handle,
