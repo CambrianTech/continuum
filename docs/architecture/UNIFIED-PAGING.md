@@ -475,6 +475,34 @@ run the same `Reservation` and the same law. On unified memory a demoted residen
 everyone shares; on the 5090 it frees `Pinned`, and the Streamer says so. The difference between
 nodes is a row in `Placement`, never a mystery found by trace.
 
+**Settled in review (Cormac, Codex, 2026-11-26 08:11Z and 08:19Z), before any code:**
+- **One authority, no seventh counter.** The resource authority keeps leasing to everything outside
+  the engine (builds, residents' tools). The Streamer holds one authority lease per tier for the
+  engine's memory and sub-allocates every block inside it. The authority sees one holder; the Streamer's
+  block table is the only picture of what is inside. Pressure from outside, our own builds included,
+  arrives as that lease's budget shrinking, and a growing budget wakes waiting seats. Both launch and
+  quit of another application are inputs.
+- **The engine thread never waits on a demotion. Prepare, consume, commit.** A `Reservation` is one
+  atomic claim across every tier. The Streamer prepares and pins it on its own workers, demoting as its
+  law decides, and says `Granted` only when the room is free. Inside the graph, the scheduler's callback
+  only consumes a prepared claim, answering at once. On allocator success it commits the actual size;
+  on allocator failure or cancel the unused claim unwinds. A replacement buffer that overlaps the old
+  one reserves its transient peak. With no prepared claim the step drains as `Unchanged`, and the seat
+  stays `Demand` until `Granted`. `grow()` is therefore never a call on the engine thread; the callback
+  is `consume`.
+- **A workspace is identified by its storage, not its name.** `Workspace` blocks key on the allocator's
+  context generation and backing allocation. Device and buffer type are descriptors, because two
+  schedulers can share a device and type without sharing storage.
+- **Bytes count as freed only when they are.** A source's bytes are credited to a tier only after a
+  fenced move and the allocator's release. On unified memory pinned RAM and GPU mappings may alias, so
+  the tier table is per physical memory. A smaller KV share, or a move from RAM to RAM, never pays for a
+  device shortage.
+- **"Never here" is a proven limit only.** A seat is refused only for a physical or semantic limit:
+  the reply alone past what this seat could reserve on each tier with every demotable block demoted.
+  The Streamer answers that query, and it is the `Fit` a lesson is sized within (2ae0feed16 sizes it from
+  governed capacity until 3b lands, then from the Streamer). External pressure is always a wait, never
+  a refusal.
+
 What it deletes, in the slice that builds it (slice 3b below): `LearningMemory`'s workspace and lease
 matching, `lease_memory`, `from_rows`, `learning::leased`, the metrics sum, training's path through
 `window_allocator`, and `GrantHandoff` as bytes.
@@ -537,7 +565,7 @@ network link between them. So that works later with no rework, everything built 
 | 1b | `Topology` and the tiers' budgets, once the resource authority says `resources/free` on the bus (card 9d856843, Cormac's delta 8). The drive's measured write rate checks the Mapping link: 64 MiB demoted at 1.06 GB/s on the M5 with serving beside, below what an SSD gives | Fable | Mapping at >= 80% of the measured drive rate |
 | 2 | The first consumer: the Core's parked minds' KV as `MindKv` blocks. Deletes the fork's private storage reservation (#6264), her separate file write, and `preserve.rs`'s JSON token history (her tokens are a block beside her KV) | Fable | `--test-core` byte-identical through a flash round trip; stop and restore at 130k at the drive's rate |
 | 3 | The `Streamer` with `PlacementLaw` (`FractalPager`, `Lru` as baseline), `Forecaster`, the law registry, `blocks/observed` and the `Trace`, simulator and replay; the Lane's `Forecast` as its first `Demand` | Fable | replay reproduces every decision; zero misses for forecast minds; `FractalPager` beats `Lru` on a fitted live trace |
-| 3b | Workspace, admission and reclaim as blocks ("Every byte the engine holds is a block"): `Workspace` blocks and `grow` at the scheduler's admission callback; `Reservation` replaces every learning lease sum; training demand as `Demand`. Deletes the six counters listed there | Fable (blocks, Streamer), Codex (`Reservation` contract, the discrete tiers' reclaim), Cormac (the trainer as a consumer, outstanding demand) | the M5 and the 5090 each run 15 min on one head: zero refusals that are not "never here", and every wait names the tier and bytes it waits for |
+| 3b | Workspace, admission and reclaim as blocks ("Every byte the engine holds is a block"): `Workspace` blocks and `grow` at the scheduler's admission callback; `Reservation` replaces every learning lease sum; training demand as `Demand`. Deletes the six counters listed there | Fable (blocks, Streamer), Codex (`Reservation` contract, the discrete tiers' reclaim), Cormac (the trainer as a consumer, outstanding demand) | the M5 and the 5090 each run 15 min on one head: zero refusals that are not "never here"; every wait names the tier and bytes it waits for; forward progress (a `Saved` generation linked to its lesson, serving restored after) on both nodes; time from the short tier freeing to `Granted`, p50 and max; fixtures for pressure onset and recovery, cancel, and a native allocation failure after a reservation |
 | 4 | Discrete: the `Vram` and `Pinned` tiers, `Dma` and `Staged` links, the CUDA graph check | Codex | the 5090: a swap hidden under decode |
 | 5 | The hot tier as `Weights` blocks; its private copier deleted | Codex (owns the catalog) | model load from flash at the drive's rate |
 | 6 | llama-server page IO onto `Mapping`, or deleted with the HTTP lanes (the inference audit's line 2) | the card 6af87187 owner, with Codex | no `fread` of a page body |
