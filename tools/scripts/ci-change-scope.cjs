@@ -300,7 +300,11 @@ function selectChecks(files, evidence = {}) {
   const rust = rustPaths.length > 0;
   const workspace = evidence.eventName === 'push' ? null : evidence.workspace;
   const scope = !rust ? { crates: [], cli: false } : selectCrates(rustPaths, workspace);
-  const targets = selectTargets(rustPaths, workspace, scope.crates);
+  // a target is built only from a file the change leaves in the tree: a removed or renamed-away
+  // example names nothing cargo can build (#6283: the deleted examples/learn_in_place.rs failed
+  // continuum-genome with "no example target named learn_in_place")
+  const kept = files.filter(f => f.status !== 'removed').map(f => f.filename).filter(p => rustPaths.includes(p));
+  const targets = selectTargets(kept, workspace, scope.crates);
   return { rust, installer: rust || paths.some(windows), publication: selectPublication(paths, evidence, files), ...scope, ...targets };
 }
 module.exports = { selectChecks, readWorkspace, readPolicy, deriveCrates, publishedBinaries, TESTED_CRATES, TEST_FEATURES, LIB_TESTS };

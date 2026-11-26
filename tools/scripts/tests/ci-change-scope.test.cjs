@@ -213,6 +213,12 @@ test('a PR that touches an example builds it, and runs the tests of one declarin
   assert.deepEqual(examples(['core/continuum-context/src/source.rs']), {});
   assert.deepEqual(examples(['docs/a.md']), {});
   assert.deepEqual(examples(['core/continuum-context/examples/replay.rs'], 'push'), {});
+  // A deleted example, or the old name of a renamed one, builds nothing: it is not in the tree
+  // (#6283: deleting examples/learn_in_place.rs failed continuum-genome with "no example target").
+  const changed = files => selectChecks(files, { eventName: 'pull_request', workspace }).examples;
+  assert.deepEqual(changed([{ filename: 'core/continuum-context/examples/gone.rs', status: 'removed' }]), {});
+  assert.deepEqual(changed([{ filename: 'core/continuum-context/examples/summarize.rs', previous_filename: 'core/continuum-context/examples/old_name.rs', status: 'renamed' }]),
+    { 'continuum-context': { all: ['summarize'], tested: [] } });
 });
 
 test('a PR that touches a declared binary\'s own source compiles that binary', () => {
