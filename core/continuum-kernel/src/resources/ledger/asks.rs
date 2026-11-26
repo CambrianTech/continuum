@@ -84,6 +84,12 @@ impl ResourceLeaseLedger {
         if self.leases.contains_key(lease_id) {
             return Err(LeaseError::DuplicateLease { lease_id: lease_id.to_owned() });
         }
+        // one transition on place: the bytes move from the reserve's claim to the stage's, every charge
+        // (the kind's and its pool's) unchanged, so nothing can come between
+        let stage = self
+            .place
+            .split(claim, kind, Bytes(req.bytes), told::owner_of(&req.consumer_id), Generation(1))
+            .map_err(|_refused| LeaseError::MissingLease { lease_id: reserve.to_owned() })?;
         let left = bytes - req.bytes;
         if left == 0 {
             if let Some(held) = self.leases.remove(reserve) {
@@ -93,17 +99,18 @@ impl ResourceLeaseLedger {
             held.lease.bytes = left;
             if let Some(view) = &held.view { view.bytes.store(left, std::sync::atomic::Ordering::Release); }
         }
-        if self.place.shrink(claim, kind, Bytes(req.bytes)).is_err() {
-            continuum_base::probe!(class = "resources.ledger.carve_unknown", reserve = %reserve, "a reserve had no claim left on place");
-        }
-        let taken = self.place.take(told::owner_of(&req.consumer_id), Generation(1), &[Need { place: req.kind, amount: Bytes(req.bytes) }]);
-        let lease = match taken {
-            Ok(claim) => self.hold(claim, req, lease_id.to_owned(), now_ms),
-            // the bytes just freed fit by construction; only a floor told since could refuse them
-            Err(_untaken) => Err(LeaseError::InsufficientCapacity { kind: req.kind, requested: req.bytes, available: 0 }),
+        let lease = ResourceLease {
+            lease_id: lease_id.to_owned(),
+            consumer_id: req.consumer_id.clone(),
+            kind: req.kind,
+            bytes: req.bytes,
+            acquired_at_ms: now_ms,
+            expires_at_ms: now_ms.saturating_add(req.ttl_ms),
+            reclaim_policy: req.reclaim_policy,
         };
-        self.tell();
-        lease
+        self.leases.insert(lease_id.to_owned(), super::Held { lease: lease.clone(), landed_from: None, view: None, claim: stage });
+        self.tell(); // after the transition: what the floors and waits see is its result
+        Ok(lease)
     }
 
     /// Grant every waiting ask that now fits and turn each into its lease. Run after every change that can
