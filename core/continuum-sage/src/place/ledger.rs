@@ -178,9 +178,10 @@ impl<P: Copy + PartialEq + std::fmt::Debug, Q: Quantity> Ledger<P, Q> {
         // in order of asking, per place: a newcomer waits only behind an earlier wait short on a place
         // it also needs, so a wait on one place never holds up another
         // (a need within its owner's own floor is a guarantee and queues behind no one)
-        let behind = self.waiting.iter().any(|wait| {
-            self.short_places(wait.owner, &wait.needs).any(|place| merged.iter().any(|need| need.place == place && !self.within_floor(owner, need)))
-        });
+        let mut blocked = std::mem::take(&mut self.blocked);
+        self.held_by_waits(&mut blocked);
+        let behind = merged.iter().any(|need| blocked.contains(&need.place) && !self.within_floor(owner, need));
+        self.blocked = blocked;
         if !behind && self.fits(owner, &merged) {
             return Answer::Granted(self.grant(id, owner, generation, merged));
         }
@@ -189,10 +190,9 @@ impl<P: Copy + PartialEq + std::fmt::Debug, Q: Quantity> Ledger<P, Q> {
         Answer::Waiting { id, short }
     }
 
-    /// Grant every wait that fits now, in order of asking per place: a wait is passed over only on a
-    /// place where an earlier wait is still short, so the oldest wins on its own place and a wait short
-    /// on one place never starves another. Granted claims are pushed to `granted` (a buffer the caller
-    /// reuses).
+    /// Grant every wait that fits now, in order of asking per place. Granted claims are pushed to
+    /// `granted` (a buffer the caller reuses). Which places each remaining wait holds is
+    /// [`Self::holds`]'s rule.
     pub fn grant_waiting(&mut self, granted: &mut Vec<Claim<P, Q>>) {
         let mut blocked = std::mem::take(&mut self.blocked);
         blocked.clear();
@@ -207,10 +207,35 @@ impl<P: Copy + PartialEq + std::fmt::Debug, Q: Quantity> Ledger<P, Q> {
                 }
                 continue;
             }
-            blocked.extend(self.short_places(self.waiting[at].owner, &self.waiting[at].needs));
+            self.holds(at, held_up, &mut blocked);
             at += 1;
         }
         self.blocked = blocked;
+    }
+
+    /// The places every queued wait holds, into `blocked` (cleared first), without granting.
+    fn held_by_waits(&self, blocked: &mut Vec<P>) {
+        blocked.clear();
+        for at in 0..self.waiting.len() {
+            let wait = &self.waiting[at];
+            let held_up = wait.needs.iter().any(|need| blocked.contains(&need.place) && !self.within_floor(wait.owner, need));
+            self.holds(at, held_up, blocked);
+        }
+    }
+
+    /// What the wait at `at` holds from later asks. A wait behind an earlier one holds only the places
+    /// it is short on, so a wait short on one place never starves another. The first wait in line on
+    /// its places (nobody ahead holds any of them) also holds its places that fit, so a stream of
+    /// later asks cannot spend them while it waits for its short place and leave it short there next
+    /// (Cormac, 2026-11-26 09:24Z: a seat needing Vram and Ram).
+    fn holds(&self, at: usize, held_up: bool, blocked: &mut Vec<P>) {
+        let wait = &self.waiting[at];
+        let needs = &wait.needs;
+        if held_up {
+            blocked.extend(self.short_places(wait.owner, needs));
+        } else {
+            blocked.extend(needs.iter().map(|need| need.place));
+        }
     }
 
     /// The claim's consumer is done spending it: what it consumed on each place becomes held, and
@@ -325,6 +350,11 @@ impl<P: Copy + PartialEq + std::fmt::Debug, Q: Quantity> Ledger<P, Q> {
             .filter(|need| need.place == place)
             .fold(0u64, |sum, need| sum.saturating_add(need.amount.units()));
         Some(Q::of(wanted.saturating_sub(free)))
+    }
+
+    /// Every place's shortfall to its waits, in the order places were told.
+    pub fn shortfalls(&self) -> impl Iterator<Item = Need<P, Q>> + '_ {
+        self.places.iter().filter_map(|(place, _)| self.shortfall(*place).map(|amount| Need { place: *place, amount }))
     }
 
     /// How many waits are queued.

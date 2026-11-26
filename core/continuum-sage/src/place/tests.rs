@@ -145,14 +145,13 @@ fn a_wait_short_on_one_place_never_holds_up_a_claim_on_another() {
     let Answer::Waiting { id: seat, .. } = ledger.prepare(TRAINER, FIRST, &[Need { place: Tier::Vram, amount: Bytes(5_700 * MB) }]) else { panic!("test: the seat waits") };
     let pinned = ledger.prepare(SERVING, FIRST, &[Need { place: Tier::Pinned, amount: Bytes(GB) }]);
     assert!(matches!(pinned, Answer::Granted(_)), "Pinned has room and nobody waits on it");
-    let Answer::Waiting { id: later, .. } = ledger.prepare(Owner(3), FIRST, &[Need { place: Tier::Vram, amount: Bytes(MB) }]) else { panic!("test: behind the older Vram wait, though it fits") };
-    let Answer::Waiting { id: both, .. } = ledger.prepare(Owner(4), FIRST, &[Need { place: Tier::Vram, amount: Bytes(MB) }, Need { place: Tier::Pinned, amount: Bytes(GB) }]) else { panic!("test: waits on Vram") };
+    let Answer::Waiting { .. } = ledger.prepare(Owner(3), FIRST, &[Need { place: Tier::Vram, amount: Bytes(MB) }]) else { panic!("test: behind the older Vram wait, though it fits") };
+    let Answer::Waiting { .. } = ledger.prepare(Owner(4), FIRST, &[Need { place: Tier::Vram, amount: Bytes(MB) }, Need { place: Tier::Pinned, amount: Bytes(GB) }]) else { panic!("test: waits on Vram") };
     ledger.place(Tier::Vram, Bytes(32 * GB), Bytes(5_700 * MB), &mut Vec::new());
     let mut out = Vec::new();
     ledger.grant_waiting(&mut out);
     assert_eq!(out.iter().map(Claim::id).collect::<Vec<_>>(), vec![seat], "the oldest wins its place; the 1 MB waits are then short");
     assert_eq!(ledger.waiting(), 2);
-    let _ = (later, both);
 }
 
 // what this catches (review 2): a restarted owner's committed memory credited the moment it restarted,
@@ -215,7 +214,7 @@ fn a_retired_claim_cannot_be_spent_and_a_racing_spend_stays_charged() {
         let old = granted(ledger.prepare(TRAINER, FIRST, &[Need { place: Tier::Vram, amount: Bytes(100) }]));
         let spender = old.clone();
         let spend = std::thread::spawn(move || spender.consume(Tier::Vram, Bytes(60)));
-        let _ = ledger.prepare(TRAINER, Generation(2), &[]);
+        assert!(matches!(ledger.prepare(TRAINER, Generation(2), &[]), Answer::Granted(_)), "the restart's own ask");
         let spent = spend.join().expect("test: the spending thread"); // expect: the test's own precondition
         let held = ledger.accounts(Tier::Vram).map(|a| a.held);
         assert_eq!(held, Some(Bytes(if spent { 60 } else { 0 })), "a spend that won the race is charged; one that lost spent nothing");
@@ -297,4 +296,70 @@ fn a_floor_is_kept_for_its_owner_and_others_are_granted_around_it() {
     let mut out = Vec::new();
     ledger.grant_waiting(&mut out);
     assert_eq!(out.len(), 1, "a withdrawn floor's room is granted to the wait");
+}
+
+// what this catches (Cormac, 09:24Z): a seat needing Vram and Ram, short on Vram, while a stream of
+// later Ram asks spends the Ram it will need, so when Vram frees it is short on Ram behind them.
+// The first wait in line holds its fitting places too.
+#[test]
+fn a_two_place_wait_is_granted_when_its_short_place_frees_despite_asks_on_its_other() {
+    let mut ledger = Ledger::default();
+    ledger.place(Tier::Vram, Bytes(32 * GB), Bytes(GB), &mut Vec::new());
+    ledger.place(Tier::Pinned, Bytes(16 * GB), Bytes(8 * GB), &mut Vec::new());
+    let seat = [Need { place: Tier::Vram, amount: Bytes(6 * GB) }, Need { place: Tier::Pinned, amount: Bytes(6 * GB) }];
+    let Answer::Waiting { id, .. } = ledger.prepare(TRAINER, FIRST, &seat) else { panic!("test: short on Vram") };
+    for owner in 10..14 {
+        let ask = ledger.prepare(Owner(owner), FIRST, &[Need { place: Tier::Pinned, amount: Bytes(GB) }]);
+        assert!(matches!(ask, Answer::Waiting { .. }), "a later Pinned ask does not spend the seat's Pinned");
+    }
+    let other = ledger.prepare(SERVING, FIRST, &[Need { place: Tier::Vram, amount: Bytes(1) }]);
+    assert!(matches!(other, Answer::Waiting { .. }), "nor its Vram");
+    ledger.place(Tier::Vram, Bytes(32 * GB), Bytes(7 * GB), &mut Vec::new());
+    let mut out = Vec::new();
+    ledger.grant_waiting(&mut out);
+    assert_eq!(out.first().map(Claim::id), Some(id), "the seat first, once its short place frees");
+    assert_eq!(out.len(), 1 + 2 + 1, "then the Pinned asks that still fit (2 of 4) and the 1-byte Vram ask");
+}
+
+/// Bytes on the test's two tiers, as one placer's domain.
+struct Memory;
+
+impl Domain for Memory {
+    type Place = Tier;
+    type Quantity = Bytes;
+    const NAME: &'static str = "test-placer";
+    const ASKS: crate::dataflow::TopicName = crate::dataflow::TopicName("test/place/asks");
+    const SHORT: crate::dataflow::TopicName = crate::dataflow::TopicName("test/place/short");
+}
+
+// what this catches: a placer answering by a promise or an event a lagging consumer can lose (a lost
+// grant leaks memory). Asks go in by its teller; each owner reads its whole table as state, so the
+// seat that waited sees its grant once room appears, and a later ask past a shrunk capacity sees
+// never-here, with nothing awaited and nothing held but the claim.
+#[tokio::test]
+async fn an_owner_reads_its_asks_as_state_waiting_then_granted_then_never_here() {
+    let bus: &'static crate::component::Bus = Box::leak(Box::new(crate::component::Bus::new()));
+    let placer = Placer::<Memory>::new(bus).expect("test: the topics are free"); // expect: the test's own precondition
+    let running = crate::component::start(placer, bus, crate::dataflow::OwnerId(uuid::Uuid::from_u128(7)), 1);
+    let mut asks = bus.reader::<Asks<Tier, Bytes>>(Memory::ASKS, key_of(TRAINER));
+    let seat = AskId { owner: TRAINER, seq: 1 };
+    assert!(running.tell(Act::Room { place: Tier::Vram, capacity: Bytes(32 * GB), budget: Bytes(5 * MB) }).await);
+    assert!(running.tell(Act::Prepare { ask: seat, generation: FIRST, needs: vec![Need { place: Tier::Vram, amount: Bytes(5_700 * MB) }] }).await);
+    let waiting = asks.changed().await.expect("test: the placer runs"); // expect: the test's own precondition
+    assert!(matches!(waiting.value.0.as_slice(), [(1, Status::Waiting { .. })]), "it waits, naming its shortfall: {:?}", waiting.value);
+
+    assert!(running.tell(Act::Room { place: Tier::Vram, capacity: Bytes(32 * GB), budget: Bytes(8 * GB) }).await);
+    let granted = asks.changed().await.expect("test: the placer runs"); // expect: the test's own precondition
+    let [(1, Status::Granted(claim))] = granted.value.0.as_slice() else { panic!("test: granted, got {:?}", granted.value) };
+    assert!(claim.consume(Tier::Vram, Bytes(GB)), "spent straight from the claim, nothing awaited");
+
+    let later = AskId { owner: TRAINER, seq: 2 };
+    assert!(running.tell(Act::Prepare { ask: later, generation: FIRST, needs: vec![Need { place: Tier::Vram, amount: Bytes(20 * GB) }] }).await);
+    asks.changed().await.expect("test: the placer runs"); // expect: the test's own precondition
+    assert!(running.tell(Act::Room { place: Tier::Vram, capacity: Bytes(16 * GB), budget: Bytes(8 * GB) }).await);
+    let never = asks.changed().await.expect("test: the placer runs"); // expect: the test's own precondition
+    assert!(matches!(never.value.0.as_slice(), [(1, Status::Granted(_)), (2, Status::Never { capacity: Bytes(c), .. })] if *c == 16 * GB), "{:?}", never.value);
+    assert!(running.tell(Act::Forget(later)).await);
+    let forgot = asks.changed().await.expect("test: the placer runs"); // expect: the test's own precondition
+    assert_eq!(forgot.value.0.len(), 1, "a read terminal answer leaves the table");
 }
