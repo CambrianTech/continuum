@@ -71,7 +71,7 @@ impl<K> Mind<K> {
     /// The time her features are measured against: her bound, or for background work the bound acts
     /// are held to, so every mind's times are on one scale.
     pub fn scale(&self) -> Duration {
-        self.deadline.unwrap_or_else(Urgency::act_bound)
+        self.deadline.unwrap_or_else(Urgency::act_bound) // unwrap_or_else: background work has no bound of its own, so it is measured on the act bound's scale by design
     }
 }
 
@@ -151,13 +151,13 @@ fn worthwhile_step<K>(mind: &Mind<K>) -> Duration {
 /// (her first step, which measures it), the whole batch. At least one token, so she always advances.
 /// The M5, 2026-11-25 19:40 to 19:50Z: prefill chunks a whole batch long left other minds 7 to 9 s
 /// without a step under a 1 s bound.
-pub fn step_tokens<K: PartialEq>(situation: &Situation<K>, stepped: &Mind<K>, most: u64) -> u64 {
+pub fn step_tokens<K: PartialEq>(situation: &Situation<K>, stepped: &Mind<K>, most: std::num::NonZeroU64) -> u64 {
     let room = room(situation, Some(&stepped.mind));
     // the chunk's fixed part comes off the room first; what is left buys tokens at her part a token
     let fixed = stepped.overhead.value().unwrap_or(Duration::ZERO); // unwrap_or: an unmeasured fixed part is a cost not yet seen
     match (room, stepped.step.value()) {
-        (Some(room), Some(per_token)) if per_token > Duration::ZERO => ((room.saturating_sub(fixed).as_secs_f64() / per_token.as_secs_f64()) as u64).clamp(1, most.max(1)),
-        _ => most.max(1),
+        (Some(room), Some(per_token)) if per_token > Duration::ZERO => ((room.saturating_sub(fixed).as_secs_f64() / per_token.as_secs_f64()) as u64).clamp(1, most.get()),
+        _ => most.get(),
     }
 }
 
@@ -285,9 +285,7 @@ impl<K: Copy + Debug + PartialEq + Send + 'static> Policy<Lane<K>> for NeedFirst
             (None, Some((slot, _))) => Action::Switch(slot as Slot),
             (None, None) => Action::Idle,
         };
-        // The envelope offered what it allows; a wanted action it did not offer yields its first.
-        let index = admissible.iter().position(|action| *action == wanted).unwrap_or(0); // unwrap_or: not offered means the envelope decided; its first is its choice
-        Choice { index, expected: None }
+        Choice::wanted_or_envelopes_first(admissible, &wanted)
     }
 }
 

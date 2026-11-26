@@ -182,7 +182,9 @@ fn offer_whole_sequences(demands: &mut [Demand<uuid::Uuid>], per_sequence_cap: u
             (demand.target, demand.wish) = (whole, whole);
         }
     }
-    per_sequence_cap.saturating_mul(u32::try_from(demands.len()).unwrap_or(u32::MAX)) // unwrap_or: more minds than u32 counts is no smaller pool
+    // the pool is counted in u32 tokens: a product past it saturates, never wraps
+    let pool = u64::from(per_sequence_cap).saturating_mul(demands.len() as u64).min(u64::from(u32::MAX));
+    pool as u32 // lossless: clamped to u32 above
 }
 
 #[cfg(test)]

@@ -58,7 +58,9 @@ impl UseCase for Placement {
             }
         }
         if admissible.is_empty() {
-            let roomiest = named.iter().map(|volume| volume.free_bytes).max().unwrap_or(0); // unwrap_or: no volume at all has no free bytes
+            let Some(roomiest) = named.iter().map(|volume| volume.free_bytes).max() else {
+                return Gate::Defer(Deferred { condition: "a volume to place on", have: 0.0, need: 1.0 });
+            };
             return Gate::Defer(Deferred { condition: "free bytes on the roomiest volume", have: roomiest as f64, need: situation.bytes as f64 });
         }
         Gate::Choose

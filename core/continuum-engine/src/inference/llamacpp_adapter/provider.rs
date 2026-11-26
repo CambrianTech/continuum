@@ -381,7 +381,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
         // Where an act's submit time goes before her turn reaches the Core (the M5, 2026-11-26: submit to
         // queue 0.6 to 9.5 s at 70k to 226k tokens): her prompt's render, and her view's second render.
         continuum_base::probe!(class = "inference.submit.render", request = ?request.request_id, prompt_chars = prompt.len() as u64,
-            view_chars = stable_prefix.as_ref().map_or(0, super::chat_turn::View::chars) as u64, render_ms = render_started.elapsed().saturating_sub(rendered_at.elapsed()).as_millis() as u64,
+            view_chars = ?stable_prefix.as_ref().map(super::chat_turn::View::chars), render_ms = render_started.elapsed().saturating_sub(rendered_at.elapsed()).as_millis() as u64,
             view_render_ms = rendered_at.elapsed().as_millis() as u64, "an act's prompt rendered, and her view rendered again");
         // Stop sequences = caller-supplied + model's registry-declared
         // text-form stops. Some GGUFs (the forged qwen3.5 included) carry

@@ -125,8 +125,7 @@ impl<K: Copy + Debug + PartialEq + Send + 'static> Policy<Lane<K>> for CostModel
                 if fits { Action::Continue } else { Action::Switch(slot as Slot) }
             }
         };
-        let index = admissible.iter().position(|action| *action == wanted).unwrap_or(0); // unwrap_or: not offered means the envelope decided; its first is its choice
-        Choice { index, expected: None }
+        Choice::wanted_or_envelopes_first(admissible, &wanted)
     }
 
     /// A reading only when the decision was the margin's to make: a mind running and another waiting,

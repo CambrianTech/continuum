@@ -222,10 +222,15 @@ impl<K: Copy + PartialEq> LaneHistory<K> {
             Some(Measured::Value(turn)) => Measured::Value(turn),
             _ => self.turns.quantile(typical),
         };
-        let decoded = track.map_or(0, |track| track.decoded); // map_or: no track has decoded nothing
+        // a decoding mind's remainder: her typical turn less what her track says she decoded in this one;
+        // with no track, the whole typical turn
+        let left = |turn: u64| match track {
+            Some(track) => turn.saturating_sub(track.decoded),
+            None => turn,
+        };
         (mind.step, mind.remaining) = match mind.phase {
             Phase::Prefill { remaining } => (seconds(rate), Measured::Value(remaining)),
-            Phase::Decode => (seconds(rate), turn.value().map_or(Measured::Unmeasured, |turn| Measured::Value((turn as u64).saturating_sub(decoded)))),
+            Phase::Decode => (seconds(rate), turn.value().map_or(Measured::Unmeasured, |turn| Measured::Value(left(turn as u64)))),
         };
         // A prefilling mind's chunk: its fixed part and its part a token, from her own chunks once they
         // vary in size, else this Core's; her step is then the part a token, never the two mixed.

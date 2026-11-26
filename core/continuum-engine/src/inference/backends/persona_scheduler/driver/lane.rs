@@ -69,8 +69,8 @@ pub(super) struct Lanes {
     /// Of the time since the open decision, what bringing a mind in took: its outcome's transition time.
     switching: Duration,
     /// How many tokens the step just picked may move (`lane::step_tokens`): a prefill chunk is no
-    /// longer than every other mind's slack allows.
-    tokens: u64,
+    /// longer than every other mind's slack allows. Never more than the engine's batch, a `usize`.
+    tokens: usize,
     /// Her learning jobs' Core time, a job (Measure, Load, Seat, a step): the background class's cost of
     /// one, from the jobs it ran.
     learning_job: continuum_sage::decide::Ewma,
@@ -142,7 +142,7 @@ impl Lanes {
     }
 
     pub(super) fn step_tokens(&self) -> usize {
-        usize::try_from(self.tokens).unwrap_or(usize::MAX) // unwrap_or: a count past the address space is no limit
+        self.tokens
     }
 
     /// What the driver measured, as the lane's executor.
@@ -186,10 +186,10 @@ impl Driver<'_, '_> {
     /// her oldest turn is offered.
     pub(super) fn pick(&mut self, turns: &[Turn]) -> Option<usize> {
         let active = self.engine.active();
-        let most = self.batch.get() as u64;
+        let most = std::num::NonZeroU64::MIN.saturating_add(self.batch.get() as u64 - 1); // the batch is non-zero, so a step moves at least one token
         let learning_waiting = self.learning.waiting_jobs();
         let lanes = &mut self.lane;
-        lanes.tokens = most;
+        lanes.tokens = self.batch.get();
         let now = Instant::now();
         let situation = &mut lanes.situation;
         situation.ready.clear();
@@ -239,7 +239,7 @@ impl Driver<'_, '_> {
         let owed = learning_waiting > 0 && (situation.background_owed || job.is_none()) && fits;
         if owed && !lanes.learning_owed && !(situation.ready.is_empty() && situation.running.is_none()) {
             continuum_base::probe!(class = "persona.lane.learning_owed", waiting_jobs = learning_waiting as u64, backlog_ms = backlog.as_millis() as u64,
-                job_ms = job.map_or(0, |job| job.as_millis() as u64), "learning is owed a step while turns wait: its queue would grow"); // map_or: a job not yet measured reads 0
+                job_ms = ?job.map(|job| job.as_millis()), "learning is owed a step while turns wait: its queue would grow"); // job_ms: None until a job is measured
         }
         lanes.learning_owed = owed;
         let (id, action) = match lanes.decider.decide(&lanes.situation, &[]) {
@@ -258,7 +258,7 @@ impl Driver<'_, '_> {
         };
         lanes.open = Some(Open { id, at: now, left: stepped.map_or(Measured::Unmeasured, |mind| mind.remaining), background: stepped.is_some_and(|mind| mind.deadline.is_none()) }); // map_or: a batch or idle steps no one mind
         if let Some(mind) = stepped {
-            lanes.tokens = lane::step_tokens(&lanes.situation, mind, most);
+            lanes.tokens = lane::step_tokens(&lanes.situation, mind, most) as usize; // lossless: at most `most`, the batch, itself a usize
         }
         match action {
             lane::Action::Continue => lanes.running,

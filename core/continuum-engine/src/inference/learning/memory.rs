@@ -101,8 +101,7 @@ impl ReplyAdmission for LearningMemory {
             // a refusal names which bound refused: no measured row for this buffer, a graph past the row
             // measured for it, or a lease no longer covering it
             continuum_base::probe!(class = "learning.workspace.refused", buffer = ?buffer.name(), required, held,
-                measured = measured.unwrap_or(0), has_row = row.is_some(), covered, // unwrap_or: a probe field; has_row says none was measured
-                "a reply's workspace was refused before it grew");
+                measured = ?measured, covered, "a reply's workspace was refused before it grew"); // measured: None when no row was measured for this buffer
         }
         admitted
     }

@@ -20,6 +20,19 @@ pub struct Choice {
     pub expected: Option<f64>,
 }
 
+impl Choice {
+    /// A rule's choice with no model of value: the action it wanted where the envelope offered it,
+    /// else the envelope's own first, since an action the envelope did not offer is one it decided
+    /// against. Index 0 here is a real action, never a stand-in for an absent one.
+    pub fn wanted_or_envelopes_first<A: PartialEq>(admissible: &[A], wanted: &A) -> Self {
+        let index = match admissible.iter().position(|action| action == wanted) {
+            Some(offered) => offered,
+            None => 0,
+        };
+        Self { index, expected: None }
+    }
+}
+
 /// One parameter's value: typed, never text.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Param {

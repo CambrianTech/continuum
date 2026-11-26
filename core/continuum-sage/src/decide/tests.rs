@@ -4,6 +4,9 @@ use std::time::{Duration, Instant};
 use super::cases::lane::{self, Lane, Mind, Phase};
 use super::cases::{placement, volume};
 use super::*;
+
+/// The engine's batch the step-sizing tests hold a step to: 4,096 tokens.
+const BATCH: std::num::NonZeroU64 = std::num::NonZeroU64::MIN.saturating_add(4_095);
 use crate::component::Urgency;
 use crate::dataflow::{InputRevision, TopicName};
 
@@ -50,7 +53,7 @@ impl Policy<Thermostat> for Warmer {
         PolicyId { name: "warmer", parameters: self.learned.len() as u64 }
     }
     fn choose(&mut self, _: &f64, admissible: &[i8]) -> Choice {
-        Choice { index: admissible.iter().position(|&a| a == 1).unwrap_or(0), expected: Some(1.0) } // unwrap_or: the test's own policy takes the first when warming is not offered
+        Choice { expected: Some(1.0), ..Choice::wanted_or_envelopes_first(admissible, &1) }
     }
     fn learn(&mut self, record: &Record<Thermostat>) {
         self.learned.push(record.id.0);
@@ -404,8 +407,9 @@ fn the_cost_models_margin_is_seeded_from_the_first_measurements_it_needs() {
 /// her next turn. Bringing a mind in costs 5 ms. Turn sizes come from a fixed generator, so every
 /// algorithm faces the same work. Answers tokens per second of Core time, the worst wait against the
 /// bound, the median turn latency in ms, and turns finished.
-fn simulate(policy: Box<dyn Policy<Lane<u8>>>, seconds: u64) -> (f64, f64, u128, usize, Decider<Lane<u8>>) {
+fn simulate(policy: Box<dyn Policy<Lane<u8>>>, seconds: u64) -> (f64, f64, Option<u128>, usize, Decider<Lane<u8>>) {
     const CHUNK: u64 = 256;
+    const CHUNK_MOST: std::num::NonZeroU64 = std::num::NonZeroU64::MIN.saturating_add(CHUNK - 1);
     let prefill_token = Duration::from_micros(200);
     // what every prefill chunk pays whatever its tokens (the 35B: ~6 ms submit plus a pass over her context)
     let chunk_fixed = Duration::from_millis(12);
@@ -463,7 +467,7 @@ fn simulate(policy: Box<dyn Policy<Lane<u8>>>, seconds: u64) -> (f64, f64, u128,
             lane::Action::Switch(slot) => situation.ready.get(usize::from(slot)).copied(),
             lane::Action::Batch(_) | lane::Action::Idle => None,
         };
-        let allowed = stepped_mind.map_or(CHUNK, |mind| lane::step_tokens(&situation, &mind, CHUNK)); // map_or: no one stepped, nothing sized
+        let allowed = stepped_mind.map_or(CHUNK, |mind| lane::step_tokens(&situation, &mind, CHUNK_MOST)); // map_or: no one stepped, nothing sized
         let stepped = match action {
             lane::Action::Continue => running,
             lane::Action::Switch(slot) => slots.get(usize::from(slot)).copied(),
@@ -504,7 +508,7 @@ fn simulate(policy: Box<dyn Policy<Lane<u8>>>, seconds: u64) -> (f64, f64, u128,
         decider.outcome(id, lane::Outcome { tokens: Measured::Value(moved), engine, worst_wait: longest, worst_deadline: bound, switching, served: lane::served(moved, Measured::Value(left_before)) });
     }
     latencies.sort();
-    let median = latencies.get(latencies.len() / 2).map_or(0, Duration::as_millis);
+    let median = latencies.get(latencies.len() / 2).map(Duration::as_millis); // none when no turn finished
     (tokens as f64 / busy.as_secs_f64(), worst, median, latencies.len(), decider)
 }
 
@@ -516,7 +520,7 @@ fn the_stock_linear_learner_learns_the_lane_and_keeps_the_bound() {
     let registry = lane::algorithms::<u8>().expect("test: distinct names register"); // expect: the test's own precondition
     for name in ["need-first", "cost-model", "linear-ucb"] {
         let (rate, worst, median, turns, _) = simulate(registry.create(name).expect("test: registered"), 300); // expect: the test's own precondition
-        println!("{name:>11}: {rate:7.1} tok/s of Core, worst wait {worst:.2} of the bound, turn p50 {median} ms, {turns} turns");
+        println!("{name:>11}: {rate:7.1} tok/s of Core, worst wait {worst:.2} of the bound, turn p50 {median:?} ms, {turns} turns");
     }
     let (_, worst, _, _, decider) = simulate(registry.create("linear-ucb").expect("test: registered"), 300); // expect: the test's own precondition
     assert!(worst <= 1.1, "the envelope keeps every wait near its bound: {worst}");
@@ -554,13 +558,13 @@ fn a_step_is_no_longer_than_the_tightest_other_minds_slack() {
     let prefilling = Mind { phase: Phase::Prefill { remaining: 30_000 }, step: Measured::Value(Duration::from_micros(200)), ..mind(1, 0) };
     let waiter = mind(2, 900); // 100 ms of bound left, less her 10 us switch
     let contended = lane::Situation { running: Some(prefilling), ready: vec![waiter], batch_width: 1, background_owed: false };
-    assert_eq!(lane::step_tokens(&contended, &prefilling, 4_096), 499, "her slack at 0.2 ms a token");
+    assert_eq!(lane::step_tokens(&contended, &prefilling, BATCH), 499, "her slack at 0.2 ms a token");
     let alone = lane::Situation { running: Some(prefilling), ready: vec![], batch_width: 1, background_owed: false };
-    assert_eq!(lane::step_tokens(&alone, &prefilling, 4_096), 4_096, "no one else waits: the whole batch");
+    assert_eq!(lane::step_tokens(&alone, &prefilling, BATCH), 4_096, "no one else waits: the whole batch");
     let overdue = lane::Situation { running: Some(prefilling), ready: vec![mind(2, 1_500)], batch_width: 1, background_owed: false };
-    assert_eq!(lane::step_tokens(&overdue, &prefilling, 4_096), 1, "no slack left: one token, so she still advances");
+    assert_eq!(lane::step_tokens(&overdue, &prefilling, BATCH), 1, "no slack left: one token, so she still advances");
     let unmeasured = Mind { step: Measured::Unmeasured, ..prefilling };
-    assert_eq!(lane::step_tokens(&contended, &unmeasured, 4_096), 4_096, "her first step measures her rate");
+    assert_eq!(lane::step_tokens(&contended, &unmeasured, BATCH), 4_096, "her first step measures her rate");
 }
 
 // what this catches (the M5, 2026-11-25 20:54 to 21:04Z: 929 violations at p50 1.02 of the bound,
@@ -630,7 +634,7 @@ fn a_prefill_chunk_pays_its_fixed_part_and_is_never_too_small_to_be_worth_it() {
     assert!((fixed - 0.012).abs() < 1e-9 && (per_token - 0.0002).abs() < 1e-12, "{fixed} {per_token}");
     let prefilling = Mind { phase: Phase::Prefill { remaining: 30_000 }, step: Measured::Value(Duration::from_micros(200)), overhead: Measured::Value(Duration::from_millis(12)), ..mind(1, 0) };
     let roomy = lane::Situation { running: Some(prefilling), ready: vec![mind(2, 900)], batch_width: 1, background_owed: false };
-    assert_eq!(lane::step_tokens(&roomy, &prefilling, 4_096), 439, "(100 ms of room less 12 ms fixed) at 0.2 ms a token");
+    assert_eq!(lane::step_tokens(&roomy, &prefilling, BATCH), 439, "(100 ms of room less 12 ms fixed) at 0.2 ms a token");
     let tight = lane::Situation { running: Some(prefilling), ready: vec![mind(2, 980)], batch_width: 1, background_owed: false };
     assert_eq!(envelope::<Lane<u8>>(&tight).0, Gate::Forced(lane::Action::Switch(0)), "20 ms of room cannot buy a chunk worth its 12 ms: the waiter goes first");
 }
