@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 
 use super::claim::{Claim, ClaimId, Generation, Need, Owner};
-use super::ledger::{Answer, Ledger, NeverNow, Refusal};
+use super::ledger::{Answer, Ledger, NeverNow, Refusal, ShrinkTo};
 use super::quantity::Quantity;
 use crate::component::{Bus, Component, Ctx, Key, Taken, Wiring};
 use crate::dataflow::{Publisher, TopicName};
@@ -62,6 +62,13 @@ pub enum Act<P, Q> {
     Forget(AskId),
     /// A place's room, as the authority measures it.
     Room { place: P, capacity: Q, budget: Q },
+    /// Its committed holding on `place` can run on `floor`, at `priority`: the law may ask it to shrink.
+    Elastic { ask: AskId, place: P, floor: Q, priority: u8 },
+    /// Its waiting ask's priority, as the law measures it (temperature, age): it may now ask lower
+    /// holdings to shrink.
+    Prioritize { ask: AskId, priority: u8 },
+    /// Its holding on `place` released `by` after its own fence: free again, and its shrink answered.
+    Shrunk { ask: AskId, place: P, by: Q },
 }
 
 /// Where one ask stands.
@@ -76,6 +83,9 @@ pub enum Status<P, Q> {
     Unknown { place: P },
     Stale,
     Refused(Refusal),
+    /// Committed, and asked to shrink to `to` on `place` so a higher wait fits: it releases the rest
+    /// after its own fence and says [`Act::Shrunk`].
+    Shrink { place: P, to: Q },
 }
 
 /// One owner's asks, as the placer publishes them: (its sequence, where it stands).
@@ -110,6 +120,8 @@ pub struct Placer<D: Domain> {
     /// Reused across inputs: claims a pass granted, waits a capacity drop withdrew.
     granted: Vec<Claim<D::Place, D::Quantity>>,
     never: Vec<NeverNow<D::Place, D::Quantity>>,
+    /// Reused: the shrinks the last pass asked for.
+    shrinks: Vec<ShrinkTo<D::Place, D::Quantity>>,
 }
 
 impl<D: Domain> Placer<D> {
@@ -125,6 +137,7 @@ impl<D: Domain> Placer<D> {
             last_short: Shortfall(Vec::new()),
             granted: Vec::new(),
             never: Vec::new(),
+            shrinks: Vec::new(),
         })
     }
 
@@ -141,6 +154,26 @@ impl<D: Domain> Placer<D> {
                 }
             }
             Act::Room { place, capacity, budget } => self.ledger.place(place, capacity, budget, &mut self.never),
+            Act::Elastic { ask, place, floor, priority } => self.told(ask, |ledger, id| ledger.elastic(id, place, floor, priority)),
+            Act::Prioritize { ask, priority } => self.told(ask, |ledger, id| ledger.prioritize(id, priority)),
+            Act::Shrunk { ask, place, by } => {
+                let freed = by.units();
+                self.settle(ask, |ledger, id| ledger.shrink(id, place, by).map(|_left| ()), Some(Status::Committed));
+                continuum_base::probe!(class = "place.shrunk", placer = D::NAME, owner = ask.owner.0, place = ?place, freed,
+                    "a holding gave back what the law asked, after its fence");
+            }
+        }
+    }
+
+    /// Tell the ledger something about `ask`'s claim that leaves where it stands unchanged; a refusal is
+    /// recorded on it.
+    fn told(&mut self, ask: AskId, apply: impl FnOnce(&mut Ledger<D::Place, D::Quantity>, ClaimId) -> Result<(), Refusal>) {
+        let Some(table) = self.owners.get_mut(&ask.owner) else { return };
+        let Some(entry) = table.entries.iter_mut().find(|entry| entry.seq == ask.seq) else { return };
+        let Some(id) = entry.claim else { return };
+        if let Err(refused) = apply(&mut self.ledger, id) {
+            entry.status = Status::Refused(refused);
+            table.changed = true;
         }
     }
 
@@ -233,6 +266,20 @@ impl<D: Domain> Placer<D> {
             }) {
                 (entry.claim, entry.status) = (None, Status::Never { place: never.place, need: never.need, capacity: never.capacity });
             }
+        }
+        // room by priority: each holding a higher wait outranks is asked to shrink, on its own table
+        self.ledger.shrinks(&mut self.shrinks);
+        for shrink in &self.shrinks {
+            let Some(ask) = self.asks_of.get(&shrink.id).copied() else { continue };
+            let Some(table) = self.owners.get_mut(&ask.owner) else { continue };
+            let Some(entry) = table.entries.iter_mut().find(|entry| entry.seq == ask.seq) else { continue };
+            if matches!(entry.status, Status::Shrink { place, to } if place == shrink.place && to == shrink.to) {
+                continue; // already asked: said once
+            }
+            entry.status = Status::Shrink { place: shrink.place, to: shrink.to };
+            table.changed = true;
+            continuum_base::probe!(class = "place.shrink.asked", placer = D::NAME, owner = ask.owner.0, place = ?shrink.place, to = shrink.to.units(),
+                "a holding was asked to shrink so a higher wait fits: the law's feedback, with place.shrunk when it lands");
         }
         for table in self.owners.values_mut().filter(|table| table.changed) {
             table.changed = false;

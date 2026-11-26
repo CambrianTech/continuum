@@ -19,7 +19,9 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+mod elastic;
 mod room;
+pub use elastic::ShrinkTo;
 
 use super::claim::{Claim, ClaimId, Expiry, Generation, Need, Owner};
 use super::quantity::Quantity;
@@ -130,11 +132,13 @@ pub struct Ledger<P, Q> {
     /// `grant_waiting`'s scratch: places an earlier wait is still short on. Reused, never reallocated
     /// once it has held as many places as there are.
     blocked: Vec<P>,
+    /// Room by priority: elastic holdings, waits' priorities, and the flexbox's scratch (`elastic.rs`).
+    law: elastic::Law<P, Q>,
 }
 
 impl<P: Copy + PartialEq + std::fmt::Debug, Q: Quantity> Default for Ledger<P, Q> {
     fn default() -> Self {
-        Self { places: Vec::new(), claims: HashMap::new(), waiting: VecDeque::new(), generations: HashMap::new(), next: 0, pools: Vec::new(), floors: Vec::new(), blocked: Vec::new() }
+        Self { places: Vec::new(), claims: HashMap::new(), waiting: VecDeque::new(), generations: HashMap::new(), next: 0, pools: Vec::new(), floors: Vec::new(), blocked: Vec::new(), law: elastic::Law::default() }
     }
 }
 

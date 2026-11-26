@@ -474,3 +474,124 @@ fn the_flexbox_shares_bytes_floors_first_then_by_priority() {
     assert_eq!(total, card.0, "every byte accounted once");
     assert!(shares[1].amount.0 > 4_096 * MIB && shares[1].amount.0 <= 8_704 * MIB, "the KV grows into what is left, never past its want");
 }
+
+mod room_by_priority {
+    use super::*;
+
+    const CORE: Owner = Owner(3);
+
+    /// A committed holding of `owner` of `amount` on the card.
+    fn hold(ledger: &mut Ledger<Tier, Bytes>, owner: Owner, amount: u64) -> ClaimId {
+        let claim = granted(ledger.prepare(owner, FIRST, &[Need { place: Tier::Vram, amount: Bytes(amount) }]));
+        assert!(claim.consume(Tier::Vram, Bytes(amount)));
+        assert_eq!(ledger.commit(claim.id()), Ok(()));
+        claim.id()
+    }
+
+    /// The 5090 at 15:41Z (Codex, MiB): weights fixed, KV and workspace elastic, the card all but full.
+    fn the_5090() -> (Ledger<Tier, Bytes>, ClaimId, ClaimId) {
+        let mut ledger = Ledger::default();
+        let held = (17_402 + 8_704 + 3_124) * MB;
+        ledger.place(Tier::Vram, Bytes(32_607 * MB), Bytes(held + 400 * 1024), &mut Vec::new());
+        hold(&mut ledger, CORE, 17_402 * MB);
+        let kv = hold(&mut ledger, CORE, 8_704 * MB);
+        let workspace = hold(&mut ledger, CORE, 3_124 * MB);
+        assert_eq!(ledger.elastic(kv, Tier::Vram, Bytes(2_048 * MB), 8), Ok(()));
+        assert_eq!(ledger.elastic(workspace, Tier::Vram, Bytes(1_024 * MB), 6), Ok(()));
+        (ledger, kv, workspace)
+    }
+
+    const SEAT: u64 = 12_058_624; // the 5090's asks, 13 of them in one window
+
+    // what this catches (Joel, 2026-11-26: "make room by priority"): a wait shrinking a holding that
+    // outranks it, or asking anything with no priority of its own. Below both elastic holdings, the seat
+    // waits for what frees by itself.
+    #[test]
+    fn a_wait_below_every_holding_or_with_no_priority_shrinks_no_one() {
+        let (mut ledger, _, _) = the_5090();
+        let Answer::Waiting { id, .. } = ledger.prepare(TRAINER, FIRST, &[Need { place: Tier::Vram, amount: Bytes(SEAT) }]) else { panic!("test: the seat waits") };
+        let mut shrinks = Vec::new();
+        ledger.shrinks(&mut shrinks);
+        assert!(shrinks.is_empty(), "no priority: it asks nothing");
+        assert_eq!(ledger.prioritize(id, 3), Ok(()));
+        ledger.shrinks(&mut shrinks);
+        assert!(shrinks.is_empty(), "below the KV and the workspace: it asks nothing of either");
+    }
+
+    // what this catches: a wait that outranks a holding still never granted (the 5090's 13 waits), or
+    // taking more than it lacks, or from a holding above it, or before the holder's release. Aged past the
+    // workspace, the seat asks the workspace alone for exactly what it lacks, and is granted only once the
+    // workspace has shrunk.
+    #[test]
+    fn a_wait_that_outranks_a_holding_shrinks_it_by_what_it_lacks_and_is_granted_after_the_release() {
+        let (mut ledger, kv, workspace) = the_5090();
+        let Answer::Waiting { id, short } = ledger.prepare(TRAINER, FIRST, &[Need { place: Tier::Vram, amount: Bytes(SEAT) }]) else { panic!("test: the seat waits") };
+        let lacks = short[0].amount.0;
+        assert_eq!(ledger.prioritize(id, 7), Ok(()));
+        let mut shrinks = Vec::new();
+        ledger.shrinks(&mut shrinks);
+        assert_eq!(shrinks, vec![ShrinkTo { id: workspace, place: Tier::Vram, to: Bytes(3_124 * MB - lacks) }], "the workspace alone, by what the seat lacks; the KV outranks it");
+        assert!(shrinks.iter().all(|shrink| shrink.id != kv));
+        let mut granted_now = Vec::new();
+        ledger.grant_waiting(&mut granted_now);
+        assert!(granted_now.is_empty(), "a shrink asked is not room: nothing is granted before the release");
+        assert_eq!(ledger.shrink(workspace, Tier::Vram, Bytes(lacks)), Ok(Bytes(3_124 * MB - lacks)), "the workspace released what it was asked, fenced");
+        ledger.grant_waiting(&mut granted_now);
+        assert_eq!(granted_now.iter().map(Claim::id).collect::<Vec<_>>(), vec![id], "then the seat is granted");
+    }
+
+    // what this catches: shrinking for a wait that could not fit even with every elastic holding at its
+    // floor, giving up room for nothing.
+    #[test]
+    fn a_wait_that_could_not_fit_even_at_every_floor_asks_no_one() {
+        let (mut ledger, _, _) = the_5090();
+        let Answer::Waiting { id, .. } = ledger.prepare(TRAINER, FIRST, &[Need { place: Tier::Vram, amount: Bytes(10_000 * MB) }]) else { panic!("test: it waits") };
+        assert_eq!(ledger.prioritize(id, 9), Ok(()));
+        let mut shrinks = Vec::new();
+        ledger.shrinks(&mut shrinks);
+        assert!(shrinks.is_empty());
+    }
+}
+
+// what this catches (Joel, 2026-11-26: "make room by priority"; "everything memory related needs to feed
+// back"): the shrink reaching a holder only through a side channel, or a wait granted before the holder's
+// fenced release. Through the component: the Core reads Shrink on its own table, says Shrunk after its
+// fence, and the seat then reads Granted on its own.
+#[tokio::test]
+async fn a_holder_reads_its_shrink_and_the_seat_its_grant_after_the_fenced_release() {
+    let bus: &'static crate::component::Bus = Box::leak(Box::new(crate::component::Bus::new()));
+    let placer = Placer::<Memory>::new(bus).expect("test: the topics are free"); // expect: the test's own precondition
+    let running = crate::component::start(placer, bus, crate::dataflow::OwnerId(uuid::Uuid::from_u128(8)), 1);
+    let mut core = bus.reader::<Asks<Tier, Bytes>>(Memory::ASKS, key_of(SERVING));
+    let mut seat = bus.reader::<Asks<Tier, Bytes>>(Memory::ASKS, key_of(TRAINER));
+    assert!(running.tell(Act::Room { place: Tier::Vram, capacity: Bytes(32 * GB), budget: Bytes(4 * GB) }).await);
+    let workspace = AskId { owner: SERVING, seq: 1 };
+    assert!(running.tell(Act::Prepare { ask: workspace, generation: FIRST, needs: vec![Need { place: Tier::Vram, amount: Bytes(4 * GB) }] }).await);
+    let held = core.changed().await.expect("test: the placer runs"); // expect: the test's own precondition
+    let [(1, Status::Granted(claim))] = held.value.0.as_slice() else { panic!("test: granted, got {:?}", held.value) };
+    assert!(claim.consume(Tier::Vram, Bytes(4 * GB)));
+    assert!(running.tell(Act::Commit(workspace)).await);
+    assert!(running.tell(Act::Elastic { ask: workspace, place: Tier::Vram, floor: Bytes(GB), priority: 6 }).await);
+
+    let lesson = AskId { owner: TRAINER, seq: 1 };
+    assert!(running.tell(Act::Prepare { ask: lesson, generation: FIRST, needs: vec![Need { place: Tier::Vram, amount: Bytes(12 * MB) }] }).await);
+    assert!(running.tell(Act::Prioritize { ask: lesson, priority: 7 }).await);
+    let asked = loop {
+        let now = core.changed().await.expect("test: the placer runs"); // expect: the test's own precondition
+        if let [(1, Status::Shrink { place: Tier::Vram, to })] = now.value.0.as_slice() {
+            break *to;
+        }
+    };
+    assert_eq!(asked, Bytes(4 * GB - 12 * MB), "asked for exactly what the seat lacks");
+    let waiting = seat.changed().await.expect("test: the placer runs"); // expect: the test's own precondition
+    assert!(matches!(waiting.value.0.as_slice(), [(1, Status::Waiting { .. })]), "no grant before the release: {:?}", waiting.value);
+
+    assert!(running.tell(Act::Shrunk { ask: workspace, place: Tier::Vram, by: Bytes(12 * MB) }).await);
+    let granted = loop {
+        let now = seat.changed().await.expect("test: the placer runs"); // expect: the test's own precondition
+        if let [(1, Status::Granted(claim))] = now.value.0.as_slice() {
+            break claim.clone();
+        }
+    };
+    assert!(granted.consume(Tier::Vram, Bytes(12 * MB)), "the seat spends what the workspace gave back");
+}
