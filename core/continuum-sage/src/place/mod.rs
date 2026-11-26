@@ -11,14 +11,16 @@
 //! - **Release**: a holding returns only when its owner's allocator has released it.
 //! - **Never here**: refused only past a place's proven capacity, never for pressure.
 //!
-//! This slice is the ledger. The placer's component (its bus topics `Demand` and `Granted`, its law
-//! as a `decide::Policy` use case) and its consumers come next, on this contract.
+//! The ledger is `ledger`; the [`Placer`] is the component that owns one per domain (`component`). Its law
+//! as a `decide::Policy` use case, and its consumers, come next on this contract.
 
 mod claim;
+mod component;
 mod ledger;
 mod quantity;
 
 pub use claim::{Claim, ClaimId, Generation, Need, Owner};
+pub use component::{key_of, Act, AskId, Asks, Domain, Placer, Shortfall, Status};
 pub use ledger::{Accounts, Answer, Ledger, NeverNow, Refusal};
 pub use quantity::{Bytes, Quantity, Slots};
 
