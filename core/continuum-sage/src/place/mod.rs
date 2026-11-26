@@ -17,12 +17,14 @@
 mod claim;
 mod flex;
 mod component;
+mod core;
 mod ledger;
 mod quantity;
 mod resident;
 
 pub use claim::{Claim, ClaimId, Generation, Need, Owner};
 pub use component::{key_of, Act, AskId, Asks, Domain, Placer, Shortfall, Status};
+pub use core::PlacerCore;
 pub use ledger::{Accounts, Answer, Ledger, NeverNow, Refusal, ShrinkTo, Untaken};
 pub use flex::{Flex, Flexbox, Landed, Share, Shared};
 pub use quantity::{Bytes, Quantity, Slots, Tokens};

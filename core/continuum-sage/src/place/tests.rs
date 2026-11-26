@@ -740,3 +740,22 @@ mod residents {
         assert_eq!(report.requirements(0).map(|requires| requires.amount.0 / MB).collect::<Vec<_>>(), vec![512]);
     }
 }
+
+// what this catches (Cormac's step 3: about 28 kernel sites call the authority synchronously and cannot
+// await a teller): the placer's tables reachable only through the bus. The core alone, applied and settled
+// in one call each, answers the same tables the component says.
+#[test]
+fn the_core_is_driven_synchronously_with_no_bus() {
+    let mut core = PlacerCore::<Memory>::default();
+    core.apply(Act::Room { place: Tier::Vram, capacity: Bytes(32 * GB), budget: Bytes(5 * MB) });
+    let seat = AskId { owner: TRAINER, seq: 1 };
+    core.apply(Act::Prepare { ask: seat, generation: FIRST, needs: vec![Need { place: Tier::Vram, amount: Bytes(12 * MB) }] });
+    assert!(core.settle(), "the shortfall changed: the seat lacks 7 MB");
+    let mut changed = Vec::new();
+    core.changed(&mut changed);
+    assert!(matches!(changed.as_slice(), [(TRAINER, Asks(rows))] if matches!(rows.as_slice(), [(1, Status::Waiting { .. })])));
+    core.apply(Act::Room { place: Tier::Vram, capacity: Bytes(32 * GB), budget: Bytes(GB) });
+    core.settle();
+    core.changed(&mut changed);
+    assert!(matches!(changed.as_slice(), [(TRAINER, Asks(rows))] if matches!(rows.as_slice(), [(1, Status::Granted(_))])), "granted once room is told");
+}
