@@ -1216,6 +1216,7 @@ Joel: "Yeah or time divided. We never need to abort. If it doesn't fit now, it c
   - Every resource is shared in space and in time, and every way of sharing it is priced in time: the units a smaller tile adds, the transfer that swaps an occupant (the context switch, as a mind's KV moving), the wait.
   - `Ways`' `Cost::takes` is that price, measured.
   - Rejection discards the work done so far and everything spent to come back to it, so no controller has it among its actions. Only a broken contract is typed, and it is made impossible where the plan is chosen.
+  - **The measure is power: useful work over time** (Joel: "Wattage work over time"). The controllers maximize the useful work the node delivers per second, each class's work under its own contract. A transfer is time spent moving, not working. A rejected unit is time spent for no work at all.
 - **`learning/owed` is state, not events** (Cormac, 22:59Z): `Owed(BTreeMap<SeatId, LearnerOwed>)` on one key, latest-wins, said on change. A seat leaving the map is its Done, so a dropped or coalesced say can never leave the lane holding a Ready it never sees retired.
   - `LearnerOwed { seat, mind, examples, next: Option<Rows { context, reply }>, since }`.
   - `next` is the lesson the engine sized in `Loaded` (`context = lesson_rows - reply_rows`), and is `None` until measured. Token counting has one owner, and the trainer never renders.
