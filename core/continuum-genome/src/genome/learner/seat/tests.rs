@@ -27,8 +27,13 @@ fn authority() -> Authority {
     Authority { resources, serving: crate::inference::serving_lifecycle::LifecycleGate::unowned(true), custody: crate::genome::learner::custody::Custody::isolated() }
 }
 
-fn shadow() -> FreshShadow {
-    FreshShadow { name: "her-shadow.gguf".into(), rank: 8, alpha: 16.0, targets: vec!["attn_q".into(), "attn_v".into()], top_layers: 1, seed: 7 }
+/// Seat her gene as the gene catalog does: inside a serving operation the test holds on the authority's
+/// gate, bound to the engine identity the fake ledger reports. The custody rules under test are the
+/// residency's, which every seat shares.
+async fn seat_her(authority: &Authority, engine: LearningEngine) -> Result<Seat, SeatRefusal> {
+    let operation = authority.serving.try_operation().expect("test: a fresh gate is free");
+    let bound = LedgerEngine::fixture(ENGINE);
+    seat_gene(authority, GeneLoad { operation: &operation, engine, bound: &bound, consumer: "learning:her", name: "her-gene.gguf" }).await
 }
 
 /// A fake engine that plans `WEIGHTS` of VRAM, answers residency registration with `residency`,
@@ -38,7 +43,7 @@ async fn engine(residency: &'static str) -> (LearningEngine, Arc<Mutex<Vec<serde
     let (fresh_seen, residency_seen) = (Arc::clone(&seen), Arc::clone(&seen));
     let app = axum::Router::new()
         .route(
-            "/lora-adapters/fresh",
+            "/lora-adapters/load",
             axum::routing::post(move |axum::Json(body): axum::Json<serde_json::Value>| {
                 let seen = Arc::clone(&fresh_seen);
                 async move {
@@ -78,7 +83,7 @@ fn leased(authority: &Authority) -> u64 {
 async fn a_shadow_is_seated_on_exactly_the_measured_lease() {
     let authority = authority();
     let (engine, seen, server) = engine("none").await;
-    let seat = seat(&authority, engine, "learning:her", shadow()).await.expect("test: seated");
+    let seat = seat_her(&authority, engine).await.expect("test: seated");
     assert_eq!((seat.shadow.id, leased(&authority)), (3, WEIGHTS), "the shadow's measured bytes are leased, no more");
     let calls = seen.lock().unwrap_or_else(|p| p.into_inner()).clone(); // test-owned lock
     assert_eq!(calls[0]["dry_run"], true, "measured first");
@@ -101,7 +106,7 @@ async fn a_seat_short_of_memory_answers_at_once_holding_nothing_and_seats_once_c
     let (engine, _seen, server) = engine("none").await;
     let mut changes = authority.resources.subscribe();
     changes.borrow_and_update();
-    let short = tokio::time::timeout(std::time::Duration::from_secs(5), seat(&authority, engine.clone(), "learning:her", shadow()))
+    let short = tokio::time::timeout(std::time::Duration::from_secs(5), seat_her(&authority, engine.clone()))
         .await
         .expect("test: a short seat answers, it never waits")
         .err()
@@ -119,7 +124,7 @@ async fn a_seat_short_of_memory_answers_at_once_holding_nothing_and_seats_once_c
     })
     .await
     .expect("test: the authority publishes the returned capacity");
-    let seated = match seat(&authority, engine.clone(), "learning:her", shadow()).await {
+    let seated = match seat_her(&authority, engine.clone()).await {
         Ok(seated) => seated,
         Err(other) => panic!("test: seated once capacity returned, got {other}"),
     };
@@ -133,7 +138,7 @@ async fn a_seat_short_of_memory_answers_at_once_holding_nothing_and_seats_once_c
 async fn a_refused_residency_releases_its_lease() {
     let authority = authority();
     let (engine, seen, server) = engine("stale_engine").await;
-    let refused = seat(&authority, engine, "learning:her", shadow()).await.err().expect("test: refused");
+    let refused = seat_her(&authority, engine).await.err().expect("test: refused");
     assert!(matches!(refused, SeatRefusal::Unmirrored(crate::inference::llama_server::ResidencyRefusal::StaleEngine)), "{refused}");
     assert_eq!(leased(&authority), 0, "nothing stays leased");
     assert_eq!(seen.lock().unwrap_or_else(|p| p.into_inner()).len(), 2, "nothing was written after the refusal"); // test-owned lock
@@ -152,7 +157,7 @@ async fn engine_losing_the_load(release: &'static str) -> (LearningEngine, tokio
 async fn engine_relaunched_after_the_load(after: &'static str, release: &'static str) -> (LearningEngine, tokio::task::JoinHandle<std::io::Result<()>>) {
     let app = axum::Router::new()
         .route(
-            "/lora-adapters/fresh",
+            "/lora-adapters/load",
             axum::routing::post(|axum::Json(body): axum::Json<serde_json::Value>| async move {
                 if body["dry_run"] == true {
                     return (axum::http::StatusCode::OK, axum::Json(serde_json::json!({"engine": ENGINE, "reserved": false,
@@ -176,7 +181,7 @@ async fn engine_relaunched_after_the_load(after: &'static str, release: &'static
 async fn a_lost_load_keeps_its_lease_until_the_engine_confirms_the_release() {
     let authority = authority();
     let (engine, server) = engine_losing_the_load("busy").await;
-    let refused = seat(&authority, engine, "learning:her", shadow()).await.err().expect("test: refused");
+    let refused = seat_her(&authority, engine).await.err().expect("test: refused");
     assert!(matches!(refused, SeatRefusal::Unloaded(_)), "{refused}");
     assert_eq!((leased(&authority), authority.custody.held()), (WEIGHTS, (1, 1)), "held in custody, orphaned");
     assert_eq!(authority.custody.settle_orphans().await, 1, "still unconfirmed, still held");
@@ -190,7 +195,7 @@ async fn a_lost_load_keeps_its_lease_until_the_engine_confirms_the_release() {
 async fn a_lost_load_the_engine_confirms_empty_releases_its_lease() {
     let authority = authority();
     let (engine, server) = engine_losing_the_load("none").await;
-    let refused = seat(&authority, engine, "learning:her", shadow()).await.err().expect("test: refused");
+    let refused = seat_her(&authority, engine).await.err().expect("test: refused");
     assert!(matches!(refused, SeatRefusal::Unloaded(_)), "{refused}");
     assert_eq!((leased(&authority), authority.custody.held()), (0, (0, 0)), "a confirmed-empty residency holds nothing");
     server.abort();
@@ -203,7 +208,7 @@ async fn a_lost_load_the_engine_confirms_empty_releases_its_lease() {
 async fn another_incarnation_at_the_address_proves_nothing_about_the_old_memory() {
     let authority = authority();
     let (engine, server) = engine_relaunched_after_the_load("0b5e55ed0b5e55ed0b5e55ed0b5e55ed", "unknown_residency").await;
-    let refused = seat(&authority, engine, "learning:her", shadow()).await.err().expect("test: refused");
+    let refused = seat_her(&authority, engine).await.err().expect("test: refused");
     assert!(matches!(refused, SeatRefusal::Unloaded(_)), "{refused}");
     assert_eq!((leased(&authority), authority.custody.held()), (WEIGHTS, (1, 1)), "held: the admitted process is alive");
     assert_eq!(authority.custody.settle_orphans().await, 1, "still unproven");
@@ -216,7 +221,7 @@ async fn another_incarnation_at_the_address_proves_nothing_about_the_old_memory(
 async fn a_release_refused_as_stale_keeps_its_lease() {
     let authority = authority();
     let (engine, server) = engine_losing_the_load("stale_engine").await;
-    let refused = seat(&authority, engine, "learning:her", shadow()).await.err().expect("test: refused");
+    let refused = seat_her(&authority, engine).await.err().expect("test: refused");
     assert!(matches!(refused, SeatRefusal::Unloaded(_)), "{refused}");
     assert_eq!((leased(&authority), authority.custody.held()), (WEIGHTS, (1, 1)), "held: nothing was released");
     server.abort();
@@ -235,7 +240,7 @@ async fn a_cancelled_seat_leaves_its_lease_in_custody_until_settled() {
     let on_unload = Arc::clone(&unloaded);
     let app = axum::Router::new()
         .route(
-            "/lora-adapters/fresh",
+            "/lora-adapters/load",
             axum::routing::post(|axum::Json(body): axum::Json<serde_json::Value>| async move {
                 if body["dry_run"] == true {
                     return axum::Json(serde_json::json!({"engine": ENGINE, "reserved": false,
@@ -262,7 +267,7 @@ async fn a_cancelled_seat_leaves_its_lease_in_custody_until_settled() {
                 async move {
                     let id = registered.lock().unwrap_or_else(|p| p.into_inner()).clone(); // test-owned lock
                     let mut answer = ledger("none");
-                    answer["residencies"] = serde_json::json!([{"id": id, "engine": ENGINE, "owner": "core", "subject": {"fresh": {}},
+                    answer["residencies"] = serde_json::json!([{"id": id, "engine": ENGINE, "owner": "core", "subject": {"load": {"name": "her-gene.gguf"}},
                         "rows": [], "leases": [], "pending": false, "live": true, "revoked": false, "lora_id": 3}]);
                     axum::Json(answer)
                 }
@@ -283,7 +288,7 @@ async fn a_cancelled_seat_leaves_its_lease_in_custody_until_settled() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("test: bind");
     let port = listener.local_addr().expect("test: addr").port();
     let server = tokio::spawn(async move { axum::serve(listener, app).await });
-    let cancelled = tokio::time::timeout(std::time::Duration::from_millis(500), seat(&authority, LearningEngine::serving_here(port).expect("test: this process's start time is readable"), "learning:her", shadow())).await;
+    let cancelled = tokio::time::timeout(std::time::Duration::from_millis(500), seat_her(&authority, LearningEngine::serving_here(port).expect("test: this process's start time is readable"))).await;
     assert!(cancelled.is_err(), "test: the caller stopped waiting mid-load");
     assert_eq!((leased(&authority), authority.custody.held()), (WEIGHTS, (1, 1)), "the lease outlives the dropped future");
     assert_eq!(authority.custody.settle_orphans().await, 0, "settled");
@@ -292,37 +297,20 @@ async fn a_cancelled_seat_leaves_its_lease_in_custody_until_settled() {
     server.abort();
 }
 
-// what this catches: a stop that fails partway dropping the value, and with it leases the engine's
-// memory still holds (Codex's audit of fed5f3f64). A refused release hands the mind back, lease held.
+// what this catches (Codex on dd98bfdda): workspace the context already holds
+// (`SharedComputeHeld`) leased again on top of what a lesson requires, charging held memory twice;
+// or handed to the adapter, which refuses it, so every lesson with such a row is refused. Only the
+// reservable rows are leased, the SAME rows build the real adapter, and the held row is kept for
+// diagnostics.
 #[tokio::test]
-async fn a_refused_stop_hands_the_mind_back_with_its_lease() {
+async fn held_workspace_is_evidence_never_a_second_lease() {
+    use crate::inference::learning::{MemoryRole, MemoryRow};
+    let row = |role: MemoryRole, bytes: u64| MemoryRow { device: "CUDA0".into(), buffer_type: "CUDA0".into(), role, bytes, host: false };
     let authority = authority();
-    let app = axum::Router::new()
-        .route(
-            "/lora-adapters/fresh",
-            axum::routing::post(|axum::Json(body): axum::Json<serde_json::Value>| async move {
-                if body["dry_run"] == true {
-                    return axum::Json(serde_json::json!({"engine": ENGINE, "reserved": false,
-                        "weights": [{"device": "CUDA0", "buffer_type": "CUDA0", "bytes": WEIGHTS, "host": false}]}));
-                }
-                axum::Json(serde_json::json!({"success": true, "id": 3, "path": "/train/her-shadow.gguf"}))
-            }),
-        )
-        .route("/lora-adapters/unload", axum::routing::post(|| async { axum::Json(serde_json::json!({"success": true, "id": 3, "path": "/train/her-shadow.gguf"})) }))
-        .route("/learn/residency", axum::routing::post(|| async { axum::Json(ledger("none")) }))
-        .route("/learn/grants", axum::routing::post(|| async { axum::Json(ledger("none")) }))
-        .route("/learn/grants/revoke", axum::routing::post(|| async { axum::Json(ledger("none")) }))
-        .route("/learn/residency/release", axum::routing::post(|| async { axum::Json(ledger("busy")) }));
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("test: bind");
-    let port = listener.local_addr().expect("test: addr").port();
-    let server = tokio::spawn(async move { axum::serve(listener, app).await });
-    let mind = crate::genome::learner::mind::MindLearner::start(&authority, LearningEngine::serving_here(port).expect("test: this process's start time is readable"), "learning:her", shadow(), std::time::Duration::from_secs(60))
-        .await
-        .map_err(|why| why.to_string())
-        .expect("test: started");
-    let (mind, _why) = mind.stop().await.err().expect("test: the release is refused");
-    assert_eq!(leased(&authority), WEIGHTS, "her weights stay leased while the engine holds them");
-    drop(mind);
-    assert_eq!((leased(&authority), authority.custody.held()), (WEIGHTS, (1, 1)), "dropped, she is an orphan in custody, still leased");
-    server.abort();
+    let measured = vec![row(MemoryRole::OptimizerStatic, 2_000), row(MemoryRole::SharedComputeRequired, 1_000), row(MemoryRole::SharedComputeHeld, 500)];
+    let memory = lease_memory(&authority, "test:learning", measured).expect("test: 10 MB of VRAM covers 3,000 B");
+    assert_eq!(leased(&authority), 3_000, "the optimizer and the required workspace, never the held workspace");
+    assert_eq!(memory.held, vec![row(MemoryRole::SharedComputeHeld, 500)], "the held row is kept for diagnostics");
+    assert!(memory.rows.iter().all(|r| r.role != MemoryRole::SharedComputeHeld));
+    assert!(memory.view().is_ok(), "the real adapter accepts exactly the leased rows");
 }

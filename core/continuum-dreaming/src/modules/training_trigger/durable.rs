@@ -28,7 +28,7 @@ pub(crate) use arrivals::Arrival;
 mod learn_checkpoint;
 mod reclaim;
 mod rekey;
-pub(crate) use rekey::{CheckpointedSides, Membership, RekeyCandidate, RekeyCounts, RekeyFilter, RekeyRefused, Rekeyed};
+pub(crate) use rekey::{CheckpointedSides, RekeyCandidate, RekeyCounts, RekeyFilter, RekeyRefused, Rekeyed};
 pub(crate) use learn_checkpoint::{Generation, LearnCheckpoint, Position};
 mod training_trigger_state;
 mod training_trigger_state_2;

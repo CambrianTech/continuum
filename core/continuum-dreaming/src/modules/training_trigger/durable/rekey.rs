@@ -17,6 +17,7 @@
 
 use super::*;
 use crate::orm::types::{BatchOperation, BatchOperationType};
+use super::arrivals::BucketColumns;
 
 /// The four collections a bucket's rows live in, keyed by `(personaId, traitKind, baseModel)`.
 fn collections() -> [&'static str; 4] {
@@ -108,8 +109,8 @@ pub(crate) enum RekeyRefused {
     Base(#[from] crate::model_registry::base_identity::BaseRefused),
     #[error("the source bucket has a learn checkpoint: its generation is keyed by the source and does not move with its rows")]
     SourceCheckpointed,
-    #[error("a learner of the source bucket is seated on engine {0:?}: re-key once she pages out")]
-    SourceSeated(crate::inference::engine_residency::EngineIncarnation),
+    #[error("a seat on the node engine holds the source bucket: re-key once it is let go")]
+    SourceSeated,
     #[error("the source and destination buckets pin different training policies: merging them would train one bucket under two")]
     PolicyDiffers,
     #[error("the batch committed but the counts do not balance: source left {left:?}, destination {destination:?}")]
@@ -126,26 +127,11 @@ impl RekeyRefused {
             Self::NoSuchBucket => "NoSuchBucket",
             Self::Base(_) => "BaseRefused",
             Self::SourceCheckpointed => "SourceCheckpointed",
-            Self::SourceSeated(_) => "SourceSeated",
+            Self::SourceSeated => "SourceSeated",
             Self::PolicyDiffers => "InconsistentBucket",
             Self::Unbalanced { .. } => "Unbalanced",
         }
     }
-}
-
-/// The trainer's bucket membership as a pass read it before selecting its rows
-/// ([`TrainingTriggerState::membership`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Membership(u64);
-
-/// The bucket columns of a row, read without its payload.
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct BucketColumns {
-    sequence: u64,
-    persona_id: Uuid,
-    trait_kind: String,
-    base_model: String,
 }
 
 impl DurableStore {
@@ -188,8 +174,7 @@ impl DurableStore {
             if let Some(trait_kind) = &filter.trait_kind {
                 query = query.filter_eq("traitKind", trait_kind.as_str());
             }
-            let fields = ["personaId", "traitKind", "baseModel", "sequence"].map(String::from).to_vec();
-            let result = self.adapter.query(query.sort_asc("sequence").limit(PAGE).select(fields).build()).await;
+            let result = self.adapter.query(query.sort_asc("sequence").limit(PAGE).select(BucketColumns::names()).build()).await;
             let rows = match (result.success, result.data) {
                 (true, Some(rows)) => rows,
                 _ => return Err(RekeyRefused::Store(result.error.unwrap_or_else(|| "stale bucket query refused".into()))), // the adapter refused without detail; still a refusal
@@ -198,7 +183,7 @@ impl DurableStore {
             for row in rows {
                 let columns: BucketColumns = row.decode().map_err(|e| RekeyRefused::Store(e.to_string()))?;
                 after = after.max(columns.sequence);
-                found.insert(BucketKey { persona_id: columns.persona_id, trait_kind: columns.trait_kind, base_model: columns.base_model });
+                found.insert(columns.key());
             }
             if !full {
                 return Ok(found);
@@ -223,18 +208,6 @@ impl DurableStore {
 }
 
 impl TrainingTriggerState {
-    /// Bucket membership now: a pass reads it BEFORE selecting its rows and checks it under its
-    /// bucket's gate before seating or stepping; a move committed in between ends that pass, and
-    /// the next pass selects the rows where they are now (Codex on #6226).
-    pub(crate) fn membership(&self) -> Membership {
-        Membership(self.membership.load(std::sync::atomic::Ordering::Acquire))
-    }
-
-    /// Whether rows moved between buckets since `seen`.
-    pub(crate) fn membership_moved_since(&self, seen: Membership) -> bool {
-        self.membership() != seen
-    }
-
     fn store_for_rekey(&self) -> Result<&DurableStore, RekeyRefused> {
         self.require_ready().map_err(RekeyRefused::Unavailable)?;
         self.durable.require().map(Arc::as_ref).map_err(RekeyRefused::Unavailable)
@@ -291,9 +264,8 @@ impl TrainingTriggerState {
 
     /// [`Self::rekey_apply`], both gates held: hold every engine, re-read, and move.
     async fn rekey_holding_gates(self: Arc<Self>, from: BucketKey, to: BucketKey) -> Result<Rekeyed, RekeyRefused> {
-        let engines = self.in_place.hold_every_engine().await;
-        if let Some(engine) = engines.seating(&from) {
-            return Err(RekeyRefused::SourceSeated(engine));
+        if self.seated_on_engine(&from) {
+            return Err(RekeyRefused::SourceSeated);
         }
         let store = self.durable.require().map_err(RekeyRefused::Unavailable)?;
         let moved = store.counts_of(&from).await?;
@@ -323,7 +295,6 @@ impl TrainingTriggerState {
             return Err(RekeyRefused::Store(result.error.unwrap_or_else(|| "the re-key batch was refused".into()))); // the adapter refused without detail; still a refusal
         }
         // still under both gates: every pass that selected rows before this move stops at its gate
-        self.membership.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         let left = store.counts_of(&from).await?;
         let destination = store.counts_of(&to).await?;
         let expected = RekeyCounts {
@@ -335,7 +306,6 @@ impl TrainingTriggerState {
         if left.rows() != 0 || destination != expected {
             return Err(RekeyRefused::Unbalanced { left, destination });
         }
-        drop(engines);
         continuum_base::probe!(
             class = "training.trigger.rekeyed",
             persona = %from.persona_id,
@@ -467,25 +437,36 @@ mod tests {
         assert_eq!(trigger.state.bucket_example_count(persona, "code", FIXTURE_HF).await, Some(1), "the source keeps its row");
     }
 
-    // what this catches (Codex on #6226 @849c32d0e): a learning pass that selected its rows, then
-    // waited for her act holding nothing, while a re-key moved those rows; it would take the old
-    // bucket's gate and seat and learn the moved examples under the old key. The pass reads the
-    // membership before its rows and checks it under its gate: a move in between ends it with nothing
-    // seated or learned, and the rows stay where the re-key put them.
+    /// An engine that counts what it is told and takes it.
+    #[derive(Default)]
+    struct Counted(std::sync::atomic::AtomicUsize);
+
+    impl crate::inference::learning::LearnPort for Counted {
+        fn tell(&self, _learning: crate::inference::learning::Learning) -> Result<(), crate::inference::learning::Unavailable> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    // what this catches (Codex on #6226 @849c32d0e): a learning pass that listed a bucket, then a
+    // re-key moved its rows before the pass took the bucket's gate; it would seat and learn the moved
+    // examples under the old key. The pass reads the bucket's rows again under its gate: after the
+    // move nothing is told or seated there, and the rows stay where the re-key put them.
     #[tokio::test]
-    async fn a_pass_that_selected_its_rows_before_a_move_seats_and_learns_nothing() {
+    async fn a_pass_that_listed_a_bucket_before_a_move_seats_nothing_there() {
         let (trigger, _executor, _dir) = runtime().await;
         let persona = Uuid::new_v4();
         let stale = key(persona, FIXTURE_HF);
         seed(&trigger.state, persona, FIXTURE_HF, batch(&["s-1"], None)).await;
-        let seen = trigger.state.membership(); // the pass reads it first, as learn_in_place does
         let store = trigger.state.durable.require().expect("test: store");
-        let rows: Vec<Arrival> = store.arrivals(0, 16).await.expect("test: arrivals").into_iter().filter(|row| row.key == stale).collect();
-        assert_eq!(rows.len(), 1, "the pass selected her stale row");
-        trigger.state.rekey_apply(&stale).await.expect("test: the move commits while the pass waits");
-        let engine = crate::inference::engine_residency::EngineIncarnation::of(std::process::id(), 9).expect("test: this process's start time");
-        let pass = trigger.state.learn_bucket(stale, rows, engine, seen).await.expect("test: the pass ends cleanly");
-        assert_eq!(pass, super::super::super::in_place::BucketPass::default(), "nothing seated, learned, deferred or checkpointed");
+        let listed = store.arrivals(0, 16).await.expect("test: arrivals").into_iter().filter(|row| row.key == stale).count();
+        assert_eq!(listed, 1, "the pass listed her stale bucket");
+        trigger.state.rekey_apply(&stale).await.expect("test: the move commits before the pass takes the gate");
+        let counted = std::sync::Arc::new(Counted::default());
+        let port: std::sync::Arc<dyn crate::inference::learning::LearnPort> = counted.clone();
+        trigger.state.seat_bucket(&port, &stale).await.expect("test: the bucket's turn ends cleanly");
+        assert_eq!(counted.0.load(std::sync::atomic::Ordering::Relaxed), 0, "nothing is told for the old key");
+        assert!(!trigger.state.seated_on_engine(&stale), "nothing is seated under the old key");
         assert_eq!(trigger.state.bucket_example_count(persona, "code", CANONICAL).await, Some(1), "her row is where the move put it, unlearned");
     }
 

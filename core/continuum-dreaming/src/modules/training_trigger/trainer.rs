@@ -12,16 +12,16 @@
 
 use std::sync::Arc;
 
-use std::collections::BTreeSet;
-use std::path::PathBuf;
 
 use continuum_sage::component::{Bus, Component, Ctx, Key, Source, Taken, Urgency, Wiring};
-use continuum_sage::dataflow::{Emitter, Snapshot, TopicName};
+use continuum_sage::dataflow::{Event, Snapshot, TopicName};
 use continuum_sage::Qos;
 
-use super::cleaner::{Seated, Settled, SEATED, SETTLED};
+use super::cleaner::{Seated, SEATED};
 use super::{OwnedKind, TrainingTriggerState};
+use crate::inference::learning::{Said, LEARNING_SAID};
 use crate::inference::llama_server::{ServingSnapshot, SERVING_TOPIC};
+use crate::resources::{Free, FREE};
 
 /// The trigger's arrivals, as state: the sequence of the newest accepted example.
 pub const ARRIVALS: TopicName = TopicName("trainer/arrivals");
@@ -30,12 +30,34 @@ pub const ARRIVALS: TopicName = TopicName("trainer/arrivals");
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Arrivals(pub u64);
 
+// derived-or-floor: a seat has at most two answers outstanding (one seat state for its one seat
+// command, one step or generation for its one lesson or checkpoint: seat_run tells no more), so 1,024
+// holds every answer of 512 seats; a node seats one per learning bucket (residents times traits,
+// tens). A dropped Said would leave a seat waiting, so the window must never be what bounds them.
+const SAID_WINDOW: std::num::NonZeroUsize = std::num::NonZeroUsize::MIN.saturating_add(1_023);
+
 /// What wakes the trainer.
 pub enum Wake {
     /// Serving changed: an engine came, went or changed.
     Serving(Arc<ServingSnapshot>),
     /// An example was accepted.
     Arrived(u64),
+    /// The node engine said what became of one of the trainer's seats.
+    Said(Said),
+    /// The resource authority said what is free: a bucket held for memory may seat now.
+    Free(Arc<Free>),
+}
+
+impl From<Snapshot<Free>> for Wake {
+    fn from(snapshot: Snapshot<Free>) -> Self {
+        Wake::Free(snapshot.value)
+    }
+}
+
+impl From<Event<Said>> for Wake {
+    fn from(event: Event<Said>) -> Self {
+        Wake::Said(event.value.as_ref().clone())
+    }
 }
 
 impl From<Snapshot<ServingSnapshot>> for Wake {
@@ -50,37 +72,19 @@ impl From<Snapshot<Arrivals>> for Wake {
     }
 }
 
-/// What the trigger says on the trainer's bus, claimed when the trainer is built: arrivals, the
-/// shadows live seats hold, and each page-out.
+/// What the trigger says on the trainer's bus, claimed when the trainer is built: its arrivals.
+/// (It also says once that it holds no shadow file: in-process seats keep their shadows in the
+/// engine's memory, so every shadow file in the train dir is a leftover the cleaner may release.)
 pub(crate) struct TrainerOut {
     arrivals: Source<Arrivals>,
-    seated: Source<Seated>,
-    settled: Emitter<Settled>,
-    held: BTreeSet<PathBuf>,
+    /// Held for the trainer's life, so what it said (no shadow file held) stays said.
+    _no_shadows: Source<Seated>,
 }
 
 impl TrainerOut {
-    /// Say the shadows live seats hold now: the one place the held set is said.
-    fn say_held(&mut self) {
-        self.seated.say(Seated(self.held.clone()));
-    }
-
     /// Say that the newest accepted example is `sequence`.
     pub(crate) fn arrived(&mut self, sequence: u64) {
         self.arrivals.say(Arrivals(sequence));
-    }
-
-    /// A seat now holds `shadow`.
-    pub(crate) fn seated(&mut self, shadow: PathBuf) {
-        self.held.insert(shadow);
-        self.say_held();
-    }
-
-    /// A seat let `shadow` go at page-out, having learned `learned` examples and published or not.
-    pub(crate) fn settled(&mut self, shadow: PathBuf, learned: u32, published: bool) {
-        self.held.remove(&shadow);
-        self.say_held();
-        self.settled.emit(Settled { shadow, learned, published });
     }
 }
 
@@ -94,12 +98,9 @@ impl Trainer {
     /// trigger, which says the current sequence at once, so the first wake recovers whatever was
     /// already waiting at boot. A second trainer on one bus is refused.
     pub fn on(state: Arc<TrainingTriggerState>, bus: &Bus) -> Result<Self, Taken> {
-        let out = TrainerOut {
-            arrivals: Source::on(bus, ARRIVALS, Key::ONE, "training-trigger")?,
-            seated: Source::on(bus, SEATED, Key::ONE, "training-trigger")?,
-            settled: bus.emitter::<Settled>(SETTLED)?,
-            held: BTreeSet::new(),
-        };
+        let mut no_shadows = Source::on(bus, SEATED, Key::ONE, "training-trigger")?;
+        no_shadows.say(Seated(std::collections::BTreeSet::new()));
+        let out = TrainerOut { arrivals: Source::on(bus, ARRIVALS, Key::ONE, "training-trigger")?, _no_shadows: no_shadows };
         state.install_out(out);
         Ok(Self { state })
     }
@@ -113,13 +114,36 @@ impl Component for Trainer {
     fn wire(&self, wiring: &mut Wiring<'_, Self>) {
         wiring.watch::<ServingSnapshot>(SERVING_TOPIC, Key::ONE);
         wiring.watch::<Arrivals>(ARRIVALS, Key::ONE);
+        wiring.watch::<Free>(FREE, Key::ONE);
+        // the engine says on the node bus; every Said is kept until taken, in order (one per command
+        // the trainer told, so the window bounds nothing the trainer did not ask for)
+        let node = continuum_sage::component::node();
+        wiring.hear_on::<Said>(&node, LEARNING_SAID, SAID_WINDOW);
     }
 
     async fn handle(&mut self, wake: Wake, ctx: &mut Ctx<Self>) {
         ctx.need(Urgency::Want);
-        let woke_by = match &wake {
+        let woke_by = match wake {
             Wake::Serving(_) => "serving",
             Wake::Arrived(_) => "arrival",
+            Wake::Said(said) => {
+                let state = Arc::clone(&self.state);
+                // owned, so shutdown's join waits for a seat's act in flight
+                if let Err(refused) = self.state.run_operation(OwnedKind::Recover, None, async move { state.heard_from_engine(said).await }).await {
+                    continuum_base::probe!(class = "training.on_engine.refused", refused = %refused, "a Said arrived as the trigger stopped; its seat is settled at shutdown");
+                }
+                ctx.need(Urgency::Content);
+                return;
+            }
+            Wake::Free(free) => {
+                let state = Arc::clone(&self.state);
+                // only the buckets held for memory are looked at: never a whole pass per board change
+                if let Err(refused) = self.state.run_operation(OwnedKind::Recover, None, async move { state.heard_free(&free).await }).await {
+                    continuum_base::probe!(class = "training.on_engine.refused", refused = %refused, "a free-memory change arrived as the trigger stopped");
+                }
+                ctx.need(Urgency::Content);
+                return;
+            }
         };
         let state = Arc::clone(&self.state);
         // an owned operation, so shutdown's join waits for a pass in flight and refuses one after it

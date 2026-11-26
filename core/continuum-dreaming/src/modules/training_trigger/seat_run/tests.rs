@@ -1,7 +1,7 @@
 #![cfg(test)]
 use super::*;
 use crate::inference::learning::{BufferType, Optimizer, PersonaId, ShadowSource, Slot};
-use crate::inference::llama_server::FreshShadow;
+use crate::inference::learning::FreshShadow;
 use std::num::{NonZeroU32, NonZeroU64};
 use std::sync::atomic::{AtomicBool, Ordering};
 

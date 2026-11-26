@@ -5,7 +5,4 @@
 pub mod custody;
 pub mod example;
 pub mod seat;
-pub mod memory;
-pub mod grant;
-pub mod mind;
 pub mod policy;

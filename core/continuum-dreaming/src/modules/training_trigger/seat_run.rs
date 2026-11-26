@@ -99,6 +99,15 @@ pub(crate) enum NotTold {
     OutOfOrder(&'static str),
 }
 
+impl std::fmt::Display for NotTold {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NotTold::NoEngine => write!(f, "no engine took the command"),
+            NotTold::OutOfOrder(what) => write!(f, "out of order: {what}"),
+        }
+    }
+}
+
 impl From<Unavailable> for NotTold {
     fn from(_returned: Unavailable) -> Self {
         NotTold::NoEngine // the returned command, and every guard in it, drops here

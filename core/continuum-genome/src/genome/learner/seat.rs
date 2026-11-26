@@ -16,7 +16,7 @@
 
 use super::custody::{Claim, Custody};
 use crate::inference::llama_server::{
-    CoveringLease, FreshShadow, LeaseKind, LearningEngine, LedgerAnswer, LedgerEngine, LoadedAdapter, ResidencyId,
+    CoveringLease, LeaseKind, LearningEngine, LedgerAnswer, LedgerEngine, LoadedAdapter, ResidencyId,
     ResidencyRefusal, ResidencyRow, ResidencySubject, ResidencyTerms, RowKind,
 };
 use crate::inference::serving_lifecycle::Admission;
@@ -86,20 +86,6 @@ impl Authority {
         );
         Self { resources, serving: crate::inference::serving_lifecycle::LifecycleGate::unowned(true), custody: Custody::isolated() }
     }
-}
-
-/// Seat `shadow` for `consumer` (her learning's name on the resource board) in `engine`.
-pub async fn seat(authority: &Authority, engine: LearningEngine, consumer: &str, shadow: FreshShadow) -> Result<Seat, SeatRefusal> {
-    let plan = match engine.plan_fresh_shadow(&shadow).await {
-        Ok(LedgerAnswer::Ledger(plan)) => plan,
-        Ok(LedgerAnswer::NoLedger) => return Err(SeatRefusal::NoLedger),
-        Err(error) => return Err(SeatRefusal::Unmeasured(error.to_string())),
-    };
-    let rows: Vec<ResidencyRow> = plan.weights.into_iter().map(|row| ResidencyRow::of(row, RowKind::Weights)).collect();
-    let leases = lease_rows(authority, Admission::Free(&authority.serving), consumer, &rows).await?;
-    let claim = register(authority, &engine, &plan.engine, ResidencySubject::Fresh(shadow.clone()), rows, leases).await?;
-    let loaded = engine.seat_fresh(&shadow, claim.residency()).await;
-    seated(engine, plan.engine, claim, loaded).await
 }
 
 /// One gene to seat: the adapter file `name` (staged under the engine's train dir) for `consumer`,
@@ -202,12 +188,35 @@ pub(super) async fn lease_rows(authority: &Authority, admission: Admission<'_>, 
     Ok(leases)
 }
 
+/// What [`lease_memory`] leased: the rows it reserved and their guards, which go to
+/// `learning::LearningMemory::from_rows` exactly as they are, so the view covers what was leased and
+/// nothing else; and the workspace the context already holds, kept for diagnostics only.
+pub struct LeasedMemory {
+    pub rows: Vec<crate::inference::learning::MemoryRow>,
+    pub leases: Vec<(LeaseKind, u64, LeaseGuard)>,
+    pub held: Vec<crate::inference::learning::MemoryRow>,
+}
+
+impl LeasedMemory {
+    /// The engine's view of these leases: a `LearningMemory` over exactly the rows they cover, owning
+    /// nothing. A view is built per command (each lesson's admission is its own); the rows are copied
+    /// into it because the view counts what native code charges against each.
+    pub fn view(&self) -> Result<crate::inference::learning::LearningMemory, &'static str> {
+        crate::inference::learning::LearningMemory::from_rows(self.rows.clone(), &self.leases)
+    }
+}
+
 /// Lease what the in-process engine measured for a seat (`learning::SeatState::Measured` or
 /// `Loaded`), one guard per memory class (device rows as VRAM, host rows as RAM), in ONE attempt
 /// under the serving lifecycle gate, as [`lease_rows`] does for the HTTP engine. A shortfall answers
-/// `AwaitingMemory` and the guards already taken drop with it. The trainer keeps the guards; the
-/// engine gets `learning::LearningMemory::from_rows` over them, a view that owns nothing.
-pub fn lease_memory(authority: &Authority, consumer: &str, rows: &[crate::inference::learning::MemoryRow]) -> Result<Vec<(LeaseKind, u64, LeaseGuard)>, SeatRefusal> {
+/// `AwaitingMemory` and the guards already taken drop with it.
+///
+/// Rows are partitioned by their typed role first: `SharedComputeHeld` is workspace the context
+/// already holds, evidence and never a further lease, so it is neither leased nor handed to the view
+/// (leasing it would charge held memory twice, and `from_rows` refuses it; Codex on dd98bfdda).
+pub fn lease_memory(authority: &Authority, consumer: &str, rows: impl IntoIterator<Item = crate::inference::learning::MemoryRow>) -> Result<LeasedMemory, SeatRefusal> {
+    use crate::inference::learning::MemoryRole;
+    let (held, rows): (Vec<_>, Vec<_>) = rows.into_iter().partition(|row| row.role == MemoryRole::SharedComputeHeld);
     let mut leases = Vec::new();
     for (kind, resource, host) in [(LeaseKind::Vram, ResourceKind::Vram, false), (LeaseKind::Ram, ResourceKind::Ram, true)] {
         let bytes = rows
@@ -223,7 +232,7 @@ pub fn lease_memory(authority: &Authority, consumer: &str, rows: &[crate::infere
             .map_err(SeatRefusal::AwaitingMemory)?;
         leases.push((kind, bytes, guard));
     }
-    Ok(leases)
+    Ok(LeasedMemory { rows, leases, held })
 }
 
 impl Seat {
