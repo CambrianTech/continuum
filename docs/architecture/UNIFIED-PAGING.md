@@ -1136,6 +1136,48 @@ update matches the full graph's by cosine and norm (`tests/test-walk-exact.cpp`,
 the last tile, uneven labels, a partial final tile), one optimizer update, the restored serving state
 unchanged; then Kimi's 64 GB, 91 GB and 1.9 TB lessons learned on the 5090 beside serving, held-out loss kept.
 
+### Measuring a tile, not the reply (2026-11-26, for review before code)
+
+**What is measured today** (Cormac and Codex, 22:14-22:16Z, at pin 32e155036):
+- `measure_within` (`driver/learning.rs:277`) calls `opt_measure_memory` (`llama-context-opt-measure.cpp`) with `chunk = reply_rows` and `walk_active = false`.
+- That is the whole-reply graph, which is honest for the path that runs today, and is Kimi's 1.9 TB.
+- The fork's tile walk (`llama-context-learn-tiles.cpp`, fork head 17704d6a7, gate passing at 64- and 128-row tiles) has no measure of its own.
+
+**The measure is the walk's worst tile, built as the walk builds it.**
+- `llama_opt_measure_shadow_tile(ctx, params, tile, reply_rows, lesson_rows, horizon, callback)` builds one reverse-pass training graph and allocates nothing.
+- It builds the graph the tile walk runs at its most expensive tile: the reply's last tile, at `n_past = lesson_rows - tile`.
+- Its flags are the ones `opt_tiles_unit` sets: `walk_active` and `walk_exact`, `grad_from = max(prefix, n_past - horizon)`, and the K/V surrogate. The recurrent state surrogate is added when the memory has a recurrent part.
+- The last tile is the worst on both terms that grow:
+  - its attention window `n_past + tile` is the largest;
+  - its tap span `n_past - grad_from` (the F32 cast of the cached rows that carry gradient) is the longest at the full horizon.
+- Every other tile's graph is no larger, so this one bound covers the whole walk.
+- The measure reports two rows, never one sum:
+  - **Device:** that graph's workspace, by the same `ggml_opt_prepare_alloc_slices` pass `opt_measure_memory` uses.
+  - **Host:** the walk's K/V gradient accumulator and its recurrent checkpoints. It uses the walk's own formulas (`llama_walk_acc::kv_bytes`, `state_bytes`, `plan.stride_for`, `plan.host_bytes`) at the walk's host budget, so the measure and the run cannot disagree.
+- `opt_measure_memory` and the tile measure share one body. The tile measure is the same pass with the walk's flags and a positioned ubatch; it is not a second allocator walk.
+
+**The accumulator in a graph that allocates nothing.**
+- The graph reads `cparams.walk_acc_k/v[il]`, the host accumulator's tensors.
+- The measure binds metadata tensors of the run's shape that sit in a host buffer. A leaf with no buffer would be scheduled into the compute buffer and overprice the device by the accumulator's size.
+- Question 1 below is how to give those tensors a host buffer without allocating it.
+
+**The driver.**
+- `Walk` gains `tile: NonZeroU32` and becomes `exact = true` whenever tiles are used. Tiles are exact or not used: `opt_learn_tile` refuses otherwise.
+- `measure_within` stops shrinking the lesson. The lesson's K/V are read from her cache as constants, so the lesson no longer prices the device beyond one window of attention.
+- It shrinks the tile instead: halving from `min(reply, one tile past which Fit overshoots)` down to one ubatch, the floor.
+- `Loaded` reports the tile beside `reply_rows` and `lesson_rows`. The Learn step calls `llama_opt_learn_tile(tile)` after begin.
+- The seat's Resident row is `Elastic { floor: one ubatch tile, ways: Resize(tile) }`, as above.
+
+**Gates, in order.**
+1. The fork's `test-walk-exact`: the tile measure is at least the workspace each tile actually admits (`workspace_admission`'s bytes per tile). Run at 64, 128 and 512 rows, f16 and q8_0, flash on.
+2. The same on a hybrid model: the 5090 serves Qwen3.8-27B, and the hybrid path has an open `k_idxs` abort.
+3. The open device-refusal case: a refused tile names itself and the seat learns at a smaller tile, never an abort.
+4. Kimi's 64 GB, 91 GB and 1.9 TB lessons measured, admitted and learned on the 5090 beside serving.
+
+**Questions for Codex.**
+1. **The accumulator's tensors in a host buffer that is never allocated.** One option is a CPU buffer from `ggml_backend_cpu_buffer_from_ptr` over a pointer that is never read. Is that sound under ggml's allocator? Or should `walk_acc_rows` take a graph input that the measure marks host-resident?
+2. **The Core's layout.** `opt_learn_tile` refuses `kv_unified && n_seq_max > 1`. Is every live serving context on the 5090 a stream per mind? If one shares a cache, the tile path is refused there and the reply would learn by the whole-reply graph again.
+
 ## Questions for review
 
 1. **Metal and a file mapping as a buffer** (Fable, slice 1): does `buffer_from_host_ptr` over a
