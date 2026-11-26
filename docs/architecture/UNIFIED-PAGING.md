@@ -791,6 +791,34 @@ network link between them. So that works later with no rework, everything built 
   - Codex's CUDA graph check (#6264) applies to every `Vram` pointer switch.
 - **CPU-only nodes:** `Ram` and `Flash`, with `Mapping` between them.
 
+### A mind's storage is one object with an adapter per memory, never a branch (2026-11-26, for review)
+
+Joel: "you've got to nip unified vs dedicated memory with comprehensive objects not patches." The 5090's crash
+at 2f8bd03a1 (Codex, 18:22Z) came from one branch: `UnifiedTier::kv_memory` mapped each mind's storage as a
+file where the device views host memory, and elsewhere reserved her whole stream-sized storage in device memory
+for her life. On unified memory a parked mind's file costs nothing (the OS pages it); on a discrete card the
+same decision is a lifetime VRAM reservation per mind, outside every ledger, which the Windows driver spilled
+into shared system memory until it lost the device. 76f45739f4 put a room check on that branch: a patch. The
+branch is the defect.
+
+- **`MindStorage`, the abstract home of a mind's KV.** One contract: `storage_for(StorageAsk { mind, window })`
+  answers her storage (a held object whose drop returns its room), and the home is a [`Resident`] whose rows say
+  what each mind's storage holds, on which tier, and how it varies. The tier asks it and never branches on the
+  device.
+- **Adapters, chosen once at start from the node's measured topology** (`continuum-host`, the per-OS files
+  pattern): `Unified` (her storage a block over her mapped file; parked, the OS pages it; a cheap Elastic row
+  whose way is cache-out to flash), `Dedicated` (her storage device memory leased on the ledger, sized to her
+  window, never the stream; parked, cached out to pinned host memory by DMA overlapped with decode and back on her
+  next step; an Elastic row with resize to her window and cache-out to pinned), and `RowCopy` (a context that is
+  not the Core's shape: the fork's own memory, its own named adapter, never a fallback inside another).
+- **The levels do the work.** Each adapter's rows sit on the `Resizing`/cache-out levels, so an adapter writes
+  only how its bytes move (map, lease, DMA); the floor, want, fences and receipts are the parent's.
+- **Deleted with it:** the viewable branch in `unified_tier.rs` and `DeviceRoom` (its lease becomes the
+  `Dedicated` adapter's).
+
+Gate: the 5090 with Kimi and Sahar resumed holds each parked mind on pinned host memory (shared GPU usage flat at
+the control's ~1.2 GB), the bound mind's storage leased on the board, and no driver loss; the M5 unchanged.
+
 ## Validators (seconds, any machine), then the live read
 
 - **Every `Link`:** a block moved there and back is byte-identical; its throughput is reported against
