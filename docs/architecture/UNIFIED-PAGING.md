@@ -1010,6 +1010,41 @@ refused by the file's length before any byte is read; the per-token encode and d
 attached mind's record, and the KV storage's private layout, reserve, attach and repoint code (now
 `llama-persona-view`, shared by both memories).
 
+## A long reply learns in tiles, never as one graph (2026-11-26, for review before code)
+
+**What the 5090 showed** (Codex, 46cfb47915, 16:21-16:36Z): Kimi's lessons measured 64.4 GB, 91.5 GB and
+1.9 TB on a 34.2 GB card, and a seat asked for 26.5 GB against a 13.1 GB ceiling. Cormac's reading, now
+confirmed in the fork: `llama-context-learn.cpp` builds "one graph for the entire reply" (when the reply
+has graph nodes, a step takes `end - cursor` rows and widens the batch to it), and `opt_measure_memory`
+sizes that graph at `reply_rows`. A reply's backward holds every reply row's activations against every
+lesson row it attends, so a long code reply cannot learn on any card. Collapsing the context cannot help:
+the reply itself is what is trained and is never cut.
+
+**The fix (Joel: stream in tiles, never shrink).** The reply learns in consecutive tiles of `tile` rows.
+Each tile is one graph: its rows' forward and backward, attending the lesson before it from the cache as a
+constant, its gradient accumulated into the shadow's accumulators; the optimizer commits once after the
+last tile, with the label denominator of the whole reply, so the example and its loss are exactly the
+reply's. Every label is trained; none is cut. The fork already walks chunks this way (`Walk`, `exact`,
+`horizon`); the whole-reply graph replaced it for speed on short replies, and the tile restores it with the
+tile sized by memory, not by the batch.
+
+- **The tile is the seat's elastic dimension.** `measure` reports per tile rows: a seat's floor is one tile
+  of the smallest size that learns (one ubatch), its want the whole reply as one tile. Its Resident row is
+  `Elastic { floor, ways: Resize(tile) }`: a shrink asks for smaller tiles, a grow allows larger. The
+  flexbox share at Background decides the tile, so the seat always fits the room it is given.
+- **What it costs is measured, not guessed.** Smaller tiles add one forward per tile over the cached lesson
+  (no re-prefill: the lesson's KV stays in place) and more kernel launches. Each Learned row says its tile and
+  milliseconds per labelled token, the cost the policy weighs against waiting for room.
+- **Exactness.** A tile's backward reaches the earlier tiles of the reply through their cached K/V only when
+  `Walk::exact` carries it (the fork's existing path); otherwise the gradient stops at the tile boundary, as
+  chunked training does everywhere. Which one is measured on quality (the held-out loss after a lesson), the
+  same receipt every learning change carries.
+
+Order: (1) the fork's learn step takes a tile (rows per graph) from its caller; `measure` sizes a tile, not
+the reply; (2) the driver picks the tile from the seat's share and reports it; (3) the seat as a Resident with
+the tile as its resize. Gate: Kimi's 64 GB, 91 GB and 1.9 TB lessons learned on the 5090 beside serving, with
+the held-out loss no worse than the whole-reply graph on lessons that fit both ways.
+
 ## Questions for review
 
 1. **Metal and a file mapping as a buffer** (Fable, slice 1): does `buffer_from_host_ptr` over a
