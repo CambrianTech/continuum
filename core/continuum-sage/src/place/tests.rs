@@ -600,30 +600,28 @@ mod residents {
     use super::*;
     use std::time::Duration;
 
-    /// A leaf holder on the card: what it holds, how it varies, its class.
-    struct Leaf {
-        held: u64,
-        varies: Varies<Tier, Bytes>,
-        qos: crate::Qos,
-    }
+    /// The one method an elastic part writes (the levels do the rest): its allocation moves where it is asked.
+    struct Allocation;
 
-    impl Resident<Tier, Bytes> for Leaf {
-        fn report(&self, into: &mut Report<Tier, Bytes>) {
-            into.row(Row { place: Tier::Vram, held: Bytes(self.held), want: Bytes(self.held), varies: self.varies, qos: self.qos, waited: Duration::ZERO });
-        }
-        fn shrink(&mut self, ask: ShrinkAsk<Tier, Bytes>) -> Given<Bytes> {
-            if matches!(self.varies, Varies::Fixed { .. }) {
-                return Given::Refused { why: "fixed" };
-            }
-            let freed = self.held.saturating_sub(ask.to.0);
-            self.held -= freed;
-            Given::Done { way: Way::Resize, amount: Bytes(freed), took: Duration::ZERO }
-        }
-        fn grow(&mut self, _: GrowGrant<Tier, Bytes>) -> Given<Bytes> {
-            Given::Refused { why: "a leaf in this test does not grow" }
+    impl Resize<Bytes> for Allocation {
+        fn resize(&mut self, ask: ResizeTo<Bytes>) -> Moved<Bytes> {
+            Moved::Done { now: ask.to, took: Duration::ZERO }
         }
     }
 
+    fn facts(held: u64, qos: crate::Qos) -> Facts<Tier, Bytes> {
+        Facts { place: Tier::Vram, held: Bytes(held), qos, waited: Duration::ZERO }
+    }
+
+    /// A holding nothing can shrink: no code of its own.
+    fn fixed(held: u64, qos: crate::Qos, why: &'static str) -> Box<dyn Resident<Tier, Bytes> + Send> {
+        Box::new(Fixed { facts: facts(held, qos), why })
+    }
+
+    /// A holding that resizes from `floor` up to what it holds now.
+    fn resizing(held: u64, floor: u64, qos: crate::Qos) -> Box<dyn Resident<Tier, Bytes> + Send> {
+        Box::new(Resizing { facts: facts(held, qos), floor: Bytes(floor), want: Bytes(held), cost: Cost::default(), leaf: Allocation })
+    }
     /// The law's priority in these tests: the class alone (the system's point of view).
     fn by_class(row: &Row<Tier, Bytes>) -> u8 {
         row.qos as u8 * 64
@@ -638,10 +636,6 @@ mod residents {
         core
     }
 
-    fn elastic(floor: u64) -> Varies<Tier, Bytes> {
-        Varies::Elastic { floor: Bytes(floor), ways: Ways { resize: Some(Cost::default()), cache_out: None, collapse: None } }
-    }
-
     // what this catches (Joel, 2026-11-26: "you do this with objects"; "A host of a base model can't just
     // shrink"): a composite that cannot hold mixed children, a shrink that reaches a fixed holding, or the
     // system's need ignored (an Interactive turn's KV giving before a Background workspace). The Core folds
@@ -649,9 +643,9 @@ mod residents {
     #[test]
     fn a_composite_shares_a_shrink_lowest_class_first_and_never_asks_the_fixed() {
         let mut core = core(vec![
-                Box::new(Leaf { held: 17_402 * MB, varies: Varies::Fixed { why: "the base model serves live minds" }, qos: crate::Qos::Interactive }),
-                Box::new(Leaf { held: 8_704 * MB, varies: elastic(2_048 * MB), qos: crate::Qos::Interactive }),
-                Box::new(Leaf { held: 3_124 * MB, varies: elastic(1_024 * MB), qos: crate::Qos::Background }),
+                fixed(17_402 * MB, crate::Qos::Interactive, "the base model serves live minds"),
+                resizing(8_704 * MB, 2_048 * MB, crate::Qos::Interactive),
+                resizing(3_124 * MB, 1_024 * MB, crate::Qos::Background),
         ]);
         let mut report = Report::default();
         core.report(&mut report);
@@ -697,7 +691,7 @@ mod residents {
     fn a_shrink_keeps_what_a_held_row_requires_and_lowers_a_level_instead_of_dropping() {
         let mut core = core(vec![
             Box::new(Call { held: 4 * GB, encoder: 512 * MB }),
-            Box::new(Leaf { held: 2 * GB, varies: elastic(512 * MB), qos: crate::Qos::Background }),
+            resizing(2 * GB, 512 * MB, crate::Qos::Background),
         ]);
         // what the card holds of them: their rows and the encoder the call requires
         let card = 4 * GB + 2 * GB + 512 * MB;
@@ -765,9 +759,9 @@ mod residents {
     #[test]
     fn a_composite_grows_its_parts_toward_their_wants_highest_class_first() {
         let mut core = core(vec![
-            Box::new(Leaf { held: 2 * GB, varies: Varies::Fixed { why: "weights" }, qos: crate::Qos::Interactive }),
+            fixed(2 * GB, crate::Qos::Interactive, "weights"),
             Box::new(Paging { held: GB, want: 3 * GB }),
-            Box::new(Leaf { held: GB, varies: elastic(GB), qos: crate::Qos::Background }),
+            resizing(GB, GB, crate::Qos::Background),
         ]);
         let given = core.grow(GrowGrant { place: Tier::Vram, to: Bytes(2 * GB + GB + GB + 2 * GB) });
         assert!(matches!(given, Given::Done { amount: Bytes(a), .. } if a == 2 * GB), "{given:?}");
@@ -775,6 +769,32 @@ mod residents {
         core.report(&mut report);
         let held: Vec<u64> = report.rows().iter().map(|row| row.held.0 / GB).collect();
         assert_eq!(held, vec![2, 3, 1], "the Utility part grew to its want; the fixed and the Background part kept theirs");
+    }
+
+    /// A resize its owner cannot make now.
+    struct Busy;
+
+    impl Resize<Bytes> for Busy {
+        fn resize(&mut self, _: ResizeTo<Bytes>) -> Moved<Bytes> {
+            Moved::Refused { why: "a graph is in flight" }
+        }
+    }
+
+    // what this catches (Joel, 2026-11-26: "only this part needs the abstract method"): a leaf that has to
+    // police its own floor and want, or build its own row. The level does both: an ask below the floor stops at
+    // the floor, a grant past the want stops at the want, and the leaf sees only from and to.
+    #[test]
+    fn the_resizing_level_keeps_floor_and_want_and_its_leaf_writes_one_method() {
+        let mut workspace = Resizing { facts: facts(3 * GB, crate::Qos::Background), floor: Bytes(GB), want: Bytes(4 * GB), cost: Cost::default(), leaf: Allocation };
+        let given = workspace.shrink(ShrinkAsk { place: Tier::Vram, to: Bytes(0), for_qos: crate::Qos::Interactive });
+        assert_eq!(given, Given::Done { way: Way::Resize, amount: Bytes(2 * GB), took: Duration::ZERO }, "down to its floor, never below");
+        assert_eq!(workspace.facts.held, Bytes(GB));
+        let given = workspace.grow(GrowGrant { place: Tier::Vram, to: Bytes(10 * GB) });
+        assert_eq!(given, Given::Done { way: Way::Resize, amount: Bytes(3 * GB), took: Duration::ZERO }, "up to its want, never past");
+        assert!(matches!(workspace.shrink(ShrinkAsk { place: Tier::Pinned, to: Bytes(0), for_qos: crate::Qos::Interactive }), Given::Refused { .. }), "not its place");
+        let mut busy = Resizing { facts: facts(3 * GB, crate::Qos::Background), floor: Bytes(GB), want: Bytes(3 * GB), cost: Cost::default(), leaf: Busy };
+        assert_eq!(busy.shrink(ShrinkAsk { place: Tier::Vram, to: Bytes(GB), for_qos: crate::Qos::Interactive }), Given::Refused { why: "a graph is in flight" });
+        assert_eq!(busy.facts.held, Bytes(3 * GB), "a refused resize holds what it held");
     }
 }
 

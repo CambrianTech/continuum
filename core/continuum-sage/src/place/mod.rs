@@ -18,6 +18,7 @@ mod claim;
 mod composite;
 mod flex;
 mod holding;
+mod levels;
 mod component;
 mod core;
 mod ledger;
@@ -31,6 +32,7 @@ pub use ledger::{Accounts, Answer, Ledger, NeverNow, Refusal, ShrinkTo, Untaken}
 pub use composite::{Composite, Priority};
 pub use flex::{Flex, Flexbox, Landed, Share, Shared};
 pub use holding::{Answered, Asked, Holding, Landing, Receipt, Ticket};
+pub use levels::{Facts, Fixed, Moved, Resize, ResizeTo, Resizing};
 pub use quantity::{Bytes, Quantity, Slots, Tokens};
 pub use resident::{Cost, Given, GrowGrant, Report, Requires, Resident, Row, Sharing, ShrinkAsk, Varies, Way, Ways};
 
