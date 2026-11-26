@@ -24,7 +24,7 @@ use uuid::Uuid;
 
 use super::durable::Position;
 use crate::inference::learning::{
-    GenerationOutcome, Learn, LearnPort, Learning, Lesson, Measure, MemoryRow, OptimizerLease, OptimizerStart, ReplyAdmission, Said,
+    Fit, GenerationOutcome, Learn, LearnPort, Learning, Lesson, Measure, MemoryRow, OptimizerLease, OptimizerStart, ReplyAdmission, Said,
     Seat, SeatId, SeatState, StepId, StepOutcome, Unavailable,
 };
 
@@ -55,9 +55,9 @@ enum Phase {
 pub(crate) enum Heard {
     /// Lease the shadow's `weights` off the engine thread, then [`SeatRun::load`] under it.
     LeaseWeights(Vec<MemoryRow>),
-    /// Lease its `optimizer` and a `workspace` for lessons up to `reply_rows` tokens, then
+    /// Lease its `optimizer` and its `workspace` (sized for the lesson rows the seat keeps), then
     /// [`SeatRun::seat`] under them.
-    LeaseSeat { optimizer: Vec<MemoryRow>, workspace: Vec<MemoryRow>, reply_rows: std::num::NonZeroU32 },
+    LeaseSeat { optimizer: Vec<MemoryRow>, workspace: Vec<MemoryRow> },
     /// Seated: lessons may be learned. `optimizer` says whether its moments came back.
     Seated { optimizer: OptimizerStart },
     /// `position`'s lesson committed `steps`: it is learned, volatile until a generation holds it.
@@ -132,6 +132,8 @@ pub(crate) struct SeatRun<G> {
     /// The workspace's lease, from Seat: each lesson's admission is a view over it. Held and
     /// dropped with the other guards.
     workspace: Option<G>,
+    /// The lesson rows the engine loaded the seat within: every Learn renders its lesson within them.
+    within: Option<std::num::NonZeroU32>,
 }
 
 impl<G: Send> SeatRun<G> {
@@ -139,7 +141,7 @@ impl<G: Send> SeatRun<G> {
     pub(crate) fn measure(port: &dyn LearnPort, measure: Measure) -> Result<Self, NotTold> {
         let seat = measure.seat;
         port.tell(Learning::Measure(measure))?;
-        Ok(Self { seat, phase: Phase::Measuring, before: Phase::Measuring, in_flight: None, progress: HashMap::new(), checkpoints: VecDeque::new(), guards: Vec::new(), workspace: None })
+        Ok(Self { seat, phase: Phase::Measuring, before: Phase::Measuring, in_flight: None, progress: HashMap::new(), checkpoints: VecDeque::new(), guards: Vec::new(), workspace: None, within: None })
     }
 
     pub(crate) fn id(&self) -> SeatId {
@@ -161,13 +163,14 @@ impl<G: Send> SeatRun<G> {
         &self.progress
     }
 
-    /// Load the measured shadow under `weights`, the lease the trainer took for its measured weights.
+    /// Load the measured shadow under `weights`, the lease the trainer took for its measured weights,
+    /// its optimizer and workspace measured within `fit`.
     /// Not told, the guard drops here: nothing was allocated under it.
-    pub(crate) fn load(&mut self, port: &dyn LearnPort, weights: G) -> Result<(), NotTold> {
+    pub(crate) fn load(&mut self, port: &dyn LearnPort, weights: G, fit: Fit) -> Result<(), NotTold> {
         if self.phase != Phase::Measured {
             return Err(NotTold::OutOfOrder("load before its weights were measured"));
         }
-        port.tell(Learning::Load { seat: self.seat })?;
+        port.tell(Learning::Load { seat: self.seat, fit })?;
         self.guards.push(weights);
         self.told(Phase::Loading);
         Ok(())
@@ -192,7 +195,8 @@ impl<G: Send> SeatRun<G> {
             return Err(NotTold::OutOfOrder("a lesson while not seated or another is in flight"));
         }
         let step = StepId(Uuid::new_v4());
-        port.tell(Learning::Learn(Learn { seat: self.seat, step, lesson, admission }))?;
+        let Some(within) = self.within else { return Err(NotTold::OutOfOrder("a lesson before the seat was loaded")) };
+        port.tell(Learning::Learn(Learn { seat: self.seat, step, lesson, within, admission }))?;
         self.in_flight = Some((step, position));
         Ok(step)
     }
@@ -247,9 +251,10 @@ impl<G: Send> SeatRun<G> {
                 self.phase = Phase::Measured;
                 Heard::LeaseWeights(weights.clone())
             }
-            SeatState::Loaded { optimizer, workspace, reply_rows } => {
+            SeatState::Loaded { optimizer, workspace, lesson_rows, .. } => {
                 self.phase = Phase::Loaded;
-                Heard::LeaseSeat { optimizer: optimizer.clone(), workspace: workspace.clone(), reply_rows: *reply_rows }
+                self.within = Some(*lesson_rows);
+                Heard::LeaseSeat { optimizer: optimizer.clone(), workspace: workspace.clone() }
             }
             SeatState::Seated { optimizer } => {
                 self.phase = Phase::Seated;

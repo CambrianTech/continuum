@@ -123,7 +123,7 @@ mod whole_loop {
         let say = |state_: SeatState| Said::Seat { seat, state: state_ };
         state.on_said(&port, say(SeatState::Measured { weights: rows(MemoryRole::Weights) })).await;
         assert_eq!(kept.kinds().last(), Some(&"load"), "its weights leased, it loads");
-        state.on_said(&port, say(SeatState::Loaded { optimizer: rows(MemoryRole::OptimizerStatic), workspace: rows(MemoryRole::SharedComputeRequired), reply_rows: NonZeroU32::MIN.saturating_add(511) })).await;
+        state.on_said(&port, say(SeatState::Loaded { optimizer: rows(MemoryRole::OptimizerStatic), workspace: rows(MemoryRole::SharedComputeRequired), reply_rows: NonZeroU32::MIN.saturating_add(511), lesson_rows: NonZeroU32::MIN.saturating_add(511) })).await;
         assert_eq!(kept.kinds().last(), Some(&"seat"), "its optimizer and workspace leased, it seats");
         state.on_said(&port, say(SeatState::Seated { optimizer: OptimizerStart::Cold })).await;
         for lesson in 0..2 {
@@ -293,7 +293,13 @@ mod held_off {
         let vram = |role, bytes| vec![MemoryRow { device: "CUDA0".into(), buffer_type: "CUDA0".into(), role, bytes, host: false }];
         state.on_said(&port, Said::Seat { seat, state: SeatState::Measured { weights: vram(MemoryRole::Weights, 300 << 20) } }).await;
         assert!(matches!(kept.0.lock().last(), Some(Learning::Load { .. })), "its weights fit: it loads");
-        let loaded = SeatState::Loaded { optimizer: vram(MemoryRole::OptimizerStatic, 200 << 20), workspace: vram(MemoryRole::SharedComputeRequired, 1 << 20), reply_rows: NonZeroU32::MIN };
+        // what this catches: a lesson sized past the governed device (the 5090's 1.9 TB lesson, held
+        // as a defect forever). The engine is told the room beside her weights: 1 GiB less 300 MiB.
+        assert!(
+            matches!(kept.0.lock().last(), Some(Learning::Load { fit, .. }) if fit.vram == (1 << 30) - (300 << 20)),
+            "the load carries what the device governs beside the seat's weights"
+        );
+        let loaded = SeatState::Loaded { optimizer: vram(MemoryRole::OptimizerStatic, 200 << 20), workspace: vram(MemoryRole::SharedComputeRequired, 1 << 20), reply_rows: NonZeroU32::MIN, lesson_rows: NonZeroU32::MIN };
         state.on_said(&port, Said::Seat { seat, state: loaded }).await;
         assert!(matches!(kept.0.lock().last(), Some(Learning::Release { .. })), "its optimizer refused: the seat is let go");
         let told = kept.told();

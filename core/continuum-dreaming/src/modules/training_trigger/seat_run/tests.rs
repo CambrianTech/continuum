@@ -30,7 +30,7 @@ impl LearnPort for Port {
         }
         let told = match &learning {
             Learning::Measure(m) => Told::Measure(m.seat),
-            Learning::Load { seat } => Told::Load(*seat),
+            Learning::Load { seat, .. } => Told::Load(*seat),
             Learning::Seat(s) => Told::Seat(s.seat),
             Learning::Learn(l) => Told::Learn(l.seat, l.step),
             Learning::Checkpoint { seat, into, .. } => Told::Checkpoint(*seat, into.clone()),
@@ -82,8 +82,11 @@ fn measured(port: &Port) -> SeatRun<G> {
     SeatRun::measure(port, measure).expect("test: the port is open")
 }
 
+/// Room for any seat: a fit the engine never sizes a lesson down for.
+const ROOM: Fit = Fit { vram: u64::MAX, ram: u64::MAX };
+
 fn loaded() -> SeatState {
-    SeatState::Loaded { optimizer: Vec::new(), workspace: Vec::new(), reply_rows: NonZeroU32::MIN }
+    SeatState::Loaded { optimizer: Vec::new(), workspace: Vec::new(), reply_rows: NonZeroU32::MIN, lesson_rows: NonZeroU32::MIN }
 }
 
 fn lesson() -> Lesson {
@@ -95,7 +98,7 @@ fn seated(port: &Port) -> SeatRun<G> {
     let mut run = measured(port);
     let id = run.id();
     assert_eq!(run.hear(port, &Said::Seat { seat: id, state: SeatState::Measured { weights: Vec::new() } }), Some(Heard::LeaseWeights(Vec::new())));
-    run.load(port, g(guard().0)).expect("test: measured, so it loads");
+    run.load(port, g(guard().0), ROOM).expect("test: measured, so it loads");
     assert!(matches!(run.hear(port, &Said::Seat { seat: id, state: loaded() }), Some(Heard::LeaseSeat { .. })));
     run.seat(port, guard().0, g(guard().0), g(guard().0)).expect("test: loaded, so it seats");
     assert_eq!(
@@ -236,19 +239,19 @@ fn guards_go_only_when_nothing_of_the_seat_remains() {
     let port = Port::default();
     let mut run = measured(&port);
     let (early, early_dropped) = guard();
-    assert!(matches!(run.load(&port, g(early)), Err(NotTold::OutOfOrder(_))), "loaded before its weights were measured");
+    assert!(matches!(run.load(&port, g(early), ROOM), Err(NotTold::OutOfOrder(_))), "loaded before its weights were measured");
     assert!(early_dropped.load(Ordering::Relaxed), "the refused lease is dropped");
 
     let id = run.id();
     run.hear(&port, &Said::Seat { seat: id, state: SeatState::Measured { weights: Vec::new() } });
     port.closed.store(true, Ordering::Relaxed);
     let (weights, weights_dropped) = guard();
-    assert!(matches!(run.load(&port, g(weights)), Err(NotTold::NoEngine)));
+    assert!(matches!(run.load(&port, g(weights), ROOM), Err(NotTold::NoEngine)));
     assert!(weights_dropped.load(Ordering::Relaxed), "no engine: the weights lease is dropped, nothing was allocated");
 
     port.closed.store(false, Ordering::Relaxed);
     let (weights, weights_dropped) = guard();
-    run.load(&port, g(weights)).expect("test: measured, open");
+    run.load(&port, g(weights), ROOM).expect("test: measured, open");
     assert_eq!(run.held(), 1);
     assert_eq!(
         run.hear(&port, &Said::Seat { seat: id, state: SeatState::Refused { why: Arc::from("geometry") } }),
@@ -313,7 +316,7 @@ fn a_kept_seat_command_leaves_the_seat_where_it_was() {
     let mut run = measured(&port);
     let id = run.id();
     run.hear(&port, &Said::Seat { seat: id, state: SeatState::Measured { weights: Vec::new() } });
-    run.load(&port, g(guard().0)).expect("test: measured");
+    run.load(&port, g(guard().0), ROOM).expect("test: measured");
     run.hear(&port, &Said::Seat { seat: id, state: loaded() });
     run.seat(&port, guard().0, g(guard().0), g(guard().0)).expect("test: loaded");
 

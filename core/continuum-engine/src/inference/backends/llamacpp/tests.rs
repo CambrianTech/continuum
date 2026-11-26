@@ -150,11 +150,14 @@
     mod learn_port {
         use super::*;
         use crate::inference::learning::{
-            GenerationOutcome, LearnPort, Learning, Lesson, Measure, Said, Seat, SeatId, SeatState, ShadowSource, StepId, StepOutcome, LEARNING_SAID,
+            Fit, GenerationOutcome, LearnPort, Learning, Lesson, Measure, Said, Seat, SeatId, SeatState, ShadowSource, StepId, StepOutcome, LEARNING_SAID,
         };
         use continuum_sage::dataflow::Event;
         use continuum_sage::{Qos, Stage};
         use std::sync::atomic::{AtomicU64, Ordering};
+
+        /// Room for any seat: a fit that never collapses a lesson.
+        const ROOM: Fit = Fit { vram: u64::MAX, ram: u64::MAX };
 
         /// What the test hears on learning/said, handed to its channel.
         struct Heard(tokio::sync::mpsc::UnboundedSender<Arc<Said>>);
@@ -240,12 +243,15 @@
             // Out of order: a Seat before its Load is rejected, and the seat keeps what it holds.
             assert!(port.tell(Learning::Seat(Seat { seat, lease: Box::new(Counted::default()) })).is_ok());
             assert!(matches!(next(&mut heard).await, Said::Seat { state: SeatState::Kept { .. }, .. }), "a Seat before its Load is kept, never ended");
-            assert!(port.tell(Learning::Load { seat }).is_ok());
-            match next(&mut heard).await {
-                Said::Seat { state: SeatState::Loaded { optimizer, workspace, .. }, .. } => assert!(!optimizer.is_empty() && !workspace.is_empty(), "optimizer and workspace measured"),
+            assert!(port.tell(Learning::Load { seat, fit: ROOM }).is_ok());
+            let within = match next(&mut heard).await {
+                Said::Seat { state: SeatState::Loaded { optimizer, workspace, lesson_rows, .. }, .. } => {
+                    assert!(!optimizer.is_empty() && !workspace.is_empty(), "optimizer and workspace measured");
+                    lesson_rows
+                }
                 other => panic!("expected Loaded, heard {other:?}"),
-            }
-            assert!(port.tell(Learning::Load { seat }).is_ok());
+            };
+            assert!(port.tell(Learning::Load { seat, fit: ROOM }).is_ok());
             assert!(matches!(next(&mut heard).await, Said::Seat { state: SeatState::Kept { .. }, .. }), "a second Load is kept, never ended");
             let charged = Arc::new(AtomicU64::new(0));
             assert!(port.tell(Learning::Seat(Seat { seat, lease: Box::new(Counted(Arc::clone(&charged))) })).is_ok());
@@ -254,7 +260,7 @@
             let mut losses = Vec::new();
             for _ in 0..4 {
                 let step = StepId(uuid::Uuid::new_v4());
-                assert!(port.tell(Learning::Learn(crate::inference::learning::Learn { seat, step, lesson: lesson(), admission: Box::new(Open) })).is_ok());
+                assert!(port.tell(Learning::Learn(crate::inference::learning::Learn { seat, step, lesson: lesson(), within, admission: Box::new(Open) })).is_ok());
                 match next(&mut heard).await {
                     Said::Step { step: said, outcome: StepOutcome::Learned { loss, .. }, .. } if said == step => losses.push(loss.expect("test: a learned step reports its loss")),
                     other => panic!("expected Learned, heard {other:?}"),
@@ -280,8 +286,14 @@
             let fresh = crate::inference::learning::FreshShadow { name: "loaded".into(), rank: 4, alpha: 8.0, targets: vec!["attn_q".into()], top_layers: 0, seed: 7 };
             assert!(port.tell(Learning::Measure(Measure { seat: loaded, mind: continuum_persona_engine::persona::PersonaId(her), shadow: ShadowSource::Fresh(fresh), optimizer, sized_for: lesson() })).is_ok());
             assert!(matches!(next(&mut heard).await, Said::Seat { state: SeatState::Measured { .. }, .. }));
-            assert!(port.tell(Learning::Load { seat: loaded }).is_ok());
-            assert!(matches!(next(&mut heard).await, Said::Seat { state: SeatState::Loaded { .. }, .. }));
+            // what this catches (the 5090, 2026-11-26: a lesson measured past the whole device was parked):
+            // a seat with no room beside its weights measured at the whole lesson. Its probes end at her
+            // reply alone, and the trainer's hold decides what that costs.
+            assert!(port.tell(Learning::Load { seat: loaded, fit: Fit { vram: 0, ram: 0 } }).is_ok());
+            match next(&mut heard).await {
+                Said::Seat { state: SeatState::Loaded { reply_rows, lesson_rows, .. }, .. } => assert_eq!(lesson_rows, reply_rows, "no room: the lesson is sized to her reply alone"),
+                other => panic!("expected Loaded, heard {other:?}"),
+            }
             // A repeated Measure whose lesson cannot render (no reply of hers) on that loaded seat keeps it.
             let unrenderable = Lesson { messages: vec![serde_json::json!({"role": "user", "content": "no reply"})], tools: None };
             let refit = crate::inference::learning::FreshShadow { name: "loaded".into(), rank: 4, alpha: 8.0, targets: vec!["attn_q".into()], top_layers: 0, seed: 7 };
@@ -397,13 +409,13 @@
             let optimizer = llama::Optimizer::AdamW { learning_rate: 5e-3, beta1: 0.9, beta2: 0.999, eps: 1e-8, weight_decay: 0.0 };
             assert!(port.tell(Learning::Measure(Measure { seat, mind: continuum_persona_engine::persona::PersonaId(mind), shadow: ShadowSource::Fresh(fresh), optimizer, sized_for: lesson() })).is_ok());
             assert!(matches!(next(heard).await, Said::Seat { state: SeatState::Measured { .. }, .. }));
-            assert!(port.tell(Learning::Load { seat }).is_ok());
-            assert!(matches!(next(heard).await, Said::Seat { state: SeatState::Loaded { .. }, .. }));
+            assert!(port.tell(Learning::Load { seat, fit: ROOM }).is_ok());
+            let Said::Seat { state: SeatState::Loaded { lesson_rows: within, .. }, .. } = next(heard).await else { panic!("expected Loaded") };
             assert!(port.tell(Learning::Seat(Seat { seat, lease: Box::new(Counted::default()) })).is_ok());
             assert!(matches!(next(heard).await, Said::Seat { state: SeatState::Seated { .. }, .. }));
             for _ in 0..steps {
                 let step = StepId(uuid::Uuid::new_v4());
-                assert!(port.tell(Learning::Learn(crate::inference::learning::Learn { seat, step, lesson: lesson(), admission: Box::new(Open) })).is_ok());
+                assert!(port.tell(Learning::Learn(crate::inference::learning::Learn { seat, step, lesson: lesson(), within, admission: Box::new(Open) })).is_ok());
                 match next(heard).await {
                     Said::Step { outcome: StepOutcome::Learned { .. }, .. } => {}
                     other => panic!("expected Learned, heard {other:?}"),

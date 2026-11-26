@@ -23,7 +23,7 @@ use super::seat_run::{Heard, NotTold, SeatRun};
 use super::{BucketKey, TrainingTriggerState};
 use crate::genome::learner::example::learn_messages;
 use crate::genome::learner::seat::{lease_memory, Authority, LeasedMemory, SeatRefusal};
-use crate::inference::learning::{LearnPort, Lesson, Measure, MemoryRow, Optimizer, PersonaId, Said, SeatId, ShadowSource};
+use crate::inference::learning::{leased, Fit, LearnPort, Lesson, Measure, MemoryRow, Optimizer, PersonaId, Said, SeatId, ShadowSource};
 use crate::inference::training_admission::TrainingWait;
 use crate::resources::{Free, ResourceKind};
 use crate::inference::learning::FreshShadow;
@@ -242,18 +242,15 @@ fn short(free: &Free, kind: ResourceKind, needed: u64) -> bool {
     free.kind(kind).is_none_or(|governed| governed.available < needed)
 }
 
-/// The bytes of `kind` that `rows` lease, counted the way the authority leases them
-/// (`lease_memory`: device rows are VRAM, host rows RAM, held shared compute is no lease).
-fn seat_bytes(rows: &[MemoryRow], kind: ResourceKind) -> u64 {
-    let host = match kind {
-        ResourceKind::Vram => false,
-        ResourceKind::Ram => true,
-        ResourceKind::Disk => return 0, // no seat row leases disk
+/// What a seat may lease of each kind beside its `weights`: what the authority governs of that kind
+/// less them. A kind it does not govern leaves none, as [`short`] reads it, and weights past a byte
+/// count leave none.
+fn fit_beside(free: &Free, weights: &[MemoryRow]) -> Fit {
+    let room = |kind: ResourceKind| match (free.kind(kind), leased(weights, kind)) {
+        (Some(governed), Some(held)) => governed.capacity.saturating_sub(held),
+        (None, _) | (_, None) => 0,
     };
-    rows.iter()
-        .filter(|row| row.host == host && row.role != crate::inference::learning::MemoryRole::SharedComputeHeld)
-        .map(|row| row.bytes)
-        .fold(0u64, u64::saturating_add)
+    Fit { vram: room(ResourceKind::Vram), ram: room(ResourceKind::Ram) }
 }
 
 /// What `authority` shows free now.
@@ -516,10 +513,12 @@ impl TrainingTriggerState {
         let consumer = format!("learning:{}:{}", key.persona_id, key.trait_kind);
         match heard {
             Heard::LeaseWeights(rows) => {
-                let leased = self.lease(port, key, Lease { consumer: &consumer, rows: &rows, whole: &rows })?;
+                let weights = self.lease(port, key, Lease { consumer: &consumer, rows: &rows, whole: &rows })?;
+                // the engine sizes the lesson a seat learns within what the device governs beside them
+                let fit = fit_beside(&free_now(&self.authority), &rows);
                 self.with_seat(seat, |held| {
                     held.weights = rows; // seating it again leases them again
-                    held.run.load(port.as_ref(), leased)
+                    held.run.load(port.as_ref(), weights, fit)
                 });
                 Ok(())
             }
@@ -678,7 +677,8 @@ impl TrainingTriggerState {
         let Lease { consumer, rows, whole } = ask;
         lease_memory(&self.authority, consumer, rows.iter().cloned()).map_err(|refusal| {
             if let SeatRefusal::AwaitingMemory(TrainingWait::Capacity { kind, needed, .. }) = &refusal {
-                let seat = seat_bytes(whole, *kind).max(*needed); // a kind the rows do not name is the refused lease alone
+                // a kind the rows do not name, or rows past a byte count, hold for the refused lease alone
+                let seat = leased(whole, *kind).map_or(*needed, |seat| seat.max(*needed));
                 self.on_engine.hold_off(key, port, &free_now(&self.authority), Short { kind: *kind, needed: seat }, whole);
             }
             OnEngineError::Lease(refusal)

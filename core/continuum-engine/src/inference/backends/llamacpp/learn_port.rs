@@ -30,7 +30,7 @@ impl LearnPort for LlamaCppBackend {
         };
         let job = match learning {
             Learning::Learn(learn) => {
-                let rendered = lesson::render(&learn.lesson, |request| self.rendered_prompt(request), |text| self.model.tokenize(text, true, true).map_err(LessonRefusal::Template));
+                let rendered = lesson::render_within(&learn.lesson, learn.within, |request| self.rendered_prompt(request), |text| self.model.tokenize(text, true, true).map_err(LessonRefusal::Template));
                 match rendered {
                     Ok(rendered) => LearningJob::Learn(LearningLesson { seat: learn.seat, step: learn.step, rendered, admission: learn.admission }),
                     Err(refused) => {

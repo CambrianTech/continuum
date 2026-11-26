@@ -20,7 +20,7 @@ use llama::{Finished, FreshGeometry, Label, Optimizer, ReplyAdmission, Shadow, W
 use super::Driver;
 use crate::inference::backends::persona_scheduler::lesson::Rendered;
 use crate::inference::learning::{
-    say, GenerationOutcome, Learning as Told, OptimizerStart, Said, Seat, SeatId, SeatState, ShadowSource, StepId, StepOutcome,
+    say, Fit, GenerationOutcome, Learning as Told, OptimizerStart, Said, Seat, SeatId, SeatState, ShadowSource, StepId, StepOutcome,
 };
 
 /// What reaches the driver: every verb as told, except a lesson, which arrives rendered.
@@ -64,7 +64,7 @@ impl Job {
             Job::Told(Told::Learn(learn)) => say(Said::Step { seat: learn.seat, step: learn.step, outcome: StepOutcome::Refused { why } }),
             Job::Told(Told::Measure(measure)) => say(Said::Seat { seat: measure.seat, state: SeatState::Refused { why } }),
             // A seat told to load, seat or release already holds what it holds: kept, never ended.
-            Job::Told(Told::Load { seat }) => say(Said::Seat { seat, state: SeatState::Kept { why } }),
+            Job::Told(Told::Load { seat, .. }) => say(Said::Seat { seat, state: SeatState::Kept { why } }),
             Job::Told(Told::Seat(seated)) => say(Said::Seat { seat: seated.seat, state: SeatState::Kept { why } }),
             Job::Told(Told::Checkpoint { seat, .. }) => say(Said::Generation { seat, outcome: GenerationOutcome::Refused { why } }),
             Job::Told(Told::Release { seat }) => say(Said::Seat { seat, state: SeatState::Kept { why } }),
@@ -147,7 +147,7 @@ impl Driver<'_, '_> {
                 say(Said::Seat { seat, state });
             }
             told @ Job::Told(Told::Measure(_)) => told.refuse("the measure reached the engine unrendered"),
-            Job::Told(Told::Load { seat }) => self.load(seat),
+            Job::Told(Told::Load { seat, fit }) => self.load(seat, fit),
             Job::Told(Told::Seat(seated)) => self.seat(seated),
             Job::Told(Told::Checkpoint { seat, into, binding }) => self.checkpoint(seat, &into, &binding),
             Job::Told(Told::Release { seat }) => self.release(seat),
@@ -198,7 +198,7 @@ impl Driver<'_, '_> {
         }
     }
 
-    fn load(&mut self, seat: SeatId) {
+    fn load(&mut self, seat: SeatId, fit: Fit) {
         let Some(entry) = self.learning.seats.remove(&seat) else {
             return say(Said::Seat { seat, state: SeatState::Refused { why: "load of a seat never measured".into() } });
         };
@@ -228,7 +228,7 @@ impl Driver<'_, '_> {
             Err(why) => return say(Said::Seat { seat, state: SeatState::Refused { why: why.into() } }),
         };
         let mind = mind_of(entry.mind);
-        let measured = self.engine.attach_shadow(mind, &shadow).and_then(|()| self.engine.measure_shadow(mind, &shadow, entry.rows));
+        let measured = self.engine.attach_shadow(mind, &shadow).and_then(|()| self.measure_within(mind, &shadow, entry.rows, fit));
         // Off the context before the shadow can be dropped; if that is not confirmed, the engine
         // holds it until a release proves it off.
         if let Err(attached) = self.engine.detach_shadow(mind) {
@@ -236,15 +236,37 @@ impl Driver<'_, '_> {
             return say(Said::Seat { seat, state: SeatState::Quarantined { why: attached.to_string().into() } });
         }
         match measured {
-            Ok((optimizer, workspace)) => {
-                let reply_rows = entry.rows.reply();
-                self.learning.seats.insert(seat, Entry { phase: Phase::Loaded { shadow }, ..entry });
-                say(Said::Seat { seat, state: SeatState::Loaded { optimizer, workspace, reply_rows } });
+            Ok((optimizer, workspace, rows)) => {
+                self.learning.seats.insert(seat, Entry { rows, phase: Phase::Loaded { shadow }, ..entry });
+                say(Said::Seat { seat, state: SeatState::Loaded { optimizer, workspace, reply_rows: rows.reply(), lesson_rows: rows.whole() } });
             }
             Err(refusal) => {
                 // Detached: the last reference goes before the trainer hears nothing remains.
                 drop(shadow);
                 say(Said::Seat { seat, state: SeatState::Refused { why: refusal.to_string().into() } });
+            }
+        }
+    }
+
+    /// Measure `shadow`'s optimizer and workspace for the most of `rows` that `fit` holds: the whole
+    /// lesson when it fits, otherwise fewer lesson rows with her reply kept whole (each Learn then
+    /// renders the lesson collapsed to them). Each probe is scaled down by the measured overshoot and
+    /// is at most half the last, so the probes end by the reply alone, at most log2(whole / reply) + 1
+    /// of them, each a dry run that allocates nothing. Past the fit with the reply alone, the seat is
+    /// measured as it is: the trainer's hold decides between a wait and a defect.
+    fn measure_within(&mut self, mind: MindId, shadow: &Shadow, rows: LessonRows, fit: Fit) -> Result<(Vec<llama::MemoryRow>, Vec<llama::MemoryRow>, LessonRows), continuum_persona_engine::residency::TierRefusal> {
+        let mut rows = rows;
+        loop {
+            let (optimizer, workspace) = self.engine.measure_shadow(mind, shadow, rows)?;
+            let reply = rows.reply();
+            let whole = rows.whole().get();
+            let smaller = fit.overshoot(&[&optimizer, &workspace]).filter(|_| whole > reply.get()).and_then(|over| {
+                let scaled = (f64::from(whole) / over) as u32; // floor; an infinite overshoot is 0
+                LessonRows::new(reply, std::num::NonZeroU32::new(scaled.min(whole / 2).max(reply.get()))?)
+            });
+            match smaller {
+                Some(next) => rows = next,
+                None => return Ok((optimizer, workspace, rows)),
             }
         }
     }
