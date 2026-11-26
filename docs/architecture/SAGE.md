@@ -117,6 +117,18 @@ Extracted from `Component` at each pattern's second real instance:
 - **Prepare** (on the node bus: watches the Core's queue and need ranking, its presence, each mind's
   prompt frames; issues prepare-to-wake: transition prep, predictive prefill during tool calls, prefix
   prep; its need is the next mind's uncached gap against Core idleness).
+- **Resident** (a holder of what a placer places; `continuum_sage::place::Resident`, UNIFIED-PAGING.md
+  "Holders are objects"). Its second real instance is here (the trainer's seat, the Core, the embedder,
+  the kernel's consumers), so it becomes a parent. A holder declares only its rows (held, floor, want,
+  how it varies, its QoS) and the bodies of its ways (how its bytes resize, cache out or collapse).
+  Everything else is the parent's, written once: its report published as state on every change; shrink
+  asks and grants arriving by its teller; a Pending answer held until its fence lands; every ask and
+  answer stamped into the decide replay log (the feedback the law learns from); a wait aged in its
+  class; and nothing it does consumed outside a claim prepared first, so work never starts to find out
+  whether it fits (Joel, 2026-11-26: "failures themselves shouldn't really happen if your contracts and
+  adjustments are dynamic"). A composite folds its children's reports and shares a shrink among them by
+  the flexbox; a child never writes that code. The only refusal left is a proven "never here", known
+  before anything starts; anything else that can fail is a defect, fixed at its cause.
 
 ## The lane: the one serial piece, sliced so fine nobody notices
 
