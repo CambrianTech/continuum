@@ -1212,6 +1212,13 @@ Joel: "Yeah or time divided. We never need to abort. If it doesn't fit now, it c
   - Two of the tile walk's units are not bounded by the tile: the whole prefix decoded before a run, and the reverse replay from a stride checkpoint before `train_chunk`. Each becomes a sequence of tile-sized units with a yield between, resumable at the existing chunk boundaries.
   - The commit is priced the same way. Each unit's cost, transfers on its critical path included, is measured, and the lane schedules it against the residents' remaining slack.
   - Codex's gates: a long unlabelled prefix, and a reverse stride above 1, each with a resident arriving just after dispatch. The timing receipt shows the actual overlap beside the isolated 236 ms pinned H2D.
+- **One objective: time. Rejection is never an action** (Joel: "This is inherently how any resource works like timeshare vacation homes... it's another dimension. Its cost is again transfer time. Or time is our overall optimization here. We just know rejection is the costly one").
+  - Every resource is shared in space and in time, and every way of sharing it is priced in time: the units a smaller tile adds, the transfer that swaps an occupant (the context switch, as a mind's KV moving), the wait.
+  - `Ways`' `Cost::takes` is that price, measured.
+  - Rejection discards the work done so far and everything spent to come back to it, so no controller has it among its actions. Only a broken contract is typed, and it is made impossible where the plan is chosen.
+- **`learning/owed` is state, not events** (Cormac, 22:59Z): `Owed(BTreeMap<SeatId, LearnerOwed>)` on one key, latest-wins, said on change. A seat leaving the map is its Done, so a dropped or coalesced say can never leave the lane holding a Ready it never sees retired.
+  - `LearnerOwed { seat, mind, examples, next: Option<Rows { context, reply }>, since }`.
+  - `next` is the lesson the engine sized in `Loaded` (`context = lesson_rows - reply_rows`), and is `None` until measured. Token counting has one owner, and the trainer never renders.
 - The share of the Core that learning gets (Joel's PWM width) is nobody's setting. It is what the scheduler's choices add up to: wider while the queue grows and serving has slack, narrower under serving's demand.
 
 **Space and time, under the same two controllers.**
