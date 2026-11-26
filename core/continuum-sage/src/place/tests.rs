@@ -424,3 +424,27 @@ fn a_backing_change_moves_what_is_charged_with_it() {
     ledger.back(Tier::Vram, None);
     assert_eq!(ledger.accounts(Tier::Pinned).map(|a| a.held), Some(Bytes(40)), "unbacking moves nothing that is not there");
 }
+
+// what this catches (Codex on 66c1fb471): a stage carved from a reserve by releasing and taking again,
+// where a wait or another taker can come between, or the taking fails after the release. A split moves
+// the bytes as one transition: the place's and its pool's charges never move, and no wait is granted.
+#[test]
+fn a_split_moves_held_bytes_without_freeing_them() {
+    let mut ledger = Ledger::default();
+    ledger.place(Tier::Vram, Bytes(100), Bytes(100), &mut Vec::new());
+    ledger.place(Tier::Pinned, Bytes(100), Bytes(100), &mut Vec::new());
+    ledger.back(Tier::Vram, Some(Tier::Pinned));
+    let reserve = granted(ledger.prepare(TRAINER, FIRST, &[Need { place: Tier::Vram, amount: Bytes(100) }]));
+    assert!(reserve.consume(Tier::Vram, Bytes(100)));
+    assert_eq!(ledger.commit(reserve.id()), Ok(()));
+    assert!(matches!(ledger.prepare(SERVING, FIRST, &[Need { place: Tier::Vram, amount: Bytes(10) }]), Answer::Waiting { .. }));
+    let before = (ledger.accounts(Tier::Vram), ledger.accounts(Tier::Pinned));
+    let stage = ledger.split(reserve.id(), Tier::Vram, Bytes(60), TRAINER, FIRST).expect("test: split");
+    assert_eq!((ledger.accounts(Tier::Vram), ledger.accounts(Tier::Pinned)), before, "every charge unchanged");
+    let mut out = Vec::new();
+    ledger.grant_waiting(&mut out);
+    assert!(out.is_empty(), "nothing was freed for the wait");
+    assert_eq!(ledger.split(reserve.id(), Tier::Vram, Bytes(41), TRAINER, FIRST), Err(Refusal::NotOnPlace(reserve.id())), "never past what it holds");
+    assert_eq!(ledger.release(stage), Ok(()));
+    assert_eq!(ledger.accounts(Tier::Pinned).map(|a| a.held), Some(Bytes(40)), "the stage releases its own 60");
+}

@@ -323,6 +323,29 @@ impl<P: Copy + PartialEq + std::fmt::Debug, Q: Quantity> Ledger<P, Q> {
         }
     }
 
+    /// Move `amount` of committed claim `id`'s holding on `place` to a new committed claim of `owner`'s
+    /// `generation`, as one transition: nothing is freed or taken, so every place's and pool's charge stays
+    /// exactly what it was and no wait or other taker can come between (Codex on 66c1fb471: a seat's stage
+    /// carved from its reserve). A claim moved to nothing is gone. Answers the new claim.
+    pub fn split(&mut self, id: ClaimId, place: P, amount: Q, owner: Owner, generation: Generation) -> Result<ClaimId, Refusal> {
+        let Some(Stage::Committed { held, .. }) = self.claims.get_mut(&id) else {
+            return Err(match self.claims.get(&id) {
+                Some(Stage::Prepared(_)) => Refusal::NotCommitted(id),
+                _ => Refusal::UnknownClaim(id),
+            });
+        };
+        let Some(on) = held.iter_mut().find(|need| need.place == place && need.amount >= amount) else {
+            return Err(Refusal::NotOnPlace(id));
+        };
+        on.amount = Q::of(on.amount.units() - amount.units());
+        if held.iter().all(|need| need.amount.units() == 0) {
+            self.claims.remove(&id);
+        }
+        let new = self.issue();
+        self.claims.insert(new, Stage::Committed { owner, generation, held: vec![Need { place, amount }], expiry: Expiry::never() });
+        Ok(new)
+    }
+
     /// Give a live claim a term: it lapses at `until`. One already lapsed at `now` is not renewed: a
     /// lapsed claim is overdue for reclaim, and only its release frees it.
     pub fn renew(&mut self, id: ClaimId, until: std::time::Instant, now: std::time::Instant) -> Result<(), Refusal> {
