@@ -51,7 +51,7 @@ pub enum SeatRefusal {
     EngineReplaced,
     /// A stage could not be carved from its granted reserve (released, lapsed, of another kind, or
     /// holding less).
-    Uncarved(crate::resources::LeaseError),
+    Uncarved(crate::resources::CarveError),
 }
 
 impl std::fmt::Display for SeatRefusal {

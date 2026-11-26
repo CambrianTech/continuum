@@ -188,7 +188,7 @@ impl ResourceGovernor {
     }
 
     /// Spend part of the lease `reserve` as a lease of its own (the ledger's `carve`).
-    pub fn carve(&mut self, reserve: &str, req: &LeaseRequest, now_ms: u64) -> Result<ResourceLease, LeaseError> {
+    pub fn carve(&mut self, reserve: &str, req: &LeaseRequest, now_ms: u64) -> Result<ResourceLease, super::ledger::CarveError> {
         let lease_id = self.mint_id(&req.consumer_id);
         self.ledger.carve(reserve, req, &lease_id, now_ms)
     }
