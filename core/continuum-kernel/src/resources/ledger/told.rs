@@ -24,8 +24,10 @@ impl ResourceLeaseLedger {
             let budget = capacity.saturating_sub(self.external(kind));
             self.place.place(kind, Bytes(capacity), Bytes(budget), &mut never);
         }
-        // a consumer's own unleased residency already fills its floor: the floor owed beyond its leases is
-        // what that residency leaves (the kernel's floor less max(granted, measured))
+        // a floor is met by what its holder is granted or measured to hold, whichever is more: measured
+        // residency is already in the reading, so withholding the whole floor on top counted it twice
+        // (Codex, 2026-09-27: a build reserving 10.5 GiB, resident at 6 GiB, cost serving 16.5 GiB). So
+        // place is told the floor less its holder's unleased residency; its leases fill the rest
         let floors: Vec<(Owner, ResourceKind, Bytes)> = self
             .reservations
             .iter()
@@ -49,6 +51,41 @@ impl ResourceLeaseLedger {
         };
         let landed = self.pool_kinds_drawing_on(kind).iter().map(|k| self.landed_on(*k)).fold(0u64, u64::saturating_add);
         resident.saturating_sub(landed)
+    }
+
+    /// What `consumer` replacing itself on `kind` would give back on `kind` and on the pool it draws on:
+    /// the residency it measures there leaves what is resident (but never below what the others measure on
+    /// that memory: a footprint estimate can exceed the reading), and its leases up to that residency stop
+    /// being held. `place` answers the room from it ([`Ledger::room_if`]).
+    ///
+    /// [`Ledger::room_if`]: continuum_sage::place::Ledger::room_if
+    pub(super) fn freed_by_replacing(&self, consumer: &str, kind: ResourceKind) -> Vec<(ResourceKind, Bytes)> {
+        let resident = self.measured_by(consumer, kind);
+        let released = self.granted_to(consumer, kind).min(resident);
+        let its_landed = self
+            .leases
+            .values()
+            .filter(|held| held.lease.kind == kind && held.lease.consumer_id == consumer)
+            .map(|held| held.lease.bytes.saturating_sub(held.pending(self.observed_for(kind))))
+            .fold(0u64, u64::saturating_add);
+        let axes = std::iter::once(kind).chain(self.backing.get(&kind).copied());
+        axes.map(|axis| {
+            let kinds = self.pool_kinds_drawing_on(axis);
+            let reading = match self.backing.get(&axis) {
+                Some(_) => self.measured(axis),
+                None => self.physical_used(axis),
+            };
+            let retained = self
+                .measured
+                .iter()
+                .flat_map(|(owner, footprints)| { let kinds = &kinds; footprints.iter().filter(move |f| kinds.contains(&f.kind) && (owner != consumer || f.kind != kind)) })
+                .map(|f| f.bytes)
+                .fold(0u64, u64::saturating_add);
+            let landed = kinds.iter().map(|k| self.landed_on(*k)).fold(0u64, u64::saturating_add);
+            let after = reading.saturating_sub(resident).max(retained).saturating_sub(landed.saturating_sub(its_landed));
+            (axis, Bytes(self.external(axis).saturating_sub(after).saturating_add(released)))
+        })
+        .collect()
     }
 
     /// `kind` and, when it is a pool, every kind drawing on it.

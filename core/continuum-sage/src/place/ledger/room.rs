@@ -48,7 +48,26 @@ impl<P: Copy + PartialEq + std::fmt::Debug, Q: Quantity> Ledger<P, Q> {
     /// less what other owners' floors on that physical memory still lack. `None` for a place the ledger
     /// has not been told of.
     pub fn room_for(&self, owner: Owner, place: P) -> Option<Q> {
-        let free = self.free(place)?.units();
+        self.room_if(owner, place, &[])
+    }
+
+    /// What `owner` could be granted on `place` if `freed` were given back on the places it names (its
+    /// own holding, residency that would go with it): a planning answer, never a grant. Each place's free
+    /// room grows by what is freed on it, never past its capacity, and other owners' floors still bind
+    /// (the kernel authority's replace-myself budget, moved here).
+    pub fn room_if(&self, owner: Owner, place: P, freed: &[(P, Q)]) -> Option<Q> {
+        let on = |at: P| -> Option<u64> {
+            let accounts = self.accounts(at)?;
+            let given = freed.iter().filter(|(on, _)| *on == at).map(|(_, amount)| amount.units()).fold(0u64, u64::saturating_add);
+            // what is given back raises the budget before what is held is taken from it: a place already
+            // over its budget repays that first
+            let claimed = accounts.held.units().saturating_add(accounts.prepared.units());
+            Some(accounts.budget.units().saturating_add(given).saturating_sub(claimed).min(accounts.capacity.units()))
+        };
+        let free = match self.pool_of(place) {
+            Some(pool) => on(place)?.min(on(pool)?),
+            None => on(place)?,
+        };
         let root = self.root(place);
         let owed = self
             .floors
