@@ -301,7 +301,7 @@
         // recurrent state was past the served prefix; and her prefix prefilled again under genes she was
         // not served with. She serves under a learned gene that changes her answers, her history runs on
         // past an older lesson, she learns it (Learned twice), and her next turn under the same gene
-        // answers exactly as a mind that never learned answers the same history (greedy). She reuses her
+        // answers exactly as a mind that never learned answers the same history along her resume path (greedy). She reuses her
         // served prefix, more than nothing: never a cold replay. (How much the mind that never learned
         // reuses differs by architecture: a hybrid resumes only at a checkpoint.)
         //     cargo test -p continuum-engine --features metal --lib an_older_lesson -- --ignored --nocapture
@@ -356,8 +356,21 @@
                 let third = ask(&second, &a2.text, "And of Ohio?");
                 let hers = turn(her, &third).collect().await.expect("test: her next turn answers");
                 let theirs = turn(never, &third).collect().await.expect("test: the other mind's next turn answers");
-                eprintln!("view {view:?}: after learning {:?} (reused {} of {}); never learned {:?} (reused {} of {})", hers.text, hers.facts.reused_tokens, hers.facts.prompt_tokens, theirs.text, theirs.facts.reused_tokens, theirs.facts.prompt_tokens);
-                assert_eq!(hers.text, theirs.text, "under the same gene she answers as a mind that never learned");
+                // A mind that never learned, brought down her resume path, answers as she does. On a hybrid
+                // a re-prefill from a checkpoint is not bit-identical to a history decoded token by token,
+                // so a greedy answer can differ by a token between the two paths (the M5's Qwen3.6-35B,
+                // 2026-11-26: "<think>\n\nTopeka" re-prefilled from the view against "<think>Topeka"
+                // appended); the control takes her path. Sharing the view, she rewinds to its checkpoint, as
+                // a mind does after a detour that keeps only the view; sharing nothing, she restarts cold.
+                let control = uuid::Uuid::new_v4();
+                if shares {
+                    let _ = turn(control, &first).collect().await.expect("test: the control's first turn answers");
+                    let detour = format!("{view}<|im_start|>user\nSomething else.<|im_end|>\n<|im_start|>assistant\n");
+                    let _ = turn(control, &detour).collect().await.expect("test: the control's detour answers");
+                }
+                let same_path = turn(control, &third).collect().await.expect("test: the control's next turn answers");
+                eprintln!("view {view:?}: after learning {:?} (reused {} of {}); never learned, her path {:?} (reused {}); never learned, appended {:?} (reused {})", hers.text, hers.facts.reused_tokens, hers.facts.prompt_tokens, same_path.text, same_path.facts.reused_tokens, theirs.text, theirs.facts.reused_tokens);
+                assert_eq!(hers.text, same_path.text, "under the same gene she answers as a mind that never learned");
                 // sharing a prefix with the lesson, she resumes from it: never a cold replay. (On the single
                 // Core an attention-only mind keeps the tail she held past the lesson and reuses it too; a
                 // hybrid resumes at her served prefix and prefills the rest under her genes.)
