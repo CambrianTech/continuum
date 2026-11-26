@@ -153,6 +153,10 @@ pub fn run<K: Copy + Eq + Hash + Ord>(slicer: &mut Slicer<K>, load: &Workload<K>
                 feed(slicer, &mut trace, start, Event::Switched(mind, took));
                 report.switching += took;
                 slice_since = now;
+                if let Some(m) = load.minds.iter().find(|m| m.mind == mind) {
+                    // the driver measures her copy when it lands: the lane learns how long the slice before her must be
+                    feed(slicer, &mut trace, start, Event::Fetched(mind, device.copy(m.kv)));
+                }
                 mind
             }
             Some(Next::Continue) => match slicer.running() {
@@ -239,6 +243,7 @@ impl<K: Copy + Eq + Hash + Ord> Workload<K> {
             match event {
                 Event::Decide(at, _) => now = *at,
                 Event::Switched(_, took) => switch = (switch.0 + *took, switch.1 + 1),
+                Event::Fetched(..) => {} // a fetch is the device's cost, not the load's: a replay prices it on its own device
                 Event::Need(k, need) => {
                     let s = of(&mut seen, &mut order, k);
                     match s.need {
@@ -416,8 +421,10 @@ mod tests {
         assert!(discrete.switching > shared.switching * 10, "binds on the discrete card cost the lane an order of magnitude more");
         assert!(discrete.switching.as_secs_f64() > length.as_secs_f64() / 10.0, "over a tenth of the window: the switch decision must price the bind");
         // the remedy the design names: fetch her while the slice before her runs, so the switch waits only for the rest
-        // simulated 2026-11-26: 129 s to 36 s. What it leaves is the wall: slices shorter than the copy, so the prefetch
-        // cannot finish under them, and the uncovered rest raises the measured switch that shortens them again.
+        // simulated 2026-11-26: 129 s synchronous, 36 s with prefetch, 33 s with the slice floored at the next mind's
+        // fetch. Of what is left, 76 switches pay the whole copy: the incoming mind was not waiting during the slice
+        // before (the running turn had just ended), so nothing was prefetched. The next lever: fetch the next mind when
+        // the running turn's predicted end is near.
         assert!(prefetched.switching * 3 < discrete.switching, "prefetch hides most of each bind: {:?} vs {:?}", prefetched.switching, discrete.switching);
         assert!(prefetched.prefilled + prefetched.decoded > discrete.prefilled + discrete.decoded, "and the lane does more of the day's work");
     }

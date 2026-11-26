@@ -88,6 +88,9 @@ struct Mind {
     pass: f64,
     /// Seconds per step.
     step: Measured,
+    /// Bringing her KV back on the device, the whole copy (0 where a parked mind is a pointer): what a slice before
+    /// her must cover for a prefetch to finish under it.
+    fetch: Measured,
     /// Steps per turn: what predicts her remainder.
     turn_steps: Measured,
     /// Steps taken in the turn now running.
@@ -163,6 +166,7 @@ impl<K: Copy + Eq + Hash + Ord> Slicer<K> {
             Event::Done(mind) => self.done(mind),
             Event::Stepped(mind, took) => self.stepped(mind, *took),
             Event::Switched(mind, took) => self.switched(mind, *took),
+            Event::Fetched(mind, took) => self.fetched(mind, *took),
             Event::Decide(at, _) => return Some(self.next(start + *at)),
         }
         None
@@ -256,6 +260,24 @@ impl<K: Copy + Eq + Hash + Ord> Slicer<K> {
             self.window_switches = 0;
             self.window_worst = 0.0;
         }
+    }
+
+    /// Her KV took this long to come back, measured: what the slice before her must cover.
+    pub fn fetched(&mut self, mind: &K, took: Duration) {
+        if let Some(entry) = self.minds.get_mut(mind) {
+            entry.fetch.add(took.as_secs_f64(), self.policy.smoothing);
+        }
+    }
+
+    /// The fetch of the mind who comes after `running` (the lowest pass among the other ready): a slice shorter than
+    /// it never shortens her wait, since she waits for her KV either way, and only adds switches. 0 where nobody is
+    /// waiting or her KV is a pointer.
+    fn next_fetch(&self, running: &K) -> f64 {
+        self.minds
+            .iter()
+            .filter(|(k, m)| m.ready && *k != running)
+            .min_by(|(ka, a), (kb, b)| a.pass.total_cmp(&b.pass).then_with(|| ka.cmp(kb)))
+            .map_or(0.0, |(_, m)| m.fetch.seconds()) // map_or: nobody waiting, nothing to cover
     }
 
     /// The longest slice that keeps every ready mind inside the wait bound. The lightest mind
@@ -404,7 +426,9 @@ impl<K: Copy + Eq + Hash + Ord> Slicer<K> {
     /// ready set stands now, never under one of her own steps.
     fn slice(&self, mind: &K) -> f64 {
         let step = self.step_of(mind);
-        self.control.slice().min(self.wall()).max(step).max(0.0)
+        // never under the next mind's fetch: under it the slice saves her no wait and costs the lane a switch (the 5090's
+        // day, simulated 2026-11-26: the wall shrank slices below an 8.7 GB copy and the lane spent a seventh of it switching)
+        self.control.slice().min(self.wall()).max(step).max(self.next_fetch(mind)).max(0.0)
     }
 
     /// One mind's step, in seconds: her measured mean, or nothing for a mind not seen stepping yet.

@@ -30,6 +30,8 @@ pub trait Device {
     fn name(&self) -> &'static str;
     fn prefill(&self, ask: Prefill) -> Duration;
     fn bind(&self, ask: Bind) -> Duration;
+    /// Her KV's whole copy onto the device, however much of it a slice hid: what the lane measures as her fetch.
+    fn copy(&self, bytes: u64) -> Duration;
 }
 
 /// Tokens per second, measured on a node: `rate` fresh tokens of prefill a second.
@@ -56,6 +58,9 @@ impl Device for Unified {
     }
     fn prefill(&self, ask: Prefill) -> Duration {
         self.prefill.of(ask)
+    }
+    fn copy(&self, _: u64) -> Duration {
+        Duration::ZERO
     }
     /// A pointer: nothing moves (the recurrent switch went 3.16 ms to 0.01 ms when it became one, 2026-11-25).
     fn bind(&self, _: Bind) -> Duration {
@@ -92,8 +97,11 @@ impl Device for Dedicated {
     fn prefill(&self, ask: Prefill) -> Duration {
         self.prefill.of(ask)
     }
+    fn copy(&self, bytes: u64) -> Duration {
+        Duration::from_secs_f64(bytes as f64 / self.link_bytes_per_s.max(f64::MIN_POSITIVE))
+    }
     fn bind(&self, ask: Bind) -> Duration {
-        let copy = Duration::from_secs_f64(ask.bytes as f64 / self.link_bytes_per_s.max(f64::MIN_POSITIVE));
+        let copy = self.copy(ask.bytes);
         match self.fetch {
             Fetch::Synchronous => copy,
             Fetch::Prefetch => copy.saturating_sub(ask.ahead),
