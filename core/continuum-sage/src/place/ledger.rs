@@ -167,12 +167,12 @@ impl<P: Copy + PartialEq + std::fmt::Debug, Q: Quantity> Ledger<P, Q> {
             }
         }
         for need in &merged {
-            let Some(capacity) = self.pooled_capacity(need.place) else {
+            if self.pooled_capacity(need.place).is_none() {
                 return Answer::Unknown { place: need.place };
-            };
-            if need.amount > capacity {
-                return Answer::Never { place: need.place, need: need.amount, capacity };
             }
+        }
+        if let Some((place, need, capacity)) = self.past_capacity(&merged) {
+            return Answer::Never { place, need, capacity };
         }
         let id = self.issue();
         // in order of asking, per place: a newcomer waits only behind an earlier wait short on a place
@@ -424,8 +424,8 @@ impl<P: Copy + PartialEq + std::fmt::Debug, Q: Quantity> Ledger<P, Q> {
     }
 
     /// The places where `owner`'s `needs` are short of the room it has now.
-    fn short_places<'n>(&'n self, owner: Owner, needs: &'n [Need<P, Q>]) -> impl Iterator<Item = P> + 'n {
-        needs.iter().filter(move |need| self.room_for(owner, need.place).is_some_and(|room| need.amount > room)).map(|need| need.place)
+    fn short_places(&self, owner: Owner, needs: &[Need<P, Q>]) -> impl Iterator<Item = P> {
+        self.short(owner, needs).into_iter().map(|need| need.place)
     }
 
     fn issue(&mut self) -> ClaimId {
@@ -434,17 +434,7 @@ impl<P: Copy + PartialEq + std::fmt::Debug, Q: Quantity> Ledger<P, Q> {
     }
 
     fn fits(&self, owner: Owner, needs: &[Need<P, Q>]) -> bool {
-        needs.iter().all(|need| self.room_for(owner, need.place).is_some_and(|room| need.amount <= room))
-    }
-
-    fn short(&self, owner: Owner, needs: &[Need<P, Q>]) -> Vec<Need<P, Q>> {
-        needs
-            .iter()
-            .filter_map(|need| {
-                let free = self.room_for(owner, need.place)?;
-                (need.amount > free).then(|| Need { place: need.place, amount: Q::of(need.amount.units() - free.units()) })
-            })
-            .collect()
+        self.short(owner, needs).is_empty()
     }
 
     fn grant(&mut self, id: ClaimId, owner: Owner, generation: Generation, needs: Vec<Need<P, Q>>) -> Claim<P, Q> {
