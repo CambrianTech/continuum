@@ -216,11 +216,13 @@ impl ServingDaemonModule {
     pub(super) fn publish_grants_on_events(self: &Arc<Self>, runtime: &tokio::runtime::Handle) {
         let module = Arc::downgrade(self);
         let mut moved = self.live_pool.subscribe();
+        // subscribed here, before the task is spawned: a demand move made after this call is seen
+        let mut demands = crate::capacity::window_grant::demand_moves();
         runtime.spawn(async move {
             loop {
                 tokio::select! {
                     pool = moved.changed() => if pool.is_err() { break },
-                    () = crate::capacity::window_grant::demand_moves() => {}
+                    demand = demands.changed() => if demand.is_err() { break },
                 }
                 let Some(module) = module.upgrade() else { break };
                 module.publish_grants();
