@@ -41,7 +41,7 @@ struct Fresh {
 extern "C" {
     fn continuum_lora_write_fresh(model: *const sys::llama_model, path: *const c_char, fresh: *const Fresh, sink: *const Sink) -> c_int;
     fn continuum_adapter_measure(model: *mut sys::llama_model, path: *const c_char, sink: *const Sink) -> c_int;
-    fn continuum_opt_measure_shadow_graph(ctx: *mut sys::llama_context, params: sys::llama_opt_params, reply_rows: u32, sink: *const Sink) -> c_int;
+    fn continuum_opt_measure_shadow_graph(ctx: *mut sys::llama_context, params: sys::llama_opt_params, reply_rows: u32, lesson_rows: u32, sink: *const Sink) -> c_int;
     fn continuum_opt_shadow_state_write_path(ctx: *mut sys::llama_context, shadow: *const sys::llama_adapter_lora, path: *const c_char, binding: *const c_char) -> c_int;
 }
 
@@ -211,14 +211,16 @@ impl FreshText {
 }
 
 impl Learner<'_, '_> {
-    /// What `shadow` learning a reply of up to `reply_rows` tokens would hold on this context, allocating
+    /// What `shadow` learning a reply of up to `reply_rows` tokens, in a lesson of up to `lesson_rows` (her context
+    /// and the reply, what its attention reads), would hold on this context, allocating
     /// nothing: its optimizer's own state, and the shared workspace that reply needs. One measure, sized by
     /// the reply, never by the context's window (a window-sized measure reported 5,513,766,976 bytes of
-    /// compute on the 0.5B at 2,048 tokens where its lesson needed 451,808,352, 2026-11-24).
-    pub fn measure(&mut self, shadow: &Shadow, reply_rows: NonZeroU32) -> Result<ShadowMeasure, LearnRefusal> {
+    /// compute on the 0.5B at 2,048 tokens where its lesson needed 451,808,352, 2026-11-24; attention priced at the
+    /// served window quoted 78,339,770,944 and 105,623,459,040 bytes for lessons on the M5's 35B, 2026-11-26).
+    pub fn measure(&mut self, shadow: &Shadow, reply_rows: NonZeroU32, lesson_rows: NonZeroU32) -> Result<ShadowMeasure, LearnRefusal> {
         let params = shadow_params(shadow, std::ptr::from_mut(self.holder()).cast());
         let ctx = self.ctx.as_ptr();
-        let rows = Measured::through("measure_shadow_graph", |sink| unsafe { continuum_opt_measure_shadow_graph(ctx, params, reply_rows.get(), sink) }, || self.refusal("measure_shadow_graph"))?;
+        let rows = Measured::through("measure_shadow_graph", |sink| unsafe { continuum_opt_measure_shadow_graph(ctx, params, reply_rows.get(), lesson_rows.get(), sink) }, || self.refusal("measure_shadow_graph"))?;
         let (optimizer, workspace) = rows.into_iter().partition(|row| matches!(row.role, MemoryRole::OptimizerStatic | MemoryRole::OptimizerHost));
         Ok(ShadowMeasure { optimizer, workspace })
     }

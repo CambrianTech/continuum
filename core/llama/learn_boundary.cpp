@@ -103,12 +103,13 @@ extern "C" int continuum_adapter_measure(llama_model *model, const char *path, c
     return guarded([&] { return llama_adapter_lora_measure(model, path, adapter_row, const_cast<continuum_rows_sink *>(sink)); });
 }
 
-// What an attached shadow learning a reply of up to `reply_rows` tokens would hold: its optimizer and the shared
+// What an attached shadow learning a reply of up to `reply_rows` tokens, in a lesson of up to `lesson_rows`, would hold: its optimizer and the shared
 // workspace that reply needs, allocating nothing. Always sized by the reply: a measure at the context's whole window
-// reported 5,513,766,976 bytes of compute on the 0.5B at 2,048 tokens where its lesson needs 451,808,352 (2026-11-24).
-extern "C" int continuum_opt_measure_shadow_graph(llama_context *ctx, llama_opt_params params, uint32_t reply_rows,
+// reported 5,513,766,976 bytes of compute on the 0.5B at 2,048 tokens where its lesson needs 451,808,352 (2026-11-24),
+// and attention priced at the served window quoted 78 to 105 GB for lessons on the 35B the M5 serves (2026-11-26).
+extern "C" int continuum_opt_measure_shadow_graph(llama_context *ctx, llama_opt_params params, uint32_t reply_rows, uint32_t lesson_rows,
         const continuum_rows_sink *sink) noexcept {
-    return guarded([&] { return llama_opt_measure_shadow_graph(ctx, params, reply_rows, optimizer_row, const_cast<continuum_rows_sink *>(sink)); });
+    return guarded([&] { return llama_opt_measure_shadow_graph(ctx, params, reply_rows, lesson_rows, optimizer_row, const_cast<continuum_rows_sink *>(sink)); });
 }
 
 // Write `shadow`'s optimizer state to `path`, bound to `binding` (the generation's identity the caller

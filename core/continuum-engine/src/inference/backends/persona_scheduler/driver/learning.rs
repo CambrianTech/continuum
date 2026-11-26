@@ -8,10 +8,11 @@
 //! between chunks whether a turn is waiting; one waiting drains it, so a turn waits at most one chunk.
 
 use std::collections::{HashMap, VecDeque};
-use std::num::NonZeroU32;
+
 use std::sync::Arc;
 
 use continuum_persona_engine::persona::{Epoch, MindId, PersonaId};
+use continuum_persona_engine::residency::LessonRows;
 use continuum_persona_engine::turn::common_prefix;
 use continuum_persona_llama::LearnReply;
 use llama::{Finished, FreshGeometry, Label, Optimizer, ReplyAdmission, Shadow, Walk};
@@ -41,7 +42,7 @@ pub(crate) struct Measuring {
     pub(crate) mind: PersonaId,
     pub(crate) shadow: ShadowSource,
     pub(crate) optimizer: Optimizer,
-    pub(crate) reply_rows: NonZeroU32,
+    pub(crate) rows: LessonRows,
 }
 
 /// One lesson for a seat, rendered, with its workspace admission view.
@@ -111,7 +112,7 @@ impl Learning {
 struct Entry {
     mind: PersonaId,
     optimizer: Optimizer,
-    reply_rows: NonZeroU32,
+    rows: LessonRows,
     phase: Phase,
 }
 
@@ -174,7 +175,7 @@ impl Driver<'_, '_> {
     }
 
     fn measure(&mut self, sized: Measuring) {
-        let Measuring { seat, mind, shadow, optimizer, reply_rows } = sized;
+        let Measuring { seat, mind, shadow, optimizer, rows } = sized;
         if self.learning.seats.contains_key(&seat) {
             return say(Said::Seat { seat, state: SeatState::Kept { why: "the seat is already measured".into() } });
         }
@@ -190,7 +191,7 @@ impl Driver<'_, '_> {
         };
         match weights {
             Ok(weights) => {
-                self.learning.seats.insert(seat, Entry { mind, optimizer, reply_rows, phase: Phase::Measured { source: shadow } });
+                self.learning.seats.insert(seat, Entry { mind, optimizer, rows, phase: Phase::Measured { source: shadow } });
                 say(Said::Seat { seat, state: SeatState::Measured { weights } });
             }
             Err(refusal) => say(Said::Seat { seat, state: SeatState::Refused { why: refusal.to_string().into() } }),
@@ -227,7 +228,7 @@ impl Driver<'_, '_> {
             Err(why) => return say(Said::Seat { seat, state: SeatState::Refused { why: why.into() } }),
         };
         let mind = mind_of(entry.mind);
-        let measured = self.engine.attach_shadow(mind, &shadow).and_then(|()| self.engine.measure_shadow(mind, &shadow, entry.reply_rows));
+        let measured = self.engine.attach_shadow(mind, &shadow).and_then(|()| self.engine.measure_shadow(mind, &shadow, entry.rows));
         // Off the context before the shadow can be dropped; if that is not confirmed, the engine
         // holds it until a release proves it off.
         if let Err(attached) = self.engine.detach_shadow(mind) {
@@ -236,7 +237,7 @@ impl Driver<'_, '_> {
         }
         match measured {
             Ok((optimizer, workspace)) => {
-                let reply_rows = entry.reply_rows;
+                let reply_rows = entry.rows.reply();
                 self.learning.seats.insert(seat, Entry { phase: Phase::Loaded { shadow }, ..entry });
                 say(Said::Seat { seat, state: SeatState::Loaded { optimizer, workspace, reply_rows } });
             }
@@ -317,18 +318,18 @@ impl Driver<'_, '_> {
         let Some(entry) = self.learning.seats.remove(&seat) else {
             return refused("a lesson for a seat never seated".into());
         };
-        let Entry { mind, optimizer, reply_rows, phase } = entry;
+        let Entry { mind, optimizer, rows, phase } = entry;
         let shadow = match phase {
             Phase::Seated { shadow } => shadow,
             other => {
-                self.learning.seats.insert(seat, Entry { mind, optimizer, reply_rows, phase: other });
+                self.learning.seats.insert(seat, Entry { mind, optimizer, rows, phase: other });
                 return refused("a lesson for a seat not seated".into());
             }
         };
         // Taken out while she learns (binding her needs the whole driver); put back whatever happens.
-        let (outcome, quarantined) = self.learn_seated(Seated { mind, reply_rows, shadow: &shadow, rendered: &rendered }, admission, go_on);
+        let (outcome, quarantined) = self.learn_seated(Seated { mind, rows, shadow: &shadow, rendered: &rendered }, admission, go_on);
         let phase = if quarantined.is_some() { Phase::Quarantined { shadow, retained: true } } else { Phase::Seated { shadow } };
-        self.learning.seats.insert(seat, Entry { mind, optimizer, reply_rows, phase });
+        self.learning.seats.insert(seat, Entry { mind, optimizer, rows, phase });
         if let Some(why) = quarantined {
             say(Said::Seat { seat, state: SeatState::Quarantined { why } });
         }
@@ -359,11 +360,13 @@ impl Driver<'_, '_> {
         let Some(reply) = reply else {
             return refused("the lesson has no reply past its context".into());
         };
-        if reply.tokens.len() > seated.reply_rows.get() as usize {
-            if let Some(need) = u32::try_from(reply.tokens.len()).ok().and_then(NonZeroU32::new) {
-                return (StepOutcome::TooLong { need }, None);
-            }
-            return refused(format!("{} reply tokens past the {} the seat was measured for", reply.tokens.len(), seated.reply_rows));
+        // her workspace was sized for a reply and a lesson of these rows: a longer one on either is measured again
+        let Some(lesson) = seated.rendered.rows() else {
+            return refused("the lesson renders to no rows a seat can hold".into());
+        };
+        let reply_fits = u32::try_from(reply.tokens.len()).is_ok_and(|rows| rows <= seated.rows.reply().get());
+        if !reply_fits || !seated.rows.holds(lesson) {
+            return (StepOutcome::TooLong { need: lesson.whole() }, None);
         }
         let learned = match self.engine.attach_shadow(mind, seated.shadow) {
             Ok(()) => match self.engine.learn_active(seated.shadow, &reply, admission, go_on) {
@@ -443,7 +446,7 @@ impl Driver<'_, '_> {
 /// A seated lesson's inputs: whose, how long a lesson it was measured for, its shadow and its tokens.
 struct Seated<'a> {
     mind: PersonaId,
-    reply_rows: NonZeroU32,
+    rows: LessonRows,
     shadow: &'a Shadow,
     rendered: &'a Rendered,
 }

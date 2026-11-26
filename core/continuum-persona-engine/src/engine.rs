@@ -299,11 +299,11 @@ where
         self.tier.detach(mind)
     }
 
-    /// What an attached `shadow`'s optimizer and a lesson of up to `reply_rows` tokens would hold, for `mind`:
+    /// What an attached `shadow`'s optimizer and a lesson of up to `rows` would hold, for `mind`:
     /// `(optimizer, workspace)`. Waits for a submitted step to land first.
-    pub fn measure_shadow(&mut self, mind: MindId, shadow: &T::Shadow, reply_rows: std::num::NonZeroU32) -> Result<(Vec<T::Row>, Vec<T::Row>), TierRefusal> {
+    pub fn measure_shadow(&mut self, mind: MindId, shadow: &T::Shadow, rows: crate::residency::LessonRows) -> Result<(Vec<T::Row>, Vec<T::Row>), TierRefusal> {
         self.decoding = None;
-        self.tier.measure(mind, shadow, reply_rows)
+        self.tier.measure(mind, shadow, rows)
     }
 
     /// Save `shadow` as a generation in `into`, bound to `binding`: the optimizer steps it holds.

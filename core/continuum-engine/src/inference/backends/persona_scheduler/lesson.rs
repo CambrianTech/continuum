@@ -18,6 +18,17 @@ pub struct Rendered {
     pub reply_from: usize,
 }
 
+impl Rendered {
+    /// The rows a seat learning it is sized for: its reply, from her last context token (whose logits
+    /// predict the reply's first) to its end, and the whole lesson its attention reads. The one owner
+    /// of this geometry: the measure sizes a seat by it and a step checks its lesson against it.
+    pub fn rows(&self) -> Option<continuum_persona_engine::residency::LessonRows> {
+        let whole = self.tokens.len().checked_add(1)?;
+        let rows = |count: usize| u32::try_from(count).ok().and_then(std::num::NonZeroU32::new);
+        continuum_persona_engine::residency::LessonRows::new(rows(whole.saturating_sub(self.reply_from))?, rows(whole)?)
+    }
+}
+
 /// Why a lesson could not be rendered: it reaches the trainer as the step's refusal.
 #[derive(Debug, thiserror::Error)]
 pub enum LessonRefusal {

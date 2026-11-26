@@ -7,7 +7,6 @@
 //! context never references a freed adapter (Codex on L2). The shadow is attached alone: it learns
 //! against the base weights, never another mind's genes left applied.
 
-use std::num::NonZeroU32;
 use std::path::Path;
 
 use continuum_persona_engine::persona::MindId;
@@ -54,10 +53,10 @@ impl Learns for UnifiedTier<'_, '_> {
         self.ctx.clear_loras().map_err(|message| reported(mind, "the engine could not take the shadow off", message))
     }
 
-    fn measure(&mut self, mind: MindId, shadow: &Shadow, reply_rows: NonZeroU32) -> Result<(Vec<MemoryRow>, Vec<MemoryRow>), TierRefusal> {
+    fn measure(&mut self, mind: MindId, shadow: &Shadow, rows: continuum_persona_engine::residency::LessonRows) -> Result<(Vec<MemoryRow>, Vec<MemoryRow>), TierRefusal> {
         self.settle()?;
         let mut learner = Learner::new(self.ctx);
-        let measured = learner.measure(shadow, reply_rows).map_err(|refusal| reported(mind, "the engine could not measure her shadow learning", refusal))?;
+        let measured = learner.measure(shadow, rows.reply(), rows.whole()).map_err(|refusal| reported(mind, "the engine could not measure her shadow learning", refusal))?;
         Ok((measured.optimizer, measured.workspace))
     }
 

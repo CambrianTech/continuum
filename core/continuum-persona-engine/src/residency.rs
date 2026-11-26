@@ -7,5 +7,5 @@ mod tier;
 
 pub use execute::{Completion, Execute};
 pub use fence::{Direction, Fence, FenceTag};
-pub use learn::Learns;
+pub use learn::{LessonRows, Learns};
 pub use tier::{Native, Tier, TierRefusal};
