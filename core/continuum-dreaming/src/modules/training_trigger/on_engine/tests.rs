@@ -142,6 +142,56 @@ mod whole_loop {
         assert!(!state.seated_on_engine(&key), "released: nothing of the seat remains");
         assert_eq!(kept.kinds(), ["measure", "load", "seat", "learn", "learn", "checkpoint", "release"]);
     }
+
+    // what this catches (step 3 part 6): a learning seat that holds its memory while a higher wait is short
+    // of it, or that gives it back by aborting her lesson. Asked by the law, the seat lets the lesson in
+    // flight land, saves and commits what she learned, and is released; the wait is granted on that
+    // release, and the lesson she did not reach stays pending for her next seat.
+    #[tokio::test]
+    async fn a_seat_asked_to_give_back_saves_what_she_learned_and_its_release_grants_the_wait() {
+        let home = tempfile::tempdir().expect("test: home"); // test fixture
+        let _home = crate::paths::test_home::HomeGuard::set(home.path()).await;
+        continuum_kernel::system_resources::disk_reporters::prepare_writer_fixture().await;
+        let (trigger, executor, _dir) = crate::commands::training_trigger::test_support::build_runtime_trigger_only().await;
+        let state = trigger.state.clone();
+        let persona = Uuid::new_v4();
+        let params = serde_json::json!({
+            "personaId": persona, "personaName": "give-back-fixture", "baseModel": "qwen", "traitKind": "geography",
+            "examples": [ex("What is the capital of Kansas?", "Topeka."), ex("What is the capital of Ohio?", "Columbus.")], "source": "operator_curated",
+        });
+        let answer = executor.execute_json("genome/training-trigger/submit", params).await.expect("test: submit routes"); // test fixture
+        assert_eq!(answer["success"], true, "test: accepted: {answer}");
+        let key = BucketKey { persona_id: persona, trait_kind: "geography".into(), base_model: "qwen".into() };
+        let kept = Arc::new(Kept::default());
+        let port: Arc<dyn LearnPort> = kept.clone();
+        state.seat_bucket(&port, &key).await.expect("test: the bucket seats");
+        let seat = match kept.0.lock().first() {
+            Some(Learning::Measure(measure)) => measure.seat,
+            _ => panic!("test: measured"),
+        };
+        let say = |state_: SeatState| Said::Seat { seat, state: state_ };
+        state.on_said(&port, say(SeatState::Measured { weights: rows(MemoryRole::Weights) })).await;
+        state.on_said(&port, say(SeatState::Loaded { optimizer: rows(MemoryRole::OptimizerStatic), workspace: rows(MemoryRole::SharedComputeRequired), reply_rows: NonZeroU32::MIN, lesson_rows: NonZeroU32::MIN })).await;
+        state.on_said(&port, say(SeatState::Seated { optimizer: OptimizerStart::Cold })).await;
+        assert_eq!(kept.kinds().last(), Some(&"learn"), "her first lesson is in flight");
+
+        // a turn short of what the seat holds, at a class above learning
+        let wanted = (1u64 << 30) - (1 << 20);
+        let ask = crate::inference::training_admission::ask_training_memory(&state.authority.resources, "turn", crate::resources::ResourceKind::Vram, wanted);
+        let Ok(crate::resources::Ask::Waiting { ticket: mut turn, .. }) = ask else { panic!("test: the turn waits") };
+        turn.prioritize(continuum_sage::Qos::Interactive as u8);
+        assert!(turn.granted().is_none(), "nothing is taken from her lesson in flight");
+
+        let step = kept.last_step();
+        state.on_said(&port, Said::Step { seat, step, outcome: StepOutcome::Learned { steps: NonZeroU64::MIN, loss: Some(1.0) } }).await;
+        assert_eq!(kept.kinds().last(), Some(&"checkpoint"), "asked to give back: what she learned is saved, her next lesson waits");
+        let into = kept.last_into();
+        state.on_said(&port, Said::Generation { seat, outcome: GenerationOutcome::Saved { into, steps: 1 } }).await;
+        assert_eq!(kept.kinds().last(), Some(&"release"), "committed: the seat is let go");
+        assert_eq!(state.bucket_example_count(persona, "geography", "qwen").await, Some(1), "the lesson she did not reach stays pending");
+        state.on_said(&port, say(SeatState::Released)).await;
+        assert_eq!(turn.granted().map(|lease| lease.bytes()), Some(wanted), "her release grants the turn");
+    }
 }
 
 mod held_off {

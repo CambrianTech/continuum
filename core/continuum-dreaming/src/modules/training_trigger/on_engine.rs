@@ -54,6 +54,9 @@ pub(crate) enum OnEngineError {
     /// The engine said what the seat never told: a fact the trainer cannot act on.
     #[error("{0}")]
     Unanswered(&'static str),
+    /// A lease could not be made elastic: it was gone before the seat held it.
+    #[error("its lease could not give back: {0:?}")]
+    Elastic(crate::resources::LeaseError),
 }
 
 impl From<NotTold> for OnEngineError {
@@ -79,6 +82,8 @@ struct EngineSeat {
     /// The weight rows the engine measured for this seat: part of the whole seat a hold for memory
     /// waits for, since seating it again leases them again.
     weights: Vec<MemoryRow>,
+    /// Whether a higher wait asked it to give back: it then finishes as `finishing` does.
+    asked_back: give_back::AskedBack,
 }
 
 /// A generation the engine saved: where, how many optimizer steps it holds, and the positions it
@@ -490,6 +495,7 @@ impl TrainingTriggerState {
             names: VecDeque::new(),
             finishing: false,
             weights: Vec::new(),
+            asked_back: give_back::AskedBack::default(),
         };
         self.on_engine.seats.lock().insert(SeatId(id), seat);
         Ok(())
@@ -558,6 +564,7 @@ impl TrainingTriggerState {
         match heard {
             Heard::LeaseWeights(rows) => {
                 let weights = self.lease(port, key, Lease { consumer: &consumer, rows: &rows, whole: &rows })?;
+                self.yield_when_asked(seat, &weights)?;
                 // the engine sizes the lesson a seat learns within what the device governs beside them
                 let fit = fit_beside(&free_now(&self.authority), &rows);
                 self.with_seat(seat, |held| {
@@ -570,7 +577,9 @@ impl TrainingTriggerState {
                 // The whole seat: what seating it again takes, its weights included.
                 let whole = self.whole_seat(seat, &optimizer, &workspace);
                 let optimizer = self.lease(port, key, Lease { consumer: &consumer, rows: &optimizer, whole: &whole })?;
+                self.yield_when_asked(seat, &optimizer)?;
                 let workspace = self.lease(port, key, Lease { consumer: &format!("{consumer}:workspace"), rows: &workspace, whole: &whole })?;
+                self.yield_when_asked(seat, &workspace)?;
                 let view = optimizer.view().map_err(OnEngineError::Coverage)?;
                 self.with_seat(seat, |held| held.run.seat(port.as_ref(), Box::new(view), optimizer, workspace));
                 self.on_engine.release_reserve(key); // every stage is leased: what is left of the reserve goes back
@@ -622,7 +631,7 @@ impl TrainingTriggerState {
         if !held.run.ready() {
             return Ok(());
         }
-        if !held.finishing {
+        if !held.finishing && !held.asked_back.asked() {
             if let Some((position, lesson)) = next_lesson(&rows, &held.checkpointed, held.run.progress()) {
                 let workspace = held.run.workspace().ok_or(OnEngineError::Unanswered("a ready seat holds no workspace lease"))?;
                 let admission = workspace.view().map_err(OnEngineError::Coverage)?;
@@ -769,6 +778,13 @@ impl TrainingTriggerState {
         weights.iter().chain(optimizer).chain(workspace).cloned().collect()
     }
 
+    /// Make `leased` give back when a higher wait asks, answered by `seat`: it then finishes and is released.
+    fn yield_when_asked(&self, seat: SeatId, leased: &LeasedMemory) -> Result<(), OnEngineError> {
+        let asked = self.on_engine.seats.lock().get(&seat).map(|held| &held.asked_back).cloned();
+        let Some(asked) = asked else { return Ok(()) }; // let go already: its guards drop with `leased`
+        give_back::yield_when_asked(&self.authority, leased, &asked).map_err(OnEngineError::Elastic)
+    }
+
     /// Run `act` on `seat` if the trainer still holds it; a command no engine took is probed.
     fn with_seat(&self, seat: SeatId, act: impl FnOnce(&mut EngineSeat) -> Result<(), NotTold>) {
         let mut seats = self.on_engine.seats.lock();
@@ -784,6 +800,8 @@ impl TrainingTriggerState {
         self.with_seat(seat, |held| held.run.release(port.as_ref()));
     }
 }
+
+mod give_back;
 
 #[cfg(test)]
 mod tests;

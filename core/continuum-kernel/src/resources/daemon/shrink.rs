@@ -27,6 +27,7 @@ impl ResourceDaemon {
         self.publish_locked(&governor);
         drop(governor);
         self.holders.lock().insert(ask, holder);
+        self.deliver_shrinks(); // a wait that already outranks it asks it now
         Ok(())
     }
 

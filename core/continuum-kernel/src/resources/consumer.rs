@@ -109,6 +109,15 @@ impl ReclaimOutcome {
         }
     }
 
+    /// Heard: the holder's own fence frees it later, through its lease's shrink or release.
+    pub fn deferred(detail: &str) -> Self {
+        Self {
+            freed_bytes: 0,
+            status: ReclaimStatus::Deferred,
+            detail: Some(detail.to_owned()),
+        }
+    }
+
     pub fn refused(detail: impl Into<String>) -> Self {
         Self {
             freed_bytes: 0,
