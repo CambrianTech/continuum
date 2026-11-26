@@ -6,6 +6,7 @@ description = "A mind's model view as an epoch materialization: a stable head, t
 
 [dependencies]
 continuum-base = { workspace = true }
+continuum-sage = { workspace = true } # the one flexbox (place::Flexbox): a prompt shares tokens with it as memory shares bytes
 serde = { workspace = true }
 sha2 = { workspace = true }
 

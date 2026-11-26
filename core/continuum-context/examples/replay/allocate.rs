@@ -292,7 +292,7 @@ pub fn main(args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
             c.tools_sent.push(f64::from(unpriced.chosen(id::TOOLS).map_or(0, |choice| choice.cost))); // map_or: tools are always chosen
             c.tools_kept.push(f64::from(priced.chosen(id::TOOLS).map_or(0, |choice| choice.cost))); // map_or: as above
             let (slot, held) = match priced.priced {
-                Priced::Held { held, .. } => (0, f64::from(held) / f64::from(act.window.max(1))),
+                Priced::Held { held, .. } | Priced::Trial { held, .. } => (0, f64::from(held) / f64::from(act.window.max(1))), // a trial holds a window too
                 Priced::WindowBinds => (1, 1.0),
                 Priced::OutsideMeasured { .. } => (2, 1.0),
                 Priced::Unmeasured => (3, 1.0),

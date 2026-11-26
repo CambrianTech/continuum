@@ -448,3 +448,29 @@ fn a_split_moves_held_bytes_without_freeing_them() {
     assert_eq!(ledger.release(stage), Ok(()));
     assert_eq!(ledger.accounts(Tier::Pinned).map(|a| a.held), Some(Bytes(40)), "the stage releases its own 60");
 }
+
+// what this catches (UNIFIED-PAGING.md, "Room by priority"): the one flexbox sharing a place's bytes as it
+// shares a prompt's tokens, past u32, with floors first. The 5090's split at 15:41Z (MiB, Codex): weights
+// fixed (floor == max), the Core's KV and workspace variable above a floor, a seat's 12 MB optimizer at
+// a lower priority. With the card short, the seat gets its floor before any variable holder grows.
+#[test]
+fn the_flexbox_shares_bytes_floors_first_then_by_priority() {
+    use super::{Bytes, Flex, Flexbox, Landed};
+    const MIB: u64 = 1 << 20;
+    let card = Bytes(32_607 * MIB);
+    let weights = Bytes(17_402 * MIB);
+    let claims = [
+        Flex { priority: 10, floor: weights, min: weights, max: weights, required: true },
+        Flex { priority: 8, floor: Bytes(2_048 * MIB), min: Bytes(4_096 * MIB), max: Bytes(8_704 * MIB), required: true }, // the stream's KV
+        Flex { priority: 6, floor: Bytes(1_024 * MIB), min: Bytes(2_048 * MIB), max: Bytes(3_124 * MIB), required: true }, // the workspace
+        Flex { priority: 3, floor: Bytes(12_058_624), min: Bytes(12_058_624), max: Bytes(12_058_624), required: false }, // a seat
+    ];
+    let (mut flexbox, mut shares) = (Flexbox::default(), Vec::new());
+    let shared = flexbox.share(card, &claims, |a, b| a.cmp(&b), &mut shares);
+    assert!(!shared.escalation_needed);
+    assert_eq!(shares[0].amount, weights);
+    assert_eq!((shares[3].amount, shares[3].landed), (Bytes(12_058_624), Landed::Satisfied), "the seat is granted before anything grows");
+    let total: u64 = shares.iter().map(|share| share.amount.0).sum::<u64>() + shared.unallocated.0;
+    assert_eq!(total, card.0, "every byte accounted once");
+    assert!(shares[1].amount.0 > 4_096 * MIB && shares[1].amount.0 <= 8_704 * MIB, "the KV grows into what is left, never past its want");
+}

@@ -2933,6 +2933,7 @@ name = "continuum-context"
 version = "0.1.0"
 dependencies = [
  "continuum-base",
+ "continuum-sage",
  "continuum-tool-protocol",
  "serde",
  "serde_json",

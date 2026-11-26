@@ -15,6 +15,7 @@
 //! as a `decide::Policy` use case, and its consumers, come next on this contract.
 
 mod claim;
+mod flex;
 mod component;
 mod ledger;
 mod quantity;
@@ -22,7 +23,8 @@ mod quantity;
 pub use claim::{Claim, ClaimId, Generation, Need, Owner};
 pub use component::{key_of, Act, AskId, Asks, Domain, Placer, Shortfall, Status};
 pub use ledger::{Accounts, Answer, Ledger, NeverNow, Refusal, Untaken};
-pub use quantity::{Bytes, Quantity, Slots};
+pub use flex::{Flex, Flexbox, Landed, Share, Shared};
+pub use quantity::{Bytes, Quantity, Slots, Tokens};
 
 #[cfg(test)]
 mod tests;

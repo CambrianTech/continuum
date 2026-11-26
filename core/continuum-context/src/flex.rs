@@ -1,6 +1,6 @@
-//! The flexbox: ONE algorithm that shares a budget among claims by floor, min, max and priority
-//! (moved here from `continuum-grounding::rag_budget`, CONTINUUM-ENGINE section 5's module table: "flex moves
-//! into continuum-context as the one allocator"). Pure: no I/O, no adapter instance.
+//! A prompt's claims on its window, shared by the one flexbox (`continuum_sage::place::Flexbox`, the solver
+//! memory shares bytes with: UNIFIED-PAGING.md, "Room by priority"). Moved from `continuum-grounding::rag_budget`;
+//! the algorithm itself now lives once, in continuum-sage. Pure: no I/O, no adapter instance.
 //!
 //! Its one production caller is the act's allocation ([`crate::allocation::allocate`]), which
 //! runs it ONCE per act over everything a mind's prompt holds (ONE-ACT stage 2).
@@ -58,14 +58,13 @@ pub enum AllocationState {
 }
 
 /// What [`flex_allocate`] decided: every claim's grant in INPUT order, the tokens no claim
-/// could take, and the escalation/warning receipts.
+/// could take, and whether a required claim escalates.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FlexAllocation {
     pub allocations: Vec<SourceAllocation>,
     pub unallocated: u32,
     /// A required claim got less than its floor.
     pub escalation_needed: bool,
-    pub warnings: Vec<String>,
 }
 
 impl FlexAllocation {
@@ -89,155 +88,38 @@ pub fn floors(claims: &[FlexClaim]) -> u32 {
     claims.iter().map(|c| c.floor_tokens).fold(0, u32::saturating_add)
 }
 
-/// THE flexbox algorithm, pure: `available` tokens shared across `claims`.
-///
-/// 1. **Floor pass**: required floors first (priority order), then optional floors. A required
-///    claim that cannot get its floor takes what remains and is `UnderProvisioned`
-///    (escalation); an optional one is `Dropped`.
-/// 2. **Min pass**: top up to `min_tokens` in priority order, capped at `max_tokens`.
-/// 3. **Grow pass**: distribute what remains by priority weight, capped at `max_tokens`,
-///    iterating until nothing moves.
+/// `available` tokens shared across `claims` by the one flexbox (`continuum_sage::place::Flexbox`, the
+/// solver memory shares bytes with too). This adapter holds only the diff: a prompt's claims are named
+/// by string and counted in `u32` tokens, and equal priorities are ordered by name.
 pub fn flex_allocate(available: u32, claims: &[FlexClaim]) -> FlexAllocation {
-    let mut warnings = Vec::new();
-    // Stable sort by priority desc, then by source_id for deterministic tie-break: the output
-    // must not depend on slice ordering. `order[k]` is the input index of the k-th claim in
-    // priority order.
-    let mut order: Vec<usize> = (0..claims.len()).collect();
-    order.sort_by(|&a, &b| {
-        claims[b]
-            .priority
-            .cmp(&claims[a].priority)
-            .then(claims[a].source_id.cmp(&claims[b].source_id))
-    });
-    let sorted: Vec<&FlexClaim> = order.iter().map(|&i| &claims[i]).collect();
-
-    let mut alloc: Vec<u32> = vec![0; sorted.len()];
-    let mut state: Vec<AllocationState> = vec![AllocationState::Dropped; sorted.len()];
-    let mut remaining: u32 = available;
-    let mut escalation_needed = false;
-
-    // ---- Pass 1: floors (unconditional) ----
-    let required_floor_sum: u32 = sorted.iter().filter(|s| s.required).map(|s| s.floor_tokens).fold(0, u32::saturating_add);
-    if required_floor_sum > available {
-        warnings.push(format!(
-            "required floor sum ({required_floor_sum}) exceeds available ({available}); some required sources UnderProvisioned"
-        ));
-    }
-    for (i, source) in sorted.iter().enumerate() {
-        if !source.required {
-            continue;
-        }
-        if source.floor_tokens <= remaining {
-            alloc[i] = source.floor_tokens;
-            remaining -= source.floor_tokens;
-            state[i] = AllocationState::FloorOnly;
-        } else {
-            alloc[i] = remaining;
-            remaining = 0;
-            state[i] = AllocationState::UnderProvisioned;
-            escalation_needed = true;
-        }
-    }
-    for (i, source) in sorted.iter().enumerate() {
-        if source.required {
-            continue;
-        }
-        if source.floor_tokens == 0 {
-            // A zero floor is trivially satisfied: eligible for min and grow.
-            state[i] = AllocationState::FloorOnly;
-            continue;
-        }
-        if source.floor_tokens <= remaining {
-            alloc[i] = source.floor_tokens;
-            remaining -= source.floor_tokens;
-            state[i] = AllocationState::FloorOnly;
-        } else {
-            warnings.push(format!(
-                "optional source `{}` dropped — floor {} > remaining {}",
-                source.source_id, source.floor_tokens, remaining
-            ));
-        }
-    }
-
-    // ---- Pass 2: min, in priority order ----
-    for (i, source) in sorted.iter().enumerate() {
-        if matches!(state[i], AllocationState::Dropped | AllocationState::UnderProvisioned) {
-            continue;
-        }
-        let needed = source.min_tokens.saturating_sub(alloc[i]);
-        let granted = needed.min(remaining).min(source.max_tokens.saturating_sub(alloc[i]));
-        alloc[i] += granted;
-        remaining -= granted;
-        if alloc[i] >= source.min_tokens {
-            state[i] = AllocationState::Satisfied;
-        }
-    }
-
-    // ---- Pass 3: grow by priority weight, capped at max ----
-    loop {
-        let active: Vec<usize> = sorted
-            .iter()
-            .enumerate()
-            .filter(|(i, s)| {
-                !matches!(state[*i], AllocationState::Dropped | AllocationState::UnderProvisioned) && alloc[*i] < s.max_tokens
-            })
-            .map(|(i, _)| i)
-            .collect();
-        if active.is_empty() || remaining == 0 {
-            break;
-        }
-        let priority_sum: u32 = active.iter().map(|&i| sorted[i].priority as u32).sum();
-        if priority_sum == 0 {
-            break;
-        }
-        let mut moved = 0u32;
-        for &i in &active {
-            let share = ((remaining as u64) * (sorted[i].priority as u64) / (priority_sum as u64)) as u32;
-            let grant = share.min(sorted[i].max_tokens - alloc[i]);
-            if grant > 0 {
-                alloc[i] += grant;
-                moved += grant;
-            }
-        }
-        if moved == 0 {
-            // No share moved (remaining / priority_sum = 0): the highest-priority active claim
-            // takes one token, so the loop ends deterministically.
-            let i = active[0];
-            if sorted[i].max_tokens > alloc[i] && remaining > 0 {
-                alloc[i] += 1;
-                moved = 1;
-            } else {
-                break;
-            }
-        }
-        remaining = remaining.saturating_sub(moved);
-    }
-
-    // Report in INPUT order (not priority order) for caller ergonomics.
-    let mut by_input: Vec<(u32, AllocationState)> = vec![(0, AllocationState::Dropped); claims.len()];
-    for (k, &input) in order.iter().enumerate() {
-        by_input[input] = (alloc[k], state[k]);
-    }
-    let total_allocated = by_input.iter().map(|(tokens, _)| *tokens).fold(0u32, u32::saturating_add);
+    use continuum_sage::place::{Flex, Flexbox, Landed, Tokens};
+    let tokens = |n: u32| Tokens(u64::from(n));
+    let flex: Vec<Flex<Tokens>> = claims
+        .iter()
+        .map(|c| Flex { priority: c.priority, floor: tokens(c.floor_tokens), min: tokens(c.min_tokens), max: tokens(c.max_tokens), required: c.required })
+        .collect();
+    let mut shares = Vec::with_capacity(claims.len());
+    let shared = Flexbox::default().share(tokens(available), &flex, |a, b| claims[a].source_id.cmp(&claims[b].source_id), &mut shares);
+    let narrow = |t: Tokens| u32::try_from(t.0).unwrap_or(u32::MAX); // unwrap_or: a share never exceeds `available`, a u32
     let allocations = claims
         .iter()
-        .zip(by_input)
-        .map(|(src, (tokens, st))| SourceAllocation {
-            source_id: src.source_id.clone(),
-            allocated_tokens: tokens,
-            requested_floor: src.floor_tokens,
-            requested_min: src.min_tokens,
-            requested_max: src.max_tokens,
-            required: src.required,
-            state: st,
+        .zip(&shares)
+        .map(|(claim, share)| SourceAllocation {
+            source_id: claim.source_id.clone(),
+            allocated_tokens: narrow(share.amount),
+            requested_floor: claim.floor_tokens,
+            requested_min: claim.min_tokens,
+            requested_max: claim.max_tokens,
+            required: claim.required,
+            state: match share.landed {
+                Landed::Satisfied => AllocationState::Satisfied,
+                Landed::FloorOnly => AllocationState::FloorOnly,
+                Landed::Dropped => AllocationState::Dropped,
+                Landed::UnderProvisioned => AllocationState::UnderProvisioned,
+            },
         })
         .collect();
-    FlexAllocation {
-        allocations,
-        unallocated: available.saturating_sub(total_allocated),
-        escalation_needed,
-        warnings,
-    }
+    FlexAllocation { allocations, unallocated: narrow(shared.unallocated), escalation_needed: shared.escalation_needed }
 }
 
 #[cfg(test)]

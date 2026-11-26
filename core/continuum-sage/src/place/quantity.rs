@@ -37,3 +37,16 @@ impl Quantity for Slots {
         Self(units)
     }
 }
+
+/// Tokens of a window: a mind's prompt, a lesson's rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub struct Tokens(pub u64);
+
+impl Quantity for Tokens {
+    fn units(self) -> u64 {
+        self.0
+    }
+    fn of(units: u64) -> Self {
+        Self(units)
+    }
+}
