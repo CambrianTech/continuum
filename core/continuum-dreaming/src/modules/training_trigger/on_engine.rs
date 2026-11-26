@@ -288,6 +288,18 @@ fn said_kind(said: &Said) -> &'static str {
     }
 }
 
+/// Why the engine refused, kept or quarantined, as it said it; empty for an answer that carries no
+/// reason. A refusal said with no reason left the M5's step_refused seats unexplained (2026-11-26).
+fn why_of(said: &Said) -> &str {
+    use crate::inference::learning::{GenerationOutcome, SeatState, StepOutcome};
+    match said {
+        Said::Seat { state: SeatState::Refused { why } | SeatState::Kept { why } | SeatState::Quarantined { why }, .. }
+        | Said::Step { outcome: StepOutcome::Refused { why }, .. }
+        | Said::Generation { outcome: GenerationOutcome::Refused { why }, .. } => why,
+        _ => "",
+    }
+}
+
 /// The seat a `said` is about.
 fn seat_of(said: &Said) -> SeatId {
     match said {
@@ -442,7 +454,7 @@ impl TrainingTriggerState {
             let Some(held) = seats.get_mut(&seat) else { return };
             held.run.hear(port.as_ref(), &said)
         };
-        continuum_base::probe!(class = "training.on_engine.said", persona = %key.persona_id, seat = %seat.0, said = ?said_kind(&said), acted = heard.is_some(),
+        continuum_base::probe!(class = "training.on_engine.said", persona = %key.persona_id, seat = %seat.0, said = ?said_kind(&said), why = why_of(&said), acted = heard.is_some(),
             "the node engine answered one of the trainer's seats");
         let Some(heard) = heard else { return };
         let saved = matches!(heard, Heard::Saved { .. });
