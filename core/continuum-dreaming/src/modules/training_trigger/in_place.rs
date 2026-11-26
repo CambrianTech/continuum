@@ -29,7 +29,6 @@ use crate::genome::learner::{
 use crate::inference::engine_residency::{EngineIncarnation, Liveness, process_start_s};
 use crate::inference::llama_server::{CheckpointAnswer, FreshShadow, LearnOutcome, LearningEngine, LedgerAnswer, RestoreCheckpoint, RestoreOutcome};
 use crate::inference::slots::LearnSlot;
-use continuum_base::probe;
 use continuum_host::process_exit::{self, ArmRefusal, ExitObserved};
 use std::collections::HashMap;
 use std::sync::Arc;
