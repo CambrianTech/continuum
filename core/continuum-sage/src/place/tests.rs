@@ -196,3 +196,28 @@ fn a_capacity_that_falls_below_a_wait_answers_it_never_here() {
     assert_eq!(never, vec![NeverNow { id, owner: TRAINER, place: Tier::Vram, need: Bytes(20 * GB), capacity: Bytes(16 * GB) }]);
     assert_eq!(ledger.waiting(), 0);
 }
+
+// what this catches (Codex's repro on 5ea6e2edbc): two generations of one owner each spending the
+// same 100 bytes, because the restart credited the old claim without revoking it; and a restart racing
+// a spend on another thread charging nobody.
+#[test]
+fn a_retired_claim_cannot_be_spent_and_a_racing_spend_stays_charged() {
+    let mut ledger = Ledger::default();
+    ledger.place(Tier::Vram, Bytes(100), Bytes(100), &mut Vec::new());
+    let old = granted(ledger.prepare(TRAINER, FIRST, &[Need { place: Tier::Vram, amount: Bytes(100) }]));
+    let new = granted(ledger.prepare(TRAINER, Generation(2), &[Need { place: Tier::Vram, amount: Bytes(100) }]));
+    assert!(!old.consume(Tier::Vram, Bytes(100)), "the retired incarnation's claim is revoked");
+    assert!(new.consume(Tier::Vram, Bytes(100)));
+
+    for _ in 0..200 {
+        let mut ledger = Ledger::default();
+        ledger.place(Tier::Vram, Bytes(100), Bytes(100), &mut Vec::new());
+        let old = granted(ledger.prepare(TRAINER, FIRST, &[Need { place: Tier::Vram, amount: Bytes(100) }]));
+        let spender = old.clone();
+        let spend = std::thread::spawn(move || spender.consume(Tier::Vram, Bytes(60)));
+        let _ = ledger.prepare(TRAINER, Generation(2), &[]);
+        let spent = spend.join().expect("test: the spending thread"); // expect: the test's own precondition
+        let held = ledger.accounts(Tier::Vram).map(|a| a.held);
+        assert_eq!(held, Some(Bytes(if spent { 60 } else { 0 })), "a spend that won the race is charged; one that lost spent nothing");
+    }
+}
