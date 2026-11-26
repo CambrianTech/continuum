@@ -49,12 +49,11 @@ EOF
 }
 
 install_hook pre-push git-prepush.sh "Rust compile + test + optional native-arch docker push"
+install_hook pre-commit git-precommit.sh "Fast Rust compile check on staged changes"
 
-# Earlier versions of this script also installed pre-commit → git-precommit.sh
-# and post-commit → git-postcommit.sh. Both targets guarded the deleted Node
-# src/ tree and are gone; a delegator left pointing at them would fail every
-# commit. Remove only delegators this script wrote, never a hand-written hook.
-for stale in pre-commit:git-precommit.sh post-commit:git-postcommit.sh; do
+# Earlier versions also removed a stale post-commit delegator (git-postcommit.sh
+# no longer exists). Keep this cleanup — only removes delegators we wrote.
+for stale in post-commit:git-postcommit.sh; do
   stale_hook="$HOOKS_DIR/${stale%%:*}"
   if [[ -f "$stale_hook" ]] && grep -q "delegates to tools/scripts/${stale#*:}" "$stale_hook"; then
     rm -f "$stale_hook"
