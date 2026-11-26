@@ -638,11 +638,24 @@ pub trait Resident<P, Q> {
     /// Down: room granted on `place` up to `to`: expand a collapsed level, page a cached copy back in.
     fn grow(&mut self, place: P, to: Q);
 }
-// a report row: { place, held, floor, want, qos: Qos, waited, ways: [Way] }
+// a report row: { place, held, want, varies: Fixed { why } | Elastic { floor, ways: [Way] } | Whole { dependents, cost }, qos: Qos, waited }
 // Way: Resize { loses } | CacheOut { to: P, takes } | Collapse { loses }  (each cost measured)
 // Given: Released { way, freed, took } | Pending | Refused(why)  (Preservation's shape)
 ```
 
+- *The controller knows what truly varies* (Joel: "We need the controller to know what can truly vary and
+  what cannot. It can't be blind. A host of a base model can't just shrink typically"). Every row states
+  its variability, typed, from the holder's own knowledge, never inferred by the controller:
+  - `Fixed { why }`: it cannot run on less while it serves (a base model's weights under live minds; a
+    turn's KV in flight; a writer's window). The controller never asks it, and the ceiling is short of it;
+  - `Elastic { floor, ways }`: anything from `floor` up runs, each way to give back with its cost
+    (a workspace re-reserved smaller, a stream sized to its occupant, a lesson at fewer rows);
+  - `Whole { dependents, cost }`: all or nothing (a base model unloads only when no mind is on it and
+    nothing in a higher class needs it; an expert set streams out as a set). Only a wait that outranks every
+    dependent may ask it, and the answer is the whole holding moved or cached out, never a fraction.
+  A holder that has not reported is `Fixed`: unknown is never room (fail closed, as the ledger does now: a
+  holding not marked elastic keeps all it holds). Variability can change with state (the model with no
+  mind on it becomes `Whole`), so it is re-reported on every change, like what is held.
 - *Priority is QoS, then age.* The law's priority for a row is its class, aged by its wait within the
   class (Cormac's term, measured by `resources.ask.passed`), capped so an Interactive floor is never shrunk
   for anything below it. The same classes order the lane's steps, so memory and compute agree on what
