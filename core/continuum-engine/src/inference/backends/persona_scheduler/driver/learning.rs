@@ -399,7 +399,9 @@ impl Driver<'_, '_> {
         let last_context = rendered.reply_from.checked_sub(1).ok_or("the lesson has no context before its reply")?;
         let her = self.engine.active_mut().ok_or("she is not bound")?;
         let shared = common_prefix(&her.parts().tokens.held, &rendered.tokens).min(last_context);
-        let genes = her.parts().genome.served_genes().ok_or("her genes were not served")?;
+        // a resumed mind's adapters are loaded again from the files kept with her blocks, so she learns
+        // whether or not a turn of hers has handed them back (the M5, 2026-11-26)
+        let genes = her.parts_mut().genome.held_or_loaded(self.model)?;
         let basis = her.parts().genome.clone();
         self.reposition_to_served_prefix(shared).map_err(|why| format!("she could not be brought to her held prefix: {why}"))?;
         if shared == last_context {

@@ -12,7 +12,7 @@ use continuum_persona_engine::engine::{DecodeError, HandoffError, PersonaEngine,
 use continuum_persona_engine::persona::{Epoch, Footprint, Held, MindId, PersonaId, PersonaParts, PersonaUnit};
 use continuum_persona_engine::residency::TierRefusal;
 use continuum_persona_llama::{Blocks, Genes, KvHome, Step, Tokens, UnifiedTier, STREAMS};
-use llama::{ContextParams, FlashAttn, LoraAdapter, Model, Pos};
+use llama::{ContextParams, FlashAttn, Model, Pos};
 use uuid::Uuid;
 
 use super::geometry::StopsOnExit;
@@ -188,8 +188,8 @@ fn resume(tier: &mut UnifiedTier<'_, '_>, preserved: &mut preserve::Preserved, m
         match preserved.restore(tier, &mind) {
             Ok((blocks, held)) => {
                 continuum_base::probe!(class = "persona.engine.resumed", persona = %mind.persona, tokens = held.len() as u64, in_place = mind.kv.is_some(), "a mind came back from her preserved files");
-                // a mind resumed from disk keeps only her genes' identity, never the adapters themselves
-                let parts = Parts { blocks, tokens: History::from(held), genome: Basis { genes: mind.basis, adapters: None }, learning: (), decode: Tenure::Resident };
+                // a mind resumed from disk keeps her genes and their files, never the adapters themselves
+                let parts = Parts { blocks, tokens: History::from(held), genome: Basis::resumed(mind.basis, mind.genes), learning: (), decode: Tenure::Resident };
                 parked.insert(id, Mind::new(id, epoch, parts));
             }
             Err(refused) => {
@@ -592,7 +592,7 @@ impl Driver<'_, '_> {
         }
         let her = self.parked.remove(&id).ok_or(PreserveError::NotReturned)?;
         let (epoch, parts) = (her.epoch().0, her.into_parts());
-        let leaving = preserve::Leaving { persona: id.0, epoch, basis: parts.genome.genes, blocks: parts.blocks, held: &parts.tokens.held };
+        let leaving = preserve::Leaving { persona: id.0, epoch, basis: parts.genome.genes, genes: &parts.genome.sources, blocks: parts.blocks, held: &parts.tokens.held };
         Ok(store.hand_over(leaving, generation)?)
     }
 
@@ -612,8 +612,7 @@ impl Driver<'_, '_> {
             return;
         }
         let prompt = std::mem::take(&mut req.prompt);
-        let genes: Genes = req.active_loras.iter().map(|(_, adapter, scale)| (Arc::clone(adapter), *scale)).collect::<Vec<_>>().into();
-        let basis = Basis { genes: signature(&req.active_loras), adapters: Some(Arc::clone(&genes)) };
+        let (basis, genes) = Basis::of(&req.active_loras);
         let boundary = req.view_end;
         self.answers += 1;
         let answer = emit::AnswerSeq(self.answers);
@@ -989,10 +988,4 @@ fn report(stop: tokio::sync::oneshot::Sender<Suspended>, suspended: Suspended) {
     if let Err(late) = stop.send(suspended) {
         continuum_base::probe!(class = "persona.engine.suspend_unheard", preserved = late.preserved as u64, retained = late.retained.len() as u64, "a suspend finished after its stop gave up");
     }
-}
-
-fn signature(genes: &[(String, Arc<LoraAdapter>, f32)]) -> String {
-    let mut parts: Vec<String> = genes.iter().map(|(id, _, scale)| format!("{id}:{scale}")).collect();
-    parts.sort_unstable();
-    parts.join(",")
 }

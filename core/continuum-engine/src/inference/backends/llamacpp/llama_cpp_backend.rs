@@ -516,7 +516,7 @@ impl LlamaCppBackend {
         max_tokens: usize,
         sampler: llama::TurnSampler,
         stop_sequences: &[&str],
-        active_loras: &[(String, f32)],
+        active_loras: &[crate::inference::backends::persona_scheduler::Gene],
     ) -> Result<TurnAnswer, String> {
         let gen_start = Instant::now();
         let prompt = turn.text;
@@ -525,13 +525,13 @@ impl LlamaCppBackend {
         // Channel for streaming tokens back from the scheduler.
         let (response_tx, response_rx) = tokio::sync::mpsc::unbounded_channel::<TokenEvent>();
 
-        // Resolve requested genes (`id`, scale) to live adapter handles from
+        // Resolve requested genes to live adapter handles from
         // the cache BEFORE crossing to the scheduler thread (which can't lock
         // our cache). A requested id that was never paged in via
         // `ensure_adapter` is a hard error — never a silent base-model run
         // (Rule 2: fail loud, name the cause). Empty in the common no-gene
         // case, so the base path pays nothing.
-        let resolved_loras: Vec<(String, Arc<LoraAdapter>, f32)> = if active_loras.is_empty() {
+        let resolved_loras: Vec<(crate::inference::backends::persona_scheduler::Gene, Arc<LoraAdapter>)> = if active_loras.is_empty() {
             Vec::new()
         } else {
             let guard = self
@@ -540,15 +540,16 @@ impl LlamaCppBackend {
                 .map_err(|e| format!("LoRA cache lock poisoned: {e}"))?;
             active_loras
                 .iter()
-                .map(|(id, scale)| {
+                .map(|gene| {
                     guard
-                        .get(id)
-                        .map(|h| (id.clone(), Arc::clone(h), *scale))
+                        .get(&gene.id)
+                        .map(|h| (gene.clone(), Arc::clone(h)))
                         .ok_or_else(|| {
                             format!(
-                                "LoRA gene '{id}' requested but not loaded — call \
+                                "LoRA gene '{}' requested but not loaded — call \
                                  ensure_adapter(id, path) before generate (Rule 2: \
-                                 refuse to silently run the base model in its place)"
+                                 refuse to silently run the base model in its place)",
+                                gene.id
                             )
                         })
                 })

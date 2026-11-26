@@ -427,11 +427,11 @@ impl AIProviderAdapter for LlamaCppAdapter {
         // `(name, path, scale)`. We page each in (idempotent) and hand the
         // resolved `(id, scale)` list to the scheduler, which applies it
         // context-level before decode. Empty in the common base case.
-        let requested_genes: Vec<(String, std::path::PathBuf, f32)> = request
+        let requested_genes: Vec<crate::inference::backends::persona_scheduler::Gene> = request
             .active_adapters
             .iter()
             .flatten()
-            .map(|a| (a.name.clone(), std::path::PathBuf::from(&a.path), a.scale as f32))
+            .map(|a| crate::inference::backends::persona_scheduler::Gene { id: a.name.clone(), path: std::path::PathBuf::from(&a.path), scale: a.scale as f32 })
             .collect();
 
         // Her sampler, from the render that produced her prompt when she has one: its tool grammar
@@ -468,8 +468,8 @@ impl AIProviderAdapter for LlamaCppAdapter {
                     // Page in each requested gene (idempotent) before generation.
                     // A missing/unreadable adapter file is a hard error — never
                     // silently run the base model in its place (Rule 2).
-                    for (id, path, _) in &genes_for_closure {
-                        backend_for_blocking.ensure_adapter(id, path)?;
+                    for gene in &genes_for_closure {
+                        backend_for_blocking.ensure_adapter(&gene.id, &gene.path)?;
                     }
                     continuum_base::probe!(
                         class = "inference.generate.genes_ready",
@@ -478,17 +478,13 @@ impl AIProviderAdapter for LlamaCppAdapter {
                         since_enter = ?entered.elapsed(),
                         "her genes are loaded for this generation"
                     );
-                    let active_loras: Vec<(String, f32)> = genes_for_closure
-                        .iter()
-                        .map(|(id, _, scale)| (id.clone(), *scale))
-                        .collect();
                     backend_for_blocking.submit_for_persona(
                         allocation, persona_id,
                         crate::inference::backends::llamacpp::TurnPrompt { text: &prompt_for_blocking, stable_prefix: stable_for_blocking.as_ref().and_then(|view| view.of(&prompt_for_blocking)), urgency, request: request_for_blocking.as_deref() },
                         max_tokens,
                         sampler,
                         &stop_refs,
-                        &active_loras,
+                        &genes_for_closure,
                     )
                     }).await.map_err(|e| format!("generate task panicked: {e}"))??;
                     answer.collect().await
@@ -509,7 +505,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
             if !requested_genes.is_empty() {
                 let names: Vec<&str> = requested_genes
                     .iter()
-                    .map(|(id, _, _)| id.as_str())
+                    .map(|gene| gene.id.as_str())
                     .collect();
                 return Err(format!(
                     "llamacpp_adapter: LoRA genes {names:?} requested with media — not supported \

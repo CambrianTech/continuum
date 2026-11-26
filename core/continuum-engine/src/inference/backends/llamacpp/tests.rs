@@ -330,7 +330,7 @@
             let gene_dir = std::env::temp_dir().join(format!("served-gene-{}", uuid::Uuid::new_v4()));
             learned(port, &mut heard, Learns { mind: uuid::Uuid::new_v4(), steps: 3, into: Some(&gene_dir) }).await;
             backend.ensure_adapter("served", &gene_dir.join("adapter.gguf")).expect("test: the gene loads");
-            let served = [("served".to_string(), 1.0_f32)];
+            let served = [crate::inference::backends::persona_scheduler::Gene { id: "served".to_string(), path: gene_dir.join("adapter.gguf"), scale: 1.0 }];
 
             // her view as the lesson renders it (they share a prefix), then a view sharing nothing with it
             // (Codex on #6260: a served prefix of 0 with no checkpoint there)

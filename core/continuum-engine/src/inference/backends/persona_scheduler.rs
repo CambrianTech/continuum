@@ -19,6 +19,8 @@
 
 mod driver;
 mod emit;
+mod gene;
+pub use gene::Gene;
 mod held_view;
 mod preserve;
 mod record;
@@ -214,9 +216,9 @@ pub struct GenerationRequest {
     /// (`LlamaCppBackend::turn_sampler`): the engine thread only samples with it.
     pub sampler: llama::TurnSampler,
     pub stop_sequences: Vec<String>,
-    /// Genes for this turn: `(id, handle, scale)`, resolved by the backend before enqueue. Empty is
+    /// Genes for this turn, each with its handle, resolved by the backend before enqueue. Empty is
     /// the base model.
-    pub active_loras: Vec<(String, Arc<LoraAdapter>, f32)>,
+    pub active_loras: Vec<(Gene, Arc<LoraAdapter>)>,
     /// Tokens stream back through this.
     pub response_tx: tokio::sync::mpsc::UnboundedSender<TokenEvent>,
     /// How much her mind needs this turn: the lane ranks by it (driver/lane.rs).
