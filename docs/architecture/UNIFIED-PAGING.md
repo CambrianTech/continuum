@@ -533,6 +533,58 @@ What it deletes, in the slice that builds it (slice 3b below): `LearningMemory`'
 matching, `lease_memory`, `from_rows`, `learning::leased`, the metrics sum, training's path through
 `window_allocator`, and `GrantHandoff` as bytes.
 
+### Placement while the machine is in use
+
+The resource authority continuously observes the host. For each physical pool it publishes the time of
+observation, the OS budget and available bytes, and the engine's attributed footprint where the backend
+can measure it. The Streamer joins that observation to its live blocks, outstanding reservations and
+transfers. OS available bytes already reflect resident allocations. Subtract only commitments that have
+yet to land. Charge aliases once and expose unexplained differences between the allocator and OS readings.
+An old observation can guide a forecast. The native allocation and its fence settle the actual result.
+Pressure can change between prepare and consume, including when another Continuum instance makes a claim.
+Slice 3b gives the resource authority one elected owner per host, held by a host-scoped OS lock.
+Codex owns the host reservation endpoint. Other instances prepare through that owner's bus endpoint.
+On owner loss, a successor reconciles live allocator receipts and outstanding lease identities before
+granting competing claims. A peer offer remains provisional until that peer's authority
+prepares it. Release a provisional claim on expiry or cancellation using its reservation identity.
+
+SAGE considers feasible actions against the same history. A policy may keep a warm block, demote it,
+place a future allocation on a host-capable backend, defer a seat, or use a compatible peer offer.
+Each proposal names the bytes it would free on the short pool, the destination capacity it needs,
+the transfer and restore time at recently observed rates, and the effect on the waiting lesson and
+active turns. Reusing an existing allocation and leaving the current placement intact are candidates too.
+Resource owners declare which backing can move and where computation can still execute. Free disk
+can preserve an idle block. A CUDA kernel still needs accessible backing when the block is used again.
+An authorized peer lease adds its price, expiry, queue delay and transfer cost to the same decision.
+Only the resource owner executes the selected action. The policy records the outcome beside its
+prediction so another algorithm can replay the decision using the same typed history.
+
+When outside pressure consumes a prepared reservation's headroom, validate the claim at consumption.
+If allocation fails, keep the original backing usable and release unused commitments. Observations
+continue while a seat waits, while it runs, and after it finishes. Each change can alter placement.
+Only a successful prepare covering the entire seat sends Granted to the trainer. Preserve the
+original seat identity and its waiting age. A competing application
+quitting, a transfer completing, and our own build ending can all change the preferred placement.
+Re-evaluate on those events and as observations age. Include the cost of undoing a move before bringing
+a block back. An executable path or an application name is unnecessary for these decisions.
+
+**Acceptance under changing load.** Run the same resident workload through three exact 900-second
+windows on each node. Establish the baseline, introduce a competing GPU and host-memory workload,
+then release it while the same lesson remains outstanding. Capture observations around both transitions
+inside the windows. Record build and artifact identity, request and lesson IDs, per-pool free bytes,
+prepared and committed bytes, physical bytes released, destination and move time, serving latency,
+and the interval from available capacity to grant. The proposed test command is
+`placement-pressure --host-mib 1024 --device-mib 1024 --hold-seconds 900`. Its separate process
+touches every host page and repeatedly executes a fixed GPU buffer pass using CUDA or Metal.
+Report actual resident bytes, allocation failures, pass latency and release time. On unified memory
+charge distinct physical backing once. These sizes belong to the repeatable fixture alone.
+Verify that foreground work continues, that two
+instances cannot spend the same headroom, and that the lesson produces one durable generation after
+capacity returns. Restore and exercise that generation. Replay local GPU pressure with ample disk
+space to detect false VRAM credits, and replay unified-memory pressure with aliased host and device
+views to detect duplicate credits. Report model-output quality and the competing workload's latency
+alongside throughput. These windows measure behavior; the control loop responds throughout each one.
+
 ## Built for the grid from the first slice
 
 Moving a mind or a block to another node is the same move as moving it to another tier, with a
