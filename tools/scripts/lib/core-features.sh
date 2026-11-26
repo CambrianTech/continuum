@@ -175,10 +175,7 @@ select_core_features() {
   # is then headless too: the socket client neither renders nor joins calls. Everywhere
   # else (both Macs, a CPU-only box, DirectML-only Windows, where ort loads onnxruntime by
   # name at run time) the CLI shares the core's one library build.
-  case ",$gpu," in
-    *,cuda,*|*,rocm,*|*,vulkan,*) CONTINUUM_CLI_FEATURES="" ;;
-    *)                            CONTINUUM_CLI_FEATURES="$CONTINUUM_FEATURES" ;;
-  esac
+  CONTINUUM_CLI_FEATURES="$CONTINUUM_FEATURES"
   if [ -n "$node" ]; then
     echo "node profile: $node (CONTINUUM_NODE_FEATURES) — this build hosts it" >&2
   else
