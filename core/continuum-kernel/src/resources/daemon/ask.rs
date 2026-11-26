@@ -38,6 +38,13 @@ impl AskTicket {
     }
 }
 
+impl LeaseGuard {
+    /// The kind of memory the held lease is of, read from the governor (`None` once it is released or swept).
+    pub fn kind(&self) -> Option<super::super::lease::ResourceKind> {
+        self.daemon.governor.lock().lease(&self.lease_id).map(|lease| lease.kind)
+    }
+}
+
 impl Drop for AskTicket {
     fn drop(&mut self) {
         if self.taken {

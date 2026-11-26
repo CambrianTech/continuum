@@ -49,6 +49,9 @@ pub enum SeatRefusal {
     Unloaded(String),
     /// The engine measuring the load is not the one the caller bound the change to.
     EngineReplaced,
+    /// A stage could not be carved from its granted reserve (released, lapsed, of another kind, or
+    /// holding less).
+    Uncarved(crate::resources::LeaseError),
 }
 
 impl std::fmt::Display for SeatRefusal {
@@ -61,6 +64,7 @@ impl std::fmt::Display for SeatRefusal {
             SeatRefusal::Unmirrored(why) => write!(f, "the engine refused the residency: {why:?}"),
             SeatRefusal::Unloaded(why) => write!(f, "the shadow was not loaded: {why}"),
             SeatRefusal::EngineReplaced => write!(f, "the engine was replaced after the change was bound to it"),
+            SeatRefusal::Uncarved(error) => write!(f, "a stage could not be carved from its reserve: {error:?}"),
         }
     }
 }
@@ -215,6 +219,13 @@ impl LeasedMemory {
 /// already holds, evidence and never a further lease, so it is neither leased nor handed to the view
 /// (leasing it would charge held memory twice, and `from_rows` refuses it; Codex on dd98bfdda).
 pub fn lease_memory(authority: &Authority, consumer: &str, rows: impl IntoIterator<Item = crate::inference::learning::MemoryRow>) -> Result<LeasedMemory, SeatRefusal> {
+    lease_memory_within(authority, &[], consumer, rows)
+}
+
+/// [`lease_memory`], each class spent from `reserve` when it holds a granted reserve of that kind with
+/// room for it (a seat's granted ask, carved stage by stage: no second ask, nothing a waiter can take
+/// between), otherwise leased as `lease_memory` does.
+pub fn lease_memory_within(authority: &Authority, reserve: &[LeaseGuard], consumer: &str, rows: impl IntoIterator<Item = crate::inference::learning::MemoryRow>) -> Result<LeasedMemory, SeatRefusal> {
     use crate::inference::learning::MemoryRole;
     let (held, rows): (Vec<_>, Vec<_>) = rows.into_iter().partition(|row| row.role == MemoryRole::SharedComputeHeld);
     let mut leases = Vec::new();
@@ -227,9 +238,15 @@ pub fn lease_memory(authority: &Authority, consumer: &str, rows: impl IntoIterat
         if bytes == 0 {
             continue;
         }
-        let guard = crate::inference::training_admission::try_training_memory(&authority.resources, Admission::Free(&authority.serving), consumer, resource, bytes)
-            .map_err(SeatRefusal::Unleased)?
-            .map_err(SeatRefusal::AwaitingMemory)?;
+        let from = reserve.iter().find(|guard| guard.kind() == Some(resource) && guard.bytes() >= bytes);
+        let attempt = match from {
+            Some(reserve) => {
+                let stage = crate::inference::training_admission::Carve { reserve, consumer, bytes };
+                crate::inference::training_admission::try_carve(&authority.resources, Admission::Free(&authority.serving), stage).map_err(SeatRefusal::Uncarved)?
+            }
+            None => crate::inference::training_admission::try_training_memory(&authority.resources, Admission::Free(&authority.serving), consumer, resource, bytes).map_err(SeatRefusal::Unleased)?,
+        };
+        let guard = attempt.map_err(SeatRefusal::AwaitingMemory)?;
         leases.push((kind, bytes, guard));
     }
     Ok(LeasedMemory { rows, leases, held })

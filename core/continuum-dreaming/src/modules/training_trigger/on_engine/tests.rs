@@ -266,11 +266,11 @@ mod held_off {
         refused(&state, &key, &kept, 512 << 20).await;
         let told = kept.told();
         let port: Arc<dyn LearnPort> = kept.clone();
-        state.on_free(&port, &crate::resources::Free::of(&state.authority.resources.board()), "qwen").await;
+        state.on_free(&port, "qwen").await;
         assert_eq!(kept.told(), told, "nothing freed yet: the wake measures nothing");
 
         drop(occupied);
-        state.on_free(&port, &crate::resources::Free::of(&state.authority.resources.board()), "qwen").await;
+        state.on_free(&port, "qwen").await;
         assert_eq!(kept.told(), told + 1, "the release alone seats it again");
         kept.measured();
     }
@@ -307,7 +307,7 @@ mod held_off {
         assert_eq!(kept.told(), told, "its own freed weights do not seat it again: the whole seat does not fit");
 
         drop(occupied);
-        state.on_free(&port, &crate::resources::Free::of(&state.authority.resources.board()), "qwen").await;
+        state.on_free(&port, "qwen").await;
         assert_eq!(kept.told(), told + 1, "the whole seat fits: measured again");
         kept.measured();
     }
@@ -325,11 +325,57 @@ mod held_off {
         let seat = refusing(&state, &key, &kept, 512 << 20).await;
         drop(occupied);
         let told = kept.told();
-        state.on_free(&port, &crate::resources::Free::of(&state.authority.resources.board()), "qwen").await;
+        state.on_free(&port, "qwen").await;
         assert_eq!(kept.told(), told, "still being let go: the wake seats nothing");
 
         state.on_said(&port, Said::Seat { seat, state: SeatState::Released }).await;
         assert_eq!(kept.told(), told + 1, "its Released finds the memory free and seats it again");
         kept.measured();
+    }
+
+    // what this catches (Codex's contract for the trainer, 2026-11-26): serving holds the device, a seat
+    // refused its optimizer asks for its whole seat and waits; the release grants that ask at once (a
+    // competing taker finds nothing), and the seat is measured, loaded and seated on stages carved from the
+    // grant, with no second ask and nothing of the reserve left over.
+    #[tokio::test]
+    async fn a_seat_waits_on_its_ask_and_seats_on_the_carved_grant_without_asking_again() {
+        use std::num::NonZeroU32;
+        let (state, key, _home, _dir, _guard) = waiting().await;
+        let free_vram = |state: &Arc<TrainingTriggerState>| state.authority.resources.board().kinds.iter().find(|k| k.kind == crate::resources::ResourceKind::Vram).map(|k| k.available_bytes);
+        let occupied = crate::inference::training_admission::try_training_memory(&state.authority.resources, Admission::Free(&state.authority.serving), "occupier", crate::resources::ResourceKind::Vram, 600 << 20)
+            .expect("test: the authority answers")
+            .expect("test: 600 MiB of the 1 GiB is granted");
+        let kept = Arc::new(Kept::default());
+        let port: Arc<dyn LearnPort> = kept.clone();
+        state.seat_bucket(&port, &key).await.expect("test: the bucket seats");
+        let seat = kept.measured();
+        let vram = |role, bytes| vec![MemoryRow { device: "CUDA0".into(), buffer_type: "CUDA0".into(), role, bytes, host: false }];
+        let measured = SeatState::Measured { weights: vram(MemoryRole::Weights, 300 << 20) };
+        let loaded = || SeatState::Loaded { optimizer: vram(MemoryRole::OptimizerStatic, 200 << 20), workspace: vram(MemoryRole::SharedComputeRequired, 1 << 20), reply_rows: NonZeroU32::MIN, lesson_rows: NonZeroU32::MIN };
+        state.on_said(&port, Said::Seat { seat, state: measured.clone() }).await;
+        state.on_said(&port, Said::Seat { seat, state: loaded() }).await;
+        assert!(matches!(kept.0.lock().last(), Some(Learning::Release { .. })), "its optimizer refused: let go, its whole seat asked for");
+        state.on_said(&port, Said::Seat { seat, state: SeatState::Released }).await;
+
+        drop(occupied);
+        let competing = crate::inference::training_admission::try_training_memory(&state.authority.resources, Admission::Free(&state.authority.serving), "competitor", crate::resources::ResourceKind::Vram, 600 << 20)
+            .expect("test: the authority answers");
+        assert!(competing.is_err(), "the release granted the seat's ask at once: a competing taker finds nothing");
+        assert_eq!(free_vram(&state), Some((1 << 30) - (501 << 20)), "the whole seat (300 + 200 + 1 MiB) is the seat's reserve");
+        // another taker holds everything free beside the reserve: only the reserve can seat her now
+        let rest = crate::inference::training_admission::try_training_memory(&state.authority.resources, Admission::Free(&state.authority.serving), "competitor", crate::resources::ResourceKind::Vram, (1 << 30) - (501 << 20))
+            .expect("test: the authority answers")
+            .expect("test: what is free beside the reserve is granted");
+
+        let told = kept.told();
+        state.on_free(&port, "qwen").await;
+        assert_eq!(kept.told(), told + 1, "its grant seats it again");
+        let seat = kept.measured();
+        state.on_said(&port, Said::Seat { seat, state: measured }).await;
+        assert!(matches!(kept.0.lock().last(), Some(Learning::Load { .. })), "its weights are carved from the reserve: it loads");
+        state.on_said(&port, Said::Seat { seat, state: loaded() }).await;
+        assert!(matches!(kept.0.lock().last(), Some(Learning::Seat(_))), "its optimizer and workspace are carved too: it seats");
+        assert_eq!(free_vram(&state), Some(0), "every stage spent the reserve, nothing more was asked and nothing is left over");
+        drop(rest);
     }
 }
