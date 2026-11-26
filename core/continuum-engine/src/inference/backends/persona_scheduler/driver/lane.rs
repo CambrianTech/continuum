@@ -71,6 +71,14 @@ pub(super) struct Lanes {
     /// How many tokens the step just picked may move (`lane::step_tokens`): a prefill chunk is no
     /// longer than every other mind's slack allows.
     tokens: u64,
+    /// Her learning jobs' Core time, a job (Measure, Load, Seat, a step): the background class's cost of
+    /// one, from the jobs it ran.
+    learning_job: continuum_sage::decide::Ewma,
+    /// Core time learning jobs took since the last decision: the background class's service.
+    learning_served: Duration,
+    /// A learning job may run now although turns wait: the background class is owed, and the queue's
+    /// room holds one job's measured time (so no act is carried past her bound by it).
+    learning_owed: bool,
     /// Where what the algorithm learned is kept, once the node's home is known, and under what.
     learned: Option<(Store<LearnedLane>, uuid::Uuid, LaneContract)>,
     algorithm: &'static str,
@@ -90,6 +98,9 @@ impl Lanes {
             moved: 0,
             switching: Duration::ZERO,
             tokens: 1,
+            learning_job: continuum_sage::decide::Ewma::new(Fraction::QUARTER),
+            learning_served: Duration::ZERO,
+            learning_owed: false,
             learned: None,
             algorithm,
         })
@@ -119,6 +130,17 @@ impl Lanes {
     }
 
     /// How many tokens the step the lane just picked may move.
+    /// A learning job may run now (the background class is owed and the queue has room for one).
+    pub(super) fn learning_owed(&self) -> bool {
+        self.learning_owed
+    }
+
+    /// A learning job ran for `took`: the background class's service, and its measured cost a job.
+    pub(super) fn learned(&mut self, took: Duration) {
+        self.learning_served += took;
+        self.learning_job.observe(took.as_secs_f64());
+    }
+
     pub(super) fn step_tokens(&self) -> usize {
         usize::try_from(self.tokens).unwrap_or(usize::MAX) // unwrap_or: a count past the address space is no limit
     }
@@ -165,6 +187,7 @@ impl Driver<'_, '_> {
     pub(super) fn pick(&mut self, turns: &[Turn]) -> Option<usize> {
         let active = self.engine.active();
         let most = self.batch.get() as u64;
+        let learning_waiting = self.learning.waiting_jobs();
         let lanes = &mut self.lane;
         lanes.tokens = most;
         let now = Instant::now();
@@ -201,8 +224,24 @@ impl Driver<'_, '_> {
             let outcome = lane::Outcome { tokens: Measured::Value(moved), engine, worst_wait, worst_deadline, switching: std::mem::take(&mut lanes.switching), served: lane::served(moved, left) };
             let _ = lanes.decider.outcome(id, outcome);
         }
-        let backlog = situation.running.iter().chain(situation.ready.iter()).filter(|mind| mind.deadline.is_none()).filter_map(|mind| mind.remaining.value().zip(mind.step.value()).map(|(left, step)| step.mul_f64(left as f64))).sum();
+        // the background class: her dreams' predicted remaining Core time, and the learning jobs waiting at
+        // their measured cost a job; served, what each took since the last decision
+        let job = lanes.learning_job.mean().value().and_then(|secs| Duration::try_from_secs_f64(secs).ok());
+        let learning_backlog = job.map_or(Duration::ZERO, |job| job.mul_f64(learning_waiting as f64)); // map_or: a job not yet measured is a cost not yet seen
+        let dreams: Duration = situation.running.iter().chain(situation.ready.iter()).filter(|mind| mind.deadline.is_none()).filter_map(|mind| mind.remaining.value().zip(mind.step.value()).map(|(left, step)| step.mul_f64(left as f64))).sum();
+        let backlog = dreams + learning_backlog;
+        served_background += std::mem::take(&mut lanes.learning_served);
         situation.background_owed = lanes.history.background(backlog, served_background);
+        // learning first in its class (her learning through the day; dreams are the occasional part),
+        // when the queue's room holds one job so no act is carried past her bound by it
+        // (a job not yet measured is a cost not yet seen: the first runs as soon as it waits, and measures it)
+        let fits = lane::room(situation, situation.running.as_ref().map(|running| &running.mind)).is_none_or(|room| room >= job.unwrap_or(Duration::ZERO)); // unwrap_or: a job not yet measured is a cost not yet seen
+        let owed = learning_waiting > 0 && (situation.background_owed || job.is_none()) && fits;
+        if owed && !lanes.learning_owed && !(situation.ready.is_empty() && situation.running.is_none()) {
+            continuum_base::probe!(class = "persona.lane.learning_owed", waiting_jobs = learning_waiting as u64, backlog_ms = backlog.as_millis() as u64,
+                job_ms = job.map_or(0, |job| job.as_millis() as u64), "learning is owed a step while turns wait: its queue would grow"); // map_or: a job not yet measured reads 0
+        }
+        lanes.learning_owed = owed;
         let (id, action) = match lanes.decider.decide(&lanes.situation, &[]) {
             Decided::Act(id, action) => (id, action),
             // the lane never defers, and every decision is closed at the next one, so neither occurs;

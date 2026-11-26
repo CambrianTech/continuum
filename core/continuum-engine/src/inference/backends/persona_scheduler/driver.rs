@@ -312,9 +312,9 @@ pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
         // while deferred, the thread waits for EITHER a submission (a turn, or the stop's suspend) or
         // the stage's space: a wake on both, never a poll, and a stalled caller never blocks a stop.
         let holding = driver.holding();
-        // Learning only between her turns: with no turn and nothing held for a stage, the oldest
-        // learning job runs, asking between chunks whether a submission waits (one drains it).
-        if turns.is_empty() && !holding && driver.learning.waiting() {
+        // Learning between her turns, and when the lane owes the background class a step (her learning
+        // keeps its queue in check, never waiting for an empty Core), asking between chunks whether a turn waits.
+        if !holding && driver.learning.waiting() && (turns.is_empty() || driver.lane.learning_owed()) {
             driver.learn_next(&mut || requests.is_empty());
             continue;
         }

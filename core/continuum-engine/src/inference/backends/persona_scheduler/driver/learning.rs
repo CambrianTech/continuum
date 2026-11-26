@@ -83,6 +83,11 @@ impl Learning {
         self.waiting.push_back(job);
     }
 
+    /// How many jobs wait: the learning backlog the lane counts in the background class.
+    pub(super) fn waiting_jobs(&self) -> usize {
+        self.waiting.len()
+    }
+
     pub(super) fn waiting(&self) -> bool {
         !self.waiting.is_empty()
     }
@@ -126,6 +131,13 @@ fn mind_of(persona: PersonaId) -> MindId {
 impl Driver<'_, '_> {
     /// Work the oldest waiting job. `go_on` says whether no turn waits.
     pub(super) fn learn_next(&mut self, go_on: &mut dyn FnMut() -> bool) {
+        // timed whole: the lane's background class counts it as service and learns a job's cost
+        let started = std::time::Instant::now();
+        self.work_next(go_on);
+        self.lane.learned(started.elapsed());
+    }
+
+    fn work_next(&mut self, go_on: &mut dyn FnMut() -> bool) {
         let Some(job) = self.learning.waiting.pop_front() else { return };
         match job {
             Job::Measure(sized) => self.measure(sized),
