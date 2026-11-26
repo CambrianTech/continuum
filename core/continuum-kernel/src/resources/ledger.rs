@@ -24,6 +24,7 @@ use ts_rs::TS;
 use continuum_sage::place::{Act, AskId, Bytes, Generation, Need, PlacerCore, TakeAsk};
 
 pub use asks::{Asked, CarveError};
+pub use shrinks::{Elastic, ShrinkDue};
 
 use super::arbiter::{ArbiterContext, LeaseArbiter};
 use super::consumer::ConsumerFootprint;
@@ -873,6 +874,7 @@ fn bytes_of(answer: Option<Bytes>) -> u64 {
 }
 
 mod asks;
+mod shrinks;
 mod told;
 
 #[cfg(test)]

@@ -30,6 +30,14 @@ pub struct AskTicket {
 }
 
 impl AskTicket {
+    /// Give this wait a priority (higher outranks): its shortfall may then ask lower elastic leases to give
+    /// back, delivered to their holders on the daemon's next tick.
+    pub fn prioritize(&self, priority: u8) {
+        let mut governor = self.daemon.governor.lock();
+        governor.prioritize(self.ask, priority);
+        self.daemon.publish_locked(&governor);
+    }
+
     /// The lease the ask became, once the authority granted it; taken once.
     pub fn granted(&mut self) -> Option<LeaseGuard> {
         let lease = self.daemon.governor.lock().take_granted(self.ask)?;

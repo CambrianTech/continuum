@@ -765,3 +765,63 @@
         drop(core);
         assert_eq!(ceiling(&daemon), Some(CAPACITY - EMBED - (USED - EMBED)), "let go but still resident: external, not room");
     }
+
+    /// A holder that answers the law as scripted and counts what it was asked.
+    struct Answering {
+        asked: std::sync::Mutex<Vec<crate::resources::ShrinkDue>>,
+        answer: ReclaimOutcome,
+    }
+
+    impl crate::resources::ShrinkHolder for Answering {
+        fn shrink(&self, due: &crate::resources::ShrinkDue) -> ReclaimOutcome {
+            let due = due.clone();
+            self.asked.lock().expect("test: the holder's log").push(due); // expect: the test's own lock
+            self.answer.clone()
+        }
+    }
+
+    fn vram_free(daemon: &ResourceDaemon) -> Option<u64> {
+        daemon.board().kinds.iter().find(|k| k.kind == ResourceKind::Vram).map(|k| k.available_bytes)
+    }
+
+    // what this catches (step 3 part 6): a learning seat's elastic lease never asked to give back while a
+    // higher wait starves, asked again on every tick, or its deferred answer lost: the law asks once, the
+    // seat finishes, and releasing its lease grants the higher wait.
+    #[tokio::test]
+    async fn the_law_asks_an_elastic_lease_once_and_its_release_grants_the_higher_wait() {
+        let src = Arc::new(MockCapacitySource::new(ResourceKind::Vram, 1_000));
+        let config = DaemonConfig { tick_interval: Duration::from_secs(3600), min_reclaim_budget: Duration::from_millis(100), governor: GovernorConfig { min_dwell_ms: 0, graceful_grace_ms: 50 } };
+        let daemon = ResourceDaemon::start(vec![src], vec![], config);
+        let seat = daemon.acquire_guarded(&req("learning:her", 600, u64::MAX, ReclaimPolicy::Graceful)).expect("test: the seat fits");
+        let holder = Arc::new(Answering { asked: std::sync::Mutex::new(Vec::new()), answer: ReclaimOutcome { freed_bytes: 0, status: ReclaimStatus::Deferred, detail: None } });
+        let registered: Arc<dyn crate::resources::ShrinkHolder> = holder.clone();
+        daemon.hold_elastic(&seat, crate::resources::Elastic { floor: 0, priority: 10 }, registered).expect("test: the seat is elastic");
+        let Ok(Ask::Waiting { ticket: mut turn, .. }) = daemon.ask(&req("serving", 700, u64::MAX, ReclaimPolicy::Pinned)) else { panic!("test: the turn waits") };
+        turn.prioritize(200);
+        daemon.deliver_shrinks();
+        daemon.deliver_shrinks();
+        let asked = holder.asked.lock().expect("test: the holder's log").clone(); // expect: the test's own lock
+        assert_eq!(asked.len(), 1, "asked once, never again for the same target");
+        assert_eq!((asked[0].held, asked[0].to), (600, 300), "asked to give back exactly what the turn lacks");
+        assert!(turn.granted().is_none(), "deferred: nothing is given back yet");
+        drop(seat); // the seat finished: its lease is released, its own fence
+        let lease = turn.granted().expect("test: the release grants the turn");
+        assert_eq!(lease.bytes(), 700);
+        assert_eq!(vram_free(&daemon), Some(300));
+    }
+
+    // what this catches: bytes a holder gives back at once not credited until some later release.
+    #[tokio::test]
+    async fn bytes_given_back_at_once_shrink_the_lease_and_grant_the_wait() {
+        let src = Arc::new(MockCapacitySource::new(ResourceKind::Vram, 1_000));
+        let config = DaemonConfig { tick_interval: Duration::from_secs(3600), min_reclaim_budget: Duration::from_millis(100), governor: GovernorConfig { min_dwell_ms: 0, graceful_grace_ms: 50 } };
+        let daemon = ResourceDaemon::start(vec![src], vec![], config);
+        let window = daemon.acquire_guarded(&req("embed", 600, u64::MAX, ReclaimPolicy::Graceful)).expect("test: the window fits");
+        let holder = Arc::new(Answering { asked: std::sync::Mutex::new(Vec::new()), answer: ReclaimOutcome { freed_bytes: 300, status: ReclaimStatus::Partial, detail: None } });
+        daemon.hold_elastic(&window, crate::resources::Elastic { floor: 100, priority: 10 }, holder).expect("test: elastic");
+        let Ok(Ask::Waiting { ticket: mut turn, .. }) = daemon.ask(&req("serving", 700, u64::MAX, ReclaimPolicy::Pinned)) else { panic!("test: the turn waits") };
+        turn.prioritize(200);
+        daemon.deliver_shrinks();
+        assert_eq!(window.bytes(), 300, "given back at once: the lease shrank");
+        assert!(turn.granted().is_some(), "and the turn is granted from it");
+    }
