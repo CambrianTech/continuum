@@ -1203,6 +1203,15 @@ Joel: "Yeah or time divided. We never need to abort. If it doesn't fit now, it c
   - `Fetched` is its context paged back in.
 - **Off gives back only the scratch** (Cormac). The shadow and its optimizer state (Kimi's: 36,176,000 B) are the thread's context and stay seated. They are cached out to pinned only when the lane parks the thread for long, priced like any park.
 - **The ledger acts per period, never per step** (Cormac). The lane holds one elastic Vram lease for learning scratch, sized to the on-tile, and resizes it only when the tile or the share changes. A decode step is milliseconds, and an ask, grant and release through the authority's lock on every edge would cost more than it saves. Every grant, shrink and change is still a `decide` observation, recorded per period.
+- **Priority is a share the central policy sets, and a threshold only where the work has one** (Joel: "Usually thread priority is exactly this. I get 10% or 50 etc. not hard coded just saying priority. In an rtos some things truly have thresholds like for instance a frame draw in a game engine. Others might have less of this or none more like cars at a traffic light. Regardless like in cbar or rockstars rage we can find time for everyone. You just must have more centralized logic and everyone comply").
+  - **A threshold class** (`Want`, `Urgent`: a resident inside her act bound; a live call's frame) has a hard bound the scheduler never lets pass.
+  - **A share class** (`Content`: learning, dreaming) has no per-item bound. Its guarantee is its queue kept in check, like cars at a light: each gets its turn, and none waits forever.
+  - **The shares are the policy's output, not constants.** Today `slice::weight` fixes them at 1, 2 and 4 per urgency. They become the lane's decision per class, from each class's feedback: slack against the bound for a threshold class, the queue's growth for a share class. This is the decide framework's job, recorded per period.
+- **Everyone complies: every slice is bounded and declared** (Codex's review at c6d40d7917).
+  - A thread's unit may never run longer than the slack the scheduler grants it.
+  - Two of the tile walk's units are not bounded by the tile: the whole prefix decoded before a run, and the reverse replay from a stride checkpoint before `train_chunk`. Each becomes a sequence of tile-sized units with a yield between, resumable at the existing chunk boundaries.
+  - The commit is priced the same way. Each unit's cost, transfers on its critical path included, is measured, and the lane schedules it against the residents' remaining slack.
+  - Codex's gates: a long unlabelled prefix, and a reverse stride above 1, each with a resident arriving just after dispatch. The timing receipt shows the actual overlap beside the isolated 236 ms pinned H2D.
 - The share of the Core that learning gets (Joel's PWM width) is nobody's setting. It is what the scheduler's choices add up to: wider while the queue grows and serving has slack, narrower under serving's demand.
 
 **Space and time, under the same two controllers.**
