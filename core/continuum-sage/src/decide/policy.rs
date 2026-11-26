@@ -25,9 +25,10 @@ impl Choice {
     /// else the envelope's own first, since an action the envelope did not offer is one it decided
     /// against. Index 0 here is a real action, never a stand-in for an absent one.
     pub fn wanted_or_envelopes_first<A: PartialEq>(admissible: &[A], wanted: &A) -> Self {
+        const ENVELOPES_FIRST: usize = 0;
         let index = match admissible.iter().position(|action| action == wanted) {
             Some(offered) => offered,
-            None => 0,
+            None => ENVELOPES_FIRST,
         };
         Self { index, expected: None }
     }

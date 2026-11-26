@@ -183,7 +183,7 @@ fn the_lane_forces_an_overdue_mind_and_offers_batches_only_as_wide_as_the_core()
 fn placement_admits_a_peer_only_under_a_lease_that_carries_the_work_within_budget() {
     let now = Instant::now();
     let measured = |seconds| Measured::Value(Duration::from_secs(seconds));
-    let lease = |rate, until_s, per_unit| Capacity::Committed(Lease { rate, until: now + Duration::from_secs(until_s), price: Price { per_unit } });
+    let lease = |rate, until_s, per_unit| Capacity::Committed(Lease { amount: Rate(rate), until: now + Duration::from_secs(until_s), price: Price { per_unit } });
     let peer = |id, capacity| placement::Holder { id, capacity, transfer: measured(2), queue: measured(1) };
     let holders = vec![
         peer(1, Capacity::Observed { rate: Measured::Value(40.0), as_of: now }),
