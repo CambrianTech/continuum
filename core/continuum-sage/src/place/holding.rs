@@ -1,11 +1,12 @@
 //! The parent of every holder (SAGE.md, "Intermediate parents": Resident). A leaf declares only its rows
 //! and the bodies of its ways; the parent does the rest, once, for every holder: it answers asks through the
-//! leaf, holds a Pending answer until its fence lands, keeps every ask with its answer as a receipt (the
-//! feedback the room law learns from), and re-reads the leaf's report so its owner publishes only on change.
+//! leaf, gives each exchange a ticket, holds a Pending answer until the fence of that ticket lands, keeps
+//! every exchange as a receipt (the feedback the room law learns from), and re-reads the leaf's report so its
+//! owner publishes only on change.
 //!
 //! An owner keeps a `Holding` around its leaf and calls in on its own thread: `shrink` and `grow` when the
-//! law asks, `landed` when a fence it started completes, `refresh` after its own state changed. Nothing here
-//! waits.
+//! law asks, `landed` with the ticket when a fence it started completes, `refresh` after its own state
+//! changed. Nothing here waits.
 
 use std::time::Duration;
 
@@ -18,13 +19,36 @@ pub enum Asked<P, Q> {
     Grow(GrowGrant<P, Q>),
 }
 
-/// One exchange, as the law's replay keeps it: what was asked, what the holder answered, and the report
-/// revision it answered from. A Pending answer gets a second receipt when its fence lands.
+/// One exchange's identity, issued by the parent: a fence names the ask it completes, so a late or
+/// duplicate completion, or one of two asks on the same place, can never close another (Codex on the
+/// delivery design, 2026-11-26).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct Ticket(pub u64);
+
+/// The leaf's answer to one ask, with the ticket its fence will name.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Answered<Q> {
+    pub ticket: Ticket,
+    pub given: Given<Q>,
+}
+
+/// One exchange, as the law's replay keeps it: its ticket, what was asked, what the holder answered, and the
+/// report revision it answered from. A Pending answer gets a second receipt when its fence lands.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Receipt<P, Q> {
+    pub ticket: Ticket,
     pub asked: Asked<P, Q>,
     pub given: Given<Q>,
     pub revision: u64,
+}
+
+/// What a fence's landing did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Landing {
+    /// It closed its pending ask.
+    Settled,
+    /// No ask is pending under that ticket: already settled, never issued, or answered at once. Nothing changed.
+    Unknown,
 }
 
 /// A leaf and everything its parent keeps for it.
@@ -36,8 +60,9 @@ pub struct Holding<P, Q, R> {
     revision: u64,
     /// Scratch for the next read, so a refresh allocates nothing past its high-water mark.
     fresh: Report<P, Q>,
-    /// Asks answered Pending, awaiting their fence.
-    pending: Vec<Asked<P, Q>>,
+    next: u64,
+    /// Asks answered Pending, by ticket, awaiting their fence.
+    pending: Vec<(Ticket, Asked<P, Q>)>,
     /// Exchanges since the owner last drained them.
     receipts: Vec<Receipt<P, Q>>,
 }
@@ -45,7 +70,7 @@ pub struct Holding<P, Q, R> {
 impl<P: Copy + PartialEq, Q: Copy + PartialEq, R: Resident<P, Q>> Holding<P, Q, R> {
     /// The parent around `leaf`, its first report read.
     pub fn new(leaf: R) -> Self {
-        let mut holding = Self { leaf, report: Report::default(), revision: 0, fresh: Report::default(), pending: Vec::new(), receipts: Vec::new() };
+        let mut holding = Self { leaf, report: Report::default(), revision: 0, fresh: Report::default(), next: 0, pending: Vec::new(), receipts: Vec::new() };
         holding.refresh();
         holding
     }
@@ -76,31 +101,28 @@ impl<P: Copy + PartialEq, Q: Copy + PartialEq, R: Resident<P, Q>> Holding<P, Q, 
         true
     }
 
-    /// The law asks the leaf to give back; its answer is kept as a receipt and the report read again.
-    pub fn shrink(&mut self, ask: ShrinkAsk<P, Q>) -> Given<Q> {
+    /// The law asks the leaf to give back; its answer is kept as a receipt under a new ticket.
+    pub fn shrink(&mut self, ask: ShrinkAsk<P, Q>) -> Answered<Q> {
         let given = self.leaf.shrink(ask);
         self.answered(Asked::Shrink(ask), given)
     }
 
-    /// The law grants the leaf room; its answer is kept as a receipt and the report read again.
-    pub fn grow(&mut self, grant: GrowGrant<P, Q>) -> Given<Q> {
+    /// The law grants the leaf room; its answer is kept as a receipt under a new ticket.
+    pub fn grow(&mut self, grant: GrowGrant<P, Q>) -> Answered<Q> {
         let given = self.leaf.grow(grant);
         self.answered(Asked::Grow(grant), given)
     }
 
-    /// A fence the leaf started for `place` has landed: `amount` moved by `way` in `took`. Closes the oldest
-    /// Pending ask on that place with a Done receipt. Answers whether one was open.
-    pub fn landed(&mut self, place: P, way: Way, amount: Q, took: Duration) -> bool {
-        let Some(at) = self.pending.iter().position(|asked| match asked {
-            Asked::Shrink(ask) => ask.place == place,
-            Asked::Grow(grant) => grant.place == place,
-        }) else {
-            return false;
+    /// The fence of `ticket` has landed: `amount` moved by `way` in `took`. Settles that ask once, with a Done
+    /// receipt; any other ticket changes nothing.
+    pub fn landed(&mut self, ticket: Ticket, way: Way, amount: Q, took: Duration) -> Landing {
+        let Some(at) = self.pending.iter().position(|(pending, _)| *pending == ticket) else {
+            return Landing::Unknown;
         };
-        let asked = self.pending.remove(at);
+        let (_, asked) = self.pending.swap_remove(at);
         self.refresh();
-        self.receipts.push(Receipt { asked, given: Given::Done { way, amount, took }, revision: self.revision });
-        true
+        self.receipts.push(Receipt { ticket, asked, given: Given::Done { way, amount, took }, revision: self.revision });
+        Landing::Settled
     }
 
     /// Whether an ask is waiting on its fence.
@@ -114,12 +136,14 @@ impl<P: Copy + PartialEq, Q: Copy + PartialEq, R: Resident<P, Q>> Holding<P, Q, 
         out.append(&mut self.receipts);
     }
 
-    fn answered(&mut self, asked: Asked<P, Q>, given: Given<Q>) -> Given<Q> {
+    fn answered(&mut self, asked: Asked<P, Q>, given: Given<Q>) -> Answered<Q> {
+        let ticket = Ticket(self.next);
+        self.next += 1;
         if matches!(given, Given::Pending { .. }) {
-            self.pending.push(asked);
+            self.pending.push((ticket, asked));
         }
         self.refresh();
-        self.receipts.push(Receipt { asked, given, revision: self.revision });
-        given
+        self.receipts.push(Receipt { ticket, asked, given, revision: self.revision });
+        Answered { ticket, given }
     }
 }

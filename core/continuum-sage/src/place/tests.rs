@@ -734,22 +734,28 @@ mod residents {
 
     // what this catches (SAGE.md, the Resident parent): a holder that has to publish, track its pending
     // fences or keep its own receipts. The parent does all three: it publishes only on change, holds the
-    // Pending ask until its fence lands, and keeps every exchange as a receipt for the law.
+    // Pending ask until the fence of its own ticket lands, and keeps every exchange as a receipt for the law. A late
+    // or duplicate completion, or the fence of another ask on the same place, never settles the wrong one (Codex).
     #[test]
     fn the_parent_keeps_receipts_holds_a_pending_ask_until_its_fence_and_publishes_only_on_change() {
         let mut holding = Holding::new(Paging { held: GB, want: GB });
         assert_eq!(holding.report().1, 1, "its first report is read at once");
         assert!(!holding.refresh(), "nothing changed: nothing to publish");
-        let given = holding.shrink(ShrinkAsk { place: Tier::Vram, to: Bytes(256 * MB), for_qos: crate::Qos::Interactive });
-        assert_eq!(given, Given::Pending { way: Way::CacheOut });
-        assert!(holding.pending());
-        assert_eq!(holding.report().1, 2, "the shrink changed its report");
-        assert!(holding.landed(Tier::Vram, Way::CacheOut, Bytes(768 * MB), Duration::from_millis(3)), "the fence closes the pending ask");
+        let first = holding.shrink(ShrinkAsk { place: Tier::Vram, to: Bytes(512 * MB), for_qos: crate::Qos::Interactive });
+        let second = holding.shrink(ShrinkAsk { place: Tier::Vram, to: Bytes(256 * MB), for_qos: crate::Qos::Interactive });
+        assert_eq!((first.given, second.given), (Given::Pending { way: Way::CacheOut }, Given::Pending { way: Way::CacheOut }));
+        assert_ne!(first.ticket, second.ticket, "two asks on one place, two tickets");
+        assert_eq!(holding.report().1, 3, "each shrink changed its report");
+        // the second fence lands first: it settles its own ask, never the older one on the same place
+        assert_eq!(holding.landed(second.ticket, Way::CacheOut, Bytes(256 * MB), Duration::from_millis(2)), Landing::Settled);
+        assert!(holding.pending(), "the first ask still waits on its own fence");
+        assert_eq!(holding.landed(second.ticket, Way::CacheOut, Bytes(256 * MB), Duration::from_millis(2)), Landing::Unknown, "a duplicate completion changes nothing");
+        assert_eq!(holding.landed(first.ticket, Way::CacheOut, Bytes(512 * MB), Duration::from_millis(3)), Landing::Settled);
         assert!(!holding.pending());
         let mut receipts = Vec::new();
         holding.receipts(&mut receipts);
-        assert_eq!(receipts.len(), 2, "the ask's Pending and its fence's Done");
-        assert!(matches!(receipts[1].given, Given::Done { way: Way::CacheOut, amount: Bytes(a), .. } if a == 768 * MB));
+        assert_eq!(receipts.len(), 4, "two Pending answers and their two fences' Done");
+        assert!(matches!(receipts[2], Receipt { ticket, given: Given::Done { amount: Bytes(a), .. }, .. } if ticket == second.ticket && a == 256 * MB));
         holding.receipts(&mut receipts);
         assert!(receipts.is_empty(), "drained once");
     }

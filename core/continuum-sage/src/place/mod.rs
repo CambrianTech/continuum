@@ -30,7 +30,7 @@ pub use core::PlacerCore;
 pub use ledger::{Accounts, Answer, Ledger, NeverNow, Refusal, ShrinkTo, Untaken};
 pub use composite::{Composite, Priority};
 pub use flex::{Flex, Flexbox, Landed, Share, Shared};
-pub use holding::{Asked, Holding, Receipt};
+pub use holding::{Answered, Asked, Holding, Landing, Receipt, Ticket};
 pub use quantity::{Bytes, Quantity, Slots, Tokens};
 pub use resident::{Cost, Given, GrowGrant, Report, Requires, Resident, Row, Sharing, ShrinkAsk, Varies, Way, Ways};
 
