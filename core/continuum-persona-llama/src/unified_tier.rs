@@ -22,7 +22,7 @@ use llama::{Batch, BindRefusal, ChatRefusal, Context, LoraAdapter, PersonaBlocks
 
 mod kv_home;
 mod learn;
-pub use kv_home::KvHome;
+pub use kv_home::{DeviceRoom, KvHome, Room, RoomAsk, Unmetered};
 use kv_home::KvMemory;
 pub use learn::LearnReply;
 
@@ -154,7 +154,7 @@ impl<'c, 'm> UnifiedTier<'c, 'm> {
     /// device can view host memory; the fork's own otherwise (the fork's `storage_bytes` is 0 then, and
     /// the tier keeps that answer for every later mind).
     fn kv_memory(&mut self, mind: MindId, native: &mut PersonaBlocks) -> Result<KvMemory, TierRefusal> {
-        let KvHome::Mapped(instance) = &self.home else { return Ok(KvMemory::Native) };
+        let KvHome::Mapped { instance, room } = &mut self.home else { return Ok(KvMemory::Native) };
         let dir = instance.dir().to_path_buf();
         let bytes = PersonaBlocks::storage_bytes(self.ctx);
         if bytes == 0 {
@@ -163,13 +163,23 @@ impl<'c, 'm> UnifiedTier<'c, 'm> {
             return Ok(KvMemory::Native);
         }
         if !PersonaBlocks::storage_viewable(self.ctx) {
-            // a device that cannot wrap host memory (CUDA): her storage in the fork's own device memory, viewed the
-            // same way; where it does not fit she moves by row copy until room is made (the Placer's decision)
+            // a device that cannot wrap host memory (CUDA): her storage is device memory for her life, so it is asked
+            // for first and placed on the ledger; refused, she moves by row copy until room is made (the law's)
+            let bytes = bytes as u64;
+            let hold = match room.ask(RoomAsk { persona: mind.persona.0, bytes }) {
+                Room::Granted(hold) => hold,
+                Room::Refused { why, available } => {
+                    continuum_base::probe!(class = "persona.kv_home.no_device_room", persona = %mind.persona.0, why, bytes, available,
+                        "her KV storage was not granted device room: she moves by row copy");
+                    return Ok(KvMemory::Native);
+                }
+            };
             return Ok(match native.reserve_storage(self.ctx) {
-                Ok(()) => KvMemory::Device,
+                Ok(()) => KvMemory::Device { _room: hold },
                 Err(refusal) => {
-                    continuum_base::probe!(class = "persona.kv_home.no_device_room", persona = %mind.persona.0, why = %refusal, bytes = bytes as u64, "her KV storage did not fit in device memory: she moves by row copy");
-                    KvMemory::Native
+                    continuum_base::probe!(class = "persona.kv_home.no_device_room", persona = %mind.persona.0, why = %refusal, bytes,
+                        "granted room, but the device refused her KV storage: she moves by row copy");
+                    KvMemory::Native // the hold drops here: the room goes back
                 }
             });
         }
@@ -248,7 +258,7 @@ impl<'c, 'm> UnifiedTier<'c, 'm> {
             blocks.saved = Saved::Restored;
             return Ok(blocks);
         };
-        let KvHome::Mapped(instance) = &self.home else { return Err(refused(mind, "her KV file needs a mapped home on this node")) };
+        let KvHome::Mapped { instance, .. } = &self.home else { return Err(refused(mind, "her KV file needs a mapped home on this node")) };
         let live = live_file(instance, mind);
         let bytes = PersonaBlocks::storage_bytes(self.ctx);
         if bytes == 0 || !PersonaBlocks::storage_viewable(self.ctx) {

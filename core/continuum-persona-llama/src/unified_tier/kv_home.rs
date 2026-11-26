@@ -18,20 +18,52 @@ const MAPPING_GRANULE: usize = 64 * 1024;
 #[derive(Debug)]
 pub enum KvHome {
     /// Each mind's KV is a block over her own file in this instance's directory, under its lease (other copies
-    /// of us on the node never map there). Whether the device can view it is
-    /// the fork's to say (`storage_bytes` is 0 when it cannot); the tier asks once and keeps the answer.
-    Mapped(continuum_blocks::Instance),
+    /// of us on the node never map there). Whether the device can view it is the fork's to say; where it
+    /// cannot (a discrete GPU), her storage is the fork's device memory instead, and `room` is asked for it
+    /// first.
+    Mapped { instance: continuum_blocks::Instance, room: Box<dyn DeviceRoom> },
     /// The fork's own memory, moved by row copy (a context that is not the Core's shape; examples).
     Native,
-    /// In the fork's own device memory (VRAM), viewed like a mapped block: a device that cannot wrap host memory.
-    Device,
+}
+
+/// What a mind's device storage asks for: her persona and its bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RoomAsk {
+    pub persona: uuid::Uuid,
+    pub bytes: u64,
+}
+
+/// The answer: room held for as long as the hold lives, or none, and why.
+pub enum Room {
+    Granted(Box<dyn Send>),
+    Refused { why: &'static str, available: u64 },
+}
+
+/// The contract a discrete device's KV storage is asked through (UNIFIED-PAGING.md: no allocation outside a
+/// claim). On unified memory a mind's storage is a mapped file the OS pages, and costs nothing parked; on a
+/// discrete device it is device memory for her life, so it is asked for first and placed on the ledger. The
+/// 5090 on 2026-11-26 (Codex, 2f8bd03a1): reserved outside any claim, the driver spilled it into shared system
+/// memory (shared usage 23 to 28 GB, free RAM 7 GB to 520 MB) until NVML lost the driver.
+pub trait DeviceRoom: Send + std::fmt::Debug {
+    fn ask(&mut self, ask: RoomAsk) -> Room;
+}
+
+/// A process with no resource authority (an example, a fixture): the device's own allocation is the only gate.
+/// Named, never a default.
+#[derive(Debug)]
+pub struct Unmetered;
+
+impl DeviceRoom for Unmetered {
+    fn ask(&mut self, _: RoomAsk) -> Room {
+        Room::Granted(Box::new(()))
+    }
 }
 
 /// A mind's KV memory, held beside her fork blocks and dropped after them.
 pub(super) enum KvMemory {
     Native,
     /// In the fork's own device memory (VRAM), viewed like a mapped block: a device that cannot wrap host memory.
-    Device,
+    Device { _room: Box<dyn Send> }, // the room her storage was granted: given back when it drops, with her
     /// Her mapped file. `owned` while it is this core's (in its instance directory: it goes with her); not while a
     /// restore verifies a file still at the path a manifest names, nor once a stop has handed it over (either way
     /// it is the next start's, and is never removed here).
@@ -41,7 +73,7 @@ pub(super) enum KvMemory {
 impl KvMemory {
     /// Whether she has storage of her own the stream can view.
     pub(super) fn held(&self) -> bool {
-        matches!(self, Self::Mapped { .. } | Self::Device)
+        matches!(self, Self::Mapped { .. } | Self::Device { .. })
     }
 
     /// The bytes her mapping takes for `bytes` of storage: whole pages.

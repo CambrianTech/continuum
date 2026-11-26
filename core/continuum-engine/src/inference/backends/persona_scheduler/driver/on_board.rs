@@ -90,3 +90,45 @@ impl CoreHeld {
             "the Core holds this, measured from its context per pool");
     }
 }
+
+/// The Core's answer to a mind's device storage (`DeviceRoom`): room on the resource board, held as her
+/// residency for as long as her storage lives, or refused with what was available, so she moves by row copy.
+/// On the 5090 (2026-11-26) this storage was reserved outside any claim and the driver spilled it into shared
+/// system memory until NVML lost the driver. The check and the hold are two steps on the Core's own thread; the
+/// authority's synchronous take (UNIFIED-PAGING.md, step 3) makes them one.
+
+pub(super) struct CoreRoom {
+    daemon: Option<Arc<ResourceDaemon>>,
+}
+
+impl std::fmt::Debug for CoreRoom {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CoreRoom").field("governed", &self.daemon.is_some()).finish()
+    }
+}
+
+impl CoreRoom {
+    pub(super) fn new() -> Self {
+        Self { daemon: ResourceDaemon::global() }
+    }
+}
+
+impl continuum_persona_llama::DeviceRoom for CoreRoom {
+    fn ask(&mut self, ask: continuum_persona_llama::RoomAsk) -> continuum_persona_llama::Room {
+        use continuum_persona_llama::Room;
+        let Some(daemon) = &self.daemon else {
+            // no authority on this node: the device's own allocation is the only gate (said, never silent)
+            continuum_base::probe!(class = "core.device_room.ungoverned", persona = %ask.persona, bytes = ask.bytes,
+                "no resource authority: her device storage is placed by the device's allocator alone");
+            return Room::Granted(Box::new(()));
+        };
+        let available = daemon.available_for(CORE_CONSUMER_ID, ResourceKind::Vram);
+        if available < ask.bytes {
+            return Room::Refused { why: "the board has no device room for her storage", available };
+        }
+        let hold = daemon.hold_residency(CORE_CONSUMER_ID, [ResidentFloor { kind: ResourceKind::Vram, resident: ask.bytes, headroom: 0, fixed: 0 }]);
+        continuum_base::probe!(class = "core.device_room.granted", persona = %ask.persona, bytes = ask.bytes, available,
+            "a mind's device storage is on the board");
+        Room::Granted(Box::new(hold))
+    }
+}
