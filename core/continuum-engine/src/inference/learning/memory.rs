@@ -86,19 +86,25 @@ impl LearningMemory {
 }
 
 impl ReplyAdmission for LearningMemory {
+    /// `held` is what the shared buffer already holds and `required` what the reply's graph needs in it
+    /// (ggml_backend_sched_alloc_graph_admitted: only `required - held` is allocated, and nothing when the
+    /// graph fits in what is held). Only growth spends memory, so only growth is checked against her seat:
+    /// a graph within the buffer is admitted whatever the buffer's size. Admitting by `required.max(held)`
+    /// refused every lesson smaller than what serving had grown the buffer to (the M5 06:33Z: MTL0
+    /// required 1,795,324,768 within held 4,617,194,784, refused against her measured 3,911,758,624).
     fn workspace(&self, buffer: BufferType, required: u64, held: u64) -> bool {
         let row = self.row(buffer, MemoryRole::SharedComputeRequired);
-        let fits = row.is_some_and(|(row, _)| required.max(held) <= row.bytes);
+        let measured = row.map(|(row, _)| row.bytes);
         let covered = row.is_some_and(|(row, _)| self.covered(row.host));
-        if !(fits && covered) {
+        let admitted = admits(required, held, measured, covered);
+        if !admitted {
             // a refusal names which bound refused: no measured row for this buffer, a graph past the row
-            // measured for it, or a lease no longer covering it (the M5 06:20Z: "optimizer workspace
-            // allocation was refused" said none of these)
+            // measured for it, or a lease no longer covering it
             continuum_base::probe!(class = "learning.workspace.refused", buffer = ?buffer.name(), required, held,
-                measured = row.map_or(0, |(row, _)| row.bytes), has_row = row.is_some(), fits, covered,
-                "a reply's workspace was refused before it allocated");
+                measured = measured.unwrap_or(0), has_row = row.is_some(), covered, // unwrap_or: a probe field; has_row says none was measured
+                "a reply's workspace was refused before it grew");
         }
-        fits && covered
+        admitted
     }
 }
 
@@ -130,5 +136,30 @@ impl OptimizerLease for LearningMemory {
                 charged.set(left);
             }
         }
+    }
+}
+
+/// Whether a reply's graph may take `required` bytes of a shared buffer already holding `held`, against
+/// the row `measured` for her seat (none: no row for this buffer) and whether her lease still covers it.
+/// Only growth past `held` spends memory, so a graph within the buffer is admitted whatever its size.
+fn admits(required: u64, held: u64, measured: Option<u64>, covered: bool) -> bool {
+    required <= held || (measured.is_some_and(|measured| required <= measured) && covered)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::admits;
+
+    // what this catches: a seat refused because serving had grown the shared buffer past her measured row
+    // although her graph fit in it (the M5 06:33Z: required 1,795,324,768 within held 4,617,194,784,
+    // measured 3,911,758,624), and growth past her row or past a lapsed lease admitted.
+    #[test]
+    fn only_growth_past_what_the_buffer_holds_is_checked_against_her_seat() {
+        assert!(admits(1_795_324_768, 4_617_194_784, Some(3_911_758_624), true), "a graph within the buffer");
+        assert!(admits(1_795_324_768, 4_617_194_784, None, false), "within the buffer, no row or lease is spent");
+        assert!(admits(3_000, 1_000, Some(3_000), true), "growth within her row, covered");
+        assert!(!admits(3_001, 1_000, Some(3_000), true), "growth past her row");
+        assert!(!admits(3_000, 1_000, Some(3_000), false), "growth past a lapsed lease");
+        assert!(!admits(3_000, 1_000, None, true), "growth on a buffer she has no row for");
     }
 }
