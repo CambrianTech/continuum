@@ -169,12 +169,27 @@ fn rate(tokens: usize, took: std::time::Duration) -> f64 {
 pub fn prepare(model: &Model, prompt: &str, view: Option<&str>) -> Result<(Vec<i32>, Option<usize>), String> {
     // special=true so chat-template markers tokenize as the model's own special tokens
     let started = std::time::Instant::now();
-    let tokens = model.tokenize(prompt, true, true)?;
+    // Her view held inside her prompt (a slice of it from its start, by construction: the same render
+    // with its generation prompt stripped) is tokenized once with the rest after it: the split is where
+    // the template's generation prompt begins, a special token, so the halves tokenize as the whole does.
+    // Tokenizing her whole prompt and then her whole view again, to find where they agree, cost nearly
+    // twice (the M5, 2026-11-26: 1,974 ms prompt and 1,691 ms view over 39 acts, 505 + 509 ms at 230k).
+    let held = view.filter(|view| view.as_ptr() == prompt.as_ptr() && view.len() <= prompt.len());
+    let (tokens, view_end) = match held {
+        Some(view) => {
+            let mut tokens = model.tokenize(view, true, true)?;
+            let end = tokens.len();
+            tokens.extend(model.tokenize(prompt.get(view.len()..).unwrap_or(""), false, true)?); // unwrap_or: a view as long as the prompt leaves nothing after it
+            (tokens, Some(end))
+        }
+        None => {
+            let tokens = model.tokenize(prompt, true, true)?;
+            let view_end = view.and_then(|view| model.tokenize(view, true, true).ok()).map(|view| reuse::common_prefix(&view, &tokens));
+            (tokens, view_end)
+        }
+    };
+    let view_end = view_end.filter(|end| *end > 0 && *end < tokens.len());
     let prompt_tokenized = started.elapsed();
-    let view_end = view
-        .and_then(|view| model.tokenize(view, true, true).ok())
-        .map(|view| reuse::common_prefix(&view, &tokens))
-        .filter(|end| *end > 0 && *end < tokens.len());
     // Where an act's submit time goes (inference.submit.render has its renders): her whole prompt
     // tokenized, then her view tokenized again to find where it ends.
     continuum_base::probe!(class = "inference.submit.tokenize", prompt_tokens = tokens.len() as u64, prompt_ms = prompt_tokenized.as_millis() as u64,

@@ -404,3 +404,29 @@
             assert!(matches!(next(heard).await, Said::Seat { state: SeatState::Released, .. }));
         }
     }
+
+    // what this catches (the M5, 2026-11-26: every act tokenized her whole prompt, then her whole view
+    // again, 1,974 + 1,691 ms over 39 acts): her view held inside her prompt tokenized once with the
+    // rest after it must give exactly the tokens the whole prompt does, and her view's end, or her next
+    // act's prefix stops matching what she holds.
+    #[test]
+    #[ignore = "requires qwen2.5-0.5b-instruct under ~/.continuum/genome/models; run explicitly"]
+    fn a_held_view_tokenizes_once_with_the_rest_as_the_whole_prompt_does() {
+        let path = dirs::home_dir().expect("test: a home").join(".continuum/genome/models/qwen2.5-0.5b-instruct/qwen2.5-0.5b-instruct-q4_k_m.gguf"); // expect: the test's own precondition
+        if !path.exists() {
+            eprintln!("SKIPPED: {} not present", path.display());
+            return;
+        }
+        let backend = LlamaCppBackend::load(LlamaCppConfig { model_path: path, ..Default::default() }).expect("test: the 0.5B loads"); // expect: the test's own precondition
+        let generation = "<|im_start|>assistant\n";
+        let prompt = format!("<|im_start|>system\nYou are Benchy, a resident.<|im_end|>\n<|im_start|>user\nRead core/src/lib.rs and say what it owns. 9b: ünïcode — fine.<|im_end|>\n{generation}");
+        let view = &prompt[..prompt.len() - generation.len()];
+        let whole = backend.model.tokenize(&prompt, true, true).expect("test: the prompt tokenizes"); // expect: the test's own precondition
+        let held_view = backend.model.tokenize(view, true, true).expect("test: the view tokenizes"); // expect: the test's own precondition
+        let (tokens, view_end) = crate::inference::backends::persona_scheduler::prepare(&backend.model, &prompt, Some(view)).expect("test: prepare"); // expect: the test's own precondition
+        assert_eq!(tokens, whole, "tokenized in two halves at the generation prompt, the same tokens as whole");
+        assert_eq!(view_end, Some(held_view.len()), "her view ends where her view's own tokens do");
+        let apart = String::from(view);
+        let (tokens_apart, end_apart) = crate::inference::backends::persona_scheduler::prepare(&backend.model, &prompt, Some(&apart)).expect("test: prepare"); // expect: the test's own precondition
+        assert_eq!((tokens_apart, end_apart), (whole, Some(held_view.len())), "a view rendered apart takes the other path to the same answer");
+    }
