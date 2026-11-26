@@ -603,6 +603,30 @@ algorithm over any unit, and `cambrian-flex` was never built. So the join is the
   is in flight, taken back by a lease that waits. A seat: its lesson rows (Fit within the ceiling already
   sizes it). A turn's prompt: its own flex, unchanged.
 
+**Everything feeds back** (Joel, 2026-11-26: "everything memory related needs to feed back"). No holder's
+`floor`, `want` or `priority` is a constant someone picked; each is the last measurement of what it is, and
+every decision writes the receipt the next one reads:
+- *what is held*, measured from the allocator after every change (`core.held`; the embedder's lease; a seat's
+  rows), never a plan or a catalog estimate;
+- *what is used*, so `want` tracks use: a stream's KV against the occupant's measured window, a workspace
+  against the largest graph it ran since the last reserve, an embed window against the recalls it served;
+- *every grant, shrink, wait and refusal*, as an observation in the `decide` replay log (`resources.ask.passed`
+  already counts a wait passed and its age): what was asked, what was short, what was shrunk, how long it
+  took to land, and what the work it enabled earned (a lesson learned, a turn's latency);
+- *the law learns from those receipts*. The flex passes are the envelope; priority and the shrink choice
+  are a `decide::Policy` trained on the replay, the same lifecycle as the lane's switch policy.
+
+**Settled in review (Cormac, 2026-11-26 15:55Z):**
+- *One shrink path.* A kernel consumer receives `Shrink` as its existing `ResourceConsumer::reclaim`
+  (`ReclaimRequest` -> `ReclaimOutcome`, deferred and partial outcomes included), settled through `shrink`
+  and a fenced release. A Placer-native holder reads it from its asks state. Both doors reach one solver.
+- *Priority ages.* Temperature alone ranks a learning seat below every serving mind forever (the 5090's
+  13 waits). Priority = measured temperature + f(wait age), capped so a running turn's floor is never
+  shrunk for a seat. The age term is learned from `resources.ask.passed`.
+- *Fit is the seat's share, not the ceiling.* A lesson sized within the ceiling could claim serving's KV,
+  and a shrink would then take a mind's window to train. The lesson is sized within what the flex passes
+  grant the seat at its own priority, with its whole rows as its want. Cormac moves Fit with step 3.
+
 Order: (1) the solver generic in `continuum-sage`, with `continuum-context`'s callers moved and `flex.rs`
 deleted; (2) `Elastic` claims with `Shrink` on the placer; (3) the embedder's window as the first elastic
 holder, since it frees memory at once without a fork verb; (4) the Core's workspace, then its KV. Each lands
