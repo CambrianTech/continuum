@@ -516,9 +516,16 @@ would be memory-only, and each later instance would write it again. So the order
   `unwind`. `Demand` and `Granted` are its bus topics, and `ceiling(unit) -> Bound` is the "never here"
   query. Its law is a `decide::Policy` use case, not a new `PlacementLaw` trait, so placement shares
   the decide module's replay, checkpoint and learned-policy lifecycle with every other decision. A
-  committed claim is `decide::capacity::Lease`, the type that already says observed versus committed
-  for the grid. Codex's host-wide arbitration across instances (`codex/placement-under-load`) is the
-  `Placer` at node scope.
+  committed claim keeps `decide::capacity`'s observed-versus-committed meaning, but `Lease` today is
+  a rate (work a second), and a byte extent, an awake slot and a service rate differ in dimension and
+  lifetime (Cormac, Codex, 2026-11-26). So `Lease` becomes `Lease<Q> { amount: Q, until, price }`,
+  generic over a typed quantity (`Bytes`, `Slots`, `Rate`), so one kind can never be spent as
+  another; the grid's rate is `Lease<Rate>`. Prepare, commit and unwind take a claim id and its
+  owner's generation, so an owner that restarts cannot spend a stale claim, and a prepare across
+  several places succeeds as one claim before `Granted`. Codex's host-wide arbitration across
+  instances (`codex/placement-under-load`, folded at a92d5fc514) is the `Placer` at node scope,
+  serializing prepares across instances; the Streamer supplies backing identity, aliasing, releases
+  and native completion.
 - **Validated by two outliers, as CLAUDE.md's method asks:** the Streamer's blocks (bytes on tiers,
   fenced DMA) and who is awake on a node (minds on levels from stepping to asleep, no bytes moved by
   the `Placer` itself). If both fit `Consumer` without forcing, the interface holds, and the hot tier,
@@ -643,7 +650,7 @@ network link between them. So that works later with no rework, everything built 
 | 1b | `Topology` and the tiers' budgets, once the resource authority says `resources/free` on the bus (card 9d856843, Cormac's delta 8). The drive's measured write rate checks the Mapping link: 64 MiB demoted at 1.06 GB/s on the M5 with serving beside, below what an SSD gives | Fable | Mapping at >= 80% of the measured drive rate |
 | 2 | The first consumer: the Core's parked minds' KV as `MindKv` blocks. Deletes the fork's private storage reservation (#6264), her separate file write, and `preserve.rs`'s JSON token history (her tokens are a block beside her KV) | Fable | `--test-core` byte-identical through a flash round trip; stop and restore at 130k at the drive's rate |
 | 3 | The `Streamer` with `PlacementLaw` (`FractalPager`, `Lru` as baseline), `Forecaster`, the law registry, `blocks/observed` and the `Trace`, simulator and replay; the Lane's `Forecast` as its first `Demand` | Fable | replay reproduces every decision; zero misses for forecast minds; `FractalPager` beats `Lru` on a fitted live trace |
-| 3a | SAGE's `Placer` in `continuum-sage`: `Consumer` with prepare/consume/commit/unwind, `Demand`/`Granted`, `ceiling`, its law as a `decide::Policy` use case, committed claims as `decide::capacity::Lease` | Fable (Placer), Codex (node-scope arbitration on it) | two outlier consumers fit without forcing: a block consumer and the awake/asleep minds; sim replays a captured night's demand with zero waits that never clear |
+| 3a | SAGE's `Placer` in `continuum-sage`: `Consumer` with prepare/consume/commit/unwind, `Demand`/`Granted`, `ceiling`, its law as a `decide::Policy` use case, committed claims as `decide::capacity::Lease<Q>` over typed quantities, claims keyed by id and owner generation | Fable (Placer), Codex (node-scope arbitration on it) | two outlier consumers fit without forcing: a block consumer and the awake/asleep minds; sim replays a captured night's demand with zero waits that never clear |
 | 3b | Workspace, admission and reclaim as blocks ("Every byte the engine holds is a block"): `Workspace` blocks and `grow` at the scheduler's admission callback; `Reservation` replaces every learning lease sum; training demand as `Demand`. Deletes the six counters listed there | Fable (blocks, Streamer), Codex (`Reservation` contract, the discrete tiers' reclaim), Cormac (the trainer as a consumer, outstanding demand) | the M5 and the 5090 each run 15 min on one head: zero refusals that are not "never here"; every wait names the tier and bytes it waits for; forward progress (a `Saved` generation linked to its lesson, serving restored after) on both nodes; time from the short tier freeing to `Granted`, p50 and max; fixtures for pressure onset and recovery, cancel, and a native allocation failure after a reservation |
 | 4 | Discrete: the `Vram` and `Pinned` tiers, `Dma` and `Staged` links, the CUDA graph check | Codex | the 5090: a swap hidden under decode |
 | 5 | The hot tier as `Weights` blocks; its private copier deleted | Codex (owns the catalog) | model load from flash at the drive's rate |
