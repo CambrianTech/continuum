@@ -180,6 +180,10 @@
                 .acquire_guarded(&req("eval-lane", 6_000, 60_000, ReclaimPolicy::Pinned))
                 .expect("6GB fits under the 10GB ceiling");
             assert_eq!(guard.bytes(), 6_000, "guard reports the held bytes");
+            let view = guard.view().expect("live lease");
+            let busy = daemon.governor.lock();
+            assert_eq!(view.bytes_at(0), 6_000, "native callback reads without locking the governor");
+            drop(busy);
             // What this catches: a planner must not pair a post-release budget
             // with a pre-release lease and omit the same reservation twice.
             let read = daemon.replacement_budget_snapshot("serving", ResourceKind::Vram);
@@ -683,4 +687,30 @@
             daemon.is_over_budget(),
             "still over budget — nothing was freed"
         );
+    }
+
+    // what this catches (card 9d856843): a component waiting for memory that cannot hear a release
+    // (nothing said on the bus), finds the topic empty when it attaches late, or wakes on boards
+    // that changed nothing it watches. The authority says its kinds at once, says each lease and
+    // release in order, and says nothing for an unchanged board; a second writer is refused.
+    #[tokio::test]
+    async fn what_is_free_is_said_at_attach_and_on_each_change_only() {
+        let src = Arc::new(MockCapacitySource::new(ResourceKind::Vram, 10_000));
+        let daemon = ResourceDaemon::start(vec![src], vec![], DaemonConfig::default());
+        let bus = continuum_sage::component::Bus::new();
+        daemon.say_on(&bus).expect("test: the authority is the first writer");
+        assert!(daemon.say_on(&bus).is_err(), "a second writer is refused");
+        let free = |seq: u64| {
+            let said = bus.reader::<Free>(FREE, continuum_sage::component::Key::ONE).latest().expect("test: a value is said");
+            assert_eq!(said.provenance.by.seq, seq, "said {seq} times");
+            said.value.kind(ResourceKind::Vram).expect("test: VRAM is governed").available
+        };
+        assert_eq!(free(1), 10_000, "said at once: a late reader reads a value");
+
+        let guard = daemon.acquire_guarded(&req("held", 4_000, u64::MAX, ReclaimPolicy::Pinned)).expect("test: granted");
+        assert_eq!(free(2), 6_000, "a lease is said");
+        daemon.publish_locked(&daemon.governor.lock());
+        assert_eq!(free(2), 6_000, "an unchanged board says nothing");
+        drop(guard);
+        assert_eq!(free(3), 10_000, "a release is said, with nothing else changing");
     }

@@ -85,11 +85,9 @@ use pages::{
 mod genome;
 pub mod genome_catalog;
 mod learn_ledger;
-pub use learn_ledger::{GrantId, GrantShare, LearningEngine, GrantRefusal, GrantTerms, LedgerAnswer, LedgerEngine, LedgerMemory, LedgerSnapshot, Registered, RegisteredGrant};
+pub use learn_ledger::{LearningEngine, GrantRefusal, LedgerAnswer, LedgerEngine, LedgerMemory, LedgerSnapshot, Registered, RegisteredGrant};
 mod learn_residency;
-mod learn_step;
-pub use learn_step::{LearnExample, LearnOutcome, RestoreCheckpoint, RestoreOutcome};
-pub use learn_residency::{Checkpoint, CheckpointAnswer, CoveringLease, FreshShadow, LeaseKind, LearningPlan, LoadedAdapter, MeasuredRow, PlannedKind, PlannedRow, Preflight, PreflightRefusal, RegisteredResidency, ResidencyId, ResidencyRefusal, ResidencyRow, ResidencySubject, ResidencyTerms, RowKind, WeightsPlan};
+pub use learn_residency::{CoveringLease, LeaseKind, LoadedAdapter, MeasuredRow, RegisteredResidency, ResidencyId, ResidencyRefusal, ResidencyRow, ResidencySubject, ResidencyTerms, RowKind, WeightsPlan};
 mod gene_pages;
 pub use gene_pages::{gene_seats, page_gene, GeneMove, GenePageError, GeneSeat};
 pub(crate) use genome::gene_stage_name;

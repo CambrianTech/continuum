@@ -229,7 +229,7 @@
             turn(prompt).expect("test: her turn submits").collect().await.expect("test: her first turn answers");
 
             let seat = SeatId(uuid::Uuid::new_v4());
-            let fresh = crate::inference::llama_server::FreshShadow { name: "validator".into(), rank: 8, alpha: 16.0, targets: vec!["attn_q".into(), "attn_v".into()], top_layers: 0, seed: 42 };
+            let fresh = crate::inference::learning::FreshShadow { name: "validator".into(), rank: 8, alpha: 16.0, targets: vec!["attn_q".into(), "attn_v".into()], top_layers: 0, seed: 42 };
             let optimizer = llama::Optimizer::AdamW { learning_rate: 5e-3, beta1: 0.9, beta2: 0.999, eps: 1e-8, weight_decay: 0.0 };
             let port: &dyn LearnPort = &backend;
             assert!(port.tell(Learning::Measure(Measure { seat, mind: continuum_persona_engine::persona::PersonaId(her), shadow: ShadowSource::Fresh(fresh), optimizer, sized_for: lesson() })).is_ok());
@@ -277,14 +277,14 @@
             assert!(matches!(next(&mut heard).await, Said::Seat { state: SeatState::Released, .. }), "released");
             // A shadow loaded but never seated is released whole, and a seat never told is released too.
             let loaded = SeatId(uuid::Uuid::new_v4());
-            let fresh = crate::inference::llama_server::FreshShadow { name: "loaded".into(), rank: 4, alpha: 8.0, targets: vec!["attn_q".into()], top_layers: 0, seed: 7 };
+            let fresh = crate::inference::learning::FreshShadow { name: "loaded".into(), rank: 4, alpha: 8.0, targets: vec!["attn_q".into()], top_layers: 0, seed: 7 };
             assert!(port.tell(Learning::Measure(Measure { seat: loaded, mind: continuum_persona_engine::persona::PersonaId(her), shadow: ShadowSource::Fresh(fresh), optimizer, sized_for: lesson() })).is_ok());
             assert!(matches!(next(&mut heard).await, Said::Seat { state: SeatState::Measured { .. }, .. }));
             assert!(port.tell(Learning::Load { seat: loaded }).is_ok());
             assert!(matches!(next(&mut heard).await, Said::Seat { state: SeatState::Loaded { .. }, .. }));
             // A repeated Measure whose lesson cannot render (no reply of hers) on that loaded seat keeps it.
             let unrenderable = Lesson { messages: vec![serde_json::json!({"role": "user", "content": "no reply"})], tools: None };
-            let refit = crate::inference::llama_server::FreshShadow { name: "loaded".into(), rank: 4, alpha: 8.0, targets: vec!["attn_q".into()], top_layers: 0, seed: 7 };
+            let refit = crate::inference::learning::FreshShadow { name: "loaded".into(), rank: 4, alpha: 8.0, targets: vec!["attn_q".into()], top_layers: 0, seed: 7 };
             assert!(port.tell(Learning::Measure(Measure { seat: loaded, mind: continuum_persona_engine::persona::PersonaId(her), shadow: ShadowSource::Fresh(refit), optimizer, sized_for: unrenderable })).is_ok());
             assert!(matches!(next(&mut heard).await, Said::Seat { state: SeatState::Kept { .. }, .. }), "a malformed repeat Measure on a loaded seat keeps it, never ends it");
             assert!(port.tell(Learning::Release { seat: loaded }).is_ok());
@@ -393,7 +393,7 @@
         async fn learned(port: &dyn LearnPort, heard: &mut tokio::sync::mpsc::UnboundedReceiver<Arc<Said>>, learns: Learns<'_>) {
             let Learns { mind, steps, into } = learns;
             let seat = SeatId(uuid::Uuid::new_v4());
-            let fresh = crate::inference::llama_server::FreshShadow { name: format!("shadow-{}", seat.0), rank: 8, alpha: 16.0, targets: vec!["attn_q".into(), "attn_v".into()], top_layers: 0, seed: 42 };
+            let fresh = crate::inference::learning::FreshShadow { name: format!("shadow-{}", seat.0), rank: 8, alpha: 16.0, targets: vec!["attn_q".into(), "attn_v".into()], top_layers: 0, seed: 42 };
             let optimizer = llama::Optimizer::AdamW { learning_rate: 5e-3, beta1: 0.9, beta2: 0.999, eps: 1e-8, weight_decay: 0.0 };
             assert!(port.tell(Learning::Measure(Measure { seat, mind: continuum_persona_engine::persona::PersonaId(mind), shadow: ShadowSource::Fresh(fresh), optimizer, sized_for: lesson() })).is_ok());
             assert!(matches!(next(heard).await, Said::Seat { state: SeatState::Measured { .. }, .. }));

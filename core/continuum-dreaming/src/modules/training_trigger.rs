@@ -65,9 +65,11 @@ pub mod trainer;
 pub mod cleaner;
 pub(crate) mod competence;
 mod in_place;
+mod on_engine;
+mod seat_run;
 mod owned;
 pub(crate) use owned::OwnedKind;
-pub(crate) use durable::{CheckpointedSides, Membership, RekeyCandidate, RekeyCounts, RekeyFilter, RekeyRefused, Rekeyed, RetireReport, RetireSelection};
+pub(crate) use durable::{CheckpointedSides, RekeyCandidate, RekeyCounts, RekeyFilter, RekeyRefused, Rekeyed, RetireReport, RetireSelection};
 
 
 /// Default `validation_split` when the submit doesn't pin one. 0.0
@@ -164,9 +166,6 @@ pub struct TrainingTriggerState {
     /// This node has accepted examples and no engine to learn them on, and has said so once
     /// ([`TrainingTriggerState::note_no_learning_engine`]); cleared when a learning engine appears.
     no_learning_engine_noted: std::sync::atomic::AtomicBool,
-    /// Bucket membership: bumped by every write that moves rows between buckets (a re-key), under
-    /// both buckets' gates, so a pass that selected its rows before the move stops at its gate.
-    membership: std::sync::atomic::AtomicU64,
     /// The LIVE model catalog every submit resolves its base against (`base_identity::canonical_base`):
     /// the one the serving daemon and `models/*` mutate, so a model pulled after boot resolves at once.
     models: Arc<crate::model_registry::live::ModelCatalog>,
@@ -175,7 +174,10 @@ pub struct TrainingTriggerState {
     /// when the trainer component is built on its owner's bus.
     out: parking_lot::Mutex<Option<trainer::TrainerOut>>,
     /// The learners seated in place and the engines' workspaces (card 4114a2c6).
-    in_place: in_place::InPlace,
+    /// The authorities learning answers to: the resource authority, the serving gate and custody.
+    authority: crate::genome::learner::seat::Authority,
+    /// The seats this trigger holds on the node's in-process engine.
+    on_engine: on_engine::OnEngine,
     /// Finite admitted operations outlive a cancelled caller. Shutdown drains
     /// this set; dropping a caller never aborts a writer or releases its lease.
     operations: parking_lot::Mutex<tokio::task::JoinSet<()>>,
@@ -223,10 +225,10 @@ impl TrainingTriggerState {
             ready: std::sync::atomic::AtomicBool::new(false),
             stopping: std::sync::atomic::AtomicBool::new(false),
             no_learning_engine_noted: std::sync::atomic::AtomicBool::new(false),
-            membership: std::sync::atomic::AtomicU64::new(0),
             next_sequence: std::sync::atomic::AtomicU64::new(1),
             out: parking_lot::Mutex::new(None),
-            in_place: in_place::InPlace::new(authority),
+            authority,
+            on_engine: on_engine::OnEngine::default(),
             operations: parking_lot::Mutex::new(tokio::task::JoinSet::new()),
             running: owned::Running::default(),
             #[cfg(test)]
@@ -241,14 +243,13 @@ impl TrainingTriggerState {
 
 
 
-    /// Every recovery pass, in order: what the tick runs AND what a serving change wakes, one
-    /// list, so a pass added for one is never missing from the other (Cormac on #5562: the wake
-    /// ran two of four, and missed the remainder pass a grown window unblocks).
-    /// The trigger's pass: learn every accepted example the live engine's base can learn, in place
-    /// (`in_place`). A node serving nothing learns nothing until it serves.
+    /// The trigger's pass: learn every accepted example the node engine's base can learn, in place,
+    /// through its port (IN-PROCESS-LEARNING.md L3, `on_engine`). A node serving nothing learns
+    /// nothing until it serves.
     pub(crate) async fn recover_pass(self: &Arc<Self>) -> Result<(), String> {
         self.ensure_storage().await?; // an interrupted schema setup is retried here, serving or not
-        let Some(lane) = crate::inference::lane_registry::live_lane() else {
+        // the engine says what it serves: the owner of that fact, never a snapshot that may lag it
+        let (Some(port), Some(model)) = (on_engine::port(), on_engine::served_model().await) else {
             if !self.no_learning_engine_noted.load(std::sync::atomic::Ordering::Relaxed) {
                 let pending = self.pending_views().await?;
                 self.note_no_learning_engine(&pending);
@@ -256,13 +257,16 @@ impl TrainingTriggerState {
             return Ok(());
         };
         self.no_learning_engine_noted.store(false, std::sync::atomic::Ordering::Relaxed);
-        self.learn_in_place(lane.incarnation(), &lane.model).await
+        if let Err(why) = self.learn_on_engine(&port, &model).await {
+            continuum_base::probe!(class = "training.on_engine.pass_failed", reason = %why,
+                "a pass on the node engine could not read the journal; durable work stays and the next wake tries again");
+        }
+        Ok(())
     }
 
-    /// No llama-server lane: in-place learning has no engine on this node. A node that serves
-    /// in-process (the 5090, Codex 2026-11-22: 8 accepted examples, learned=0, no checkpoint) is
-    /// serving, so this is never a quiet "nothing to do". With examples waiting, say so once per
-    /// transition, naming what waits; in-process learning is IN-PROCESS-LEARNING.md L2 and L3.
+    /// No node engine, or none serving yet: in-place learning has no engine on this node. With
+    /// examples waiting this is never a quiet "nothing to do" (the 5090, Codex 2026-11-22: 8 accepted
+    /// examples, learned=0, no checkpoint): say so once per transition, naming what waits.
     fn note_no_learning_engine(&self, pending: &[crate::commands::training_trigger::status::PendingBucketView]) {
         let examples: u64 = pending.iter().map(|bucket| u64::from(bucket.examples_pending)).sum();
         if examples == 0 {
@@ -366,16 +370,20 @@ impl ServiceModule for TrainingTriggerModule {
         u32::try_from(in_flight).map_err(|_| format!("{in_flight} learning operations in flight do not fit the drain count"))
     }
 
-    /// Publish and page out every learner whose engine is idle; a learner mid-step is left to her
-    /// step (her progress since her newest generation is learned again from the journal if the
-    /// join does not reach it). Fails, naming the count, when a learner's progress was not published.
+    /// Checkpoint every seat on the node engine that holds progress and is between lessons: its
+    /// Saved commits it as any other. A seat mid-lesson is left to it; what it learned since its
+    /// newest generation is learned again from the journal if the core stops first.
     async fn save_state(&self) -> Result<(), String> {
-        let quiesced = shutdown_step("save.quiesce", self.state.in_place.quiesce(&self.state, in_place::Busy::Skip)).await;
-        continuum_base::probe!(class = "training.in_place.saved", stopped = quiesced.stopped, unpublished = quiesced.unpublished,
-            unconfirmed = quiesced.unconfirmed, busy = quiesced.busy, "at save, every idle engine's learners published and paged out; a busy engine is left to its step");
-        match quiesced.unpublished {
-            0 => Ok(()),
-            unpublished => Err(format!("{unpublished} learners' progress since their newest generation was not published; the journal still holds it")),
+        let told = shutdown_step("save.checkpoint_seats", async { self.state.checkpoint_seats() }).await;
+        match told {
+            Ok(told) => {
+                continuum_base::probe!(class = "training.on_engine.saved", told = told, "at save, every ready seat holding progress was told to checkpoint");
+                Ok(())
+            }
+            Err(why) => {
+                continuum_base::probe!(class = "training.on_engine.save_failed", reason = %why, "at save, the seats were not checkpointed; the journal still holds their progress");
+                Ok(())
+            }
         }
     }
 

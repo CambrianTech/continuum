@@ -192,6 +192,8 @@ pub struct ResourceDaemon {
     /// what it decides. Grows after startup (no restart), like `consumers`; each observer is
     /// panic-isolated so one broken consumer can't abort the reconcile tick.
     tick_observers: RwLock<Vec<Arc<dyn Fn(&LeaseBoard) + Send + Sync>>>,
+    /// What is free, said on the node bus once boot gives it one ([`Self::say_on`]).
+    said: Mutex<Option<said::Said>>,
 }
 
 static GLOBAL_RESOURCE_DAEMON: std::sync::OnceLock<std::sync::Arc<ResourceDaemon>> =
@@ -246,6 +248,7 @@ impl ResourceDaemon {
             config,
             last_drift_bytes: Mutex::new([0; 3]),
             tick_observers: RwLock::new(Vec::new()),
+            said: Mutex::new(None),
         });
 
         // The canonical runner owns the loop: interval + Skip + PER-TICK
@@ -269,7 +272,19 @@ impl ResourceDaemon {
     /// `publish` is an atomic store plus a `watch::send`, cheap enough to hold
     /// the lock across.
     fn publish_locked(&self, governor: &ResourceGovernor) {
-        self.channel.publish(governor.board());
+        let board = governor.board();
+        if let Some(said) = self.said.lock().as_mut() {
+            said.board(&board);
+        }
+        self.channel.publish(board);
+    }
+
+    /// Say what is free on `bus` (`resources/free`) from now on, starting with the current board.
+    /// Boot gives the authority the node bus once; a second writer on that bus is refused.
+    pub fn say_on(&self, bus: &continuum_sage::component::Bus) -> Result<(), continuum_sage::component::Taken> {
+        let governor = self.governor.lock(); // held: no board is published between the first said and the rest
+        *self.said.lock() = Some(said::Said::on(bus, &governor.board())?);
+        Ok(())
     }
 
     /// Grant a lease (or fail-loud refusal). Microsecond in-memory critical
@@ -785,6 +800,10 @@ impl LeaseGuard {
         self.daemon.governor.lock().lease(&self.lease_id).map(|l| l.bytes).unwrap_or(0) // unwrap_or: no lease means nothing held, the documented answer once it is released or swept
     }
 
+    /// A native callback can inspect this reservation without taking custody of it.
+    pub fn view(&self) -> Option<super::ledger::LeaseView> {
+        self.daemon.governor.lock().lease_view(&self.lease_id)
+    }
     /// Release the reservation early (idempotent). `Drop` calls this if the guard
     /// is dropped without an explicit release.
     pub fn release(mut self) {
@@ -928,6 +947,9 @@ fn drift_should_report(drift: u64, last: &mut u64) -> bool {
         false
     }
 }
+
+mod said;
+pub use said::{Free, KindFree, FREE};
 
 #[cfg(test)]
 mod tests;

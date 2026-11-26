@@ -56,44 +56,6 @@ impl LearningEngine {
     }
 }
 
-/// A grant the core issues: never reused, so a new share is a new id (and the old is revoked).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct GrantId(uuid::Uuid);
-
-impl GrantId {
-    pub fn issue() -> Self {
-        Self(uuid::Uuid::new_v4())
-    }
-}
-
-impl std::fmt::Display for GrantId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-/// How much of the engine's time a grant lets learning take while another slot serves.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GrantShare {
-    /// Learning only while no other slot serves; every contended step is refused. The bootstrap
-    /// before anything has been measured (Codex, 2026-11-09: share 0, never an invented number).
-    UncontendedOnly,
-    /// Of every `period`, at most `share_ppm` millionths, each learning chunk at most `max_chunk`
-    /// (the latency a neighbour may wait behind one chunk), all from measurement. A share without
-    /// its chunk bound is not a measured grant, so it cannot be written.
-    Measured { share_ppm: std::num::NonZeroU32, period: std::time::Duration, max_chunk: std::time::Duration },
-}
-
-/// What a grant allows, until `expires_in` (the engine turns it into its own clock, so no
-/// translation can go wrong).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GrantTerms {
-    pub id: GrantId,
-    pub engine: LedgerEngine,
-    pub share: GrantShare,
-    pub expires_in: std::time::Duration,
-}
-
 /// Why the engine refused a ledger request, by the engine's own names (`learn_refusal_name`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -249,32 +211,6 @@ impl LearningEngine {
         Ok(reply.map(|reply| reply.snapshot))
     }
 
-    /// `POST /learn/grants`: register `terms` with the engine.
-    pub async fn register_learn_grant(&self, terms: &GrantTerms) -> Result<LedgerAnswer<Registered<GrantRefusal>>, LlamaServerError> {
-        let (share_ppm, period_ms, max_chunk_us) = match terms.share {
-            GrantShare::UncontendedOnly => (0, 0, 0),
-            GrantShare::Measured { share_ppm, period, max_chunk } => (share_ppm.get(), duration_ms(period)?, duration_us(max_chunk)?),
-        };
-        let body = serde_json::json!({
-            "id": terms.id.to_string(),
-            "engine": terms.engine,
-            "period_ms": period_ms,
-            "share_ppm": share_ppm,
-            "max_chunk_us": max_chunk_us,
-            "expires_in_ms": duration_ms(terms.expires_in)?,
-        });
-        let reply = self.ledger_request::<GrantRefusal>(self.client.post(format!("{}/learn/grants", self.root)).json(&body)).await?;
-        Ok(reply.map(LedgerReply::registered))
-    }
-
-    /// `POST /learn/grants/revoke`: no new work under `id` (idempotent); its account goes once its
-    /// last reservation settles.
-    pub async fn revoke_learn_grant(&self, id: &str) -> Result<LedgerAnswer<LedgerSnapshot>, LlamaServerError> {
-        let body = serde_json::json!({ "id": id });
-        let reply = self.ledger_request::<GrantRefusal>(self.client.post(format!("{}/learn/grants/revoke", self.root)).json(&body)).await?;
-        Ok(reply.map(|reply| reply.snapshot))
-    }
-
     /// One ledger route: the engine's answer parsed whole (identity, clock, grants, residencies,
     /// measured memory) with the route family's refusal names, NoLedger for an engine without it.
     pub(super) async fn ledger_request<R: serde::de::DeserializeOwned>(
@@ -299,14 +235,4 @@ impl LearningEngine {
             .map(LedgerAnswer::Ledger)
             .map_err(|e| LlamaServerError::Unreachable(format!("the learning ledger answered no ledger: {e}")))
     }
-}
-
-/// A duration on the wire in whole milliseconds, refused past what the field holds.
-fn duration_ms(d: std::time::Duration) -> Result<u64, LlamaServerError> {
-    u64::try_from(d.as_millis()).map_err(|_| LlamaServerError::Unreachable(format!("{d:?} does not fit the ledger's milliseconds")))
-}
-
-
-fn duration_us(d: std::time::Duration) -> Result<u64, LlamaServerError> {
-    u64::try_from(d.as_micros()).map_err(|_| LlamaServerError::Unreachable(format!("{d:?} does not fit the ledger's microseconds")))
 }

@@ -19,14 +19,17 @@
 //! No engine is a typed [`Unavailable`] that returns the command to the trainer, which still owns its
 //! guards; never a fallback to another path.
 
+mod memory;
+pub use memory::LearningMemory;
+
 use std::num::NonZeroU64;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use continuum_persona_engine::persona::PersonaId;
+pub use continuum_persona_engine::persona::PersonaId;
 use continuum_sage::dataflow::TopicName;
-use crate::inference::llama_server::FreshShadow;
-use llama::{MemoryRow, Optimizer, OptimizerLease, ReplyAdmission};
+// The seam's own vocabulary: a caller names the guards and the optimizer through it, never through llama.
+pub use llama::{BufferType, MemoryRole, MemoryRow, Optimizer, OptimizerLease, ReplyAdmission, Slot};
 
 /// The engine's one learning stream: every [`Said`], from its one producer (Cormac on #6254).
 pub const LEARNING_SAID: TopicName = TopicName("learning/said");
@@ -86,6 +89,18 @@ pub struct Seat {
     pub seat: SeatId,
     /// A non-owning view of the optimizer's lease: native code asks it before each allocation.
     pub lease: Box<dyn OptimizerLease>,
+}
+
+/// A fresh shadow's shape, all of it explicit: the engine writes it on her resident weights from
+/// exactly these fields and fills none in.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FreshShadow {
+    pub name: String,
+    pub rank: u32,
+    pub alpha: f32,
+    pub targets: Vec<String>,
+    pub top_layers: u32,
+    pub seed: u32,
 }
 
 /// Where a seat's shadow comes from (Cormac on #6254). Either way the engine makes it on her resident

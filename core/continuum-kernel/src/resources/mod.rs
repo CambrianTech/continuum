@@ -201,7 +201,8 @@ pub use consumer::{
     ConsumerFootprint, ReclaimOutcome, ReclaimReason, ReclaimRequest, ReclaimStatus,
     ResourceConsumer,
 };
-pub use daemon::{DaemonConfig, LeaseGuard, LeasePoolView, ReplacementBudget, ResidencyGuard, ResidentFloor, ResourceDaemon};
+pub use ledger::LeaseView;
+pub use daemon::{DaemonConfig, Free, KindFree, LeaseGuard, LeasePoolView, ReplacementBudget, ResidencyGuard, ResidentFloor, ResourceDaemon, FREE};
 pub use governor::{GovernorConfig, PlannedReclaim, ResourceGovernor};
 pub use lease::{LeaseError, LeaseRequest, ReclaimPolicy, ResourceKind, ResourceLease};
 pub use ledger::{KindLedger, LeaseBoard, ResourceLeaseLedger};

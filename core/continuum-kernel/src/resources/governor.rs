@@ -344,6 +344,10 @@ impl ResourceGovernor {
         self.ledger.lease(lease_id)
     }
 
+    pub(super) fn lease_view(&mut self, id: &str) -> Option<super::ledger::LeaseView> {
+        self.ledger.lease_view(id)
+    }
+
     /// The board the daemon publishes and the `resources/*` commands return.
     pub fn board(&self) -> LeaseBoard {
         self.ledger.board()

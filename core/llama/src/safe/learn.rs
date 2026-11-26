@@ -642,6 +642,15 @@ impl ReplyAdmission for Released {
     }
 }
 
+impl Optimizer {
+    /// AdamW at `learning_rate`, every other parameter ggml's own default: the one owner of those
+    /// numbers, which the llama-server learning path used, so a learner never types its betas.
+    pub fn adamw(learning_rate: f32) -> Self {
+        let defaults = unsafe { sys::ggml_opt_get_default_optimizer_params(std::ptr::null_mut()) }.adamw;
+        Optimizer::AdamW { learning_rate, beta1: defaults.beta1, beta2: defaults.beta2, eps: defaults.eps, weight_decay: defaults.wd }
+    }
+}
+
 fn optimizer_params(optimizer: Optimizer) -> sys::ggml_opt_optimizer_params {
     let mut params = unsafe { sys::ggml_opt_get_default_optimizer_params(std::ptr::null_mut()) };
     match optimizer {

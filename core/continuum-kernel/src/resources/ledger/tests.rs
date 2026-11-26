@@ -344,7 +344,12 @@
                 0,
             )
             .unwrap();
+        let view = ledger.lease_view("d1").expect("live grant");
         ledger.renew("d1", 5_000, 500).expect("live lease renews");
+        assert_eq!(view.bytes_at(4_999), 500);
+        assert_eq!(view.bytes_at(5_000), 0);
+        ledger.shrink("d1", 100).expect("partial reclaim");
+        assert_eq!(view.bytes_at(4_999), 400);
         assert_eq!(ledger.lease("d1").unwrap().expires_at_ms, 5_000);
         // now past the new deadline
         let err = ledger
@@ -356,6 +361,8 @@
                 lease_id: "d1".into()
             }
         );
+        ledger.release("d1").expect("holder released");
+        assert_eq!(view.bytes_at(0), 0);
         // unknown id is fail-loud, not a no-op
         assert_eq!(
             ledger.renew("ghost", 9_000, 100).expect_err("missing"),

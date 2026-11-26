@@ -230,8 +230,6 @@ impl RetireReport {
 pub(in crate::modules::training_trigger) enum OperationPoint {
     BeforeSchemaSetup,
     AcceptanceCommitted,
-    /// A learner's pass, just seated, before her slot is asked for.
-    SeatedBeforeSlot,
 }
 
 /// Pause the actual owner at a persistence boundary; no replacement storage or
