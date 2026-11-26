@@ -38,11 +38,17 @@ impl<P: Copy + PartialEq + std::fmt::Debug, Q: Quantity> Ledger<P, Q> {
         }
     }
 
+    /// Replace every floor with `floors`: a guarantee not named again is withdrawn.
+    pub fn floors(&mut self, floors: impl IntoIterator<Item = (Owner, P, Q)>) {
+        self.floors.clear();
+        self.floors.extend(floors.into_iter().filter(|(_, _, amount)| amount.units() > 0).map(|(owner, place, amount)| Floor { owner, place, amount }));
+    }
+
     /// What `owner` could be granted on `place` now: the smaller of the place's free room and its pool's,
     /// less what other owners' floors on that physical memory still lack. `None` for a place the ledger
     /// has not been told of.
     pub fn room_for(&self, owner: Owner, place: P) -> Option<Q> {
-        let free = self.pooled_free(place)?.units();
+        let free = self.free(place)?.units();
         let root = self.root(place);
         let owed = self
             .floors
@@ -121,8 +127,9 @@ impl<P: Copy + PartialEq + std::fmt::Debug, Q: Quantity> Ledger<P, Q> {
             .is_some_and(|floor| need.amount.units() <= floor.amount.units().saturating_sub(self.holding_of(owner, need.place).units()))
     }
 
-    /// The place's free room, bounded by its pool's.
-    pub(super) fn pooled_free(&self, place: P) -> Option<Q> {
+    /// What any owner could be granted on `place` now, floors aside: its free room, bounded by its
+    /// pool's. `None` for a place the ledger has not been told of.
+    pub fn free(&self, place: P) -> Option<Q> {
         let own = self.accounts(place)?.free();
         match self.pool_of(place) {
             Some(pool) => Some(own.min(self.accounts(pool)?.free())),
