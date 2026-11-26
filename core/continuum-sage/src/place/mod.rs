@@ -15,7 +15,9 @@
 //! as a `decide::Policy` use case, and its consumers, come next on this contract.
 
 mod claim;
+mod composite;
 mod flex;
+mod holding;
 mod component;
 mod core;
 mod ledger;
@@ -26,7 +28,9 @@ pub use claim::{Claim, ClaimId, Generation, Need, Owner};
 pub use component::{key_of, Act, AskId, Asks, Domain, Placer, Shortfall, Status};
 pub use core::PlacerCore;
 pub use ledger::{Accounts, Answer, Ledger, NeverNow, Refusal, ShrinkTo, Untaken};
+pub use composite::{Composite, Priority};
 pub use flex::{Flex, Flexbox, Landed, Share, Shared};
+pub use holding::{Asked, Holding, Receipt};
 pub use quantity::{Bytes, Quantity, Slots, Tokens};
 pub use resident::{Cost, Given, GrowGrant, Report, Requires, Resident, Row, Sharing, ShrinkAsk, Varies, Way, Ways};
 

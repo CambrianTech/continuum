@@ -624,40 +624,18 @@ mod residents {
         }
     }
 
-    /// The Core: a Resident of mixed children, folding their reports and sharing a shrink among them.
-    struct Core {
-        parts: Vec<Box<dyn Resident<Tier, Bytes>>>,
-        sharing: Sharing<Bytes>,
-        rows: Report<Tier, Bytes>,
+    /// The law's priority in these tests: the class alone (the system's point of view).
+    fn by_class(row: &Row<Tier, Bytes>) -> u8 {
+        row.qos as u8 * 64
     }
 
-    impl Resident<Tier, Bytes> for Core {
-        fn report(&self, into: &mut Report<Tier, Bytes>) {
-            for part in &self.parts {
-                part.report(into);
-            }
+    /// A Core: the library's composite over mixed parts, nothing written here.
+    fn core(parts: Vec<Box<dyn Resident<Tier, Bytes> + Send>>) -> Composite<Tier, Bytes> {
+        let mut core = Composite::new(by_class);
+        for part in parts {
+            core.push(part);
         }
-        fn shrink(&mut self, ask: ShrinkAsk<Tier, Bytes>) -> Given<Bytes> {
-            let ShrinkAsk { place, to, for_qos } = ask;
-            self.rows.clear();
-            for part in &self.parts {
-                part.report(&mut self.rows);
-            }
-            // the law's priority: the class first (the system's point of view); age would refine it
-            let targets = self.sharing.shrink(&self.rows, place, to, |row| row.qos as u8 * 64).to_vec();
-            let mut freed = 0;
-            for ((part, row), target) in self.parts.iter_mut().zip(self.rows.rows()).zip(targets) {
-                if let Some(target) = target.filter(|target| *target < row.held) {
-                    if let Given::Done { amount, .. } = part.shrink(ShrinkAsk { place, to: target, for_qos }) {
-                        freed += amount.0;
-                    }
-                }
-            }
-            Given::Done { way: Way::Resize, amount: Bytes(freed), took: Duration::ZERO }
-        }
-        fn grow(&mut self, _: GrowGrant<Tier, Bytes>) -> Given<Bytes> {
-            Given::Refused { why: "not in this test" }
-        }
+        core
     }
 
     fn elastic(floor: u64) -> Varies<Tier, Bytes> {
@@ -670,15 +648,11 @@ mod residents {
     // its parts' reports and shares a shrink so the lowest class gives first and the weights are never asked.
     #[test]
     fn a_composite_shares_a_shrink_lowest_class_first_and_never_asks_the_fixed() {
-        let mut core = Core {
-            parts: vec![
+        let mut core = core(vec![
                 Box::new(Leaf { held: 17_402 * MB, varies: Varies::Fixed { why: "the base model serves live minds" }, qos: crate::Qos::Interactive }),
                 Box::new(Leaf { held: 8_704 * MB, varies: elastic(2_048 * MB), qos: crate::Qos::Interactive }),
                 Box::new(Leaf { held: 3_124 * MB, varies: elastic(1_024 * MB), qos: crate::Qos::Background }),
-            ],
-            sharing: Sharing::default(),
-            rows: Report::default(),
-        };
+        ]);
         let mut report = Report::default();
         core.report(&mut report);
         assert_eq!(report.rows().len(), 3, "the parent's report is its children's, folded");
@@ -721,23 +695,80 @@ mod residents {
     // room.
     #[test]
     fn a_shrink_keeps_what_a_held_row_requires_and_lowers_a_level_instead_of_dropping() {
-        let mut core = Core {
-            parts: vec![
-                Box::new(Call { held: 4 * GB, encoder: 512 * MB }),
-                Box::new(Leaf { held: 2 * GB, varies: elastic(512 * MB), qos: crate::Qos::Background }),
-            ],
-            sharing: Sharing::default(),
-            rows: Report::default(),
-        };
+        let mut core = core(vec![
+            Box::new(Call { held: 4 * GB, encoder: 512 * MB }),
+            Box::new(Leaf { held: 2 * GB, varies: elastic(512 * MB), qos: crate::Qos::Background }),
+        ]);
         // what the card holds of them: their rows and the encoder the call requires
         let card = 4 * GB + 2 * GB + 512 * MB;
         let given = core.shrink(ShrinkAsk { place: Tier::Vram, to: Bytes(card - 3 * GB), for_qos: crate::Qos::Interactive });
-        assert_eq!(given, Given::Done { way: Way::Resize, amount: Bytes(3 * GB), took: Duration::ZERO });
+        assert!(matches!(given, Given::Done { amount: Bytes(moved), .. } if moved == 3 * GB), "3 GiB moved in all: {given:?}"); // each part's own way is its own receipt
         let mut report = Report::default();
         core.report(&mut report);
         let held: Vec<u64> = report.rows().iter().map(|row| row.held.0 / MB).collect();
         assert_eq!(held, vec![4_096 - 1_536, 512], "the workspace to its floor first, then the call a level lower; the encoder untouched");
         assert_eq!(report.requirements(0).map(|requires| requires.amount.0 / MB).collect::<Vec<_>>(), vec![512]);
+    }
+
+    /// A holder whose cache-out lands later: it answers Pending, and its owner reports the fence.
+    struct Paging {
+        held: u64,
+        want: u64,
+    }
+
+    impl Resident<Tier, Bytes> for Paging {
+        fn report(&self, into: &mut Report<Tier, Bytes>) {
+            let ways = Ways { resize: None, cache_out: Some((Tier::Pinned, Cost::default())), collapse: None };
+            into.row(Row { place: Tier::Vram, held: Bytes(self.held), want: Bytes(self.want), varies: Varies::Elastic { floor: Bytes(0), ways }, qos: crate::Qos::Utility, waited: Duration::ZERO });
+        }
+        fn shrink(&mut self, ask: ShrinkAsk<Tier, Bytes>) -> Given<Bytes> {
+            self.held = ask.to.0; // the copy is started; its bytes are released when its fence lands
+            Given::Pending { way: Way::CacheOut }
+        }
+        fn grow(&mut self, grant: GrowGrant<Tier, Bytes>) -> Given<Bytes> {
+            let took = grant.to.0.saturating_sub(self.held);
+            self.held = grant.to.0;
+            Given::Done { way: Way::Restore, amount: Bytes(took), took: Duration::ZERO }
+        }
+    }
+
+    // what this catches (SAGE.md, the Resident parent): a holder that has to publish, track its pending
+    // fences or keep its own receipts. The parent does all three: it publishes only on change, holds the
+    // Pending ask until its fence lands, and keeps every exchange as a receipt for the law.
+    #[test]
+    fn the_parent_keeps_receipts_holds_a_pending_ask_until_its_fence_and_publishes_only_on_change() {
+        let mut holding = Holding::new(Paging { held: GB, want: GB });
+        assert_eq!(holding.report().1, 1, "its first report is read at once");
+        assert!(!holding.refresh(), "nothing changed: nothing to publish");
+        let given = holding.shrink(ShrinkAsk { place: Tier::Vram, to: Bytes(256 * MB), for_qos: crate::Qos::Interactive });
+        assert_eq!(given, Given::Pending { way: Way::CacheOut });
+        assert!(holding.pending());
+        assert_eq!(holding.report().1, 2, "the shrink changed its report");
+        assert!(holding.landed(Tier::Vram, Way::CacheOut, Bytes(768 * MB), Duration::from_millis(3)), "the fence closes the pending ask");
+        assert!(!holding.pending());
+        let mut receipts = Vec::new();
+        holding.receipts(&mut receipts);
+        assert_eq!(receipts.len(), 2, "the ask's Pending and its fence's Done");
+        assert!(matches!(receipts[1].given, Given::Done { way: Way::CacheOut, amount: Bytes(a), .. } if a == 768 * MB));
+        holding.receipts(&mut receipts);
+        assert!(receipts.is_empty(), "drained once");
+    }
+
+    // what this catches: room returning and nobody growing back, or the lowest class growing first. Granted
+    // room, the composite grows its parts toward their wants highest class first; a fixed part never grows.
+    #[test]
+    fn a_composite_grows_its_parts_toward_their_wants_highest_class_first() {
+        let mut core = core(vec![
+            Box::new(Leaf { held: 2 * GB, varies: Varies::Fixed { why: "weights" }, qos: crate::Qos::Interactive }),
+            Box::new(Paging { held: GB, want: 3 * GB }),
+            Box::new(Leaf { held: GB, varies: elastic(GB), qos: crate::Qos::Background }),
+        ]);
+        let given = core.grow(GrowGrant { place: Tier::Vram, to: Bytes(2 * GB + GB + GB + 2 * GB) });
+        assert!(matches!(given, Given::Done { amount: Bytes(a), .. } if a == 2 * GB), "{given:?}");
+        let mut report = Report::default();
+        core.report(&mut report);
+        let held: Vec<u64> = report.rows().iter().map(|row| row.held.0 / GB).collect();
+        assert_eq!(held, vec![2, 3, 1], "the Utility part grew to its want; the fixed and the Background part kept theirs");
     }
 }
 
@@ -758,4 +789,5 @@ fn the_core_is_driven_synchronously_with_no_bus() {
     core.settle();
     core.changed(&mut changed);
     assert!(matches!(changed.as_slice(), [(TRAINER, Asks(rows))] if matches!(rows.as_slice(), [(1, Status::Granted(_))])), "granted once room is told");
+
 }

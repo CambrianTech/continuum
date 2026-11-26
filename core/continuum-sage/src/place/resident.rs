@@ -84,7 +84,7 @@ pub struct Requires<P, Q> {
 
 /// What a resident reported: its rows, and what each needs beside it, in buffers the placer reuses. A
 /// question the controller needs answered next is a new kind of entry here, never a new protocol.
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct Report<P, Q> {
     rows: Vec<Row<P, Q>>,
     requires: Vec<Requires<P, Q>>,
@@ -115,6 +115,16 @@ impl<P, Q> Report<P, Q> {
     /// What `row` needs beside it.
     pub fn requirements(&self, row: usize) -> impl Iterator<Item = &Requires<P, Q>> + '_ {
         self.requires.iter().filter(move |requires| requires.row == row)
+    }
+
+    /// Become a copy of `other`, reusing this report's buffers.
+    pub fn copy_from(&mut self, other: &Self)
+    where
+        P: Copy,
+        Q: Copy,
+    {
+        self.rows.clone_from(&other.rows);
+        self.requires.clone_from(&other.requires);
     }
 
     pub fn clear(&mut self) {
@@ -180,12 +190,18 @@ pub trait Resident<P, Q> {
 
 /// How a parent shares a shrink it received among its children: the one flexbox over their rows on the
 /// place. Kept by the parent and reused, so a sharing allocates nothing past its high-water mark.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Sharing<Q> {
     flexbox: super::Flexbox,
     claims: Vec<super::Flex<Q>>,
     shares: Vec<super::Share<Q>>,
     targets: Vec<Option<Q>>,
+}
+
+impl<Q> Default for Sharing<Q> {
+    fn default() -> Self {
+        Self { flexbox: super::Flexbox::default(), claims: Vec::new(), shares: Vec::new(), targets: Vec::new() }
+    }
 }
 
 impl<Q: super::Quantity> Sharing<Q> {
@@ -204,6 +220,36 @@ impl<Q: super::Quantity> Sharing<Q> {
                 Varies::Fixed { .. } | Varies::Whole { .. } => row.held,
             };
             self.claims.push(super::Flex { priority: priority(row), floor, min: row.held, max: row.held, required: true });
+        }
+        let on_rows = self.claims.len();
+        let required = report.requires.iter().filter(|requires| requires.place == place && rows.get(requires.row).is_some_and(|row| row.held.units() > 0));
+        for requires in required {
+            self.claims.push(super::Flex { priority: u8::MAX, floor: requires.amount, min: requires.amount, max: requires.amount, required: true });
+        }
+        self.flexbox.share(to, &self.claims, |a, b| a.cmp(&b), &mut self.shares);
+        self.targets.clear();
+        let mut on = self.shares[..on_rows].iter();
+        for row in rows {
+            self.targets.push(if row.place == place { on.next().map(|share| share.amount) } else { None });
+        }
+        &self.targets
+    }
+}
+
+impl<Q: super::Quantity> Sharing<Q> {
+    /// Share `to` on `place` among `report`'s rows as room granted: every row keeps what it holds, and an
+    /// elastic row with a want above it grows toward it in priority order, the highest first (a collapsed
+    /// level expanded, a cached copy paged back in). What a held row requires stays charged. Answers each
+    /// row's target in row order: `None` for a row on another place.
+    pub fn grow<P: Copy + PartialEq>(&mut self, report: &Report<P, Q>, place: P, to: Q, priority: impl Fn(&Row<P, Q>) -> u8) -> &[Option<Q>] {
+        self.claims.clear();
+        let rows = report.rows();
+        for row in rows.iter().filter(|row| row.place == place) {
+            let want = match row.varies {
+                Varies::Elastic { .. } => row.want.max(row.held),
+                Varies::Fixed { .. } | Varies::Whole { .. } => row.held,
+            };
+            self.claims.push(super::Flex { priority: priority(row), floor: row.held, min: want, max: want, required: true });
         }
         let on_rows = self.claims.len();
         let required = report.requires.iter().filter(|requires| requires.place == place && rows.get(requires.row).is_some_and(|row| row.held.units() > 0));
