@@ -260,7 +260,7 @@ pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
         refuse_all(StartError::ZeroBatch.to_string());
         return;
     };
-    let geometry = EngineGeometry::applied(incarnation, &ctx, config);
+    let geometry = EngineGeometry::applied(incarnation, &mut ctx, config);
     let capacity = admission::Capacity::new(geometry.n_ctx_seq as usize);
     // The root resume (CONTINUUM-ENGINE 4.16): the minds the last stop preserved come back Warm, in
     // RAM, and bind when they are next scheduled. A mind that does not verify stays on disk, named.
