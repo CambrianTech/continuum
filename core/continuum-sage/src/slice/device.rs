@@ -15,10 +15,12 @@ pub struct Prefill {
     pub tokens: u64,
 }
 
-/// Bringing a parked mind onto the stream: `bytes` of her KV.
+/// Bringing a parked mind onto the stream: `bytes` of her KV, with `ahead` of lane time the device had to fetch her
+/// before the switch (the slice that just ran, during which the lane already knew who comes next).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Bind {
     pub bytes: u64,
+    pub ahead: Duration,
 }
 
 /// What a device charges for the lane's work. A decode step is each mind's own (measured per mind, it depends on
@@ -61,23 +63,41 @@ impl Device for Unified {
     }
 }
 
+/// How a discrete card brings a parked mind back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fetch {
+    /// A copy the switch waits on, whole (today's fork: no verb overlaps it).
+    Synchronous,
+    /// Pinned async DMA started when the lane knows who comes next, overlapped with the running slice; the switch
+    /// waits only for what the slice did not cover (THE-LANE-ON-SAGE.md: "pinned async DMA overlapped with decode").
+    Prefetch,
+}
+
 /// A discrete card: a parked mind's KV lives in host memory and comes back over the link.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Dedicated {
     pub prefill: PrefillRate,
     /// Host to device, measured (pinned DMA).
     pub link_bytes_per_s: f64,
+    pub fetch: Fetch,
 }
 
 impl Device for Dedicated {
     fn name(&self) -> &'static str {
-        "dedicated"
+        match self.fetch {
+            Fetch::Synchronous => "dedicated, synchronous fetch",
+            Fetch::Prefetch => "dedicated, prefetch",
+        }
     }
     fn prefill(&self, ask: Prefill) -> Duration {
         self.prefill.of(ask)
     }
     fn bind(&self, ask: Bind) -> Duration {
-        Duration::from_secs_f64(ask.bytes as f64 / self.link_bytes_per_s.max(f64::MIN_POSITIVE))
+        let copy = Duration::from_secs_f64(ask.bytes as f64 / self.link_bytes_per_s.max(f64::MIN_POSITIVE));
+        match self.fetch {
+            Fetch::Synchronous => copy,
+            Fetch::Prefetch => copy.saturating_sub(ask.ahead),
+        }
     }
 }
 
@@ -91,7 +111,7 @@ impl Dedicated {
     /// The 5090 (Qwen3.8-27B): cold prefill of Kimi's prompt 16,031 fresh tokens in 42,296 ms and Sahar's 16,673 in
     /// 42,065 ms, about 380-400 tok/s (Codex, 2f8bd03a1f window 17:01-17:16Z, 2026-11-26). The link is measured per
     /// node and passed in; it has no default here.
-    pub fn rtx_5090(link_bytes_per_s: f64) -> Self {
-        Self { prefill: PrefillRate { tokens_per_s: 16_031.0 / 42.296 }, link_bytes_per_s }
+    pub fn rtx_5090(link_bytes_per_s: f64, fetch: Fetch) -> Self {
+        Self { prefill: PrefillRate { tokens_per_s: 16_031.0 / 42.296 }, link_bytes_per_s, fetch }
     }
 }

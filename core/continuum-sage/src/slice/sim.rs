@@ -124,6 +124,8 @@ pub fn run<K: Copy + Eq + Hash + Ord>(slicer: &mut Slicer<K>, load: &Workload<K>
     }
     let (mut now, mut busy) = (Duration::ZERO, Duration::ZERO);
     let mut stepped: HashMap<K, Duration> = HashMap::new();
+    // when the running slice began: the lane knew who comes next from then, so a prefetching device fetched her meanwhile
+    let mut slice_since = Duration::ZERO;
     while now < length {
         for (m, s) in load.minds.iter().zip(states.iter_mut()) {
             while let Some((_, need)) = m.changes.get(s.next_change).copied().filter(|(at, _)| *at <= now) {
@@ -144,12 +146,13 @@ pub fn run<K: Copy + Eq + Hash + Ord>(slicer: &mut Slicer<K>, load: &Workload<K>
                     report.switches += 1;
                 }
                 // her KV comes back on the device: free on unified memory, a copy over the link on a discrete card
-                let bind = load.minds.iter().find(|m| m.mind == mind).map_or(Duration::ZERO, |m| device.bind(Bind { bytes: m.kv })); // map_or: the slicer switches only to minds this load fed it
+                let bind = load.minds.iter().find(|m| m.mind == mind).map_or(Duration::ZERO, |m| device.bind(Bind { bytes: m.kv, ahead: now.saturating_sub(slice_since) })); // map_or: the slicer switches only to minds this load fed it
                 let took = load.switch + bind;
                 now += took;
                 busy += took;
                 feed(slicer, &mut trace, start, Event::Switched(mind, took));
                 report.switching += took;
+                slice_since = now;
                 mind
             }
             Some(Next::Continue) => match slicer.running() {
@@ -375,7 +378,7 @@ mod tests {
     // pinned), not a measurement: the next 5090 window measures it.
     #[test]
     fn the_same_day_on_unified_and_dedicated_memory_prices_every_bind() {
-        use crate::slice::device::Dedicated;
+        use crate::slice::device::{Dedicated, Fetch};
         const MIB: u64 = 1 << 20;
         let mind = |mind, prompt, kv| MindLoad {
             mind,
@@ -394,14 +397,15 @@ mod tests {
             chunk: std::num::NonZeroU64::new(2_048).expect("test: a chunk"), // expect: the test's own constant
         };
         let length = Duration::from_secs(900); // the 5090's window
-        let five_090 = Dedicated::rtx_5090(25.0e9);
+        let five_090 = Dedicated::rtx_5090(25.0e9, Fetch::Synchronous);
         let unified = Unified { prefill: five_090.prefill }; // the same prefill rate, unified memory
         let (shared, _) = run(&mut Slicer::new(policy()), &load, &unified, length);
         let (discrete, _) = run(&mut Slicer::new(policy()), &load, &five_090, length);
-        assert_eq!((shared.device, discrete.device), ("unified", "dedicated"));
+        let (prefetched, _) = run(&mut Slicer::new(policy()), &load, &Dedicated::rtx_5090(25.0e9, Fetch::Prefetch), length);
+        assert_eq!((shared.device, discrete.device, prefetched.device), ("unified", "dedicated, synchronous fetch", "dedicated, prefetch"));
         assert!(shared.prefilled > 0 && discrete.prefilled > 0, "both prefill the prompts");
         assert!(discrete.switches > 0, "the minds alternate");
-        for report in [&shared, &discrete] {
+        for report in [&shared, &discrete, &prefetched] {
             println!("{}: prefilling {:.0} s, decoding {:.0} s, switching {:.2} s over {} switches", report.device, report.prefilling.as_secs_f64(), report.decoding.as_secs_f64(), report.switching.as_secs_f64(), report.switches);
         }
         // what the day says: the lane alternates the two minds through their cold prefills, and on a discrete card each
@@ -411,5 +415,10 @@ mod tests {
         assert!(discrete.switching > shared.switching, "every bind on the discrete card copies her KV back");
         assert!(discrete.switching > shared.switching * 10, "binds on the discrete card cost the lane an order of magnitude more");
         assert!(discrete.switching.as_secs_f64() > length.as_secs_f64() / 10.0, "over a tenth of the window: the switch decision must price the bind");
+        // the remedy the design names: fetch her while the slice before her runs, so the switch waits only for the rest
+        // simulated 2026-11-26: 129 s to 36 s. What it leaves is the wall: slices shorter than the copy, so the prefetch
+        // cannot finish under them, and the uncovered rest raises the measured switch that shortens them again.
+        assert!(prefetched.switching * 3 < discrete.switching, "prefetch hides most of each bind: {:?} vs {:?}", prefetched.switching, discrete.switching);
+        assert!(prefetched.prefilled + prefetched.decoded > discrete.prefilled + discrete.decoded, "and the lane does more of the day's work");
     }
 }
