@@ -239,8 +239,9 @@ pub(super) mod tests {
         let (eligible, row) = submission_for(1026, 1, "qwen");
         let key = BucketKey { persona_id: row.persona_id, trait_kind: row.trait_kind.clone(), base_model: row.base_model.clone() };
         store.submissions.save(eligible, &row).await.expect("test: saved");
-        let keys = super::super::super::in_place::eligible_keys(&store, "qwen").await.expect("test: gathered");
-        assert_eq!(keys, vec![key.clone()], "found past the first page, and only the served base's");
+        let waiting = super::super::super::in_place::waiting_by_base(&store, "qwen").await.expect("test: gathered");
+        assert_eq!(waiting.here, vec![key.clone()], "found past the first page, and only the served base's");
+        assert_eq!(waiting.elsewhere.len(), 1, "the other base's bucket is listed as elsewhere, not seated");
         let rows = store.arrivals_in(&key).await.expect("test: its rows");
         assert_eq!(rows.iter().map(|row| row.id).collect::<Vec<_>>(), vec![eligible]);
     }

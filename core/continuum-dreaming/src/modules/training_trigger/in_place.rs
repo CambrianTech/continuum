@@ -1,6 +1,6 @@
 //! What every learner of the trigger shares, whichever engine she learns on: where a lesson starts
 //! in the journal ([`start`]), whether a bucket learns now and with what ([`decide`]), which buckets
-//! wait ([`eligible_keys`]), her other competences in flight ([`in_flight`]), the name every file
+//! wait ([`waiting_by_base`]), her other competences in flight ([`in_flight`]), the name every file
 //! of a bucket carries ([`bucket_stem`]), and a committed generation's candidate sweep and eviction.
 //!
 //! The learning itself is the node engine's, driven by `on_engine` (IN-PROCESS-LEARNING.md L3, card
@@ -95,12 +95,20 @@ pub(crate) async fn decide(
 }
 
 
-/// Every bucket with a pending submission whose base `served_model` names: keys only (a projected
-/// scan of the pending journal), so a pass never holds another bucket's rows. A pass reads one
-/// bucket's rows when it takes that bucket's gate (`DurableStore::arrivals_in`).
-pub(crate) async fn eligible_keys(store: &super::durable::DurableStore, served_model: &str) -> Result<Vec<BucketKey>, String> {
+/// The buckets with a pending submission, split by whether `served_model` names their base: keys
+/// only (a projected scan of the pending journal), so a pass never holds another bucket's rows. A
+/// pass reads one bucket's rows when it takes that bucket's gate (`DurableStore::arrivals_in`).
+pub(crate) struct Waiting {
+    /// On the base this engine serves: what a pass may seat.
+    pub(crate) here: Vec<BucketKey>,
+    /// On a base it does not serve: nothing here learns them.
+    pub(crate) elsewhere: Vec<BucketKey>,
+}
+
+pub(crate) async fn waiting_by_base(store: &super::durable::DurableStore, served_model: &str) -> Result<Waiting, String> {
     let keys = store.pending_keys().await?;
-    Ok(keys.into_iter().filter(|key| crate::model_registry::artifacts::names_the_same_base(served_model, &key.base_model)).collect())
+    let (here, elsewhere) = keys.into_iter().partition(|key| crate::model_registry::artifacts::names_the_same_base(served_model, &key.base_model));
+    Ok(Waiting { here, elsewhere })
 }
 
 /// PURE: the competences of `key`'s persona already learning on `key`'s base, from the seated

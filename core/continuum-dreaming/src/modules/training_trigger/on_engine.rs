@@ -108,6 +108,11 @@ pub(crate) struct OnEngine {
     /// every example, so it is minted again only when the bucket's rows change (Codex on the 5090
     /// replay, 2026-11-25: a bucket decide() answered NotNow was re-embedded on every wake).
     signatures: parking_lot::Mutex<HashMap<BucketKey, (RowsSeen, crate::genome::signature::GeneSignature)>>,
+    /// The pending buckets on a base this engine does not serve, as last said, with the base it
+    /// served: said again only when either changes, so a node whose lessons were taken on another
+    /// base says so once instead of seating nothing in silence (the M5, 2026-11-26: 1,454 examples
+    /// keyed to Ornith-1.5-35B, Qwen3.6-35B served, no probe at all).
+    unserved: parking_lot::Mutex<Option<(String, Vec<BucketKey>)>>,
 }
 
 impl OnEngine {
@@ -133,6 +138,23 @@ impl OnEngine {
             held.remove(key);
         }
         still
+    }
+
+    /// Say the pending buckets this engine does not serve the base of, when they or the served base
+    /// changed since last said.
+    fn say_unserved(&self, served: &str, elsewhere: Vec<BucketKey>) {
+        let mut said = self.unserved.lock();
+        if said.as_ref().is_some_and(|(base, keys)| base == served && *keys == elsewhere) {
+            return;
+        }
+        if !elsewhere.is_empty() {
+            let mut bases: Vec<&str> = elsewhere.iter().map(|key| key.base_model.as_str()).collect();
+            bases.sort_unstable();
+            bases.dedup();
+            continuum_base::probe!(class = "training.on_engine.unserved_base", served = %served, buckets = elsewhere.len(), bases = ?bases,
+                "pending lessons wait on a base this engine does not serve: nothing here learns them");
+        }
+        *said = Some((served.to_owned(), elsewhere));
     }
 
     /// Whether any bucket waits for memory.
@@ -335,7 +357,9 @@ impl TrainingTriggerState {
     /// `port`. A bucket already seated learns on from what the engine says.
     pub(crate) async fn learn_on_engine(self: &Arc<Self>, port: &Arc<dyn LearnPort>, served_model: &str) -> Result<(), OnEngineError> {
         let store = self.durable.require().map_err(OnEngineError::Journal)?;
-        for key in super::in_place::eligible_keys(&store, served_model).await.map_err(OnEngineError::Journal)? {
+        let waiting = super::in_place::waiting_by_base(&store, served_model).await.map_err(OnEngineError::Journal)?;
+        self.on_engine.say_unserved(served_model, waiting.elsewhere);
+        for key in waiting.here {
             if let Err(why) = self.seat_bucket(port, &key).await {
                 continuum_base::probe!(class = "training.on_engine.seat_failed", persona = %key.persona_id, reason = %why,
                     "a bucket was not seated on the engine; its examples stay pending and the next pass tries again");
