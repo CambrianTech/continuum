@@ -127,12 +127,10 @@ pub async fn settle_card_credit_bound(
                 ),
             }
         }
-        // The card is a boundary for its maker: one bounded consolidation pass, now.
-        if let Some(region) = crate::cognition::dream_consolidation::global() {
-            let pid = persona_id;
-            tokio::spawn(async move {
-                let _ = region.consolidate_at_card_boundary(pid).await;
-            });
+        // The card is a boundary for its maker: her dream takes one bounded pass (absent where she is
+        // not resident here: her next rest or experience wakes it there).
+        if let Some(her) = crate::persona::senses::of(persona_id) {
+            her.ask_dream(crate::cognition::dream_consolidation::Ask::CardBoundary);
         }
         continuum_base::probe!(
             class = "training.credit.settled",

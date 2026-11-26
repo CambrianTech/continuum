@@ -1,35 +1,16 @@
-//! Dream consolidation — distilling episodic memories into durable facts.
+//! Dream consolidation: distilling her episodic memories into durable facts, reviewing her
+//! beliefs, and folding in what she was taught (`docs/cognition/DREAM-CONSOLIDATION.md`).
 //!
-//! This is the **consolidation/dream region** — "outlier B" of the
-//! RAG-as-persistent-cache architecture (`docs/cognition/RAG-AS-PERSISTENT-CACHE.md`
-//! + `docs/cognition/DREAM-CONSOLIDATION.md`). Where the live `ChannelDigestRegion`
-//! (outlier A) is an *event-driven, no-LLM* servicer, this one is the most
-//! different servicer: *intermittent, LLM-driven*. If both fit the same
-//! `BrainRegion`/`ReadyBuffer` interface without forcing, the remaining slices
-//! slot in (the methodical-process outlier-validation strategy).
-//!
-//! ## What this file is (slice 1: the distiller)
-//!
-//! The smallest, self-contained, deterministically-testable unit: given N
-//! related episodic [`Engram`]s and an inference adapter, ask the model to
-//! consolidate them into ONE durable semantic fact ([`DistilledFact`]).
-//!
-//! It deliberately does NOT:
-//! - decide WHICH engrams to consolidate (the region's clustering job — a later
-//!   slice),
-//! - admit the result into the engram store (the self-admission path — a later
-//!   slice; the engram store IS the `facts` persistence, not a bespoke buffer).
-//!
-//! It is pure: engrams in, one distilled fact out, source provenance preserved.
-//! Refinement is LEARNED cognition (the model distills), never a hand-written
-//! filter that reads the persona's output and puppets it — that would be the
-//! exact anti-pattern this codebase forbids
-//! (`[[no-hardcoded-heuristics-to-steer-cognition]]`).
+//! Her dream is a part of her mind ([`DreamPart`], `part.rs`): started on her bus, woken by her
+//! experience, her rest and what asks it, its need from what waits for it. A pass
+//! (`consolidate.rs`) clusters her fresh experience and asks the distiller (`distiller.rs`) for
+//! one fact per cluster; the passes (`passes.rs`) admit what she learned and apply its supersession
+//! verdicts. Refinement is LEARNED cognition (the model distills), never a hand-written filter
+//! that reads her output and puppets it (`[[no-hardcoded-heuristics-to-steer-cognition]]`).
 
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
-use std::sync::{Arc, Mutex};
+use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::sync::Arc;
 
-use async_trait::async_trait;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -37,92 +18,31 @@ use crate::ai::adapter::AIProviderAdapter;
 use crate::ai::types::{ChatMessage, TextGenerationRequest};
 use crate::cognition::admission_state::AdmissionState;
 use crate::cognition::engram::{AdmissionDecision, Engram, EngramKind, EngramOrigin, TrustState};
-use crate::runtime::brain_region::{BrainRegion, CadenceHint, ComputeClass, MemoryClass, Orientation, PressureProfile, PressureSignalKind, RegionContext, RegionId, TickOutcome};
+use consolidate::Passed;
+use her::Her;
 
 mod consolidate;
 mod distiller;
+mod her;
 mod lesson;
+mod part;
 mod passes;
 mod region;
 mod review_boundary_ledger;
 
 pub use distiller::*;
+pub use part::*;
 pub use region::*;
 pub use review_boundary_ledger::*;
 use passes::*;
 use lesson::DistilledLesson;
 pub use lesson::UnreadableLesson;
 
-#[async_trait]
-impl BrainRegion for DreamConsolidationRegion {
-    fn id(&self) -> RegionId {
-        RegionId::from_static("dream-consolidation")
-    }
-
-    fn pressure_profile(&self) -> PressureProfile {
-        PressureProfile {
-            // Holds Arc to the source + per-persona sets of consolidated engram
-            // ids (bounded by episodic count). Light.
-            memory_class: MemoryClass::Light,
-            // Runs LLM distillation in the tick — declared truthfully so the
-            // governor can gate placement on leases/pressure once it hosts
-            // inference (slice 4). This is the field that says "do not schedule
-            // me like the digest region."
-            compute_class: ComputeClass::InferenceHeavy,
-            // Back off when the backend is saturated or the user is actively
-            // engaged (a proxy for "not at rest" until `RegionContext` carries a
-            // real sleep signal).
-            responds_to: vec![
-                PressureSignalKind::InferenceQueueDepth,
-                PressureSignalKind::VramHigh,
-                PressureSignalKind::SystemMemHigh,
-                PressureSignalKind::UserActive,
-            ],
-        }
-    }
-
-    /// The dream draws from the **interiority** budget, never the reactive one.
-    /// Consolidation is the being's own inner work (the [`Orientation`] doc names
-    /// "dream/consolidation" as the canonical `SelfDirected` example), not
-    /// stimulus it owes a response. This is what keeps the subconscious off the
-    /// foreground path at the budget level: the governor's floored share means a
-    /// dream tick can never preempt a reactive (responding) tick under
-    /// contention, and a flood of reactive work can never fully starve the dream.
-    fn orientation(&self) -> Orientation {
-        Orientation::SelfDirected
-    }
-
-    /// The dream is per-persona, like the digest. A global tick (no persona
-    /// scope) has nothing to consolidate — sleep until scoped.
-    async fn tick(&self, ctx: &RegionContext) -> TickOutcome {
-        match ctx.persona_scope {
-            // A consolidation has nobody waiting on it (card 7496ed9d).
-            Some(persona_id) => {
-                crate::cognition::audience::with(
-                    crate::inference::prefill_rate::Audience::Unattended,
-                    self.consolidate(persona_id),
-                )
-                .await
-            }
-            None => sleep(),
-        }
-    }
-}
-
-/// Idle outcome that asks the governor to let the region sleep until experience
-/// accrues — the organism resting, not a clock ticking.
-fn sleep() -> TickOutcome {
-    TickOutcome {
-        cadence_hint: Some(CadenceHint::Sleep),
-        ..TickOutcome::idle()
-    }
-}
-
-/// Cluster episodics that share a recall key. Each engram lands in at most one
-/// cluster (its FIRST recall key — deterministic), and only clusters of at least
-/// `min_cluster` survive. Mechanical grouping; the learned step is the
-/// distillation, not this.
-fn cluster_by_recall_key(episodics: &[Engram], min_cluster: usize) -> Vec<Vec<Engram>> {
+/// Cluster episodics that share a recall key. Each engram lands in at most one cluster (its FIRST
+/// recall key, deterministic), and only patterns survive: a pattern is two or more episodes, and a
+/// single one is not yet anything to generalize into a fact. Mechanical grouping; the learned step
+/// is the distillation, not this.
+fn cluster_by_recall_key(episodics: &[Engram]) -> Vec<Vec<Engram>> {
     let mut buckets: BTreeMap<String, Vec<Engram>> = BTreeMap::new();
     for e in episodics {
         if let Some(key) = e.recall_keys.first() {
@@ -131,7 +51,7 @@ fn cluster_by_recall_key(episodics: &[Engram], min_cluster: usize) -> Vec<Vec<En
     }
     buckets
         .into_values()
-        .filter(|bucket| bucket.len() >= min_cluster)
+        .filter(|bucket| bucket.len() > 1)
         .collect()
 }
 
@@ -185,9 +105,6 @@ impl PersonaReflectionSource for crate::cognition::persona_workspace::PersonaWor
     ) -> Result<Option<Arc<dyn ReviewBoundaryLedger>>, continuum_client::ClientError> {
         review_boundary_ledger::resident_review_boundaries(persona_id)
     }
-    fn live_personas(&self) -> Vec<Uuid> {
-        self.roster().into_iter().map(|(id, _)| id).collect()
-    }
 
     fn reflector_for(&self, persona_id: Uuid) -> Option<PersonaReflector> {
         self.reflector_handles(&persona_id)
@@ -203,8 +120,8 @@ impl PersonaReflectionSource for crate::cognition::persona_workspace::PersonaWor
 pub(crate) mod tests;
 
 /// The dream fixtures this module's tests and core's credit tests share: an episodic engram,
-/// a seeded in-memory hippocampus, and a region over a stub reflection source driven by the
-/// heuristic adapter.
+/// a seeded in-memory hippocampus, and her dream over a stub reflection source driven by the
+/// heuristic adapter (driven by [`DreamPart::step`]).
 #[cfg(any(test, feature = "test-fixtures"))]
 pub mod test_support {
     use super::*;
@@ -267,9 +184,6 @@ pub mod test_support {
             }
             Ok(self.boundary_store.clone())
         }
-        fn live_personas(&self) -> Vec<Uuid> {
-            vec![self.persona_id]
-        }
         fn reflector_for(&self, persona_id: Uuid) -> Option<PersonaReflector> {
             (persona_id == self.persona_id).then(|| PersonaReflector {
                 admission: self.admission.clone(),
@@ -292,36 +206,28 @@ pub mod test_support {
         admission
     }
 
-    /// Wait for the spawned dream pass to finish (the heuristic adapter is
-    /// instant; this is scheduling latency only). Panics if it never does.
-    pub async fn drain(region: &DreamConsolidationRegion) {
-        for _ in 0..400 {
-            if !region.dreaming() {
-                return;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-        }
-        panic!("dream pass did not complete");
+    /// Her dream over `admission`, with the heuristic adapter and no credit store.
+    pub fn part_over(persona_id: Uuid, admission: Arc<AdmissionState>) -> DreamPart {
+        part_over_with_store(persona_id, admission, None)
     }
 
-    pub fn region_over(
-        persona_id: Uuid,
-        admission: Arc<AdmissionState>,
-    ) -> DreamConsolidationRegion {
-        region_over_with_store(persona_id, admission, None)
-    }
-
-    pub fn region_over_with_store(
+    /// Her dream over `admission`, recovering accepted reviews from `boundary_store`.
+    pub fn part_over_with_store(
         persona_id: Uuid,
         admission: Arc<AdmissionState>,
         boundary_store: Option<Arc<dyn ReviewBoundaryLedger>>,
-    ) -> DreamConsolidationRegion {
-        DreamConsolidationRegion::new(Arc::new(StubReflectionSource {
+    ) -> DreamPart {
+        let mut part = DreamPart::new(
             persona_id,
-            admission,
-            adapter: Arc::new(HeuristicInferenceAdapter::new()),
-            boundary_store,
-            credit_unavailable: false,
-        }))
+            Arc::new(StubReflectionSource {
+                persona_id,
+                admission,
+                adapter: Arc::new(HeuristicInferenceAdapter::new()),
+                boundary_store,
+                credit_unavailable: false,
+            }),
+        );
+        part.her.lived_from = Some(0); // a test seeds her store first: her dream reads all of it
+        part
     }
 }

@@ -20,35 +20,13 @@ fn observations_block_budgets_by_dropping_whole_trailing_engrams() {
     let sources: Vec<Engram> = (0..10)
         .map(|i| episodic(Uuid::from_u128(i + 1), &big, &["k"]))
         .collect();
-    let (block, kept) = SemanticDistiller::observations_block(&sources, 350);
+    let (block, kept) = SemanticDistiller::observations_block(&sources, Some(350));
     assert!(
         kept >= 1 && kept < 10,
         "dropped the tail to fit; kept {kept}"
     );
     // The LAST kept engram is present whole (not truncated mid-content).
     assert!(block.contains(&format!("{}. {}", kept, big)));
-}
-
-// what this catches: the autonomic consolidation trickle gate. The FIRST pass (no
-// prior timestamp) is always allowed; after a pass, another is refused until the
-// cooldown elapses — training is expensive, so background self-consolidation must
-// trickle, never storm the serving lane (same discipline as the belief-review gate).
-#[test]
-fn consolidate_cooldown_gates_the_autonomic_trickle() {
-    let now = 1_000_000_000u64;
-    // Never run before → always allowed.
-    assert!(consolidate_cooldown_elapsed(None, now));
-    // Just ran → refused until the cooldown passes.
-    assert!(!consolidate_cooldown_elapsed(Some(now), now));
-    assert!(!consolidate_cooldown_elapsed(
-        Some(now - (CONSOLIDATE_RECEIVED_COOLDOWN_MS - 1)),
-        now
-    ));
-    // Cooldown elapsed → allowed again.
-    assert!(consolidate_cooldown_elapsed(
-        Some(now - CONSOLIDATE_RECEIVED_COOLDOWN_MS),
-        now
-    ));
 }
 
 // what this catches: a single engram larger than the whole budget still distills
@@ -58,7 +36,7 @@ fn consolidate_cooldown_gates_the_autonomic_trickle() {
 fn observations_block_always_keeps_at_least_one() {
     let huge = "y".repeat(10_000);
     let sources = vec![episodic(Uuid::from_u128(1), &huge, &["k"])];
-    let (block, kept) = SemanticDistiller::observations_block(&sources, 100);
+    let (block, kept) = SemanticDistiller::observations_block(&sources, Some(100));
     assert_eq!(kept, 1);
     assert!(
         block.contains(&huge),
@@ -82,7 +60,7 @@ async fn distill_invokes_adapter_and_preserves_provenance() {
         episodic(id3, "Headless core, many clients", &["node", "clients"]),
     ];
 
-    let distiller = SemanticDistiller::new(Arc::new(HeuristicInferenceAdapter::new()), OBSERVATION_CHARS);
+    let distiller = SemanticDistiller::new(Arc::new(HeuristicInferenceAdapter::new()), Some(OBSERVATION_CHARS));
     let fact = distiller
         .distill(Some(measured(Uuid::from_u128(99))), &sources)
         .await
@@ -115,7 +93,7 @@ async fn distill_invokes_adapter_and_preserves_provenance() {
 // ([[fallbacks-are-illegal-fail-loud]]).
 #[tokio::test]
 async fn distill_empty_cluster_fails_loud() {
-    let distiller = SemanticDistiller::new(Arc::new(HeuristicInferenceAdapter::new()), OBSERVATION_CHARS);
+    let distiller = SemanticDistiller::new(Arc::new(HeuristicInferenceAdapter::new()), Some(OBSERVATION_CHARS));
     let err = distiller
         .distill(None, &[])
         .await
@@ -134,7 +112,7 @@ async fn historian_output_is_provenance_tagged_and_consolidator_is_not() {
         episodic(Uuid::from_u128(1), "tried the fence idiom again", &["act"]),
         episodic(Uuid::from_u128(2), "the fence parsed this time", &["act"]),
     ];
-    let distiller = SemanticDistiller::new(Arc::new(HeuristicInferenceAdapter::new()), OBSERVATION_CHARS);
+    let distiller = SemanticDistiller::new(Arc::new(HeuristicInferenceAdapter::new()), Some(OBSERVATION_CHARS));
 
     let thought = distiller
         .distill_with(LENS_HISTORIAN, Some(measured(Uuid::from_u128(77))), &sources)
@@ -165,7 +143,7 @@ async fn historian_output_is_provenance_tagged_and_consolidator_is_not() {
 #[tokio::test]
 async fn lens_system_prompt_reaches_the_adapter() {
     let sources = vec![episodic(Uuid::from_u128(7), "one memory", &["k"])];
-    let distiller = SemanticDistiller::new(Arc::new(HeuristicInferenceAdapter::new()), OBSERVATION_CHARS);
+    let distiller = SemanticDistiller::new(Arc::new(HeuristicInferenceAdapter::new()), Some(OBSERVATION_CHARS));
 
     let historian = distiller
         .distill_with(LENS_HISTORIAN, Some(measured(Uuid::from_u128(77))), &sources)
@@ -240,14 +218,14 @@ fn the_lesson_schema_and_its_instruction_are_one_shape() {
     assert!(instruction.contains("\"sentences\"") && instruction.contains("\"supersedes\""), "{instruction}");
 }
 
-pub(crate) mod region;
+pub(crate) mod part;
 
 // what this catches: a guessed bound for a mind with no measurement (Fable on #5811: "a constant
 // for an unknown"). With no act of hers measured, the distillation is refused typed before any
 // request, so its cluster stays for a later dream instead of running unbounded.
 #[tokio::test]
 async fn an_unmeasured_mind_defers_her_distillation_typed() {
-    let distiller = SemanticDistiller::new(Arc::new(HeuristicInferenceAdapter::new()), OBSERVATION_CHARS);
+    let distiller = SemanticDistiller::new(Arc::new(HeuristicInferenceAdapter::new()), Some(OBSERVATION_CHARS));
     let sources = vec![episodic(Uuid::new_v4(), "an observation", &["k"])];
     let unmeasured = Uuid::from_u128(0xdead_0001);
     assert!(matches!(distiller.distill(Some(unmeasured), &sources).await, Err(DistillError::Unmeasured)));

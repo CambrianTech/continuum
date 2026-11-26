@@ -61,6 +61,8 @@ pub use in_memory_seen_content::*;
 mod admission_state;
 mod admission_state_2;
 pub use admission_state_2::*;
+mod experience;
+pub use experience::{Experienced, EXPERIENCE};
 
 //=============================================================================
 // TESTS

@@ -14,6 +14,7 @@ continuum-base = { workspace = true }
 continuum-kernel = { workspace = true }
 continuum-engine = { workspace = true }
 continuum-experience = { workspace = true }
+continuum-sage = { workspace = true }  # her presence is said on her own bus (presence.rs)
 dashmap = { workspace = true }  # the workspace pin, shared with continuum-cognition
 parking_lot.workspace = true
 serde.workspace = true

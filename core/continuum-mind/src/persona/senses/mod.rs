@@ -22,7 +22,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
 
 use continuum_base::time::EpochMs;
-use continuum_sage::dataflow::{OwnerId, Reader, TopicName};
+use continuum_sage::dataflow::{Emitter, OwnerId, Reader, TopicName};
 use continuum_sage::component::{Bus, Key, Need, Owner, Taken, Teller};
 use parking_lot::RwLock;
 
@@ -69,6 +69,8 @@ pub struct Handle {
     calling: Reader<Calling>,
     /// Where her time goes: her parts' measured numbers, read without holding them.
     profiler: continuum_sage::component::Profiler,
+    /// What asks her dream for a pass (`mind/dream_asked`): one writer, shared by her callers.
+    dream: Arc<parking_lot::Mutex<Emitter<crate::cognition::dream_consolidation::Ask>>>,
 }
 
 impl Handle {
@@ -101,6 +103,11 @@ impl Handle {
 
     /// Hand her senses one of her acts; false when they have stopped. Her memberships reach her
     /// thread first, so a room she joins is threaded before her senses hear it.
+    /// Ask her dream for a pass; heard by her dream part, never lost while a pass runs.
+    pub fn ask_dream(&self, ask: crate::cognition::dream_consolidation::Ask) {
+        self.dream.lock().emit(ask);
+    }
+
     pub async fn tell(&self, act: Sensed) -> bool {
         if let Sensed::Joined(rooms) = &act {
             let rooms = rooms.iter().map(|(room, _)| *room).collect();
@@ -149,6 +156,7 @@ impl Resident {
 impl Drop for Resident {
     fn drop(&mut self) {
         RESIDENTS.write().remove(&self.persona);
+        crate::cognition::turn_ledger::presence::forget(self.persona); // her bus goes with her
     }
 }
 
@@ -201,7 +209,18 @@ pub fn start(
             built: continuum_sage::component::LastSeen::default(),
         });
     }
-    let handle = Handle { senses, thread, bus, awareness, calling, profiler: parts.profiler() };
+    // Her dream (card d56dc734), woken by what her mind says on her bus: her presence (her turn
+    // ledger), her experience (her admission store) and what asks it (`ask_dream`).
+    crate::cognition::turn_ledger::presence::say_on(persona, &bus)?;
+    let workspace = crate::cognition::persona_workspace::global();
+    match workspace.reflector_handles(&persona) {
+        Some((admission, _, _)) => admission.say_experience_on(&bus)?,
+        None => continuum_base::probe!(class = "mind.dream.experience_unheard", persona = %persona,
+            "her workspace is not registered yet: her dream wakes on her rest and what asks it, not on each experience"),
+    }
+    let dream = Arc::new(parking_lot::Mutex::new(bus.emitter::<crate::cognition::dream_consolidation::Ask>(crate::cognition::dream_consolidation::DREAM_ASKED)?));
+    parts.start(crate::cognition::dream_consolidation::DreamPart::new(persona, workspace as Arc<dyn crate::cognition::dream_consolidation::PersonaReflectionSource>));
+    let handle = Handle { senses, thread, bus, awareness, calling, profiler: parts.profiler(), dream };
     RESIDENTS.write().insert(persona, handle.clone());
     continuum_base::probe!(class = "mind.feed.registered", persona = %persona, "her senses are on the one feed");
     Ok(Resident { persona, handle, parts })
@@ -237,3 +256,17 @@ pub fn mark_perceived(persona: Uuid, room: Uuid, lamport: u64, event_id: Option<
 
 #[cfg(test)]
 mod tests;
+
+/// Her resident dream, asked on her own bus; a mind not resident on this core is not asked (her
+/// next rest or experience there wakes her dream, and an acceptance stays durable for its pass).
+pub struct ResidentDreams;
+
+impl crate::cognition::dream_consolidation::AskDream for ResidentDreams {
+    fn ask(&self, persona: Uuid, ask: crate::cognition::dream_consolidation::Ask) {
+        match of(persona) {
+            Some(her) => her.ask_dream(ask),
+            None => continuum_base::probe!(class = "mind.dream.not_resident", persona = %persona, ask = ?ask,
+                "her dream was asked where she is not resident; her next pass there takes it from durable state"),
+        }
+    }
+}

@@ -37,6 +37,7 @@ impl AdmissionState {
             owner_id: RwLock::new(None),
             graph: crate::cognition::engram_graph::EngramGraph::new(),
             tool_heads: None,
+            experience: Default::default(),
         }
     }
 
@@ -86,6 +87,7 @@ impl AdmissionState {
             // persistence is the next slice (CAUSAL-MEMORY-GRAPH.md §4).
             graph: crate::cognition::engram_graph::EngramGraph::new(),
             tool_heads: None,
+            experience: Default::default(),
         }
     }
 
@@ -293,7 +295,7 @@ impl AdmissionState {
     /// output — a storage-tier weight on a structurally-known kind (a receipt),
     /// the recall-side twin of the recency-vs-recall channel split in act_observe.
     pub fn set_recall_salience(&self, engram_id: uuid::Uuid, salience: f32) {
-        let mut meta = self.recall_metadata.get(engram_id).unwrap_or_default();
+        let mut meta = self.recall_metadata.get(engram_id).unwrap_or_default(); // JUSTIFIED: a row not yet written starts from the defaults its admission would give it
         meta.salience = salience;
         self.recall_metadata.admit(engram_id, meta);
     }
@@ -338,11 +340,12 @@ impl AdmissionState {
         // `record_side_effects` for the external path.
         self.seen_content.record(hash, engram.id);
         self.recall_metadata.admit_with_defaults(engram.id);
-        let metadata = self.recall_metadata.get(engram.id).unwrap_or_default();
+        let metadata = self.recall_metadata.get(engram.id).unwrap_or_default(); // JUSTIFIED: admitted with defaults on the line above, so the row is there
         self.persistence
             .read()
             .observe_admission(&engram, metadata);
         self.engrams.lock().push(engram.clone());
+        self.say_experienced(&engram);
 
         Ok(AdmissionDecision::Admit {
             engram,
@@ -372,10 +375,11 @@ impl AdmissionState {
                 // fires-and-forgets the disk write through tokio::spawn.
                 // The metadata snapshot reflects the just-admitted
                 // default state (admit_with_defaults above).
-                let metadata = self.recall_metadata.get(engram.id).unwrap_or_default();
+                let metadata = self.recall_metadata.get(engram.id).unwrap_or_default(); // JUSTIFIED: record_admitted above admitted it with defaults, so the row is there
                 self.persistence
                     .read()
                     .observe_admission(engram, metadata);
+                self.say_experienced(engram);
             }
             AdmissionDecision::Quarantine { engram, .. } => {
                 // Replay-only recording — see method-doc Quarantine note.
@@ -591,20 +595,21 @@ impl AdmissionState {
     /// keys — the dream's supersession-review candidates (#221 slice 2). Pure
     /// RETRIEVAL by lexical key overlap (the same mechanics recall uses), never
     /// a judgment: the distiller model decides which, if any, of these a newly
-    /// consolidated fact supersedes. Newest-first, capped at `limit`, Semantic
+    /// consolidated fact supersedes. Newest-first and every match (the distiller keeps the
+    /// newest that fit its observation budget, the one place that decides how many), Semantic
     /// only (episodics are experience, not beliefs — they decay, they aren't
     /// superseded). Keys shorter than 4 chars are skipped as noise.
-    pub fn semantic_beliefs_matching(&self, keys: &[String], limit: usize) -> Vec<Engram> {
+    pub fn semantic_beliefs_matching(&self, keys: &[String]) -> Vec<Engram> {
         let needles: Vec<String> = keys
             .iter()
             .map(|k| k.trim().to_lowercase())
             .filter(|k| k.len() >= 4)
             .collect();
-        if needles.is_empty() || limit == 0 {
+        if needles.is_empty() {
             return Vec::new();
         }
         let engrams = self.engrams.lock();
-        let mut hits: Vec<Engram> = engrams
+        engrams
             .iter()
             .rev() // newest-first (insertion order store)
             .filter(|e| e.kind == crate::cognition::engram::EngramKind::Semantic)
@@ -612,11 +617,8 @@ impl AdmissionState {
                 let content = e.content.to_lowercase();
                 needles.iter().any(|n| content.contains(n.as_str()))
             })
-            .take(limit)
             .cloned()
-            .collect();
-        hits.shrink_to_fit();
-        hits
+            .collect()
     }
 
     /// The persona's OLDEST consolidated beliefs not yet in `exclude` — the

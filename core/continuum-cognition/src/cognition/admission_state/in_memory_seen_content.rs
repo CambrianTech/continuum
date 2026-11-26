@@ -130,6 +130,9 @@ pub struct AdmissionState {
     /// queryable by keyword (`recall_by_keyword`) — this gates AMBIENT recall
     /// only, the same treatment as Tool receipts and stale inner-speech.
     pub(super) owner_id: RwLock<Option<Uuid>>,
+    /// Where each Episodic engram she admits is said on her bus (`mind/experience`); nothing until
+    /// [`say_experience_on`](Self::say_experience_on) claims it.
+    pub(super) experience: super::experience::ExperienceSaid,
 }
 
 impl Default for AdmissionState {

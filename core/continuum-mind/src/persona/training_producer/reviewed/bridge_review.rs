@@ -175,7 +175,6 @@ pub(crate) async fn consume_observed_review<T: Transport>(
     review_id: airc_work::WorkReviewId,
     self_review: &SelfReview,
 ) -> Result<Option<ReviewedCredit>, CreditBindingError> {
-    let dream = crate::cognition::dream_consolidation::global();
     consume_observed_review_with_boundary(
         conn,
         persona_name,
@@ -184,7 +183,7 @@ pub(crate) async fn consume_observed_review<T: Transport>(
         board,
         review_id,
         self_review,
-        dream.as_deref(),
+        Some(&crate::persona::senses::ResidentDreams),
     )
     .await
 }
@@ -197,7 +196,7 @@ pub async fn consume_observed_review_with_boundary<T: Transport>(
     board: &airc_work::WorkBoardProjection,
     review_id: airc_work::WorkReviewId,
     self_review: &SelfReview,
-    dream: Option<&crate::cognition::dream_consolidation::DreamConsolidationRegion>,
+    dream: Option<&dyn crate::cognition::dream_consolidation::AskDream>,
 ) -> Result<Option<ReviewedCredit>, CreditBindingError> {
     let review = board
         .submission_review(review_id)
@@ -573,7 +572,6 @@ pub async fn consume_review<T: Transport>(
     review_id: airc_work::WorkReviewId,
     self_review: &SelfReview,
 ) -> Result<ReviewedCredit, CreditBindingError> {
-    let dream = crate::cognition::dream_consolidation::global();
     consume_review_with_boundary(
         conn,
         persona_name,
@@ -582,7 +580,7 @@ pub async fn consume_review<T: Transport>(
         board,
         review_id,
         self_review,
-        dream.as_deref(),
+        Some(&crate::persona::senses::ResidentDreams),
     )
     .await
 }
@@ -595,7 +593,7 @@ pub async fn consume_review_with_boundary<T: Transport>(
     board: &airc_work::WorkBoardProjection,
     review_id: airc_work::WorkReviewId,
     self_review: &SelfReview,
-    dream: Option<&crate::cognition::dream_consolidation::DreamConsolidationRegion>,
+    dream: Option<&dyn crate::cognition::dream_consolidation::AskDream>,
 ) -> Result<ReviewedCredit, CreditBindingError> {
     let credit =
         consume_review_credit(conn, persona_name, persona_id, room_id, board, review_id, self_review).await?;
@@ -612,7 +610,7 @@ pub async fn consume_review_with_boundary<T: Transport>(
                 .submission_id
                 .as_uuid();
             if !boundaries::is_processed(conn, persona_name, persona_id, submission_id).await? {
-                dream.request_reviewed_boundary(persona_id, submission_id);
+                dream.ask(persona_id, crate::cognition::dream_consolidation::Ask::Reviewed { acceptance: submission_id });
             }
         }
     }

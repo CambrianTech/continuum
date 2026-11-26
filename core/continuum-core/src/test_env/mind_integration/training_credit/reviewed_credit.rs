@@ -169,9 +169,9 @@ use super::*;
         use airc_work::{WorkEvent, WorkReviewOutcome, WorkSubmissionReview};
         use reviewed::ReviewedCreditState as State;
         use crate::cognition::dream_consolidation::test_support::{
-            drain, episodic, measured, region_over_with_store, seeded_admission,
+            episodic, measured, part_over_with_store, seeded_admission,
         };
-        use crate::runtime::brain_region::{BrainRegion, RegionContext};
+        use crate::cognition::dream_consolidation::DreamInput;
         let (fx, mut capture) = exact_review().await;
         let (executor, persona, name, owner, reviewer, card_id, room) =
             (fx.executor.clone(), fx.persona, fx.name, fx.owner, fx.reviewer, fx.card_id, fx.room);
@@ -192,7 +192,7 @@ use super::*;
         );
         let store =
             reviewed::boundaries::ReviewBoundaryStore::new(executor.clone(), name.into(), persona);
-        let dream = region_over_with_store(persona, admission.clone(), Some(Arc::new(store.clone())));
+        let dream = parking_lot::Mutex::new(part_over_with_store(persona, admission.clone(), Some(Arc::new(store.clone()))));
         let create = |card, reviews| fx.create(card, reviews);
         let claim = ExactReview::claim;
         let project = |tail| fx.project(tail);
@@ -331,7 +331,7 @@ use super::*;
         .await
         .is_err());
         assert!(
-            !dream.review_boundary_pending(persona, selection.submission_id),
+            !dream.lock().review_boundary_pending(selection.submission_id),
             "failed, unknown, self, unrelated and wrong-room reviews cannot queue a boundary"
         );
         let submit = continuum_client::mock::MockTransport::new();
@@ -370,7 +370,7 @@ use super::*;
             .unwrap();
         assert_eq!(pending.state, State::AwaitingAcceptance);
         assert!(
-            !dream.review_boundary_pending(persona, selection.submission_id),
+            !dream.lock().review_boundary_pending(selection.submission_id),
             "lost destination ACK does not acknowledge a consolidation boundary"
         );
         assert_eq!(pending.decision_review_id, Some(review_id));
@@ -466,7 +466,7 @@ use super::*;
             State::Accepted,
             "accepted replay does not dispatch again"
         );
-        assert!(dream.review_boundary_pending(persona, selection.submission_id));
+        assert!(dream.lock().review_boundary_pending(selection.submission_id));
         assert_eq!(
             reviewed::consume_review_with_boundary(
                 &refused_conn,
@@ -530,12 +530,10 @@ use super::*;
             .finish(&[selection.submission_id], 0)
             .await
             .is_err());
-        let dream =
-            region_over_with_store(persona, admission.clone(), Some(Arc::new(reopened_store.clone())));
-        assert!(!dream.review_boundary_pending(persona, selection.submission_id));
-        dream.tick(&RegionContext::for_persona(0, persona)).await;
-        drain(&dream).await;
-        assert!(!dream.review_boundary_pending(persona, selection.submission_id));
+        let mut dream = part_over_with_store(persona, admission.clone(), Some(Arc::new(reopened_store.clone())));
+        assert!(!dream.review_boundary_pending(selection.submission_id));
+        dream.step(DreamInput::Drain).await;
+        assert!(!dream.review_boundary_pending(selection.submission_id));
         assert_eq!(
             admission
                 .recall_recent(16)
@@ -561,7 +559,7 @@ use super::*;
             .unwrap()
             .pending
             .is_empty());
-        let restarted = region_over_with_store(persona, admission, Some(Arc::new(reopened_store)));
+        let restarted = parking_lot::Mutex::new(part_over_with_store(persona, admission, Some(Arc::new(reopened_store))));
         reviewed::consume_review_with_boundary(
             &refused_conn,
             name,
@@ -575,7 +573,7 @@ use super::*;
         .await
         .unwrap();
         assert!(
-            !restarted.review_boundary_pending(persona, selection.submission_id),
+            !restarted.lock().review_boundary_pending(selection.submission_id),
             "another signed review cannot replay the selected acceptance into a fresh owner"
         );
         reviewed::consume_review_with_boundary(
@@ -591,7 +589,7 @@ use super::*;
         .await
         .unwrap();
         assert!(
-            !restarted.review_boundary_pending(persona, selection.submission_id),
+            !restarted.lock().review_boundary_pending(selection.submission_id),
             "durable completion suppresses exact replay after another restart"
         );
         assert_eq!(

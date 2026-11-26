@@ -95,31 +95,8 @@ pub(super) fn register_persona_registry_modules(
         pressure_monitor.subscribe(),
     ));
     pressure_monitor.add_reporter(mind_results);
-    // The dream/consolidation region goes LIVE (#145 slice B): per live persona,
-    // on a material-driven cadence (dreams only when undigested episodic
-    // experience accrues, `CadenceHint::Sleep` otherwise), it distills episodic
-    // clusters into durable Semantic facts and leaves ONE `[thought:historian]`
-    // SelfReflection per dreaming tick — the first mind-wanderer. Hippocampus +
-    // adapter resolve per tick from the live workspace registry (re-home-safe),
-    // never a parallel persona→adapter map.
-    let dream_region_concrete = Arc::new(
-        crate::cognition::dream_consolidation::DreamConsolidationRegion::new(
-            crate::cognition::persona_workspace::global()
-                as Arc<dyn crate::cognition::dream_consolidation::PersonaReflectionSource>,
-        ),
-    );
-    // Install the flywheel handle: `cognition/dream-now` drives THIS region
-    // on demand (factory mode) — same instance the governor ticks, so the
-    // per-persona single-flight guard holds across both drivers.
-    crate::cognition::dream_consolidation::install_global(dream_region_concrete.clone());
-    let dream_region: Arc<dyn crate::runtime::BrainRegion> = dream_region_concrete;
-    // Wire the live memory-pressure feed (R4 slice 3): each pass sizes its slice
-    // budget to the host's current memory band so a society of inference-bearing
-    // background regions can't stampede the model backend under load. A homeostatic
-    // protection, not cognition steering — and on a healthy host the band is Normal
-    // → budget None → behavior is identical to the uncapped default the digest
-    // region runs under today (the digest runs no inference; the consolidation
-    // region is the first InferenceHeavy tenant under this floor).
+    // Her dream is a part of her mind now (card d56dc734): started on her bus beside her senses
+    // (`senses::start`), never ticked here.
     // A reviewed credit the training trigger has not accepted is settled again by this region,
     // per resident, whether or not she acts (card 99b2773a): its store is hers, as her identity.
     let credit_registry = registry.clone();
@@ -131,7 +108,7 @@ pub(super) fn register_persona_registry_modules(
         })),
     );
     runtime.register(Arc::new(
-        crate::persona::substrate_governor::SubstrateGovernor::new(vec![dream_region, credit_region], registry.clone())
+        crate::persona::substrate_governor::SubstrateGovernor::new(vec![credit_region], registry.clone())
             .with_pressure_gate(pressure_monitor.subscribe()),
     ));
     let instance_manager = Arc::new(

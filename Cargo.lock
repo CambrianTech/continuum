@@ -3861,6 +3861,7 @@ dependencies = [
  "continuum-engine",
  "continuum-experience",
  "continuum-kernel",
+ "continuum-sage",
  "dashmap",
  "parking_lot",
  "serde",

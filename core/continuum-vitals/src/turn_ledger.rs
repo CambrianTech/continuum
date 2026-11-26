@@ -1,5 +1,8 @@
 //! Turn bookkeeping: last-turn stamps, in-flight turns and turn shapes.
 
+/// Her presence on her own bus (`mind/acting`), said from this ledger as its one owner.
+pub mod presence;
+
 
 pub(super) static LAST_TURN_MS: std::sync::LazyLock<
     parking_lot::Mutex<std::collections::HashMap<uuid::Uuid, u64>>,
@@ -93,6 +96,7 @@ pub fn begin_turn(persona: uuid::Uuid, now_ms: u64) -> TurnInFlight {
     let previous_start_ms = LAST_TURN_MS.lock().insert(persona, now_ms);
     let id = TurnId(NEXT_TURN.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
     TURNS.lock().insert(id, Turn { persona, started_ms: now_ms, confirmed: false });
+    presence::say(persona); // she is acting: her parts hear it on her bus
     TurnInFlight { id, persona, started: std::time::Instant::now(), previous_start_ms }
 }
 
@@ -109,6 +113,7 @@ impl TurnInFlight {
 impl Drop for TurnInFlight {
     fn drop(&mut self) {
         TURNS.lock().remove(&self.id);
+        presence::say(self.persona); // resting once her last turn ends; acting while another runs
         let turn_ms = self.started.elapsed().as_millis() as u64;
         let gap_ms = self
             .previous_start_ms

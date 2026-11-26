@@ -1,13 +1,6 @@
-//! `cognition/dream-now` — the factory flywheel button: force ONE dream pass for a
-//! persona NOW instead of waiting for the governor's material-driven tick.
-//!
-//! The dream region is deliberately demand-paced for user machines (dreams when
-//! undigested experience accrues, sleeps otherwise, pressure-gated). At the factory
-//! we run the flywheel 24/7: work lands experience → THIS forces the consolidation +
-//! supersession pass → re-measure within the hour, no overnight wait. It drives the
-//! SAME live region instance the governor drives (one region, two drivers), so the
-//! per-persona single-flight guard holds — a forced pass while a dream is already
-//! running is a cheap no-op, never a double-dream.
+//! `cognition/dream-now`, the factory flywheel button: ask a persona's dream for ONE pass now instead
+//! of waiting for her next rest or experience. Her dream part takes it on her bus like any other ask,
+//! one pass of hers at a time, so a pass already running finishes first and this one follows it.
 //!
 //! `access: Internal` — operator/proctor-driven schedule control, not a persona
 //! toolbelt verb (personas do not force each other's sleep).
@@ -17,7 +10,6 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::modules::cognition::CognitionState;
-use crate::sdk_codegen::CommandError;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
 #[ts(
@@ -31,9 +23,8 @@ pub struct DreamNowParams {
     pub persona_id: Uuid,
 }
 
-/// What the forced tick did. The dream pass itself runs async on its own task
-/// (results land through `admit_reflection` + the `hippocampus.supersede` /
-/// `persona.dream.pass_complete` probes); this is the launch verdict.
+/// Whether her dream was asked. The pass runs on her dream part (results land through
+/// `admit_reflection` and the `hippocampus.supersede` / `persona.dream.pass_complete` probes).
 #[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
 #[ts(
     export,
@@ -41,11 +32,8 @@ pub struct DreamNowParams {
 )]
 #[serde(rename_all = "camelCase")]
 pub struct DreamNowResult {
-    /// True when a dream pass launched (or decay ran) — the region found the
-    /// persona resident. False only when she had no live reflective surface.
-    pub ticked: bool,
-    /// Human-readable note on what the tick decided (launched / sated / not resident).
-    pub note: String,
+    /// True when she is resident on this core and her dream was asked.
+    pub asked: bool,
 }
 
 crate::action_command! {
@@ -56,26 +44,12 @@ crate::action_command! {
     params: DreamNowParams,
     output: DreamNowResult,
     run(this, _ctx, p) => {
-        let _ = &this.state; // command host plumbing; the region is the authority
-        let Some(region) = crate::cognition::dream_consolidation::global() else {
-            return Err(CommandError::Internal(
-                "no live dream region in this process — the substrate wiring \
-                 (ipc start_server) has not installed it"
-                    .to_string(),
-            ));
+        let _ = &this.state; // command host plumbing; her dream part is the authority
+        let Some(her) = crate::persona::senses::of(p.persona_id) else {
+            return Ok(DreamNowResult { asked: false });
         };
-        let outcome = region.consolidate(p.persona_id).await;
-        let note = match &outcome.cadence_hint {
-            Some(h) => format!(
-                "tick ran; cadence hint {h:?} — Sleep = sated (no undigested \
-                 experience), otherwise a pass launched (watch \
-                 persona.dream.pass_complete / hippocampus.supersede probes)"
-            ),
-            None => "tick ran; dream pass launched on its own task — watch \
-                     persona.dream.pass_complete / hippocampus.supersede probes"
-                .to_string(),
-        };
-        Ok(DreamNowResult { ticked: true, note })
+        her.ask_dream(crate::cognition::dream_consolidation::Ask::Now);
+        Ok(DreamNowResult { asked: true })
     }
 }
 

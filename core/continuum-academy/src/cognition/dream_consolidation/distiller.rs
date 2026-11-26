@@ -74,8 +74,9 @@ pub struct SemanticDistiller {
     /// and 500 "Compute error" / poison the lane
     /// ([[budget-at-assembly-never-clamp-the-prompt]]). Injected at construction
     /// (where the live served window is known) so the distiller itself stays a
-    /// pure fn of (engrams, budget). Defaults conservative.
-    max_observation_chars: usize,
+    /// pure fn of (engrams, budget). `None` when no served window is known (no local lane): nothing
+    /// is cut, and the adapter holds its own window.
+    max_observation_chars: Option<usize>,
 }
 
 /// A sub-personal LENS — one inner voice of the mind-wanderer arc (#145,
@@ -160,7 +161,7 @@ impl SemanticDistiller {
     /// never overflows. There is no default: a window guessed for an unwired build is a second
     /// budget. A single engram larger than it still distills ([`Self::observations_block`]
     /// always keeps one whole).
-    pub fn new(adapter: Arc<dyn AIProviderAdapter>, observation_chars: usize) -> Self {
+    pub fn new(adapter: Arc<dyn AIProviderAdapter>, observation_chars: Option<usize>) -> Self {
         Self {
             adapter,
             model: None,
@@ -233,7 +234,7 @@ impl SemanticDistiller {
         //
         // The observations block has always been budgeted (whole engrams, tail
         // dropped, never truncated). The prior-beliefs list appended below was
-        // bounded only by COUNT (SUPERSESSION_REVIEW_LIMIT +
+        // bounded only by COUNT (a per-cluster limit plus
         // ROTATING_REVIEW_PER_PASS) - and a belief is distilled prose of any
         // length, so N bounded beliefs times unbounded text is an unbounded
         // block. Both halves land in ONE user message, so the careful
@@ -253,12 +254,11 @@ impl SemanticDistiller {
         // persona, a fresh domain, any cluster whose topic has no history —
         // reserving a quarter of the budget for a list that never gets appended,
         // on exactly the passes carrying the most new material (IntelMac, #3861).
-        let belief_floor = if prior_beliefs.is_empty() {
-            0
-        } else {
-            self.max_observation_chars / 4
+        let belief_floor = match self.max_observation_chars {
+            Some(max) if !prior_beliefs.is_empty() => max / 4,
+            _ => 0,
         };
-        let observation_budget = self.max_observation_chars.saturating_sub(belief_floor);
+        let observation_budget = self.max_observation_chars.map(|max| max.saturating_sub(belief_floor));
         let (mut block, kept_n) = Self::observations_block(sources, observation_budget);
         let kept = &sources[..kept_n];
         // How many prior beliefs the block actually lists (whole beliefs up to the budget): the only
@@ -280,7 +280,7 @@ impl SemanticDistiller {
             let mut beliefs_kept = 0usize;
             for (i, b) in prior_beliefs.iter().enumerate() {
                 let line = format!("{}. {}\n", i + 1, b.content.trim());
-                if block.len() + line.len() > self.max_observation_chars {
+                if self.max_observation_chars.is_some_and(|max| block.len() + line.len() > max) {
                     break;
                 }
                 block.push_str(&line);
@@ -304,7 +304,7 @@ impl SemanticDistiller {
                     beliefs = prior_beliefs.len(),
                     kept = beliefs_kept,
                     dropped_first_chars,
-                    budget_chars = self.max_observation_chars,
+                    budget_chars = ?self.max_observation_chars,
                     block_chars = block.len(),
                     "prior-belief list exceeded the served slot budget - reviewing the \
                      first {beliefs_kept}, deferring the rest to a later pass (#3847)"
@@ -319,7 +319,7 @@ impl SemanticDistiller {
                 probe_class = "dream.cluster.budgeted",
                 cluster = sources.len(),
                 kept = kept_n,
-                budget_chars = self.max_observation_chars,
+                budget_chars = ?self.max_observation_chars,
                 "dream cluster exceeded the served slot budget — distilling the first \
                  {kept_n} engrams, deferring the rest (never overflow the slot, #175)"
             );
@@ -421,13 +421,13 @@ impl SemanticDistiller {
     /// single large memory still distills (the adapter's overflow backstop is the
     /// last-resort net for that degenerate case). Returns the block AND how many
     /// engrams it kept, so the caller's provenance reflects only what was distilled.
-    pub(super) fn observations_block(sources: &[Engram], budget_chars: usize) -> (String, usize) {
+    pub(super) fn observations_block(sources: &[Engram], budget_chars: Option<usize>) -> (String, usize) {
         let mut block = String::new();
         let mut kept = 0usize;
         for (i, e) in sources.iter().enumerate() {
             let line = format!("{}. {}\n", i + 1, e.content.trim());
             // First engram always goes in; after that, stop before overflowing.
-            if kept > 0 && block.len() + line.len() > budget_chars {
+            if kept > 0 && budget_chars.is_some_and(|budget| block.len() + line.len() > budget) {
                 break;
             }
             block.push_str(&line);
@@ -450,10 +450,6 @@ impl SemanticDistiller {
         out
     }
 }
-
-// ───────────────────────────────────────────────────────────────────────────
-// Slice 3: the DreamConsolidationRegion — the organism's rest-state servicer.
-// ───────────────────────────────────────────────────────────────────────────
 
 /// What one distillation may spend, from her measured need (`working_set::need_of`): an output room
 /// of her act's (`act_room`, which bounds every string the lesson schema allows) and a think at her

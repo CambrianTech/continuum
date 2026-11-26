@@ -162,15 +162,11 @@ use super::*;
         }
         let hits = state.semantic_beliefs_matching(
             &["main.rs".to_string(), "rs".to_string()], // "rs" = noise, skipped
-            8,
         );
         assert_eq!(hits.len(), 1, "semantic-only, key-matched: {hits:?}");
         assert_eq!(hits[0].id, stale_id);
-        // Cap respected; empty needles → empty.
-        assert!(state.semantic_beliefs_matching(&[], 8).is_empty());
-        assert!(state
-            .semantic_beliefs_matching(&["main.rs".to_string()], 0)
-            .is_empty());
+        // Empty needles → empty.
+        assert!(state.semantic_beliefs_matching(&[]).is_empty());
 
         // Rotating window (#221 slice 2b): oldest-first, Semantic-only,
         // exclusion honored — what guarantees the review EVENTUALLY reaches
