@@ -40,4 +40,9 @@ physicalUsedBytes: number,
  * claims (other processes / OS / a game). Reporting only; a grid contention
  * signal.
  */
-externalBytes: number, leaseCount: number, };
+externalBytes: number, 
+/**
+ * Of `measured`, what nothing can demote while its owner stays loaded (weights): capacity less this
+ * and `external` is the most any one wait could ever be granted now.
+ */
+fixedBytes: number, leaseCount: number, };

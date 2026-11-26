@@ -741,3 +741,27 @@
         drop(lease);
         assert_eq!(daemon.board().kinds.iter().find(|k| k.kind == ResourceKind::Vram).map(|k| k.available_bytes), Some(10_000));
     }
+
+    // what this catches (Cormac and Codex, the 5090, 2026-11-26): a lesson sized within the whole card
+    // asked for 29.5 GB while the core held 30.7 GB of it, and waited forever. The ceiling is capacity
+    // less what nothing can demote (residents' weights) and what others hold; a residency let go moves its
+    // bytes to external until the physical reading drops, so it never opens room that is not there. The
+    // byte counts are the 5090's board at 15:07Z; the core's weights split is a fixture, not a reading.
+    #[tokio::test(start_paused = true)]
+    async fn the_ceiling_is_capacity_less_fixed_weights_and_what_others_hold() {
+        const CAPACITY: u64 = 34_190_917_632;
+        const USED: u64 = 32_436_649_984;
+        const CORE: u64 = 30_721_118_208;
+        const CORE_WEIGHTS: u64 = 17_000_000_000;
+        const EMBED: u64 = 633_205_120;
+        let source = Arc::new(MockCapacitySource::new(ResourceKind::Vram, CAPACITY));
+        source.set_used(USED);
+        let daemon = ResourceDaemon::start(vec![source as Arc<dyn CapacitySource>], vec![], DaemonConfig::default());
+        let ceiling = |daemon: &ResourceDaemon| Free::of(&daemon.board()).kind(ResourceKind::Vram).map(|kind| kind.ceiling);
+        let _embed = daemon.hold_residency("embed", [ResidentFloor { kind: ResourceKind::Vram, resident: EMBED, headroom: 0, fixed: EMBED }]);
+        let core = daemon.hold_residency("core", [ResidentFloor { kind: ResourceKind::Vram, resident: CORE, headroom: 0, fixed: CORE_WEIGHTS }]);
+        let external = USED - CORE - EMBED;
+        assert_eq!(ceiling(&daemon), Some(CAPACITY - CORE_WEIGHTS - EMBED - external), "the core's KV and workspace count toward the ceiling, its weights never");
+        drop(core);
+        assert_eq!(ceiling(&daemon), Some(CAPACITY - EMBED - (USED - EMBED)), "let go but still resident: external, not room");
+    }

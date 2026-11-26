@@ -951,6 +951,9 @@ pub struct ResidentFloor {
     pub kind: ResourceKind,
     pub resident: u64,
     pub headroom: u64,
+    /// Of `resident`, what nothing can demote while the owner stays loaded (its weights): the part the
+    /// kind's ceiling is always short of (UNIFIED-PAGING.md, "never here" is a proven limit only).
+    pub fixed: u64,
 }
 
 /// Releases precisely this instance's contribution when its owner unloads.

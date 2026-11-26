@@ -206,11 +206,14 @@ impl ResourceGovernor {
         for kind in ResourceKind::ALL {
             let mut resident = self.ledger.measured_by(consumer, kind);
             let mut floor = self.ledger.reservation(consumer, kind);
+            let mut fixed = self.ledger.fixed_by(consumer, kind);
             for pool in pools.iter().filter(|pool| pool.kind == kind) {
                 resident = change(resident, pool.resident);
                 floor = change(floor, pool.resident.saturating_add(pool.headroom));
+                fixed = change(fixed, pool.fixed.min(pool.resident));
             }
             self.ledger.reserve(consumer, kind, floor);
+            self.ledger.fix(consumer, kind, fixed);
             if resident > 0 {
                 footprints.push(ConsumerFootprint { kind, bytes: resident, detail: "native resident allocation".into() });
             }

@@ -79,6 +79,10 @@ pub struct KindLedger {
     /// signal.
     #[ts(type = "number")]
     pub external_bytes: u64,
+    /// Of `measured`, what nothing can demote while its owner stays loaded (weights): capacity less this
+    /// and `external` is the most any one wait could ever be granted now.
+    #[ts(type = "number")]
+    pub fixed_bytes: u64,
     pub lease_count: u32,
 }
 
@@ -135,6 +139,9 @@ pub struct ResourceLeaseLedger {
     /// (or a higher arbiter) DECIDES the floor values — policy; the ledger
     /// ENFORCES them — mechanism. Keyed `(kind, consumer_id)`.
     reservations: BTreeMap<(ResourceKind, String), u64>,
+    /// Of each consumer's residency, what nothing can demote while it stays loaded (its weights). Keyed
+    /// like `reservations`; the board sums it per kind as the part of capacity no wait can ever be granted.
+    fixed: BTreeMap<(ResourceKind, String), u64>,
     /// Each consumer's latest self-declared footprint, refreshed wholesale by the
     /// daemon's background poll of [`ResourceConsumer::footprint`]. This is the
     /// self-declared ATTRIBUTION axis: what a consumer *says* it physically holds
@@ -369,6 +376,25 @@ impl ResourceLeaseLedger {
             self.reservations.insert(key, min_bytes);
         }
         self.tell();
+    }
+
+    /// Record what of `consumer_id`'s residency of `kind` nothing can demote (zero clears it).
+    pub fn fix(&mut self, consumer_id: &str, kind: ResourceKind, bytes: u64) {
+        let key = (kind, consumer_id.to_owned());
+        if bytes == 0 {
+            self.fixed.remove(&key);
+        } else {
+            self.fixed.insert(key, bytes);
+        }
+    }
+
+    pub fn fixed_by(&self, consumer_id: &str, kind: ResourceKind) -> u64 {
+        self.fixed.get(&(kind, consumer_id.to_owned())).copied().unwrap_or(0) // unwrap_or: no fixed residency recorded is zero fixed bytes, a fact
+    }
+
+    /// What of `kind` nothing can demote, across every consumer.
+    fn fixed(&self, kind: ResourceKind) -> u64 {
+        self.fixed.iter().filter(|((at, _), _)| *at == kind).map(|(_, bytes)| *bytes).fold(0, u64::saturating_add)
     }
 
     pub fn reservation(&self, consumer_id: &str, kind: ResourceKind) -> u64 {
@@ -762,6 +788,7 @@ impl ResourceLeaseLedger {
                 physical_used_bytes,
                 // Bytes resident that no consumer of ours claims — the external floor.
                 external_bytes: physical_used_bytes.saturating_sub(measured_bytes),
+                fixed_bytes: self.fixed(kind),
                 lease_count,
             });
         }

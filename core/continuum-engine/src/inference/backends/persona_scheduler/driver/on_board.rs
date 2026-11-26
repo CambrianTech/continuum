@@ -77,9 +77,10 @@ impl CoreHeld {
         }
         // the new residency is held before the old is let go: for that instant the board counts both,
         // never neither, so no waiter is granted bytes the Core still holds
+        // its weights are fixed while it serves; its KV, workspace and output are what the law may demote
         let claim = daemon.hold_residency(CORE_CONSUMER_ID, [
-            ResidentFloor { kind: ResourceKind::Vram, resident: device.total(), headroom: 0 },
-            ResidentFloor { kind: ResourceKind::Ram, resident: host.total(), headroom: 0 },
+            ResidentFloor { kind: ResourceKind::Vram, resident: device.total(), headroom: 0, fixed: device.model },
+            ResidentFloor { kind: ResourceKind::Ram, resident: host.total(), headroom: 0, fixed: host.model },
         ]);
         self.claim = Some(claim);
         (self.device, self.host) = (device, host);

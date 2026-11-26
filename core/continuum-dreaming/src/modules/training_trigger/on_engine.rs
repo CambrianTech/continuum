@@ -275,12 +275,13 @@ struct Short {
     capacity: Option<u64>,
 }
 
-/// What a seat may lease of each kind beside its `weights`: what the authority governs of that kind
-/// less them. A kind it does not govern leaves none, and weights past a byte
-/// count leave none.
+/// What a seat may lease of each kind beside its `weights`: the kind's ceiling (capacity less what
+/// nothing can demote and what others hold now) less them. Never capacity: on the 5090 a lesson sized
+/// within the whole card asked for 29.5 GB serving held 30.7 GB of, and waited forever (Cormac,
+/// 2026-11-26). A kind the authority does not govern leaves none, and weights past a byte count leave none.
 fn fit_beside(free: &Free, weights: &[MemoryRow]) -> Fit {
     let room = |kind: ResourceKind| match (free.kind(kind), leased(weights, kind)) {
-        (Some(governed), Some(held)) => governed.capacity.saturating_sub(held),
+        (Some(governed), Some(held)) => governed.ceiling.saturating_sub(held),
         (None, _) | (_, None) => 0,
     };
     Fit { vram: room(ResourceKind::Vram), ram: room(ResourceKind::Ram) }
