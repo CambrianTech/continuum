@@ -409,6 +409,76 @@ CLAUDE.md's polymorphism pattern), so a node's configuration or a trial picks on
   publishes the new placement only then. Cancelling a transfer waits for its event and leaves the
   block where it was.
 
+## Every byte the engine holds is a block: workspace, admission and reclaim
+
+Joel, 2026-11-26: "The low level cache/memory subsystem needs to be a whole smart object and sage based
+feature, not patched together. So there's no mystery and it works."
+
+**What the night of 2026-11-26 showed.** The design above places blocks the Streamer moves. The bytes
+that refused learning all night were bytes it does not see. Each refusal came from a different
+counter's private picture of the same memory:
+
+| Counter (2026-11-26, `fable/lesson-rows`) | Its picture | What it got wrong |
+|---|---|---|
+| `LearningMemory::workspace` (`continuum-engine/src/inference/learning/memory.rs`) | the seat's measured row against `required.max(held)` | refused every lesson smaller than what serving had grown the shared buffer to (MTL0 required 1.80 GB within held 4.62 GB, refused against 3.91 GB measured). Fixed in d119ff4dfb by checking growth only. |
+| `lease_memory` (`continuum-genome/.../learner/seat.rs`) and `LearningMemory::from_rows` | the gross `SharedComputeRequired` sum | prices a seat at the whole workspace when only the growth past what serving holds is allocated (Codex, the 5090: 5.73 GB required, 3.28 GB held, priced at 5.73 GB) |
+| `learning::leased`, `resource_admission/metrics.rs` | a third sum of the same rows | the same rule written again |
+| `window_grant` + `GrantHandoff` (`continuum-engine/src/capacity/`) | a slot's erase as bytes returned | a parked mind's KV on CUDA lives on host (`UnifiedTier::kv_memory`, native backing), so evicting her frees no VRAM; the handoff receipt proves an erase, never a device release (Codex, 2026-11-26 07:20Z) |
+| `training_demand::reservation` -> `working_set::with_training` -> `window_allocator::grow_shared_window` | demand as concurrent jobs | sums mutually exclusive queued seats as if they ran at once; a `TrainingGrowth::Reserved` plan is not a device release |
+| ggml's scheduler buffers, grown by `ggml_backend_sched_alloc_graph_admitted` | its own `held` | the only number that is true, and it sits outside every counter above |
+
+Six numbers for one memory, so every refusal needs a trace to explain, and a fix to one counter leaves
+the other five wrong. That is the mystery. The cure is the same as for the movers: one owner.
+
+**The compute workspace is a block.** A backend's shared compute buffer (the scheduler's per-buffer-type
+allocation that serving's graphs and a learner's reply graph both run in) becomes
+`BlockKind::Workspace { device, buffer_type }`, one per backend buffer type, owned by the Streamer like
+any block:
+- Its size is its `Region`'s size. `held` is never a separate number: it is the block's bytes.
+- Growth is a request to the Streamer: `grow(workspace, to: u64) -> Result<Grant, Refusal>`. The
+  Streamer prices exactly `to - held` on that block's tier, against that tier's budget, and makes room
+  by its law (demoting the coldest blocks *on that tier*) before refusing.
+- The scheduler's admission callback (`ReplyAdmission::workspace` today) becomes the one call site of
+  `grow`. Within `held` there is nothing to ask. `LearningMemory`'s row matching and lease checks are
+  deleted.
+- Shrinking is a demotion like any other: when serving's graphs no longer need the high-water mark and
+  the tier is under pressure, the law may shrink it, at a point where no graph is in flight
+  (`InFlight` covers it).
+
+**Admission is a reservation of blocks, priced where they will live.** A seat asks the Streamer for its
+blocks: `Training` blocks (shadow, optimizer state) by kind and tier, and growth of each `Workspace`
+it will run in. The Streamer answers with one typed `Reservation { per tier: bytes it will allocate }`
+computed from the same block table it places by, or a typed `Refusal` naming the tier, the bytes short
+and what it could not demote. Gross versus incremental stops being a question: the price is what the
+Streamer will allocate, because it is the allocator's owner. `lease_memory`, `from_rows`, `leased` and
+the metrics sum are deleted; Codex's typed incremental contract (2026-11-26 08:01Z) is this
+`Reservation`, not a fourth counter.
+
+**Reclaim is demotion, and the Streamer knows what a demotion frees.** Every block carries its tier, so
+"evict her to make room for training" becomes "demote blocks on the tier that is short". On the 5090
+a parked mind's KV is on `Pinned`, not `Vram`, so demoting it frees no VRAM and the Streamer never
+offers it as VRAM. What it can free on `Vram` is listed: other `Workspace` growth past need, `Weights`
+or `Expert` blocks the law can stream, a resident mind's `MindKv` on the stream. The answer is
+visible in `Placement` before anyone asks. `GrantHandoff` stays for slot custody; it stops being
+counted as bytes. `training_demand`'s reservation and `grow_shared_window`'s training path become
+`Demand` the Streamer hears, one queued seat at a time (mutually exclusive seats are one demand, not a
+sum).
+
+**Waiting, not refusing.** A seat whose reservation cannot be met now is not refused. It is `Demand`
+with a need and a forecast, and the Streamer answers `Granted` when its law has made room (a resting
+mind demoted, a workspace shrunk, a model's experts streamed). A refusal is only for a reservation
+that cannot be met on this node at all (the reply alone past every tier's budget), and it names that.
+This is how refusals become impossible rather than rarer: the only "no" is a proven "never here".
+
+**Why it works on every machine, or names the difference.** The M5 (unified) and the 5090 (discrete)
+run the same `Reservation` and the same law. On unified memory a demoted resident frees the one tier
+everyone shares; on the 5090 it frees `Pinned`, and the Streamer says so. The difference between
+nodes is a row in `Placement`, never a mystery found by trace.
+
+What it deletes, in the slice that builds it (slice 3b below): `LearningMemory`'s workspace and lease
+matching, `lease_memory`, `from_rows`, `learning::leased`, the metrics sum, training's path through
+`window_allocator`, and `GrantHandoff` as bytes.
+
 ## Built for the grid from the first slice
 
 Moving a mind or a block to another node is the same move as moving it to another tier, with a
@@ -467,6 +537,7 @@ network link between them. So that works later with no rework, everything built 
 | 1b | `Topology` and the tiers' budgets, once the resource authority says `resources/free` on the bus (card 9d856843, Cormac's delta 8). The drive's measured write rate checks the Mapping link: 64 MiB demoted at 1.06 GB/s on the M5 with serving beside, below what an SSD gives | Fable | Mapping at >= 80% of the measured drive rate |
 | 2 | The first consumer: the Core's parked minds' KV as `MindKv` blocks. Deletes the fork's private storage reservation (#6264), her separate file write, and `preserve.rs`'s JSON token history (her tokens are a block beside her KV) | Fable | `--test-core` byte-identical through a flash round trip; stop and restore at 130k at the drive's rate |
 | 3 | The `Streamer` with `PlacementLaw` (`FractalPager`, `Lru` as baseline), `Forecaster`, the law registry, `blocks/observed` and the `Trace`, simulator and replay; the Lane's `Forecast` as its first `Demand` | Fable | replay reproduces every decision; zero misses for forecast minds; `FractalPager` beats `Lru` on a fitted live trace |
+| 3b | Workspace, admission and reclaim as blocks ("Every byte the engine holds is a block"): `Workspace` blocks and `grow` at the scheduler's admission callback; `Reservation` replaces every learning lease sum; training demand as `Demand`. Deletes the six counters listed there | Fable (blocks, Streamer), Codex (`Reservation` contract, the discrete tiers' reclaim), Cormac (the trainer as a consumer, outstanding demand) | the M5 and the 5090 each run 15 min on one head: zero refusals that are not "never here", and every wait names the tier and bytes it waits for |
 | 4 | Discrete: the `Vram` and `Pinned` tiers, `Dma` and `Staged` links, the CUDA graph check | Codex | the 5090: a swap hidden under decode |
 | 5 | The hot tier as `Weights` blocks; its private copier deleted | Codex (owns the catalog) | model load from flash at the drive's rate |
 | 6 | llama-server page IO onto `Mapping`, or deleted with the HTTP lanes (the inference audit's line 2) | the card 6af87187 owner, with Codex | no `fread` of a page body |
