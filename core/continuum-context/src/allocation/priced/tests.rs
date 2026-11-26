@@ -307,6 +307,12 @@ fn a_choice_at_the_top_of_what_was_measured_tries_above_it() {
     assert_eq!(measured, narrow);
     assert!(trial > narrow.1 && trial <= 66_209, "past what was measured, within the window: {trial}");
     assert_eq!(tried.window, trial, "the act holds the trial window");
+    // Benchy, the M5, 2026-11-26 01:48Z: measured 9,952..159,015 in a 262,144 window: a trial is one
+    // step of her growth past the top, never the whole window
+    let benchy = allocate(262_144, act(Newest::Pageable { whole: 6_000, least: 600 }, ContextPrice::Measured(m5_over((9_952, 159_015)))));
+    if let Priced::Trial { held: step, .. } = benchy.priced {
+        assert!(step < 262_144, "one step of growth past 159,015, not the whole window: {step}");
+    }
     let wide = allocate(755_456, act(Newest::Pageable { whole: 6_000, least: 600 }, m5()));
     assert!(matches!(wide.priced, Priced::Held { .. }), "a peak inside a wide measured range is held as before: {:?}", wide.priced);
 }
