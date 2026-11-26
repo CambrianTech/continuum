@@ -221,3 +221,80 @@ fn a_retired_claim_cannot_be_spent_and_a_racing_spend_stays_charged() {
         assert_eq!(held, Some(Bytes(if spent { 60 } else { 0 })), "a spend that won the race is charged; one that lost spent nothing");
     }
 }
+
+// what this catches (the kernel authority's lease terms, moving onto place): a lapsed lease still spent
+// by native code, a lapsed lease credited as free before its holder released it, and a lapsed lease
+// renewed back to life.
+#[test]
+fn a_lapsed_claim_reads_nothing_and_stays_charged_until_released() {
+    let mut ledger = Ledger::default();
+    ledger.place(Tier::Vram, Bytes(8 * GB), Bytes(8 * GB), &mut Vec::new());
+    let claim = granted(ledger.prepare(TRAINER, FIRST, &[Need { place: Tier::Vram, amount: Bytes(2 * GB) }]));
+    let now = std::time::Instant::now();
+    assert_eq!(ledger.renew(claim.id(), now, now), Ok(()), "a live claim takes a term");
+    assert_eq!(claim.left(Tier::Vram), Some(Bytes(0)), "past its term it reads nothing");
+    assert!(!claim.consume(Tier::Vram, Bytes(1)), "and cannot be spent");
+    let mut overdue = Vec::new();
+    ledger.overdue(std::time::Instant::now(), &mut overdue);
+    assert_eq!(overdue, vec![claim.id()], "listed for reclaim");
+    assert_eq!(ledger.accounts(Tier::Vram).map(|a| a.free()), Some(Bytes(6 * GB)), "lapsing frees nothing");
+    assert_eq!(ledger.renew(claim.id(), now + std::time::Duration::from_secs(60), std::time::Instant::now()), Err(Refusal::Lapsed(claim.id())));
+    assert_eq!(ledger.commit(claim.id()), Ok(()));
+    assert_eq!(ledger.release(claim.id()), Ok(()));
+    assert_eq!(ledger.accounts(Tier::Vram).map(|a| a.free()), Some(Bytes(8 * GB)), "its release frees it");
+}
+
+// what this catches (the kernel's shrink): a holder that gave back part of its memory keeping the
+// whole charge, and a claim shrunk to nothing lingering.
+#[test]
+fn a_partial_release_frees_what_was_given_back() {
+    let mut ledger = Ledger::default();
+    ledger.place(Tier::Vram, Bytes(8 * GB), Bytes(8 * GB), &mut Vec::new());
+    let claim = granted(ledger.prepare(SERVING, FIRST, &[Need { place: Tier::Vram, amount: Bytes(4 * GB) }]));
+    assert!(claim.consume(Tier::Vram, Bytes(4 * GB)));
+    assert_eq!(ledger.commit(claim.id()), Ok(()));
+    assert_eq!(ledger.shrink(claim.id(), Tier::Vram, Bytes(GB)), Ok(Bytes(3 * GB)));
+    assert_eq!(ledger.accounts(Tier::Vram).map(|a| (a.held, a.free())), Some((Bytes(3 * GB), Bytes(5 * GB))));
+    assert_eq!(ledger.shrink(claim.id(), Tier::Pinned, Bytes(1)), Err(Refusal::NotOnPlace(claim.id())));
+    assert_eq!(ledger.shrink(claim.id(), Tier::Vram, Bytes(9 * GB)), Ok(Bytes(0)), "giving back more than held frees what is held");
+    assert_eq!(ledger.release(claim.id()), Err(Refusal::UnknownClaim(claim.id())), "shrunk to nothing, it is gone");
+    assert_eq!(ledger.accounts(Tier::Vram).map(|a| a.free()), Some(Bytes(8 * GB)));
+}
+
+// what this catches (the M5's unified memory, the kernel's set_backing): a VRAM claim and a host claim
+// both granted out of one physical memory, as two counters would; and a VRAM need past the memory it
+// draws on not answered "never here".
+#[test]
+fn a_place_backed_by_a_pool_is_charged_once_on_that_physical_memory() {
+    let mut ledger = Ledger::default();
+    ledger.place(Tier::Vram, Bytes(32 * GB), Bytes(32 * GB), &mut Vec::new());
+    ledger.place(Tier::Pinned, Bytes(16 * GB), Bytes(16 * GB), &mut Vec::new());
+    ledger.back(Tier::Vram, Some(Tier::Pinned));
+    let gpu = granted(ledger.prepare(SERVING, FIRST, &[Need { place: Tier::Vram, amount: Bytes(10 * GB) }]));
+    assert_eq!(ledger.accounts(Tier::Pinned).map(|a| a.prepared), Some(Bytes(10 * GB)), "the pool carries the VRAM claim");
+    assert_eq!(ledger.room_for(TRAINER, Tier::Vram), Some(Bytes(6 * GB)), "VRAM room is the pool's room");
+    assert!(matches!(ledger.prepare(TRAINER, FIRST, &[Need { place: Tier::Pinned, amount: Bytes(10 * GB) }]), Answer::Waiting { .. }), "host and VRAM share one memory");
+    assert!(matches!(ledger.prepare(SERVING, FIRST, &[Need { place: Tier::Vram, amount: Bytes(20 * GB) }]), Answer::Never { capacity: Bytes(c), .. } if c == 16 * GB), "past the physical memory: never here");
+    assert_eq!(ledger.unwind(gpu.id()), Ok(()));
+    assert_eq!(ledger.accounts(Tier::Pinned).map(|a| a.prepared), Some(Bytes(0)), "returned to the pool too");
+}
+
+// what this catches (the kernel's reservations, a live call's floor): inference granted into the
+// bytes a call is guaranteed, and the call itself kept out of its own floor.
+#[test]
+fn a_floor_is_kept_for_its_owner_and_others_are_granted_around_it() {
+    const CALL: Owner = Owner(3);
+    let mut ledger = Ledger::default();
+    ledger.place(Tier::Vram, Bytes(8 * GB), Bytes(8 * GB), &mut Vec::new());
+    ledger.floor(CALL, Tier::Vram, Bytes(4 * GB));
+    assert_eq!(ledger.room_for(TRAINER, Tier::Vram), Some(Bytes(4 * GB)), "others are granted around the floor");
+    assert_eq!(ledger.room_for(CALL, Tier::Vram), Some(Bytes(8 * GB)), "its owner may fill it");
+    assert!(matches!(ledger.prepare(TRAINER, FIRST, &[Need { place: Tier::Vram, amount: Bytes(5 * GB) }]), Answer::Waiting { .. }));
+    let call = granted(ledger.prepare(CALL, FIRST, &[Need { place: Tier::Vram, amount: Bytes(3 * GB) }]));
+    assert_eq!(ledger.room_for(TRAINER, Tier::Vram), Some(Bytes(4 * GB)), "a floor partly filled still owes the rest");
+    assert_eq!(ledger.unwind(call.id()), Ok(()));
+    ledger.floor(CALL, Tier::Vram, Bytes(0));
+    let mut out = Vec::new();
+    ledger.grant_waiting(&mut out);
+    assert_eq!(out.len(), 1, "a withdrawn floor's room is granted to the wait");
+}

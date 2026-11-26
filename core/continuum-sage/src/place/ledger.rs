@@ -19,7 +19,9 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use super::claim::{Claim, ClaimId, Generation, Need, Owner};
+mod room;
+
+use super::claim::{Claim, ClaimId, Expiry, Generation, Need, Owner};
 use super::quantity::Quantity;
 
 /// One place's accounts.
@@ -71,6 +73,10 @@ pub enum Refusal {
     NotCommitted(ClaimId),
     /// The claim is committed already.
     Committed(ClaimId),
+    /// The claim had lapsed: it is not renewed, only released.
+    Lapsed(ClaimId),
+    /// The claim holds nothing on that place.
+    NotOnPlace(ClaimId),
 }
 
 /// A wait withdrawn because a place's capacity fell below what it needs: its owner hears it as never
@@ -87,7 +93,7 @@ pub struct NeverNow<P, Q> {
 #[derive(Debug)]
 enum Stage<P, Q> {
     Prepared(Claim<P, Q>),
-    Committed { owner: Owner, generation: Generation, held: Vec<Need<P, Q>> },
+    Committed { owner: Owner, generation: Generation, held: Vec<Need<P, Q>>, expiry: Expiry },
     /// Held by an owner's earlier incarnation, which may still hold the memory (its process or GPU
     /// context not yet gone): charged until its release is fenced, never credited on the restart alone.
     Retired { held: Vec<Need<P, Q>> },
@@ -109,6 +115,10 @@ pub struct Ledger<P, Q> {
     waiting: VecDeque<Waiting<P, Q>>,
     generations: HashMap<Owner, Generation>,
     next: u64,
+    /// The physical pool each place that has one draws on ([`Ledger::back`]).
+    pools: Vec<(P, P)>,
+    /// Each owner's guaranteed amount of a place ([`Ledger::floor`]).
+    floors: Vec<room::Floor<P, Q>>,
     /// `grant_waiting`'s scratch: places an earlier wait is still short on. Reused, never reallocated
     /// once it has held as many places as there are.
     blocked: Vec<P>,
@@ -116,7 +126,7 @@ pub struct Ledger<P, Q> {
 
 impl<P: Copy + PartialEq + std::fmt::Debug, Q: Quantity> Default for Ledger<P, Q> {
     fn default() -> Self {
-        Self { places: Vec::new(), claims: HashMap::new(), waiting: VecDeque::new(), generations: HashMap::new(), next: 0, blocked: Vec::new() }
+        Self { places: Vec::new(), claims: HashMap::new(), waiting: VecDeque::new(), generations: HashMap::new(), next: 0, pools: Vec::new(), floors: Vec::new(), blocked: Vec::new() }
     }
 }
 
@@ -157,21 +167,24 @@ impl<P: Copy + PartialEq + std::fmt::Debug, Q: Quantity> Ledger<P, Q> {
             }
         }
         for need in &merged {
-            let Some(accounts) = self.accounts(need.place) else {
+            let Some(capacity) = self.pooled_capacity(need.place) else {
                 return Answer::Unknown { place: need.place };
             };
-            if need.amount > accounts.capacity {
-                return Answer::Never { place: need.place, need: need.amount, capacity: accounts.capacity };
+            if need.amount > capacity {
+                return Answer::Never { place: need.place, need: need.amount, capacity };
             }
         }
         let id = self.issue();
         // in order of asking, per place: a newcomer waits only behind an earlier wait short on a place
         // it also needs, so a wait on one place never holds up another
-        let behind = self.waiting.iter().any(|wait| self.short_places(&wait.needs).any(|place| merged.iter().any(|need| need.place == place)));
-        if !behind && self.fits(&merged) {
+        // (a need within its owner's own floor is a guarantee and queues behind no one)
+        let behind = self.waiting.iter().any(|wait| {
+            self.short_places(wait.owner, &wait.needs).any(|place| merged.iter().any(|need| need.place == place && !self.within_floor(owner, need)))
+        });
+        if !behind && self.fits(owner, &merged) {
             return Answer::Granted(self.grant(id, owner, generation, merged));
         }
-        let short = self.short(&merged);
+        let short = self.short(owner, &merged);
         self.waiting.push_back(Waiting { id, owner, generation, needs: merged });
         Answer::Waiting { id, short }
     }
@@ -186,15 +199,15 @@ impl<P: Copy + PartialEq + std::fmt::Debug, Q: Quantity> Ledger<P, Q> {
         let mut at = 0;
         while at < self.waiting.len() {
             let wait = &self.waiting[at];
-            let held_up = wait.needs.iter().any(|need| blocked.contains(&need.place));
-            if !held_up && self.fits(&wait.needs) {
+            let held_up = wait.needs.iter().any(|need| blocked.contains(&need.place) && !self.within_floor(wait.owner, need));
+            if !held_up && self.fits(wait.owner, &wait.needs) {
                 if let Some(wait) = self.waiting.remove(at) {
                     let claim = self.grant(wait.id, wait.owner, wait.generation, wait.needs);
                     granted.push(claim);
                 }
                 continue;
             }
-            blocked.extend(self.short_places(&self.waiting[at].needs));
+            blocked.extend(self.short_places(self.waiting[at].owner, &self.waiting[at].needs));
             at += 1;
         }
         self.blocked = blocked;
@@ -213,7 +226,7 @@ impl<P: Copy + PartialEq + std::fmt::Debug, Q: Quantity> Ledger<P, Q> {
             None => return Err(Refusal::UnknownClaim(id)),
         };
         let held = self.settle(&claim);
-        self.claims.insert(id, Stage::Committed { owner: claim.owner, generation: claim.generation, held });
+        self.claims.insert(id, Stage::Committed { owner: claim.owner, generation: claim.generation, held, expiry: claim.expiry.clone() });
         Ok(())
     }
 
@@ -253,10 +266,58 @@ impl<P: Copy + PartialEq + std::fmt::Debug, Q: Quantity> Ledger<P, Q> {
         }
     }
 
+    /// Give a live claim a term: it lapses at `until`. One already lapsed at `now` is not renewed: a
+    /// lapsed claim is overdue for reclaim, and only its release frees it.
+    pub fn renew(&mut self, id: ClaimId, until: std::time::Instant, now: std::time::Instant) -> Result<(), Refusal> {
+        let expiry = match self.claims.get(&id) {
+            Some(Stage::Prepared(claim)) => &claim.expiry,
+            Some(Stage::Committed { expiry, .. }) => expiry,
+            Some(Stage::Retired { .. }) | None => return Err(Refusal::UnknownClaim(id)),
+        };
+        if expiry.lapsed(now) {
+            return Err(Refusal::Lapsed(id));
+        }
+        expiry.set(until);
+        Ok(())
+    }
+
+    /// The live claims lapsed at `now`, pushed to `out` (a buffer the caller reuses): what the law
+    /// reclaims first. Lapsing frees nothing; their holdings stay charged until released.
+    pub fn overdue(&self, now: std::time::Instant, out: &mut Vec<ClaimId>) {
+        out.extend(self.claims.iter().filter_map(|(id, stage)| match stage {
+            Stage::Prepared(claim) if claim.expiry.lapsed(now) => Some(*id),
+            Stage::Committed { expiry, .. } if expiry.lapsed(now) => Some(*id),
+            _ => None,
+        }));
+    }
+
+    /// Part of a committed or retired claim's holding on `place` was released (its allocator gave back
+    /// `amount`, the caller's fence): that much is free again. Answers what it still holds there; a
+    /// claim holding nothing anywhere is gone.
+    pub fn shrink(&mut self, id: ClaimId, place: P, amount: Q) -> Result<Q, Refusal> {
+        let held = match self.claims.get_mut(&id) {
+            Some(Stage::Committed { held, .. } | Stage::Retired { held }) => held,
+            Some(Stage::Prepared(_)) => return Err(Refusal::NotCommitted(id)),
+            None => return Err(Refusal::UnknownClaim(id)),
+        };
+        let Some(on) = held.iter_mut().find(|need| need.place == place) else {
+            return Err(Refusal::NotOnPlace(id));
+        };
+        let freed = on.amount.min(amount);
+        on.amount = Q::of(on.amount.units() - freed.units());
+        let left = on.amount;
+        let empty = held.iter().all(|need| need.amount.units() == 0);
+        if empty {
+            self.claims.remove(&id);
+        }
+        self.adjust(place, |accounts| accounts.held = Q::of(accounts.held.units().saturating_sub(freed.units())));
+        Ok(left)
+    }
+
     /// What waits are short on `place`: their needs there past what is free. The placement law's
     /// demand on that place. `None` for a place the ledger has not been told of.
     pub fn shortfall(&self, place: P) -> Option<Q> {
-        let free = self.accounts(place)?.free().units();
+        let free = self.pooled_free(place)?.units();
         let wanted = self
             .waiting
             .iter()
@@ -332,9 +393,9 @@ impl<P: Copy + PartialEq + std::fmt::Debug, Q: Quantity> Ledger<P, Q> {
         held
     }
 
-    /// The places where `needs` are short of what is free now.
-    fn short_places<'n>(&'n self, needs: &'n [Need<P, Q>]) -> impl Iterator<Item = P> + 'n {
-        needs.iter().filter(|need| self.accounts(need.place).is_some_and(|accounts| need.amount > accounts.free())).map(|need| need.place)
+    /// The places where `owner`'s `needs` are short of the room it has now.
+    fn short_places<'n>(&'n self, owner: Owner, needs: &'n [Need<P, Q>]) -> impl Iterator<Item = P> + 'n {
+        needs.iter().filter(move |need| self.room_for(owner, need.place).is_some_and(|room| need.amount > room)).map(|need| need.place)
     }
 
     fn issue(&mut self) -> ClaimId {
@@ -342,15 +403,15 @@ impl<P: Copy + PartialEq + std::fmt::Debug, Q: Quantity> Ledger<P, Q> {
         ClaimId(self.next)
     }
 
-    fn fits(&self, needs: &[Need<P, Q>]) -> bool {
-        needs.iter().all(|need| self.accounts(need.place).is_some_and(|accounts| need.amount <= accounts.free()))
+    fn fits(&self, owner: Owner, needs: &[Need<P, Q>]) -> bool {
+        needs.iter().all(|need| self.room_for(owner, need.place).is_some_and(|room| need.amount <= room))
     }
 
-    fn short(&self, needs: &[Need<P, Q>]) -> Vec<Need<P, Q>> {
+    fn short(&self, owner: Owner, needs: &[Need<P, Q>]) -> Vec<Need<P, Q>> {
         needs
             .iter()
             .filter_map(|need| {
-                let free = self.accounts(need.place)?.free();
+                let free = self.room_for(owner, need.place)?;
                 (need.amount > free).then(|| Need { place: need.place, amount: Q::of(need.amount.units() - free.units()) })
             })
             .collect()
@@ -361,7 +422,7 @@ impl<P: Copy + PartialEq + std::fmt::Debug, Q: Quantity> Ledger<P, Q> {
             self.adjust(need.place, |accounts| accounts.prepared = Q::of(accounts.prepared.units().saturating_add(need.amount.units())));
         }
         let prepared: Arc<[(Need<P, Q>, AtomicU64)]> = needs.into_iter().map(|need| (need, AtomicU64::new(need.amount.units()))).collect();
-        let claim = Claim { id, owner, generation, prepared };
+        let claim = Claim { id, owner, generation, prepared, expiry: Expiry::never() };
         self.claims.insert(id, Stage::Prepared(claim.clone()));
         claim
     }
@@ -379,9 +440,14 @@ impl<P: Copy + PartialEq + std::fmt::Debug, Q: Quantity> Ledger<P, Q> {
         }
     }
 
-    fn adjust(&mut self, place: P, change: impl FnOnce(&mut Accounts<Q>)) {
-        if let Some((_, accounts)) = self.places.iter_mut().find(|(at, _)| *at == place) {
-            change(accounts);
+    /// Apply `change` to `place`'s accounts and, when it draws on a pool, to the pool's: one physical
+    /// memory, charged once there.
+    fn adjust(&mut self, place: P, change: impl Fn(&mut Accounts<Q>)) {
+        let pool = self.pool_of(place);
+        for (at, accounts) in self.places.iter_mut() {
+            if *at == place || Some(*at) == pool {
+                change(accounts);
+            }
         }
     }
 }
