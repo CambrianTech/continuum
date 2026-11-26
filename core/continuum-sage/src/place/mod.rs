@@ -19,7 +19,7 @@ mod ledger;
 mod quantity;
 
 pub use claim::{Claim, ClaimId, Generation, Need, Owner};
-pub use ledger::{Accounts, Answer, Ledger, Refusal};
+pub use ledger::{Accounts, Answer, Ledger, NeverNow, Refusal};
 pub use quantity::{Bytes, Quantity, Slots};
 
 #[cfg(test)]
