@@ -8,11 +8,12 @@
 //! drain, settled cards, operator submits) into the durable journal, per
 //! `(persona_id, trait_kind, base_model)` bucket, where the training trigger learns them in
 //! place; retiring submissions not yet learned; re-keying a bucket stored under a base spelling
-//! that is not the catalog id; and reporting each bucket's journal.
+//! that is not the catalog id; carrying a bucket's examples not learned yet to the base she runs;
+//! and reporting each bucket's journal.
 //!
 //! ## Dep-holding family
 //!
-//! The four verbs ([`submit`], [`retire`], [`rekey`], [`status`]) share the owning module's one
+//! The five verbs ([`submit`], [`retire`], [`rekey`], [`transfer`], [`status`]) share the owning module's one
 //! [`TrainingTriggerState`](crate::modules::training_trigger::TrainingTriggerState), so a
 //! submit, a retirement and a learning pass on one bucket serialize on the same
 //! [`PerKeyGate`](crate::runtime::PerKeyGate). They are assembled by [`command_objects`] and
@@ -34,11 +35,13 @@ pub mod rekey;
 pub mod retire;
 pub mod status;
 pub mod submit;
+pub mod transfer;
 
 use rekey::TrainingTriggerRekey;
 use retire::TrainingTriggerRetire;
 use status::TrainingTriggerStatus;
 use submit::TrainingTriggerSubmit;
+use transfer::TrainingTriggerTransfer;
 
 /// Build the dep-holding `genome/training-trigger/*` command objects over the
 /// shared [`TrainingTriggerState`]. Called from `TrainingTriggerModule::commands`.
@@ -53,6 +56,9 @@ pub fn command_objects(state: Arc<TrainingTriggerState>) -> Vec<Arc<dyn DynComma
             state: state.clone(),
         }),
         Arc::new(TrainingTriggerRekey {
+            state: state.clone(),
+        }),
+        Arc::new(TrainingTriggerTransfer {
             state: state.clone(),
         }),
         Arc::new(TrainingTriggerStatus { state }),
@@ -168,17 +174,18 @@ pub(crate) mod test_support {
         use super::fixture_catalog;
 
         // what this catches: the dep-holding family wires its trigger-backed verbs
-        // (submit/retire/status) over the one shared state. A regression that drops any of
+        // (submit/retire/rekey/transfer/status) over the one shared state. A regression that drops any of
         // them — or fails to share the state — is caught.
         #[tokio::test]
         async fn family_exposes_the_trigger_verbs() {
             let state = Arc::new(TrainingTriggerState::new(crate::genome::learner::seat::Authority::isolated(1 << 30), &fixture_catalog()));
             let objs = command_objects(state);
             let names: Vec<&str> = objs.iter().map(|o| o.name()).collect();
-            assert_eq!(names.len(), 4);
+            assert_eq!(names.len(), 5);
             assert!(names.contains(&"genome/training-trigger/submit"));
             assert!(names.contains(&"genome/training-trigger/retire"));
             assert!(names.contains(&"genome/training-trigger/rekey"));
+            assert!(names.contains(&"genome/training-trigger/transfer"));
             assert!(names.contains(&"genome/training-trigger/status"));
         }
     }

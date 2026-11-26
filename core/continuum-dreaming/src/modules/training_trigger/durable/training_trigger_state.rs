@@ -278,6 +278,9 @@ impl TrainingTriggerState {
             dispatch_id: None,
             retirement_id: None,
             learned: 0,
+            carried_to: None,
+            carried_from: None,
+            carried_offset: 0,
         };
         if let Err(error) = store.submissions.save(id, &row).await {
             return Err(("PersistenceFailed", error.to_string()));

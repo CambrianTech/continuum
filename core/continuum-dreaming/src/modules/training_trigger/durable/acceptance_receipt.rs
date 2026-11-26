@@ -32,6 +32,20 @@ pub(in crate::modules::training_trigger) struct Submission {
     /// every example is. Absent on rows written before in-place learning: none learned.
     #[serde(default)]
     pub(super) learned: u32,
+    /// The row her outstanding examples were carried to, on another base
+    /// (`genome/training-trigger/transfer`). A carried row keeps what it learned here, leaves pending
+    /// and is never pending again: only a pending row is carried, and a pending row names no dispatch, so
+    /// reclaim never returns it. Absent on every row not carried.
+    #[serde(default)]
+    pub(super) carried_to: Option<Uuid>,
+    /// The submission this row's examples were carried from: they are its examples from
+    /// `carried_offset` on, its batch otherwise the same, so whatever this row learns names its
+    /// origin. Absent on every row submitted directly.
+    #[serde(default)]
+    pub(super) carried_from: Option<Uuid>,
+    /// The first of the origin's examples this row carries (its learned position when carried).
+    #[serde(default)]
+    pub(super) carried_offset: u32,
 }
 
 /// The journaled withdrawal of bucket-pending submissions: what was pulled back

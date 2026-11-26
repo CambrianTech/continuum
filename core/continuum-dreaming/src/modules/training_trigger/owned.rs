@@ -18,6 +18,8 @@ pub(crate) enum OwnedKind {
     Retire,
     /// Moving a bucket stranded under a base spelling to the catalog id (genome/training-trigger/rekey).
     Rekey,
+    /// Carrying a bucket's examples not learned yet to the base she runs (genome/training-trigger/transfer).
+    Transfer,
     /// Offering a bucket's newest generation as a candidate.
     Sweep,
     #[cfg(test)]

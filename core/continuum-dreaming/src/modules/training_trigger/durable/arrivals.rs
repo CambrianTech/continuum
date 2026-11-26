@@ -205,6 +205,9 @@ pub(super) mod tests {
             dispatch_id: None,
             retirement_id: None,
             learned: 0,
+            carried_to: None,
+            carried_from: None,
+            carried_offset: 0,
         };
         (id, row)
     }

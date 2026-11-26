@@ -8,8 +8,8 @@
 //! The preview reads and changes nothing. An apply names its exact source bucket and moves every
 //! row the trainer keeps for it (submissions, dispatch intents, retirements, policy corrections)
 //! to the catalog id in ONE atomic batch, ids unchanged. It runs as an owned operation holding
-//! both buckets' gates (in key order) and then every engine's learning lock (in incarnation order):
-//! the same gate-before-engine order every pass takes. Every trainer writer of a bucket's rows
+//! both buckets' gates (in key order), the order every pass takes, and refuses a source a seat on the
+//! node engine holds (a seat's progress names the source). Every trainer writer of a bucket's rows
 //! holds that bucket's gate, so none interleaves; the generic `data/*` verbs take no trainer gate
 //! and are outside this guarantee. A source with a learn checkpoint, or a learner seated on it,
 //! is refused: its generation and volatile progress are keyed by the source and cannot move by a
@@ -192,12 +192,15 @@ impl DurableStore {
     }
 
     /// Whether `from` and `to` agree on the policy their oldest pending rows pin (an empty side agrees).
-    async fn policies_agree(&self, from: &BucketKey, to: &BucketKey) -> Result<bool, RekeyRefused> {
+    /// The one check a move between two buckets makes (re-key, transfer): merging their rows must never
+    /// train one bucket under two policies.
+    /// `failed` types a store failure as the caller's own refusal.
+    pub(super) async fn policies_agree<E>(&self, from: &BucketKey, to: &BucketKey, failed: impl Fn(String) -> E) -> Result<bool, E> {
         let mut pinned = Vec::with_capacity(2);
         for key in [from, to] {
-            let first = self.pending_page(key, 0, 1).await.map_err(RekeyRefused::Store)?;
+            let first = self.pending_page(key, 0, 1).await.map_err(&failed)?;
             if let Some(row) = first.first() {
-                pinned.push(self.effective_batch(row).await.map_err(RekeyRefused::Store)?);
+                pinned.push(self.effective_batch(row).await.map_err(&failed)?);
             }
         }
         Ok(match pinned.as_slice() {
@@ -240,7 +243,7 @@ impl TrainingTriggerState {
     }
 
     /// Move every row of bucket `from` to its base's catalog id, atomically, as an owned operation
-    /// holding both buckets' gates and every engine (module doc). A replay after the move finds no
+    /// holding both buckets' gates (module doc). A replay after the move finds no
     /// rows and is refused `NoSuchBucket`, having changed nothing.
     pub(crate) async fn rekey_apply(self: &Arc<Self>, from: &BucketKey) -> Result<Rekeyed, RekeyRefused> {
         self.store_for_rekey()?;
@@ -262,7 +265,7 @@ impl TrainingTriggerState {
         .map_err(RekeyRefused::Unavailable)?
     }
 
-    /// [`Self::rekey_apply`], both gates held: hold every engine, re-read, and move.
+    /// [`Self::rekey_apply`], both gates held: refuse a seated source, re-read, and move.
     async fn rekey_holding_gates(self: Arc<Self>, from: BucketKey, to: BucketKey) -> Result<Rekeyed, RekeyRefused> {
         if self.seated_on_engine(&from) {
             return Err(RekeyRefused::SourceSeated);
@@ -275,7 +278,7 @@ impl TrainingTriggerState {
         if store.checkpoint_of(&from).await.map_err(RekeyRefused::Store)?.is_some() {
             return Err(RekeyRefused::SourceCheckpointed);
         }
-        if !store.policies_agree(&from, &to).await? {
+        if !store.policies_agree(&from, &to, RekeyRefused::Store).await? {
             return Err(RekeyRefused::PolicyDiffers);
         }
         let before = store.counts_of(&to).await?;

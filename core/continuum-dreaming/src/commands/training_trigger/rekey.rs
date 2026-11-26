@@ -149,7 +149,7 @@ crate::action_command! {
     /// a preview of every such bucket (filter by personaId, traitKind, fromBase): where each would
     /// move and the rows it holds. With `apply`, personaId, traitKind and fromBase name the one
     /// source; its submissions, dispatch intents, retirements and policy corrections move in one
-    /// atomic write, ids unchanged, under both buckets' gates and every engine's learning lock. A
+    /// atomic write, ids unchanged, under both buckets' gates, refused while a seat holds the source. A
     /// source with a learn checkpoint, a learner seated on it, or a policy that differs from the
     /// destination's is refused by name.
     pub struct TrainingTriggerRekey {

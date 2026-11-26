@@ -29,6 +29,8 @@ mod learn_checkpoint;
 mod reclaim;
 mod rekey;
 pub(crate) use rekey::{CheckpointedSides, RekeyCandidate, RekeyCounts, RekeyFilter, RekeyRefused, Rekeyed};
+mod transfer;
+pub(crate) use transfer::{Carried, TransferRefused, Transferred};
 pub(crate) use learn_checkpoint::{Generation, LearnCheckpoint, Position};
 mod training_trigger_state;
 mod training_trigger_state_2;
