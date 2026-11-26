@@ -73,10 +73,24 @@ pub enum Refusal {
     Committed(ClaimId),
 }
 
+/// A wait withdrawn because a place's capacity fell below what it needs: its owner hears it as never
+/// here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NeverNow<P, Q> {
+    pub id: ClaimId,
+    pub owner: Owner,
+    pub place: P,
+    pub need: Q,
+    pub capacity: Q,
+}
+
 #[derive(Debug)]
 enum Stage<P, Q> {
     Prepared(Claim<P, Q>),
     Committed { owner: Owner, generation: Generation, held: Vec<Need<P, Q>> },
+    /// Held by an owner's earlier incarnation, which may still hold the memory (its process or GPU
+    /// context not yet gone): charged until its release is fenced, never credited on the restart alone.
+    Retired { held: Vec<Need<P, Q>> },
 }
 
 #[derive(Debug)]
@@ -95,23 +109,34 @@ pub struct Ledger<P, Q> {
     waiting: VecDeque<Waiting<P, Q>>,
     generations: HashMap<Owner, Generation>,
     next: u64,
+    /// `grant_waiting`'s scratch: places an earlier wait is still short on. Reused, never reallocated
+    /// once it has held as many places as there are.
+    blocked: Vec<P>,
 }
 
 impl<P: Copy + PartialEq + std::fmt::Debug, Q: Quantity> Default for Ledger<P, Q> {
     fn default() -> Self {
-        Self { places: Vec::new(), claims: HashMap::new(), waiting: VecDeque::new(), generations: HashMap::new(), next: 0 }
+        Self { places: Vec::new(), claims: HashMap::new(), waiting: VecDeque::new(), generations: HashMap::new(), next: 0, blocked: Vec::new() }
     }
 }
 
 impl<P: Copy + PartialEq + std::fmt::Debug, Q: Quantity> Ledger<P, Q> {
     /// Tell the ledger a place's capacity and its budget now. A place is added the first time.
-    /// Afterwards call [`Ledger::grant_waiting`]: a budget that grew may grant a wait.
-    pub fn place(&mut self, place: P, capacity: Q, budget: Q) {
+    /// Afterwards call [`Ledger::grant_waiting`]: a budget that grew may grant a wait. A capacity that
+    /// fell below a queued wait's need withdraws that wait into `never`, for its owner to hear.
+    pub fn place(&mut self, place: P, capacity: Q, budget: Q, never: &mut Vec<NeverNow<P, Q>>) {
         let budget = budget.min(capacity);
         match self.places.iter_mut().find(|(at, _)| *at == place) {
             Some((_, accounts)) => (accounts.capacity, accounts.budget) = (capacity, budget),
             None => self.places.push((place, Accounts { capacity, budget, held: Q::of(0), prepared: Q::of(0) })),
         }
+        self.waiting.retain(|wait| match wait.needs.iter().find(|need| need.place == place && need.amount > capacity) {
+            Some(need) => {
+                never.push(NeverNow { id: wait.id, owner: wait.owner, place, need: need.amount, capacity });
+                false
+            }
+            None => true,
+        });
     }
 
     pub fn accounts(&self, place: P) -> Option<Accounts<Q>> {
@@ -140,8 +165,10 @@ impl<P: Copy + PartialEq + std::fmt::Debug, Q: Quantity> Ledger<P, Q> {
             }
         }
         let id = self.issue();
-        // in order of asking: nobody passes a wait already queued
-        if self.waiting.is_empty() && self.fits(&merged) {
+        // in order of asking, per place: a newcomer waits only behind an earlier wait short on a place
+        // it also needs, so a wait on one place never holds up another
+        let behind = self.waiting.iter().any(|wait| self.short_places(&wait.needs).any(|place| merged.iter().any(|need| need.place == place)));
+        if !behind && self.fits(&merged) {
             return Answer::Granted(self.grant(id, owner, generation, merged));
         }
         let short = self.short(&merged);
@@ -149,39 +176,43 @@ impl<P: Copy + PartialEq + std::fmt::Debug, Q: Quantity> Ledger<P, Q> {
         Answer::Waiting { id, short }
     }
 
-    /// Grant every wait that fits now, in order of asking, stopping at the first that does not, so
-    /// the oldest is never passed. Granted claims are pushed to `granted` (a buffer the caller reuses).
+    /// Grant every wait that fits now, in order of asking per place: a wait is passed over only on a
+    /// place where an earlier wait is still short, so the oldest wins on its own place and a wait short
+    /// on one place never starves another. Granted claims are pushed to `granted` (a buffer the caller
+    /// reuses).
     pub fn grant_waiting(&mut self, granted: &mut Vec<Claim<P, Q>>) {
-        while let Some(head) = self.waiting.front() {
-            if !self.fits(&head.needs) {
-                return;
+        let mut blocked = std::mem::take(&mut self.blocked);
+        blocked.clear();
+        let mut at = 0;
+        while at < self.waiting.len() {
+            let wait = &self.waiting[at];
+            let held_up = wait.needs.iter().any(|need| blocked.contains(&need.place));
+            if !held_up && self.fits(&wait.needs) {
+                if let Some(wait) = self.waiting.remove(at) {
+                    let claim = self.grant(wait.id, wait.owner, wait.generation, wait.needs);
+                    granted.push(claim);
+                }
+                continue;
             }
-            let Some(head) = self.waiting.pop_front() else { return };
-            let claim = self.grant(head.id, head.owner, head.generation, head.needs);
-            granted.push(claim);
+            blocked.extend(self.short_places(&self.waiting[at].needs));
+            at += 1;
         }
+        self.blocked = blocked;
     }
 
     /// The claim's consumer is done spending it: what it consumed on each place becomes held, and
-    /// what it did not is returned. Call only once nothing will consume it again (its graph ended).
+    /// what it did not is returned. Its remainder is taken in the same atomic, so a consume after the
+    /// commit fails rather than spending what nobody holds.
     pub fn commit(&mut self, id: ClaimId) -> Result<(), Refusal> {
         let claim = match self.claims.remove(&id) {
             Some(Stage::Prepared(claim)) => claim,
-            Some(committed @ Stage::Committed { .. }) => {
-                self.claims.insert(id, committed);
+            Some(other) => {
+                self.claims.insert(id, other);
                 return Err(Refusal::Committed(id));
             }
             None => return Err(Refusal::UnknownClaim(id)),
         };
-        let mut held = Vec::with_capacity(claim.prepared.len());
-        for (need, left) in claim.prepared.iter() {
-            let consumed = Q::of(need.amount.units().saturating_sub(left.load(Ordering::Acquire)));
-            self.adjust(need.place, |accounts| {
-                accounts.prepared = Q::of(accounts.prepared.units().saturating_sub(need.amount.units()));
-                accounts.held = Q::of(accounts.held.units().saturating_add(consumed.units()));
-            });
-            held.push(Need { place: need.place, amount: consumed });
-        }
+        let held = self.settle(&claim);
         self.claims.insert(id, Stage::Committed { owner: claim.owner, generation: claim.generation, held });
         Ok(())
     }
@@ -198,19 +229,19 @@ impl<P: Copy + PartialEq + std::fmt::Debug, Q: Quantity> Ledger<P, Q> {
                 self.return_prepared(&claim);
                 Ok(())
             }
-            Some(committed @ Stage::Committed { .. }) => {
-                self.claims.insert(id, committed);
+            Some(other) => {
+                self.claims.insert(id, other);
                 Err(Refusal::Committed(id))
             }
             None => Err(Refusal::UnknownClaim(id)),
         }
     }
 
-    /// A committed claim's holdings are released, once the owner's allocator has released them (the
-    /// caller's fence): what it held is free again.
+    /// A committed claim's holdings, or a retired incarnation's, are released once the owner's
+    /// allocator has released them (the caller's fence): what it held is free again.
     pub fn release(&mut self, id: ClaimId) -> Result<(), Refusal> {
         match self.claims.remove(&id) {
-            Some(Stage::Committed { held, .. }) => {
+            Some(Stage::Committed { held, .. } | Stage::Retired { held }) => {
                 self.return_held(&held);
                 Ok(())
             }
@@ -251,8 +282,10 @@ impl<P: Copy + PartialEq + std::fmt::Debug, Q: Quantity> Ledger<P, Q> {
         None
     }
 
-    /// Every claim and wait of `owner` from a generation before `generation` is retired: prepared and
-    /// held amounts are returned, since the incarnation that held them is gone.
+    /// Every claim and wait of `owner` from a generation before `generation` is retired. Its waits and
+    /// whatever its prepared claims never consumed return at once. What it consumed or committed stays
+    /// charged as `Retired` until [`Ledger::release`] after a fenced release, because the earlier
+    /// incarnation's process or GPU context may still hold that memory (Codex, 2026-11-26 07:20Z).
     fn retire_before(&mut self, owner: Owner, generation: Generation) {
         self.waiting.retain(|wait| wait.owner != owner || wait.generation >= generation);
         let retired: Vec<ClaimId> = self
@@ -261,16 +294,47 @@ impl<P: Copy + PartialEq + std::fmt::Debug, Q: Quantity> Ledger<P, Q> {
             .filter(|(_, stage)| match stage {
                 Stage::Prepared(claim) => claim.owner == owner && claim.generation < generation,
                 Stage::Committed { owner: held_by, generation: held_in, .. } => *held_by == owner && *held_in < generation,
+                Stage::Retired { .. } => false,
             })
             .map(|(id, _)| *id)
             .collect();
         for id in retired {
             match self.claims.remove(&id) {
-                Some(Stage::Prepared(claim)) => self.return_prepared(&claim),
-                Some(Stage::Committed { held, .. }) => self.return_held(&held),
+                Some(Stage::Prepared(claim)) => {
+                    let held = self.settle(&claim);
+                    if held.iter().any(|need| need.amount.units() > 0) {
+                        self.claims.insert(id, Stage::Retired { held });
+                    }
+                }
+                Some(Stage::Committed { held, .. }) => {
+                    self.claims.insert(id, Stage::Retired { held });
+                }
+                Some(retired @ Stage::Retired { .. }) => {
+                    self.claims.insert(id, retired);
+                }
                 None => {}
             }
         }
+    }
+
+    /// Close a prepared claim's spending: take its remainders in one atomic each (a later consume
+    /// fails), return what was prepared, charge what was consumed as held, and answer what is held.
+    fn settle(&mut self, claim: &Claim<P, Q>) -> Vec<Need<P, Q>> {
+        let mut held = Vec::with_capacity(claim.prepared.len());
+        for (need, left) in claim.prepared.iter() {
+            let consumed = Q::of(need.amount.units().saturating_sub(left.swap(0, Ordering::AcqRel)));
+            self.adjust(need.place, |accounts| {
+                accounts.prepared = Q::of(accounts.prepared.units().saturating_sub(need.amount.units()));
+                accounts.held = Q::of(accounts.held.units().saturating_add(consumed.units()));
+            });
+            held.push(Need { place: need.place, amount: consumed });
+        }
+        held
+    }
+
+    /// The places where `needs` are short of what is free now.
+    fn short_places<'n>(&'n self, needs: &'n [Need<P, Q>]) -> impl Iterator<Item = P> + 'n {
+        needs.iter().filter(|need| self.accounts(need.place).is_some_and(|accounts| need.amount > accounts.free())).map(|need| need.place)
     }
 
     fn issue(&mut self) -> ClaimId {
@@ -303,7 +367,8 @@ impl<P: Copy + PartialEq + std::fmt::Debug, Q: Quantity> Ledger<P, Q> {
     }
 
     fn return_prepared(&mut self, claim: &Claim<P, Q>) {
-        for (need, _) in claim.prepared.iter() {
+        for (need, left) in claim.prepared.iter() {
+            left.store(0, Ordering::Release); // an unwound claim can no longer be spent
             self.adjust(need.place, |accounts| accounts.prepared = Q::of(accounts.prepared.units().saturating_sub(need.amount.units())));
         }
     }
