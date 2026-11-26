@@ -28,7 +28,7 @@ mod resident;
 
 pub use claim::{Claim, ClaimId, Generation, Need, Owner};
 pub use component::{key_of, Act, AskId, Asks, Domain, Placer, Shortfall, Status};
-pub use core::PlacerCore;
+pub use core::{Back, PlacerCore, SplitAsk, TakeAsk};
 pub use ledger::{Accounts, Answer, Ledger, NeverNow, Refusal, ShrinkTo, Untaken};
 pub use composite::{Composite, Priority};
 pub use flex::{Flex, Flexbox, Landed, Share, Shared};

@@ -12,6 +12,10 @@ use super::ledger::{Answer, Ledger, NeverNow, Refusal, ShrinkTo};
 use super::quantity::Quantity;
 use super::recording::{Recorded, Recording};
 
+mod door;
+
+pub use door::{Back, SplitAsk, TakeAsk};
+
 struct Entry<P, Q> {
     seq: u64,
     claim: Option<ClaimId>,

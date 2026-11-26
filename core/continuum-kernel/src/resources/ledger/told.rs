@@ -6,7 +6,8 @@
 
 use std::hash::{Hash, Hasher};
 
-use continuum_sage::place::{Bytes, Owner};
+use continuum_sage::dataflow::TopicName;
+use continuum_sage::place::{Act, Back, Bytes, Domain, Owner};
 
 use super::{ResourceKind, ResourceLeaseLedger};
 
@@ -15,24 +16,19 @@ impl ResourceLeaseLedger {
     /// kind's capacity and budget, then every floor.
     /// Then grant every waiting ask that now fits; a grant can change a floor, so tell again until none is.
     pub(super) fn tell(&mut self) {
-        loop {
-            self.tell_place();
-            if !self.grant_asks() {
-                return;
-            }
-        }
+        self.tell_place();
+        self.core.settle();
     }
 
     fn tell_place(&mut self) {
         for kind in ResourceKind::ALL {
             let pool = self.backing.get(&kind).copied();
-            self.place.back(kind, pool);
+            self.core.back(Back { place: kind, pool });
         }
-        let mut never = Vec::new();
         for kind in ResourceKind::ALL {
             let capacity = self.capacity(kind);
             let budget = capacity.saturating_sub(self.external(kind));
-            self.place.place(kind, Bytes(capacity), Bytes(budget), &mut never);
+            self.core.apply(Act::Room { place: kind, capacity: Bytes(capacity), budget: Bytes(budget) });
         }
         // a floor is met by what its holder is granted or measured to hold, whichever is more: measured
         // residency is already in the reading, so withholding the whole floor on top counted it twice
@@ -46,7 +42,7 @@ impl ResourceLeaseLedger {
                 (owner_of(consumer), *kind, Bytes(floor.saturating_sub(unleased)))
             })
             .collect();
-        self.place.floors(floors);
+        self.core.floors(floors);
     }
 
     /// Resident on `kind` beyond our leases proven landed in the accepted reading (Codex's rule: credit
@@ -122,4 +118,29 @@ pub(super) fn owner_of(consumer: &str) -> Owner {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     consumer.hash(&mut hasher);
     Owner(hasher.finish())
+}
+
+/// The node's memory as a placer domain: each kind of memory is a place, held in bytes. The authority holds
+/// its core for its synchronous door; the SAGE component wraps the same core for consumers on the bus.
+pub(super) struct Memory;
+
+impl Domain for Memory {
+    type Place = ResourceKind;
+    type Quantity = Bytes;
+    const NAME: &'static str = "resources";
+    const ASKS: TopicName = TopicName("resources/asks");
+    const SHORT: TopicName = TopicName("resources/short");
+}
+
+impl ResourceLeaseLedger {
+    /// A fresh `AskId` for `consumer`: its owner, and the ledger's next sequence.
+    pub(super) fn ask_id(&mut self, consumer: &str) -> continuum_sage::place::AskId {
+        self.next_seq += 1;
+        continuum_sage::place::AskId { owner: owner_of(consumer), seq: self.next_seq }
+    }
+
+    /// This authority's incarnation on the core (step 3 (3) makes it the daemon's start epoch).
+    pub(super) fn generation(&self) -> continuum_sage::place::Generation {
+        continuum_sage::place::Generation(1)
+    }
 }
