@@ -196,7 +196,13 @@ pub(super) fn hold(window: u32, claims: ActClaims) -> ActPlan {
     // measured context, at most the largest plus her reply's whole want.
     let lo = floor.max(measured.0);
     let hi = window.min(measured.1.saturating_add(claims.reply.max_tokens));
-    let outside = ActPlan { priced: Priced::OutsideMeasured { measured }, ..served.clone() };
+    // Outside what was measured the price says nothing, and nothing says fill: her window grows by
+    // the same bounded step an upward trial takes (the top measured plus the spread measured, at
+    // least her reply's want), never to the whole window at once. Filling it was bounded only by
+    // windows being small; given the whole 262,144, two minds' contexts went to 180k and 230k tokens
+    // and their acts took most of the Core (the M5, 2026-11-25 23:30Z to 00:10Z, throughput down 3x).
+    let step = measured.1.saturating_add((measured.1 - measured.0).max(claims.reply.max_tokens));
+    let outside = ActPlan { priced: Priced::OutsideMeasured { measured }, ..plan_at(window.min(step.max(floor)), claims.clone()) };
     if lo > hi {
         // What her view already sent lies past every context measured: holding it cannot be
         // priced, and serving the whole window let it grow to the ceiling (the M5, 2026-11-11). Her

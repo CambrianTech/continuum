@@ -90,7 +90,9 @@ fn a_large_window_is_not_filled_when_its_tokens_cost_more_than_they_add() {
 // what this catches (the dyno on #5822: four in five priced windows fell below the smallest context
 // ever measured, where the fresh-tokens line clamps): a price chosen where the curve says nothing.
 // A curve measured only over larger contexts never holds below them; one measured only below what
-// she must hold says nothing, and the window plans exactly as before.
+// she must hold says nothing: the window grows by a bounded step past them (the measured top plus its
+// spread, at least her reply's want, never below what she must hold), never filling the window (the
+// M5, 2026-11-25 23:30Z: given the whole 262,144, unpriced contexts went to 180k and 230k tokens).
 #[test]
 fn the_price_never_chooses_outside_the_measured_contexts() {
     let window = 755_456;
@@ -102,7 +104,7 @@ fn the_price_never_chooses_outside_the_measured_contexts() {
     let before = allocate(window, act(Newest::Pageable { whole: 6_000, least: 600 }, ContextPrice::Unmeasured));
     let unmeasured_there = allocate(window, act(Newest::Pageable { whole: 6_000, least: 600 }, ContextPrice::Measured(m5_over(low))));
     assert_eq!(unmeasured_there.priced, Priced::OutsideMeasured { measured: low });
-    assert_eq!(ActPlan { priced: Priced::Unmeasured, need: ActNeed::Unpriced, ..unmeasured_there }, before, "planned as before");
+    assert!(unmeasured_there.window < before.window, "never the whole window: {} of {}", unmeasured_there.window, before.window);
 }
 
 // what this catches (the dyno on #5822: the price took her tool schemas to their names, a help
