@@ -69,7 +69,7 @@ mod on_engine;
 mod seat_run;
 mod owned;
 pub(crate) use owned::OwnedKind;
-pub(crate) use durable::{Carried, CheckpointedSides, RekeyCandidate, RekeyCounts, RekeyFilter, RekeyRefused, Rekeyed, RetireReport, RetireSelection, TransferRefused, Transferred};
+pub(crate) use durable::{Carried, CheckpointedSides, RekeyCandidate, RekeyCounts, RekeyFilter, RekeyRefused, Rekeyed, RetireReport, RetireSelection, TransferRefused};
 
 
 /// Default `validation_split` when the submit doesn't pin one. 0.0

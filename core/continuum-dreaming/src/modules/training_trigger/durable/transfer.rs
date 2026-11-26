@@ -32,7 +32,6 @@ pub(crate) struct Carried {
 /// What an apply carried.
 #[derive(Debug, Clone)]
 pub(crate) struct Transferred {
-    pub(crate) from: BucketKey,
     pub(crate) to: BucketKey,
     pub(crate) carried: Carried,
 }
@@ -203,7 +202,7 @@ impl TrainingTriggerState {
         continuum_base::probe!(class = "training.trigger.transferred", persona = %from.persona_id, trait_kind = %from.trait_kind,
             from = %from.base_model, to = %to.base_model, rows = carried.rows, examples = carried.examples,
             "a bucket's examples not learned yet were carried to the base she runs; what she learned stays on its own");
-        Ok(Transferred { from, to, carried })
+        Ok(Transferred { to, carried })
     }
 }
 

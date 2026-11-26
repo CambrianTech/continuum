@@ -96,7 +96,7 @@ fn lesson() -> Lesson {
 /// A seat measured, loaded and seated, holding its three guards.
 fn seated(port: &Port) -> SeatRun<G> {
     let mut run = measured(port);
-    let id = run.id();
+    let id = run.seat;
     assert_eq!(run.hear(port, &Said::Seat { seat: id, state: SeatState::Measured { weights: Vec::new() } }), Some(Heard::LeaseWeights(Vec::new())));
     run.load(port, g(guard().0), ROOM).expect("test: measured, so it loads");
     assert!(matches!(run.hear(port, &Said::Seat { seat: id, state: loaded() }), Some(Heard::LeaseSeat { .. })));
@@ -121,7 +121,7 @@ fn learned(steps: u64, loss: f64) -> StepOutcome {
 fn progress_moves_the_journal_only_with_the_generation_that_holds_it() {
     let port = Port::default();
     let mut run = seated(&port);
-    let id = run.id();
+    let id = run.seat;
     let submission = Uuid::new_v4();
 
     let step = run.learn(&port, Position { submission, learned: 0 }, lesson(), guard().0).expect("test: seated, none in flight");
@@ -156,7 +156,7 @@ fn progress_moves_the_journal_only_with_the_generation_that_holds_it() {
 fn only_the_lesson_in_flight_is_answered() {
     let port = Port::default();
     let mut run = seated(&port);
-    let id = run.id();
+    let id = run.seat;
     let submission = Uuid::new_v4();
     let step = run.learn(&port, Position { submission, learned: 0 }, lesson(), guard().0).expect("test: seated");
     assert!(matches!(run.learn(&port, Position { submission, learned: 1 }, lesson(), guard().0), Err(NotTold::OutOfOrder(_))));
@@ -176,7 +176,7 @@ fn an_uncertain_step_drops_its_progress_and_lets_the_seat_go() {
     for outcome in [StepOutcome::Uncertain { steps: 1 }, learned(1, f64::NAN)] {
         let port = Port::default();
         let mut run = seated(&port);
-        let id = run.id();
+        let id = run.seat;
         let submission = Uuid::new_v4();
         let step = run.learn(&port, Position { submission, learned: 0 }, lesson(), guard().0).expect("test: seated");
         run.hear(&port, &Said::Step { seat: id, step, outcome: learned(1, 0.5) });
@@ -196,7 +196,7 @@ fn an_uncertain_step_drops_its_progress_and_lets_the_seat_go() {
 fn a_refused_checkpoint_keeps_its_progress_volatile() {
     let port = Port::default();
     let mut run = seated(&port);
-    let id = run.id();
+    let id = run.seat;
     let submission = Uuid::new_v4();
     let step = run.learn(&port, Position { submission, learned: 4 }, lesson(), guard().0).expect("test: seated");
     run.hear(&port, &Said::Step { seat: id, step, outcome: learned(1, 0.5) });
@@ -216,7 +216,7 @@ fn a_refused_checkpoint_keeps_its_progress_volatile() {
 fn a_quarantined_seat_keeps_its_leases_until_it_is_released() {
     let port = Port::default();
     let mut run = seated(&port);
-    let id = run.id();
+    let id = run.seat;
     let (weights, weights_dropped) = guard();
     run.guards.push(g(weights));
     assert_eq!(
@@ -242,7 +242,7 @@ fn guards_go_only_when_nothing_of_the_seat_remains() {
     assert!(matches!(run.load(&port, g(early), ROOM), Err(NotTold::OutOfOrder(_))), "loaded before its weights were measured");
     assert!(early_dropped.load(Ordering::Relaxed), "the refused lease is dropped");
 
-    let id = run.id();
+    let id = run.seat;
     run.hear(&port, &Said::Seat { seat: id, state: SeatState::Measured { weights: Vec::new() } });
     port.closed.store(true, Ordering::Relaxed);
     let (weights, weights_dropped) = guard();
@@ -269,7 +269,7 @@ fn guards_go_only_when_nothing_of_the_seat_remains() {
 fn an_undelivered_release_keeps_the_seats_guards() {
     let port = Port::default();
     let mut run = seated(&port);
-    let id = run.id();
+    let id = run.seat;
     let step = run.learn(&port, Position { submission: Uuid::new_v4(), learned: 0 }, lesson(), guard().0).expect("test: seated");
     port.closed.store(true, Ordering::Relaxed);
     assert_eq!(run.hear(&port, &Said::Step { seat: id, step, outcome: StepOutcome::Uncertain { steps: 1 } }), Some(Heard::Uncertain));
@@ -291,7 +291,7 @@ fn an_undelivered_release_keeps_the_seats_guards() {
 fn a_checkpoint_waits_for_the_lesson_in_flight() {
     let port = Port::default();
     let mut run = seated(&port);
-    let id = run.id();
+    let id = run.seat;
     let submission = Uuid::new_v4();
     let step = run.learn(&port, Position { submission, learned: 0 }, lesson(), guard().0).expect("test: seated");
     run.hear(&port, &Said::Step { seat: id, step, outcome: learned(1, 0.5) });
@@ -314,7 +314,7 @@ fn a_checkpoint_waits_for_the_lesson_in_flight() {
 fn a_kept_seat_command_leaves_the_seat_where_it_was() {
     let port = Port::default();
     let mut run = measured(&port);
-    let id = run.id();
+    let id = run.seat;
     run.hear(&port, &Said::Seat { seat: id, state: SeatState::Measured { weights: Vec::new() } });
     run.load(&port, g(guard().0), ROOM).expect("test: measured");
     run.hear(&port, &Said::Seat { seat: id, state: loaded() });
@@ -339,7 +339,7 @@ fn a_kept_seat_command_leaves_the_seat_where_it_was() {
 fn a_lesson_too_long_commits_what_was_learned_before_the_seat_is_measured_again() {
     let port = Port::default();
     let mut run = seated(&port);
-    let id = run.id();
+    let id = run.seat;
     let submission = Uuid::new_v4();
     let a = run.learn(&port, Position { submission, learned: 0 }, lesson(), guard().0).expect("test: seated");
     run.hear(&port, &Said::Step { seat: id, step: a, outcome: learned(1, 0.5) });
@@ -363,5 +363,5 @@ fn a_lesson_too_long_commits_what_was_learned_before_the_seat_is_measured_again(
 
     let resized = seated(&port);
     assert!(resized.progress().is_empty(), "the new seat starts cold, with B (position 1) still pending");
-    assert_ne!(resized.id(), id);
+    assert_ne!(resized.seat, id);
 }
