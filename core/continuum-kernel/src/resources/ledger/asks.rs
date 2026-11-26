@@ -69,6 +69,43 @@ impl ResourceLeaseLedger {
         self.granted.remove(&ask)
     }
 
+    /// Spend `req.bytes` of the lease `reserve` (a granted ask its owner keeps as a reserve) as a lease of
+    /// their own, `lease_id`: the reserve shrinks and the new lease takes exactly those bytes, with nothing
+    /// told in between, so no wait and no other taker can have them first. Refused, changing nothing, when
+    /// the reserve is of another kind or holds less.
+    pub fn carve(&mut self, reserve: &str, req: &LeaseRequest, lease_id: &str, now_ms: u64) -> Result<ResourceLease, LeaseError> {
+        let (kind, bytes, claim) = match self.leases.get(reserve) {
+            Some(held) => (held.lease.kind, held.lease.bytes, held.claim),
+            None => return Err(LeaseError::MissingLease { lease_id: reserve.to_owned() }),
+        };
+        if kind != req.kind || bytes < req.bytes {
+            return Err(LeaseError::InsufficientCapacity { kind: req.kind, requested: req.bytes, available: if kind == req.kind { bytes } else { 0 } });
+        }
+        if self.leases.contains_key(lease_id) {
+            return Err(LeaseError::DuplicateLease { lease_id: lease_id.to_owned() });
+        }
+        let left = bytes - req.bytes;
+        if left == 0 {
+            if let Some(held) = self.leases.remove(reserve) {
+                if let Some(view) = held.view { view.bytes.store(0, std::sync::atomic::Ordering::Release); }
+            }
+        } else if let Some(held) = self.leases.get_mut(reserve) {
+            held.lease.bytes = left;
+            if let Some(view) = &held.view { view.bytes.store(left, std::sync::atomic::Ordering::Release); }
+        }
+        if self.place.shrink(claim, kind, Bytes(req.bytes)).is_err() {
+            continuum_base::probe!(class = "resources.ledger.carve_unknown", reserve = %reserve, "a reserve had no claim left on place");
+        }
+        let taken = self.place.take(told::owner_of(&req.consumer_id), Generation(1), &[Need { place: req.kind, amount: Bytes(req.bytes) }]);
+        let lease = match taken {
+            Ok(claim) => self.hold(claim, req, lease_id.to_owned(), now_ms),
+            // the bytes just freed fit by construction; only a floor told since could refuse them
+            Err(_untaken) => Err(LeaseError::InsufficientCapacity { kind: req.kind, requested: req.bytes, available: 0 }),
+        };
+        self.tell();
+        lease
+    }
+
     /// Grant every waiting ask that now fits and turn each into its lease. Run after every change that can
     /// free room; returns whether any was granted (a grant can change floors, so the caller tells again).
     pub(super) fn grant_asks(&mut self) -> bool {
