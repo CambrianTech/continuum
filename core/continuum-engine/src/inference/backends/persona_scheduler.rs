@@ -168,11 +168,17 @@ fn rate(tokens: usize, took: std::time::Duration) -> f64 {
 /// marks nothing.
 pub fn prepare(model: &Model, prompt: &str, view: Option<&str>) -> Result<(Vec<i32>, Option<usize>), String> {
     // special=true so chat-template markers tokenize as the model's own special tokens
+    let started = std::time::Instant::now();
     let tokens = model.tokenize(prompt, true, true)?;
+    let prompt_tokenized = started.elapsed();
     let view_end = view
         .and_then(|view| model.tokenize(view, true, true).ok())
         .map(|view| reuse::common_prefix(&view, &tokens))
         .filter(|end| *end > 0 && *end < tokens.len());
+    // Where an act's submit time goes (inference.submit.render has its renders): her whole prompt
+    // tokenized, then her view tokenized again to find where it ends.
+    continuum_base::probe!(class = "inference.submit.tokenize", prompt_tokens = tokens.len() as u64, prompt_ms = prompt_tokenized.as_millis() as u64,
+        view_ms = started.elapsed().saturating_sub(prompt_tokenized).as_millis() as u64, "an act's prompt tokenized, and her view tokenized again");
     Ok((tokens, view_end))
 }
 
