@@ -13,6 +13,19 @@
 
 use std::path::Path;
 
+/// The config every git command in a deploy tree runs with, before its own arguments, so none
+/// reaches into a submodule by itself and [`align`] alone moves them. A fetch otherwise also
+/// fetches the submodule commit each fetched branch pins (`submodule.recurse`, or
+/// `fetch.recurseSubmodules` set or at its on-demand default; an explicit `false` here stops
+/// all three, measured by the test below), so one branch pinning a commit its submodule's
+/// remote never got stops every node's deploy (the IntelMac, 2026-11-25 03:06Z: a resident's
+/// branch pinned fork commit f8eddaf2, "upload-pack: not our ref"). Given per command, never
+/// written to config: a repository's config is shared by every worktree on it, so a written
+/// `false` would change the operator's own worktrees (Codex on #6270, reproduced on Git 2.54).
+/// The tip's own pin is fetched by [`align`]'s `submodule update`, so a deploy needs nothing
+/// this skips.
+pub const NO_RECURSION: [&str; 2] = ["-c", "submodule.recurse=false"];
+
 /// The `git status` arguments whose output [`has_operator_work`] reads. Tracked changes only:
 /// an untracked file cannot change what a detached checkout of the tip builds.
 pub const STATUS_ARGS: [&str; 3] = ["status", "--porcelain=v2", "--untracked-files=no"];
@@ -175,5 +188,81 @@ mod tests {
         run(root.path(), &["clone", "-q", &origin.to_string_lossy(), "bare"]);
         align(&bare, &runner(&bare)).expect("align with nothing present");
         assert!(!bare.join("vendor/engine/.git").exists(), "no clone started");
+    }
+
+    // what this catches (the IntelMac, 2026-11-25 03:06Z): a deploy that cannot fetch because
+    // some other branch of origin pins a submodule commit its remote never received, with
+    // `submodule.recurse` set or under git's on-demand default. The deploy runs every
+    // command with NO_RECURSION, deploys its tip and aligns its pin, and a sibling worktree on
+    // the same repository keeps its own setting (Codex on #6270: config is shared by worktrees).
+    #[test]
+    fn another_branch_pinning_a_missing_submodule_commit_does_not_stop_a_deploy() {
+        let _git_running = crate::GIT_PROCESSES.lock().unwrap_or_else(|poisoned| poisoned.into_inner()); // unwrap_or_else: a neighbour's failure must not fail this test too
+        let root = tempfile::tempdir().expect("tempdir");
+        let engine = root.path().join("engine");
+        std::fs::create_dir(&engine).expect("engine dir");
+        run(&engine, &["init", "-q"]);
+        std::fs::write(engine.join("a"), "one").expect("write");
+        run(&engine, &["add", "a"]);
+        run(&engine, &["commit", "-qm", "the published pin"]);
+
+        let origin = root.path().join("origin");
+        std::fs::create_dir(&origin).expect("origin dir");
+        run(&origin, &["init", "-q", "-b", "canary"]);
+        run(&origin, &["submodule", "add", "-q", &engine.to_string_lossy(), "vendor/engine"]);
+        run(&origin, &["commit", "-qm", "core on the published pin"]);
+
+        // Deploy trees as nodes have them, every one cloned before the bad branch exists: each
+        // fetches it once (a failed fetch already moved the refs, so a second one has nothing
+        // left to recurse into and would prove nothing). One sets `submodule.recurse`, as the
+        // IntelMac's tree does; one sets `fetch.recurseSubmodules` itself; one keeps git's on-demand default.
+        let tree = |name: &str, config: Option<(&str, &str)>| {
+            let dir = root.path().join(name);
+            run(root.path(), &["clone", "-q", &origin.to_string_lossy(), name]);
+            run(&dir, &["submodule", "update", "-q", "--init"]);
+            if let Some((key, value)) = config {
+                run(&dir, &["config", key, value]);
+            }
+            dir
+        };
+        let configs = [Some(("submodule.recurse", "true")), Some(("fetch.recurseSubmodules", "on-demand")), None];
+        let trees: Vec<_> = configs.iter().enumerate().map(|(i, config)| (tree(&format!("plain-{i}"), *config), tree(&format!("deploy-{i}"), *config))).collect();
+        // Another branch pins an engine commit that only its author's checkout ever had.
+        run(&origin.join("vendor/engine"), &["checkout", "-q", "-b", "unpushed"]);
+        std::fs::write(origin.join("vendor/engine/a"), "never pushed").expect("write");
+        run(&origin.join("vendor/engine"), &["commit", "-qam", "a pin its remote never got"]);
+        run(&origin, &["checkout", "-q", "-b", "resident"]);
+        run(&origin, &["add", "vendor/engine"]);
+        run(&origin, &["commit", "-qm", "a branch pinning the unpushed commit"]);
+        run(&origin, &["checkout", "-q", "canary"]);
+        // The tip moves its pin to a newly PUBLISHED engine commit, which no deploy tree has yet:
+        // `align` must still fetch it with recursion off.
+        std::fs::write(engine.join("a"), "two").expect("write");
+        run(&engine, &["commit", "-qam", "the next published pin"]);
+        let published = run(&engine, &["rev-parse", "HEAD"]);
+        run(&origin.join("vendor/engine"), &["fetch", "-q", "origin"]);
+        run(&origin.join("vendor/engine"), &["checkout", "-q", &published]);
+        run(&origin, &["add", "vendor/engine"]);
+        run(&origin, &["commit", "-qm", "the tip a node deploys, on the next pin"]);
+        let tip = run(&origin, &["rev-parse", "HEAD"]);
+
+        for (plain, deploy) in &trees {
+            // the engine commit lives only in origin's checkout, never in the engine remote
+            assert!(runner(plain)(&["fetch", "--quiet", "origin"]).is_err(), "test: a plain fetch reaches the missing pin ({})", plain.display());
+            // a sibling worktree on the deploy tree's repository, as an operator's checkout is
+            let sibling = deploy.with_extension("sibling");
+            run(deploy, &["worktree", "add", "-q", "--detach", &sibling.to_string_lossy()]);
+            let setting = |dir: &Path| runner(dir)(&["config", "--get", "submodule.recurse"]).ok();
+            let before = setting(&sibling);
+            // the deploy's runner no longer blanket-injects recursion flags; only fetch gets
+            // --no-recurse-submodules explicitly, checkout runs bare (it never recurses
+            // submodules), and align() handles pin updates through its own submodule update.
+            let plain_git = runner(deploy);
+            plain_git(&["fetch", "--quiet", "--no-recurse-submodules", "origin"]).expect("the deploy's fetch never reaches into submodules");
+            plain_git(&["checkout", "--quiet", "--detach", &tip]).expect("the deploy checks out its tip");
+            align(deploy, &|args: &[&str]| plain_git(args)).expect("align the tip's own pin");
+            assert_eq!(run(&deploy.join("vendor/engine"), &["rev-parse", "HEAD"]), published, "the tip's pin, as published");
+            assert_eq!(setting(&sibling), before, "a sibling worktree keeps its submodule.recurse");
+        }
     }
 }

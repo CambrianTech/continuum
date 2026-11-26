@@ -330,7 +330,7 @@ pub(super) async fn deploy_consume_pass() -> Result<PassEnd, String> {
                 // check the tree out under this one and reboot alongside it. `reboot` re-takes
                 // the same claim for this pid, and its guard releases it at the handoff.
                 let _claim = DeployClaimGuard::take(&tip);
-                git_in(&repo, &["fetch", "--quiet", "origin"])?;
+                git_in(&repo, &["fetch", "--no-recurse-submodules", "--quiet", "origin"])?;
                 git_in(&repo, &["checkout", "--quiet", "--detach", &tip])?;
                 // A checkout moves gitlinks, not submodule trees: every present submodule
                 // checkout follows the tip's pin, registered or not, and none is cloned
