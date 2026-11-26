@@ -565,6 +565,49 @@ What it deletes, in the slice that builds it (slice 3b below): `LearningMemory`'
 matching, `lease_memory`, `from_rows`, `learning::leased`, the metrics sum, training's path through
 `window_allocator`, and `GrantHandoff` as bytes.
 
+### Room by priority: memory is a flexbox, only weights are fixed (Joel, 2026-11-26)
+
+Joel: "some are variable and like the rag budget flexbox idea. The memory really needs to make room by
+priority. Only some are fixed size."
+
+**What the 5090 showed** (Codex, build 2167 at 4c3e3eb54, 15:41Z, Qwen3.8-27B, MiB): CUDA0 weights 17,402,
+KV 8,704 (one stream sized for 262,144 tokens), recurrent 150, compute 3,124; CUDA_Host compute 1,184. A
+learner's seat asked for about 12 MB and was short by 11.6 MB, 13 times. The card was full of bytes that are
+almost all variable: the stream's KV is sized for a window no mind on that node uses, the compute
+workspace for the largest prefill, and the embedder's window is reserved between recalls. None of them
+could give a byte back, because every holder was one fixed number.
+
+**Two halves exist and do not know about each other.** `continuum_context::flex` is the flexbox: claims with
+a priority, a floor, a min and a max, a floor pass, a min pass and a grow pass. It shares one mind's prompt
+tokens, with string ids, and nothing else. `continuum_sage::place` holds claims across places with floors,
+waits and fenced releases, but every claim is one fixed amount. ONE-BUDGET.md's contract 3 says they are one
+algorithm over any unit, and `cambrian-flex` was never built. So the join is the work:
+
+- **A claim on a place is elastic.** `Claim` gains its shape: `Elastic { floor, want, priority }` in its
+  quantity, where `floor` is what it cannot run below (a running turn's KV, the reply's workspace) and
+  `want` what it would use. A fixed holding is `floor == want` (weights: `ResidentFloor.fixed` today). The
+  board's ceiling becomes capacity less every floor, not every holding.
+- **The law shares a place by the flexbox.** When a wait is short on a place, the placer runs the flex
+  passes over every elastic holding and the wait, at their priorities: floors first, then mins, then grow.
+  A holder whose grant falls below what it holds is sent `Shrink { claim, to }` on its asks state. That is a
+  request, never a reclamation (ONE-BUDGET.md, "A shrinking grant is a request"). The wait is granted only
+  from bytes released after a fence (`release` partial, Cormac's `shrink`). Priority is the holder's measured
+  temperature: a mind on the Core, recall in a turn, a seat's lesson, an idle cache.
+- **One solver, generic over the unit.** `flex_allocate` moves into `continuum-sage` (its `decide` law, like
+  aging), over `Quantity` with typed owner ids. The prompt's tokens and the node's bytes call the same code,
+  and the string `source_id` becomes the caller's typed key. That is ONE-BUDGET's `cambrian-flex`, built where
+  the Placer is.
+- **Each variable holder names its shrink.** The Core: KV past the occupant's measured window (the stream
+  re-sized at a frame boundary, a fork verb this needs), and workspace past the next graph's need (the
+  scheduler re-reserved smaller at a point with no graph in flight). The embedder: its window when no recall
+  is in flight, taken back by a lease that waits. A seat: its lesson rows (Fit within the ceiling already
+  sizes it). A turn's prompt: its own flex, unchanged.
+
+Order: (1) the solver generic in `continuum-sage`, with `continuum-context`'s callers moved and `flex.rs`
+deleted; (2) `Elastic` claims with `Shrink` on the placer; (3) the embedder's window as the first elastic
+holder, since it frees memory at once without a fork verb; (4) the Core's workspace, then its KV. Each lands
+with a validator on the 5090's split above. The gate is a seat granted on the 5090 while Kimi and Sahar serve.
+
 ### Placement while the machine is in use
 
 The resource authority continuously observes the host. For each physical pool it publishes the time of
