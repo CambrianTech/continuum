@@ -344,13 +344,20 @@ impl Driver<'_, '_> {
             return refused(format!("she could not be bound to learn: {unbound}"));
         }
         let mind = mind_of(seated.mind);
-        // her history read where it lies (130k tokens is 520 KB): never cloned to be read
+        // native learning begins only when her state ends at the lesson's context: what she holds of it
+        // is reused, the rest prefilled forward-only (no shadow, no gradient)
+        if let Err(why) = self.bring_to_lesson_context(seated.rendered) {
+            return refused(format!("she could not be brought to the lesson's context: {why}"));
+        }
+        // her history read where it lies (130k tokens is 520 KB): never cloned to be read; it now ends at
+        // the lesson's context, so the reply is her reply rows alone and restores no tail (her next turn
+        // rewinds to the checkpoint kept where her own history and the lesson part)
         let reply = match self.engine.active_mut() {
             Some(her) => reply_for(mind, &her.parts().tokens.held, seated.rendered),
-            None => return refused("she was not bound after the switch".into()),
+            None => return refused("she was not bound after reaching the lesson's context".into()),
         };
         let Some(reply) = reply else {
-            return refused("the lesson has no reply past what she holds".into());
+            return refused("the lesson has no reply past its context".into());
         };
         if reply.tokens.len() > seated.reply_rows.get() as usize {
             if let Some(need) = u32::try_from(reply.tokens.len()).ok().and_then(NonZeroU32::new) {
@@ -358,25 +365,6 @@ impl Driver<'_, '_> {
             }
             return refused(format!("{} reply tokens past the {} the seat was measured for", reply.tokens.len(), seated.reply_rows));
         }
-        let Ok(served) = usize::try_from(reply.n_cached) else {
-            return refused(format!("a served prefix of {} positions", reply.n_cached));
-        };
-        // native learning begins only when her state ends at the served prefix (a hybrid's recurrent
-        // state cannot be cut back, so she is rewound to a checkpoint and prefilled under her genes)
-        if let Err(why) = self.reposition_to_served_prefix(served) {
-            return refused(format!("she could not be brought to her served prefix: {why}"));
-        }
-        // Her reply is built from what she holds NOW: on a hybrid the reposition cut her history to the
-        // served prefix, so the reply restores no tail (re-decoding it natively would run under the shadow
-        // and leave her recurrent state past her history); her next turn prefills it under her own genes.
-        // On an attention-only model nothing was cut and the reply is the one built above.
-        let reply = match self.engine.active_mut() {
-            Some(her) => reply_for(mind, &her.parts().tokens.held, seated.rendered),
-            None => return refused("she was not bound after reaching her served prefix".into()),
-        };
-        let Some(reply) = reply else {
-            return refused("the lesson has no reply past her served prefix".into());
-        };
         let learned = match self.engine.attach_shadow(mind, seated.shadow) {
             Ok(()) => match self.engine.learn_active(seated.shadow, &reply, admission, go_on) {
                 Ok(Finished::Learned { steps, loss, .. }) => (StepOutcome::Learned { steps, loss }, None),
@@ -393,6 +381,62 @@ impl Driver<'_, '_> {
             Ok(()) => learned,
             Err(attached) => (learned.0, Some(attached.to_string().into())),
         }
+    }
+}
+
+impl Driver<'_, '_> {
+    /// Her lesson's context, forward only: what she does not already hold of it is prefilled into her
+    /// KV under her own genes with no shadow attached (plain KV, no gradient), after a checkpoint where
+    /// her own history and the lesson part, so her next turn rewinds there. The step then trains only
+    /// her reply against that KV, so its workspace is her reply against her context, never the whole
+    /// lesson from scratch (the 5090, 2026-11-26: seats quoted 244 GB to 48.8 TB of workspace, a
+    /// 100k-token lesson measured as a 100k-row training graph). Gradients do not reach the context's
+    /// own keys and values: the frozen-prefix approximation that makes learning a small addition.
+    fn bring_to_lesson_context(&mut self, rendered: &Rendered) -> Result<(), String> {
+        let last_context = rendered.reply_from.checked_sub(1).ok_or("the lesson has no context before its reply")?;
+        let her = self.engine.active_mut().ok_or("she is not bound")?;
+        let shared = common_prefix(&her.parts().tokens.held, &rendered.tokens).min(last_context);
+        let genes = her.parts().genome.served_genes().ok_or("her genes were not served")?;
+        let basis = her.parts().genome.clone();
+        self.reposition_to_served_prefix(shared).map_err(|why| format!("she could not be brought to her held prefix: {why}"))?;
+        if shared == last_context {
+            return Ok(());
+        }
+        // what she holds past the shared prefix is not the lesson's: her history ends there
+        self.record(|her| her.tokens.cut(shared)).map_err(|why| why.to_string())?;
+        // a resume point where her history and the lesson part, for every model (a rewind needs one):
+        // her KV must end exactly there when it is taken (the native rewind checks it). A hybrid's state
+        // stands there after reposition; an attention-only mind's KV still runs past it, so her last
+        // shared token is decoded again at its own position, which truncates her KV there (one token).
+        if shared > 0 {
+            if !self.model.has_recurrent_state() {
+                let last = *rendered.tokens.get(shared - 1).ok_or("the shared prefix is past the lesson")?;
+                let at = llama::Pos::try_from(shared - 1).map_err(|_| "a prefix past what a sequence can address".to_string())?;
+                self.engine
+                    .submit(continuum_persona_llama::Step { tokens: continuum_persona_llama::Tokens::One(last), from: at, logits_at_end: false, genes: Arc::clone(&genes) })
+                    .map_err(|why| why.to_string())?;
+                self.engine.settle().map_err(|why| why.to_string())?;
+            }
+            let history = &mut self.engine.active_mut().ok_or("she is not bound")?.parts_mut().tokens;
+            if let Some(mut blocks) = history.capture_buffer(super::history::Boundary::Learned, shared) {
+                if matches!(self.engine.checkpoint_active(&mut blocks), Ok(pos) if pos as usize + 1 == shared) {
+                    self.record(|her| her.tokens.save(super::history::Boundary::Learned, blocks, shared, &basis)).map_err(|why| why.to_string())?;
+                }
+            }
+        }
+        let context: Arc<[i32]> = Arc::from(rendered.tokens.get(..last_context).ok_or("the lesson ends before its reply")?);
+        let mut pos = shared;
+        while pos < last_context {
+            let end = last_context.min(pos + self.batch.get());
+            let at = llama::Pos::try_from(pos).map_err(|_| "a lesson longer than a sequence can address".to_string())?;
+            self.engine
+                .submit(continuum_persona_llama::Step { tokens: continuum_persona_llama::Tokens::Span { of: Arc::clone(&context), from: pos, to: end }, from: at, logits_at_end: false, genes: Arc::clone(&genes) })
+                .map_err(|why| why.to_string())?;
+            self.engine.settle().map_err(|why| why.to_string())?;
+            self.record(|her| her.tokens.held.extend_from_slice(&context[pos..end])).map_err(|why| why.to_string())?;
+            pos = end;
+        }
+        Ok(())
     }
 }
 
