@@ -17,6 +17,27 @@
 //! ([`next_scan_delay`]), so a million-entry tree cannot own a core.
 //! One scanner for all paths, not a task per reporter — one concurrent
 //! concern, one task (CONCURRENCY-STYLE-GUIDE: no parallel managers).
+//!
+//! ## Living daemon — event-driven estimation between walks
+//!
+//! Between full scans the cached bytes are stale. [`EventWatcher`] observes
+//! filesystem events via the `notify` crate and feeds budgeted size deltas
+//! into each [`TrackedDir`], so reporters see a live **estimate** (last_walk
+//! baseline + accumulated delta) rather than a frozen number. The estimate
+//! is labelled as such in the detail string; when a full walk completes it
+//! resets the baseline and the accumulator.
+//!
+//! Budgeted: each event triggers at most one `stat` call capped at
+//! [`EVENT_BUDGET_MS`] ms per tick — heavy write storms (cargo build, model
+//! download) do not turn disk accounting into a second full walk. The count
+//! of observed events is still tracked even when the budget is exhausted,
+//! so reporters can report "N changes since last scan" alongside the estimate.
+//!
+//! Incremental: only changed files are measured, never re-walked entire
+//! trees between scans.
+//! Estimating: `estimate_bytes() = last_walk_bytes + net_delta` when events
+//! have been observed; falls back to `bytes()` (scanner value) before any
+//! events or after a walk has corrected the baseline.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -28,6 +49,9 @@ use async_trait::async_trait;
 use crate::runtime::{spawn_daemon, Daemon, DaemonChannel};
 
 use super::disk_pressure::{DiskPathReport, DiskReporter};
+
+// Budgeted-walk types (Req 2: budgeted cold start; Req 3: coverage tracking)
+pub use super::disk_walk::{budgeted_walk, Coverage, WalkBudget, WalkCursor};
 
 /// One tracked cache-class directory: identity + cached recursive size.
 /// The reporter half reads `bytes` lock-free; the scanner half refreshes it.
@@ -58,6 +82,21 @@ pub struct TrackedDir {
     /// whether or not the root file itself exists (a log between rotation and
     /// reopen is all predecessor). Empty for a directory class.
     companions: &'static [&'static str],
+    /// Cumulative size delta observed via filesystem events since the last full walk.
+    /// Updated by [`EventWatcher`] on budgeted stat calls; reset to zero when a walk
+    /// completes. Negative values mean files were deleted/shrunk; positive means growth.
+    net_delta: std::sync::atomic::AtomicI64,
+    /// Number of filesystem events observed since the last full walk. Even when the
+    /// budget is exhausted this counter keeps rising, so reporters can say "N changes
+    /// since last scan" alongside the estimate.
+    event_count: AtomicU64,
+    /// How much of the tree has been walked during cold start — Unknown (never scanned),
+    /// Partial (fraction swept with an active cursor), or Complete (full walk done).
+    /// Consumers read this to know whether `bytes` is a real measurement or a lower bound.
+    coverage: parking_lot::RwLock<Coverage>,
+    /// Resume cursor for budgeted partial walks during cold start. Persisted between ticks
+    /// so the scanner can continue where it left off instead of restarting each time.
+    cursor: parking_lot::RwLock<WalkCursor>,
 }
 
 impl TrackedDir {
@@ -78,9 +117,12 @@ impl TrackedDir {
             walk_ms: AtomicU64::new(0),
             next_due_ms: AtomicU64::new(0),
             companions,
+            net_delta: std::sync::atomic::AtomicI64::new(0),
+            event_count: AtomicU64::new(0),
+            coverage: parking_lot::RwLock::new(Coverage::Unknown),
+            cursor: parking_lot::RwLock::new(WalkCursor::new()),
         })
     }
-
     /// Everything this class holds: its root's walk plus each declared companion's.
     pub(crate) fn walk(&self) -> TreeWalk {
         let mut total = walk_tree(&self.path);
@@ -164,6 +206,15 @@ impl TrackedDir {
         self.walk_ms.store(took.as_millis() as u64, Ordering::Relaxed);
         self.next_due_ms
             .store(now_ms.saturating_add(next_scan_delay(took).as_millis() as u64), Ordering::Relaxed);
+        // Walk completes: reset the event-driven accumulator so future deltas
+        // are measured against this new truth, not a stale baseline.
+        self.net_delta.store(0, Ordering::Relaxed);
+        self.event_count.store(0, Ordering::Relaxed);
+        // Transition coverage to Complete — consumers can now read fraction = 1.0.
+        let mut cov = self.coverage.write();
+        if matches!(*cov, Coverage::Partial { .. } | Coverage::Unknown) {
+            *cov = Coverage::Complete { entries: walk.entries };
+        }
     }
 
     /// Is this dir due for a walk on the scanner's clock? Always true before the
@@ -189,6 +240,28 @@ impl TrackedDir {
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |cur| {
                 Some(cur.saturating_sub(freed))
             });
+    }
+
+    /// Record a size delta observed from a filesystem event (create/modify/delete).
+    /// The event watcher calls this on budgeted stat calls when it detects a change.
+    /// Negative `delta` means files were deleted or shrunk; positive means growth.
+    pub(crate) fn observe_event(&self, delta: i64) {
+        self.net_delta.fetch_add(delta, Ordering::Relaxed);
+        self.event_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Return an estimated current size based on the last full walk plus all
+    /// observed event deltas. When no events have been seen since the last walk,
+    /// returns the raw `bytes()` value (the scanner's measurement). The estimate
+    /// is clamped to 0 — it never goes negative.
+    pub fn estimate_bytes(&self) -> u64 {
+        let delta = self.net_delta.load(Ordering::Relaxed);
+        if delta == 0 && self.event_count.load(Ordering::Relaxed) == 0 {
+            // No events observed: trust the scanner's measurement directly.
+            return self.bytes.load(Ordering::Relaxed);
+        }
+        let base = self.bytes.load(Ordering::Relaxed);
+        (base as i64).saturating_add(delta).max(0) as u64
     }
 }
 
@@ -253,20 +326,60 @@ impl DiskReporter for TrackedDir {
             };
         }
         let scanned = self.scanned.load(Ordering::Relaxed);
+        let event_count = self.event_count.load(Ordering::Relaxed);
+        let has_events = event_count > 0;
+
+        // Use estimate_bytes when events have been observed; otherwise raw bytes.
+        let bytes = if has_events {
+            self.estimate_bytes()
+        } else {
+            self.bytes.load(Ordering::Relaxed)
+        };
+
+        let detail = match (scanned, self.walk_cost()) {
+            (false, _) => {
+                // Unknown-is-a-value: show coverage state so consumers know
+                // whether we have real data or just a lower bound.
+                let cov = self.coverage.read();
+                match *cov {
+                    Coverage::Unknown => "first scan pending".to_string(),
+                    Coverage::Partial { swept_entries, total_estimated } if total_estimated > 0 => {
+                        format!(
+                            "cold start in progress: partial sweep ({}% of {} entries)",
+                            ((swept_entries as f64 / total_estimated as f64) * 100.0).round(),
+                            total_estimated
+                        )
+                    }
+                    Coverage::Partial { swept_entries, .. } => {
+                        format!("cold start in progress: {} entries walked so far", swept_entries)
+                    }
+                    Coverage::Complete { .. } => "cached recursive size (walk completed)".to_string()
+                }
+            }
+            (true, None) if has_events => format!(
+                "estimated cached recursive size (set directly + {} observed changes)",
+                event_count
+            ),
+            (true, None) => "cached recursive size (set directly, not walked)".to_string(),
+            (true, Some((entries, took))) if has_events => format!(
+                "estimated cached recursive size (walk {:.1} s over {} entries; +{} observed changes)",
+                took.as_secs_f64(),
+                entries,
+                event_count
+            ),
+            (true, Some((entries, took))) => format!(
+                "cached recursive size (walk {:.1} s over {} entries; next walk no sooner than {} s after it)",
+                took.as_secs_f64(),
+                entries,
+                next_scan_delay(took).as_secs()
+            ),
+        };
+
         DiskPathReport {
             name: self.name.to_string(),
             path: self.path.clone(),
-            bytes: self.bytes.load(Ordering::Relaxed),
-            detail: match (scanned, self.walk_cost()) {
-                (false, _) => "first scan pending".to_string(),
-                (true, None) => "cached recursive size (set directly, not walked)".to_string(),
-                (true, Some((entries, took))) => format!(
-                    "cached recursive size (walk {:.1} s over {} entries; next walk no sooner than {} s after it)",
-                    took.as_secs_f64(),
-                    entries,
-                    next_scan_delay(took).as_secs()
-                ),
-            },
+            bytes,
+            detail,
         }
     }
 }
@@ -466,57 +579,145 @@ impl Daemon for DiskUsageScanner {
         }
         let dirs = TRACKED_DIRS.get().map(|registry| registry.snapshot())
             .unwrap_or_else(|| self.dirs.clone());
-        for dir in &dirs {
+        for dir in dirs.clone() {
             // A tree whose last walk was expensive is not due yet: its own cost set
             // the wait ([`next_scan_delay`]). The cached size stands meanwhile.
             if !dir.due(self.started.elapsed().as_millis() as u64) {
                 continue;
             }
-            let class = dir.clone();
-            let citizens = dir.class() == "citizens";
-            // Walk on the blocking pool — a deep tree must never stall
-            // the async runtime the substrate's minds run on. The citizens tree also
-            // observes Cargo targets; every other class weighs itself and the
-            // companions it declares (`TrackedDir::walk`, card 0af5d5ec).
-            let began = Instant::now();
-            let walked = tokio::task::spawn_blocking(move || {
-                if citizens { walk_citizen_tree(&class.path) } else { (class.walk(), Vec::new()) }
-            }).await;
-            let took = began.elapsed();
-            match walked {
-                Ok((walk, targets)) => {
-                    for target in targets {
-                        match registry::observe_citizen_target(&target.path, target.peer).await {
-                            Ok(child) => child.record_walk(target.walk, took, self.started.elapsed().as_millis() as u64),
-                            Err(error) => {
-                                tracing::warn!(%error, "citizen Cargo observation remains charged to its parent");
+            // Check coverage state before walking (Req 2: budgeted cold start)
+            let is_cold_start = {
+                let cov = dir.coverage.read();
+                matches!(*cov, Coverage::Unknown | Coverage::Partial { .. })
+            };
+
+            if is_cold_start {
+                // Cold-start path: budgeted partial walk with resume cursor (Req 2).
+                // Each tick processes up to 1_000 entries. No spawn_blocking needed
+                // since the budget caps work and we have an owned Arc.
+                let path = dir.path();
+
+                let began_tick = Instant::now();
+                let budget = WalkBudget::default();
+                // BUG 1 FIX: Read cursor from dir.cursor to persist across ticks
+                let mut cursor = (*dir.cursor.read()).clone();
+                let (entries, completed) = budgeted_walk(&path, &mut cursor, &budget);
+
+                // BUG 1 FIX: Capture all needed fields BEFORE moving cursor back to dir.cursor.
+                let initial_root_count = cursor.initial_root_count;
+                let entries_processed_before_write = cursor.entries_processed();
+
+                // Do a shallow root probe on first tick to establish an initial tree-size estimate,
+                // and compute the coverage fraction from cumulative data.
+                if initial_root_count == 0 && !completed {
+                    if let Ok(mut dir_handle) = std::fs::read_dir(&path) {
+                        let count = dir_handle.count() as u64;
+                        cursor.set_initial_root_count(count);
+                    }
+                }
+
+                // BUG 2+3 FIX: Compute swept + estimated BEFORE writing back the cursor (to avoid
+                // use-after-move). swept_entries is cumulative total; total_estimated uses a shallow
+                // root probe + directory-count extrapolation so fraction meaningfully grows toward 1.0.
+                let new_coverage = if completed {
+                    Coverage::Complete { entries }
+                } else {
+                    let swept = entries_processed_before_write;
+                    let estimated = cursor.estimate_total_size().unwrap_or(swept.max(1));
+                    Coverage::Partial {
+                        swept_entries: swept,
+                        total_estimated: estimated,
+                    }
+                };
+
+                // BUG 1 FIX: Write back the updated cursor so next tick resumes here
+                *dir.cursor.write() = cursor;
+
+                let walk = if completed {
+                    walk_tree(&path)
+                } else {
+                    // During partial, estimate bytes from average seen so far.
+                    let cur_bytes = dir.bytes.load(Ordering::Relaxed);
+                    let cur_entries = dir.entries.load(Ordering::Relaxed);
+                    let estimated_bytes = if cur_entries > 0 && entries > 0 {
+                        (cur_bytes / cur_entries).saturating_mul(entries)
+                    } else {
+                        0
+                    };
+                    TreeWalk { bytes: estimated_bytes, entries }
+                };
+
+                *dir.coverage.write() = new_coverage.clone();
+                let coverage_complete = matches!(new_coverage, Coverage::Complete { .. });
+
+                if coverage_complete {
+                    // Cold start complete — record full walk and transition to normal mode.
+                    dir.record_walk(walk, began_tick.elapsed(), self.started.elapsed().as_millis() as u64);
+                } else {
+                    // Partial progress: accumulate bytes/entries into the cache.
+                    let cur_bytes = dir.bytes.load(Ordering::Relaxed);
+                    dir.bytes.store(cur_bytes.saturating_add(walk.bytes), Ordering::Relaxed);
+                    let cur_entries = dir.entries.load(Ordering::Relaxed);
+                    dir.entries.store(cur_entries.saturating_add(walk.entries), Ordering::Relaxed);
+                }
+
+                let cov_str = format!("{:?}", *dir.coverage.read());
+                continuum_base::probe!(
+                    class = "disk.scan.walk",
+                    class_name = dir.name,
+                    bytes = walk.bytes,
+                    entries = walk.entries,
+                    cold_start_walk_ms = began_tick.elapsed().as_millis() as u64,
+                    coverage = cov_str,
+                    "cold start partial walk — {}% of tree swept",
+                    if let Coverage::Partial { swept_entries, total_estimated } = *dir.coverage.read() {
+                        if total_estimated > 0 { (swept_entries as f64 / total_estimated as f64 * 100.0).round() } else { 0.0 }
+                    } else { 100.0 }
+                );
+
+                // Skip normal full walk for this dir on cold start ticks.
+            } else {
+                // Normal path: full recursive walk (already scanned or coverage Complete).
+                let class = dir.clone();
+                let citizens = dir.class() == "citizens";
+
+                let began = Instant::now();
+                let walked = tokio::task::spawn_blocking(move || {
+                    if citizens { walk_citizen_tree(&class.path) } else { (class.walk(), Vec::new()) }
+                }).await;
+                let took = began.elapsed();
+                match walked {
+                    Ok((walk, targets)) => {
+                        for target in targets {
+                            match registry::observe_citizen_target(&target.path, target.peer).await {
+                                Ok(child) => child.record_walk(target.walk, took, self.started.elapsed().as_millis() as u64),
+                                Err(error) => {
+                                    tracing::warn!(%error, "citizen Cargo observation remains charged to its parent");
+                                }
                             }
                         }
+                        dir.record_walk(walk, took, self.started.elapsed().as_millis() as u64);
+                        continuum_base::probe!(
+                            class = "disk.scan.walk",
+                            class_name = dir.name,
+                            bytes = walk.bytes,
+                            entries = walk.entries,
+                            walk_ms = took.as_millis() as u64,
+                            next_walk_in_s = next_scan_delay(took).as_secs(),
+                            "one cache class measured — its walk's cost sets when it is measured again"
+                        );
                     }
-                    dir.record_walk(walk, took, self.started.elapsed().as_millis() as u64);
-                    continuum_base::probe!(
-                        class = "disk.scan.walk",
-                        class_name = dir.name,
-                        bytes = walk.bytes,
-                        entries = walk.entries,
-                        walk_ms = took.as_millis() as u64,
-                        next_walk_in_s = next_scan_delay(took).as_secs(),
-                        "one cache class measured — its walk's cost sets when it is measured again"
-                    );
-                }
-                // A walk that panicked measured nothing: the last value stands, never
-                // a false zero, and it is retried on the next tick.
-                Err(e) => {
-                    continuum_base::probe!(
-                        class = "disk.scan.walk_failed",
-                        class_name = dir.name,
-                        walk_ms = took.as_millis() as u64,
-                        error = %e,
-                        "the walk did not complete — cached size kept, retried next tick"
-                    );
+                    Err(e) => {
+                        continuum_base::probe!(
+                            class = "disk.scan.walk_failed",
+                            class_name = dir.name,
+                            walk_ms = took.as_millis() as u64,
+                            error = %e,
+                            "the walk did not complete — cached size kept, retried next tick"
+                        );
+                    }
                 }
             }
-            // A breath between directories so one deep tree does not own the disk.
             tokio::task::yield_now().await;
         }
         let n = self.ticks.fetch_add(1, Ordering::Relaxed) + 1;
