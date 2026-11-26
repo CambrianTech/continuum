@@ -2,10 +2,8 @@
 //! `live::audio` shares.
 //! These handle common operations like:
 //! - Sample format conversion (i16 <-> f32, bytes <-> samples)
-//! - Base64 encoding/decoding for audio transport
+//! - Audio moves as binary frames (PCM16 LE); samples are never text-encoded
 //! - Resampling between sample rates
-
-use base64::{engine::general_purpose::STANDARD, Engine};
 
 /// Convert raw bytes to i16 audio samples (little-endian)
 ///
@@ -17,26 +15,6 @@ pub fn bytes_to_i16(data: &[u8]) -> Vec<i16> {
     data.chunks_exact(2)
         .map(|chunk| i16::from_le_bytes([chunk[0], chunk[1]]))
         .collect()
-}
-
-/// Decode base64 string to i16 audio samples
-///
-/// The encoded data should be little-endian i16 samples.
-/// Returns None if base64 is invalid or byte count is odd.
-pub fn base64_decode_i16(data: &str) -> Option<Vec<i16>> {
-    let bytes = STANDARD.decode(data).ok()?;
-    if bytes.len() % 2 != 0 {
-        return None;
-    }
-    Some(bytes_to_i16(&bytes))
-}
-
-/// Encode i16 audio samples to base64 string
-///
-/// Samples are encoded as little-endian bytes.
-pub fn base64_encode_i16(samples: &[i16]) -> String {
-    let bytes: Vec<u8> = samples.iter().flat_map(|&s| s.to_le_bytes()).collect();
-    STANDARD.encode(&bytes)
 }
 
 /// Convert i16 PCM samples to f32 (-1.0 to 1.0)
@@ -148,19 +126,6 @@ mod tests {
         let bytes = vec![0u8, 1, 2]; // 3 bytes - invalid
         let decoded = bytes_to_i16(&bytes);
         assert!(decoded.is_empty());
-    }
-
-    #[test]
-    fn test_base64_roundtrip() {
-        let samples: Vec<i16> = vec![0, 1000, -1000, 32767, -32768];
-        let encoded = base64_encode_i16(&samples);
-        let decoded = base64_decode_i16(&encoded).unwrap();
-        assert_eq!(samples, decoded);
-    }
-
-    #[test]
-    fn test_base64_invalid() {
-        assert!(base64_decode_i16("not valid base64!!!").is_none());
     }
 
     #[test]

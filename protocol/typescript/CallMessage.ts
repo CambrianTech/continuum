@@ -4,7 +4,7 @@
  * Message types for call protocol
  * TypeScript types are generated via `cargo test -p streaming-core export_types`
  */
-export type CallMessage = { "type": "Join", call_id: string, user_id: string, display_name: string, is_ai: boolean, } | { "type": "Leave" } | { "type": "Audio", data: string, } | { "type": "Mute", muted: boolean, } | { "type": "ParticipantJoined", user_id: string, display_name: string, } | { "type": "ParticipantLeft", user_id: string, } | { "type": "Error", message: string, } | { "type": "Stats", participant_count: number, samples_processed: bigint, } | { "type": "Transcription", user_id: string, display_name: string, text: string, confidence: number, language: string, } | { "type": "VideoConfig", width: number, height: number, fps: number, 
+export type CallMessage = { "type": "Join", call_id: string, user_id: string, display_name: string, is_ai: boolean, } | { "type": "Leave" } | { "type": "Mute", muted: boolean, } | { "type": "ParticipantJoined", user_id: string, display_name: string, } | { "type": "ParticipantLeft", user_id: string, } | { "type": "Error", message: string, } | { "type": "Stats", participant_count: number, samples_processed: bigint, } | { "type": "Transcription", user_id: string, display_name: string, text: string, confidence: number, language: string, } | { "type": "VideoConfig", width: number, height: number, fps: number, 
 /**
  * Pixel format: "rgba8", "vp8", "h264", "jpeg"
  */

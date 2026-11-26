@@ -12,7 +12,7 @@ use crate::live::types::FrameKind;
 use crate::live::video::source::{TestPatternSource, VideoSource};
 use crate::runtime::handle::Handle;
 use crate::live::audio::pcm::{
-    base64_decode_i16, bytes_to_i16, i16_to_f32, is_silence,
+    bytes_to_i16, i16_to_f32, is_silence,
 };
 use crate::{clog_error, clog_info, clog_warn};
 use futures_util::{SinkExt, StreamExt};

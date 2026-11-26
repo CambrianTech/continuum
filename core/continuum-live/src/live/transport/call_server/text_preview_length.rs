@@ -54,11 +54,6 @@ pub enum CallMessage {
     /// Leave the call
     Leave,
 
-    /// Audio data from client (base64 encoded i16 PCM).
-    /// LEGACY: Prefer binary WebSocket frames (Message::Binary) for audio.
-    /// Kept for backward compatibility with older clients.
-    Audio { data: String },
-
     /// Mute/unmute
     Mute { muted: bool },
 
