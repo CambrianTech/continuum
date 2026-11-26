@@ -692,6 +692,22 @@
             assert_eq!(l.available(ResourceKind::Ram), host_free, "the host axis is unchanged");
         }
 
+        // what this catches (Cormac on 38736c291): the ceiling charging the host's other processes on the
+        // GPU's axis, the 2026-11-18 refusal again: a lesson sized within it would shrink toward the reply
+        // alone on the M5. Backed, the GPU is bounded by its own capacity less its fixed bytes and by the
+        // host pool's ceiling, which carries the host's other processes once. The weights split is a fixture.
+        #[test]
+        fn a_unified_gpus_ceiling_is_its_fixed_bytes_and_the_host_pools_room() {
+            const WEIGHTS: u64 = 20_000_000_000;
+            let mut l = the_m5(true);
+            l.fix("serving", ResourceKind::Vram, WEIGHTS);
+            let others = HOST_USED - ENGINE_RESIDENT;
+            let pool = RAM_CEILING - WEIGHTS - others;
+            assert_eq!(l.ceiling(ResourceKind::Ram), pool, "the host pool: its capacity less every fixed byte on it and what others hold");
+            assert_eq!(l.ceiling(ResourceKind::Vram), (VRAM_CEILING - WEIGHTS).min(pool), "the GPU: never charged the host's processes on its own axis");
+            assert!(l.ceiling(ResourceKind::Vram) > OPTIMIZER);
+        }
+
         // what this catches: the backing letting the GPU spend bytes it does not have. Our own GPU
         // residency still bounds it, and a host grant leaves the GPU less, never the same bytes twice.
         #[test]

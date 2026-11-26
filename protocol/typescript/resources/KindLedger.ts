@@ -42,7 +42,11 @@ physicalUsedBytes: number,
  */
 externalBytes: number, 
 /**
- * Of `measured`, what nothing can demote while its owner stays loaded (weights): capacity less this
- * and `external` is the most any one wait could ever be granted now.
+ * Of `measured`, what nothing can demote while its owner stays loaded (weights).
  */
-fixedBytes: number, leaseCount: number, };
+fixedBytes: number, 
+/**
+ * The most one wait could be granted now with everything demotable demoted
+ * ([`ResourceLeaseLedger::ceiling`]): what a lesson is sized within.
+ */
+ceilingBytes: number, leaseCount: number, };

@@ -79,10 +79,13 @@ pub struct KindLedger {
     /// signal.
     #[ts(type = "number")]
     pub external_bytes: u64,
-    /// Of `measured`, what nothing can demote while its owner stays loaded (weights): capacity less this
-    /// and `external` is the most any one wait could ever be granted now.
+    /// Of `measured`, what nothing can demote while its owner stays loaded (weights).
     #[ts(type = "number")]
     pub fixed_bytes: u64,
+    /// The most one wait could be granted now with everything demotable demoted
+    /// ([`ResourceLeaseLedger::ceiling`]): what a lesson is sized within.
+    #[ts(type = "number")]
+    pub ceiling_bytes: u64,
     pub lease_count: u32,
 }
 
@@ -395,6 +398,24 @@ impl ResourceLeaseLedger {
     /// What of `kind` nothing can demote, across every consumer.
     fn fixed(&self, kind: ResourceKind) -> u64 {
         self.fixed.iter().filter(|((at, _), _)| *at == kind).map(|(_, bytes)| *bytes).fold(0, u64::saturating_add)
+    }
+
+    /// The most one wait could be granted of `kind` with everything demotable demoted. A physical pool
+    /// (a discrete device, host RAM) is its capacity less what nothing can demote on it and on every kind
+    /// backed by it, less what others hold on it (its physical reading less our measured residency on it
+    /// and its backed kinds). A kind backed by a pool (unified memory's GPU on host RAM) is bounded by its
+    /// own capacity less its fixed bytes and by its pool's ceiling: it is never charged the host's other
+    /// processes on its own axis (Cormac on 38736c291: the M5's 2026-11-18 refusal, a host-wide reading
+    /// against the GPU's working-set ceiling).
+    pub fn ceiling(&self, kind: ResourceKind) -> u64 {
+        if let Some(&pool) = self.backing.get(&kind) {
+            return self.capacity(kind).saturating_sub(self.fixed(kind)).min(self.ceiling(pool));
+        }
+        let on_pool = |of: fn(&Self, ResourceKind) -> u64| {
+            ResourceKind::ALL.into_iter().filter(|at| *at == kind || self.backing.get(at) == Some(&kind)).map(|at| of(self, at)).fold(0, u64::saturating_add)
+        };
+        let external = self.physical_used(kind).saturating_sub(on_pool(Self::measured));
+        self.capacity(kind).saturating_sub(on_pool(Self::fixed).saturating_add(external))
     }
 
     pub fn reservation(&self, consumer_id: &str, kind: ResourceKind) -> u64 {
@@ -789,6 +810,7 @@ impl ResourceLeaseLedger {
                 // Bytes resident that no consumer of ours claims — the external floor.
                 external_bytes: physical_used_bytes.saturating_sub(measured_bytes),
                 fixed_bytes: self.fixed(kind),
+                ceiling_bytes: self.ceiling(kind),
                 lease_count,
             });
         }

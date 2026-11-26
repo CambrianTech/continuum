@@ -39,7 +39,7 @@ impl Free {
                     kind: ledger.kind,
                     capacity: ledger.capacity_bytes,
                     available: ledger.available_bytes,
-                    ceiling: ledger.capacity_bytes.saturating_sub(ledger.fixed_bytes.saturating_add(ledger.external_bytes)),
+                    ceiling: ledger.ceiling_bytes,
                 })
                 .collect(),
         )
