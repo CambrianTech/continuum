@@ -363,3 +363,24 @@ async fn an_owner_reads_its_asks_as_state_waiting_then_granted_then_never_here()
     let forgot = asks.changed().await.expect("test: the placer runs"); // expect: the test's own precondition
     assert_eq!(forgot.value.0.len(), 1, "a read terminal answer leaves the table");
 }
+
+// what this catches (Codex on 9bf241b3b): one ask for 60 on a place and 60 on the pool of 100 it draws
+// on, each checked alone against free room, granted as 120 of one physical memory.
+#[test]
+fn an_ask_is_summed_on_each_physical_memory_it_draws_on() {
+    let mut ledger = Ledger::default();
+    ledger.place(Tier::Pinned, Bytes(100), Bytes(100), &mut Vec::new());
+    ledger.place(Tier::Vram, Bytes(100), Bytes(100), &mut Vec::new());
+    ledger.back(Tier::Vram, Some(Tier::Pinned));
+    let both = [Need { place: Tier::Vram, amount: Bytes(60) }, Need { place: Tier::Pinned, amount: Bytes(60) }];
+    assert!(matches!(ledger.prepare(TRAINER, FIRST, &both), Answer::Never { place: Tier::Pinned, need: Bytes(120), capacity: Bytes(100) }), "past the memory itself: never here");
+    let held = granted(ledger.prepare(SERVING, FIRST, &[Need { place: Tier::Pinned, amount: Bytes(30) }]));
+    let fits = [Need { place: Tier::Vram, amount: Bytes(40) }, Need { place: Tier::Pinned, amount: Bytes(40) }];
+    let Answer::Waiting { short, .. } = ledger.prepare(TRAINER, FIRST, &fits) else { panic!("test: 80 of the 70 left waits") };
+    assert_eq!(short, vec![Need { place: Tier::Pinned, amount: Bytes(10) }], "the memory names what the ask lacks on it");
+    assert_eq!(ledger.unwind(held.id()), Ok(()));
+    let mut out = Vec::new();
+    ledger.grant_waiting(&mut out);
+    assert_eq!(out.len(), 1, "granted once the memory has room for both");
+    assert_eq!(ledger.accounts(Tier::Pinned).map(|a| a.prepared), Some(Bytes(80)), "charged once on the memory");
+}

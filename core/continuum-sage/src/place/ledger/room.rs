@@ -53,6 +53,65 @@ impl<P: Copy + PartialEq + std::fmt::Debug, Q: Quantity> Ledger<P, Q> {
         Some(Q::of(free.saturating_sub(owed)))
     }
 
+    /// What `owner`'s `needs` lack now, as one ask: each place against its own room, and each physical
+    /// memory against the sum of every need drawing on it (Codex on 9bf241b3b: 60 on a place and 60 on
+    /// the pool of 100 it draws on were both granted, 120 prepared). One entry per short place, naming
+    /// the most it lacks.
+    pub(super) fn short(&self, owner: Owner, needs: &[Need<P, Q>]) -> Vec<Need<P, Q>> {
+        let mut short: Vec<Need<P, Q>> = Vec::new();
+        let mut lacks = |place: P, wanted: u64, room: Option<Q>| {
+            let lack = match room {
+                Some(room) => wanted.saturating_sub(room.units()),
+                None => wanted, // a place never told has no room
+            };
+            if lack == 0 {
+                return;
+            }
+            match short.iter_mut().find(|at| at.place == place) {
+                Some(at) => at.amount = Q::of(at.amount.units().max(lack)),
+                None => short.push(Need { place, amount: Q::of(lack) }),
+            }
+        };
+        for need in needs {
+            lacks(need.place, need.amount.units(), self.room_for(owner, need.place));
+        }
+        for (root, wanted) in self.by_memory(needs) {
+            lacks(root, wanted, self.room_for(owner, root));
+        }
+        short
+    }
+
+    /// The first need past what its physical memory could ever give, summed over every need of the ask
+    /// drawing on it: `(place, need, capacity)`.
+    pub(super) fn past_capacity(&self, needs: &[Need<P, Q>]) -> Option<(P, Q, Q)> {
+        for need in needs {
+            let capacity = self.pooled_capacity(need.place)?;
+            if need.amount > capacity {
+                return Some((need.place, need.amount, capacity));
+            }
+        }
+        self.by_memory(needs).into_iter().find_map(|(root, wanted)| {
+            let capacity = self.accounts(root)?.capacity;
+            (wanted > capacity.units()).then(|| (root, Q::of(wanted), capacity))
+        })
+    }
+
+    /// The sum of `needs` on each physical memory that more than one of them draws on.
+    fn by_memory(&self, needs: &[Need<P, Q>]) -> Vec<(P, u64)> {
+        let mut sums: Vec<(P, u64, usize)> = Vec::new();
+        for need in needs {
+            let root = self.root(need.place);
+            match sums.iter_mut().find(|(at, _, _)| *at == root) {
+                Some((_, sum, count)) => {
+                    *sum = sum.saturating_add(need.amount.units());
+                    *count += 1;
+                }
+                None => sums.push((root, need.amount.units(), 1)),
+            }
+        }
+        sums.into_iter().filter(|(_, _, count)| *count > 1).map(|(root, sum, _)| (root, sum)).collect()
+    }
+
     /// Whether `need` fits within what `owner`'s own floor on its place still lacks: a guarantee, so it
     /// never queues behind another owner's wait.
     pub(super) fn within_floor(&self, owner: Owner, need: &Need<P, Q>) -> bool {
