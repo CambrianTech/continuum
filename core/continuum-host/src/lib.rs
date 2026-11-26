@@ -25,4 +25,5 @@ pub mod read_pin;
 pub mod sandbox;
 pub mod shutdown_signal;
 pub mod stack_sample;
+pub mod subprocess;
 pub mod system_volume;

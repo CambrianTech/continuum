@@ -44,10 +44,9 @@
 use crate::gpu::device_probe::{GpuDeviceProbe, GpuSample, MonitoredGpu};
 use async_trait::async_trait;
 use std::sync::Arc;
+use continuum_host::subprocess;
 
-// Cadence is the base's (`device_probe::DEFAULT_TICK`, 1Hz) and this backend
-// accepts it: 1Hz keeps parity with `nvidia-smi -l 1` and is the practical floor
-// for a subprocess query — faster ticks just multiply child-process churn for no
+// Cadence
 // extra signal, since the driver's counters don't update meaningfully faster under
 // normal load. Nothing NVIDIA-specific to override.
 
@@ -285,9 +284,7 @@ async fn query_gpu() -> Option<SmiReading> {
     // construction probe above is blocking and uses the sync helper instead.
     let out = tokio::time::timeout(
         NVIDIA_PROBE_TIMEOUT,
-        tokio::process::Command::new("nvidia-smi")
-            .args(QUERY_GPU_ARGS)
-            .output(),
+        subprocess::RunConfig::default().run("nvidia-smi", &QUERY_GPU_ARGS),
     )
     .await
     .ok()? // timeout elapsed: keep the last-good atomics, same contract as any other failure
@@ -318,7 +315,7 @@ pub async fn compatibility_report() -> CompatibilityReport {
 }
 
 async fn smi_stdout(args: &[&str]) -> Option<String> {
-    let out = tokio::time::timeout(NVIDIA_PROBE_TIMEOUT, tokio::process::Command::new("nvidia-smi").args(args).output())
+    let out = tokio::time::timeout(NVIDIA_PROBE_TIMEOUT, subprocess::RunConfig::default().run("nvidia-smi", args))
         .await
         .ok()?
         .ok()?;
@@ -331,12 +328,10 @@ async fn query_process_bytes() -> Option<u64> {
     // no ceiling parks the task on the first hang and freezes the reading.
     let out = tokio::time::timeout(
         NVIDIA_PROBE_TIMEOUT,
-        tokio::process::Command::new("nvidia-smi")
-            .args([
-                "--query-compute-apps=pid,used_memory",
-                "--format=csv,noheader,nounits",
-            ])
-            .output(),
+        subprocess::RunConfig::default().run("nvidia-smi", &[
+            "--query-compute-apps=pid,used_memory",
+            "--format=csv,noheader,nounits",
+        ]),
     )
     .await
     .ok()? // timeout elapsed: no reading this tick, last-good stands

@@ -5,18 +5,10 @@
 //! of them flashes a console window from a hidden service or the deploy consumer. Joel
 //! asked for ONE launch policy; three hand-set flags had already drifted apart.
 
-/// A command that never opens a console window on Windows, with stdin closed. A no-op
-/// beyond stdin elsewhere.
+/// A command that never opens a console window on Windows, with stdin closed. Delegates
+/// to [`continuum_host::subprocess`](crate::subprocess) for the launch policy.
 pub fn quiet_command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
-    #[allow(unused_mut)]
-    let mut command = std::process::Command::new(program);
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-    }
-    command.stdin(std::process::Stdio::null());
-    command
+    continuum_host::subprocess::RunConfig::default().spawn_std_os(program.as_ref())
 }
 
 /// True if `pid` names a live process: the ONE liveness check, shared by the deploy claim (here)

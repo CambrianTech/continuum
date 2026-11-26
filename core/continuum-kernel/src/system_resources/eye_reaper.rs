@@ -21,7 +21,7 @@
 //! person opened.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use continuum_host::subprocess;
 use std::time::Duration;
 
 /// The temp-profile markers Playwright uses for the browsers the eye launches. A match
@@ -137,10 +137,7 @@ pub fn parse_ps_rows(out: &str) -> Vec<PsRow> {
 fn ps_rows(timeout: Duration) -> Result<Vec<PsRow>, PsFailed> {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let out = Command::new("ps")
-            .args(["-axo", "pid=,ppid=,command="])
-            .stderr(std::process::Stdio::null())
-            .output();
+        let out = subprocess::RunConfig::default().run_sync("ps", &["-axo", "pid=,ppid=,command="]);
         let _ = tx.send(out);
     });
     match rx.recv_timeout(timeout) {
@@ -198,11 +195,7 @@ fn kill_hard(pid: u32) {
 /// browser's helper processes with it.
 #[cfg(windows)]
 fn kill_hard(pid: u32) {
-    let _ = Command::new("taskkill")
-        .args(["/F", "/T", "/PID", &pid.to_string()])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
+    let _ = subprocess::RunConfig::default().run_sync("taskkill", &[&"/F", &"/T", &"/PID", &pid.to_string()]).ok();
 }
 
 #[cfg(test)]

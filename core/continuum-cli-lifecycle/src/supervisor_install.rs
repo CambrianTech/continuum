@@ -559,21 +559,18 @@ pub fn write_task_xml(path: &Path, xml: &str) -> Result<(), String> {
 #[cfg(windows)]
 pub async fn powershell(script: &str, timeout: std::time::Duration) -> Result<String, String> {
     use base64::Engine;
-    use std::os::windows::process::CommandExt;
     let root = std::env::var_os("SystemRoot").ok_or("SystemRoot is unset")?;
     let shell = PathBuf::from(root).join("System32/WindowsPowerShell/v1.0/powershell.exe");
     let bytes: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
     let encoded = base64::engine::general_purpose::STANDARD.encode(bytes); // -EncodedCommand is UTF-16LE base64 at this process boundary
-    let mut command = std::process::Command::new(shell);
+    let mut command = continuum_host::subprocess::RunConfig::default().spawn_std_os(shell.as_os_str());
     command
         .args(["-NoProfile", "-NonInteractive", "-EncodedCommand", &encoded])
         // Windows PowerShell 5.1 builds its own module path when this is unset. Inherited from
         // a pwsh 7 caller it leads with 7's module folders, 5.1 cannot load 7's
         // Microsoft.PowerShell.Utility, and Get-FileHash is "not recognized" (the 5090 install,
         // 2026-09-28, card 1b040de5).
-        .env_remove("PSModulePath")
-        .stdin(std::process::Stdio::null())
-        .creation_flags(0x0800_0000);
+        .env_remove("PSModulePath");
     let mut command = tokio::process::Command::from(command);
     command.kill_on_drop(true);
     let output = tokio::time::timeout(timeout, command.output())
@@ -596,15 +593,12 @@ pub async fn powershell(script: &str, timeout: std::time::Duration) -> Result<St
 /// must finish before its caller releases the install lease.
 #[cfg(windows)]
 pub fn run_installer_script(shell: &std::path::Path, script: &str) -> Result<(), String> {
-    use std::os::windows::process::CommandExt;
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
 
-    let output = Command::new(shell)
+    let output = continuum_host::subprocess::RunConfig::default().spawn_std_os(shell.as_os_str())
         .args(["-NoProfile", "-NonInteractive", "-Command", script])
         // Preserve native Windows PowerShell module discovery across pwsh callers.
         .env_remove("PSModulePath")
-        .creation_flags(0x0800_0000)
-        .stdin(Stdio::null())
         .stdout(Stdio::inherit())
         .stderr(Stdio::piped())
         .output()
