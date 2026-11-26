@@ -503,6 +503,32 @@ nodes is a row in `Placement`, never a mystery found by trace.
   governed capacity until 3b lands, then from the Streamer). External pressure is always a wait, never
   a refusal.
 
+**None of this is about memory, so it is SAGE's, not the Streamer's** (Joel, 2026-11-26: "Is it well
+architected for more general use?"). Reservation, prepare/consume/commit, `Demand` that waits for
+`Granted`, the proven "never here" bound, credit only after a fenced release, and a lease per place
+from the authority apply to anything finite that is shared. SAGE.md's "Ebb and flow" lists the other
+instances: who is awake on a node, which models are hot, who runs where on the grid, the levels of
+detail in a live call. SAGE.md designs the `Placer` and `Consumer` for exactly this, but
+`continuum-sage` holds no `Placer` yet (grep, 0e54175a38). Built inside the Streamer, the contract
+would be memory-only, and each later instance would write it again. So the order is:
+- **Slice 3a, the `Placer` in `continuum-sage`.** `Consumer` gains the reservation half:
+  `prepare(units, place) -> Claim`, `consume(&Claim)` (answers now, never waits), `commit(actual)`,
+  `unwind`. `Demand` and `Granted` are its bus topics, and `ceiling(unit) -> Bound` is the "never here"
+  query. Its law is a `decide::Policy` use case, not a new `PlacementLaw` trait, so placement shares
+  the decide module's replay, checkpoint and learned-policy lifecycle with every other decision. A
+  committed claim is `decide::capacity::Lease`, the type that already says observed versus committed
+  for the grid. Codex's host-wide arbitration across instances (`codex/placement-under-load`) is the
+  `Placer` at node scope.
+- **Validated by two outliers, as CLAUDE.md's method asks:** the Streamer's blocks (bytes on tiers,
+  fenced DMA) and who is awake on a node (minds on levels from stepping to asleep, no bytes moved by
+  the `Placer` itself). If both fit `Consumer` without forcing, the interface holds, and the hot tier,
+  the grid and a live call's levels follow.
+- **Slice 3b is the Streamer as its first `Consumer`.** It keeps only what is memory: `Workspace`
+  storage identity, the links, and what aliases on unified memory.
+- **The authority itself becomes the node's `Placer` in time.** Then builds and residents' tools are
+  `Consumer`s, and the Streamer's single lease per tier is no longer needed. Until then it is the
+  bridge that keeps one counter.
+
 What it deletes, in the slice that builds it (slice 3b below): `LearningMemory`'s workspace and lease
 matching, `lease_memory`, `from_rows`, `learning::leased`, the metrics sum, training's path through
 `window_allocator`, and `GrantHandoff` as bytes.
@@ -565,6 +591,7 @@ network link between them. So that works later with no rework, everything built 
 | 1b | `Topology` and the tiers' budgets, once the resource authority says `resources/free` on the bus (card 9d856843, Cormac's delta 8). The drive's measured write rate checks the Mapping link: 64 MiB demoted at 1.06 GB/s on the M5 with serving beside, below what an SSD gives | Fable | Mapping at >= 80% of the measured drive rate |
 | 2 | The first consumer: the Core's parked minds' KV as `MindKv` blocks. Deletes the fork's private storage reservation (#6264), her separate file write, and `preserve.rs`'s JSON token history (her tokens are a block beside her KV) | Fable | `--test-core` byte-identical through a flash round trip; stop and restore at 130k at the drive's rate |
 | 3 | The `Streamer` with `PlacementLaw` (`FractalPager`, `Lru` as baseline), `Forecaster`, the law registry, `blocks/observed` and the `Trace`, simulator and replay; the Lane's `Forecast` as its first `Demand` | Fable | replay reproduces every decision; zero misses for forecast minds; `FractalPager` beats `Lru` on a fitted live trace |
+| 3a | SAGE's `Placer` in `continuum-sage`: `Consumer` with prepare/consume/commit/unwind, `Demand`/`Granted`, `ceiling`, its law as a `decide::Policy` use case, committed claims as `decide::capacity::Lease` | Fable (Placer), Codex (node-scope arbitration on it) | two outlier consumers fit without forcing: a block consumer and the awake/asleep minds; sim replays a captured night's demand with zero waits that never clear |
 | 3b | Workspace, admission and reclaim as blocks ("Every byte the engine holds is a block"): `Workspace` blocks and `grow` at the scheduler's admission callback; `Reservation` replaces every learning lease sum; training demand as `Demand`. Deletes the six counters listed there | Fable (blocks, Streamer), Codex (`Reservation` contract, the discrete tiers' reclaim), Cormac (the trainer as a consumer, outstanding demand) | the M5 and the 5090 each run 15 min on one head: zero refusals that are not "never here"; every wait names the tier and bytes it waits for; forward progress (a `Saved` generation linked to its lesson, serving restored after) on both nodes; time from the short tier freeing to `Granted`, p50 and max; fixtures for pressure onset and recovery, cancel, and a native allocation failure after a reservation |
 | 4 | Discrete: the `Vram` and `Pinned` tiers, `Dma` and `Staged` links, the CUDA graph check | Codex | the 5090: a swap hidden under decode |
 | 5 | The hot tier as `Weights` blocks; its private copier deleted | Codex (owns the catalog) | model load from flash at the drive's rate |
