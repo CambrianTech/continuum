@@ -150,6 +150,13 @@ impl ReservationState {
     fn acting(&self, persona: uuid::Uuid, engine: Option<EngineIncarnation>) -> bool {
         self.entries.get(&persona).is_some_and(|entries| entries.iter().any(|e| e.custody == Custody::Rendered && e.engine == engine))
     }
+
+    /// Whether `mind` has at least one entry with Live or Rendered custody.
+    /// Returns false for orphan-only holders whose entries are all Unresolved — they have no
+    /// active custody at any engine, so their grant should be reclaimable by waiters (CONTINUUM-ENGINE 4.9 P3).
+    fn holds_active_custody(&self, persona: uuid::Uuid) -> bool {
+        self.entries.get(&persona).is_some_and(|entries| entries.iter().any(|e| e.custody != Custody::Unresolved))
+    }
 }
 
 impl Reservations {
@@ -405,6 +412,12 @@ fn record_reclaimed(&self, proof: crate::inference::slots::grant_handoff::Reclai
     if !state.retiring.get(&ticket.persona).is_some_and(|lease| lease.same_identity(&ticket.lease)) {
         return Err("reclaimed grant was already fenced or replaced".into());
     }
+    // Verified physical reclamation is explicit evidence ending unresolved reservations
+    // (lease.rs header doc: "nothing at the engine, no handle held"). Drop Unresolved entries
+    // so compute() no longer pins this mind's tokens as a fixed claim.
+    state.entries.retain(|persona, entries| {
+        *persona != ticket.persona || !entries.iter().all(|e| e.custody == Custody::Unresolved)
+    });
     state.reclaimed.insert(ticket.persona, ticket.lease);
     Ok(())
 }
