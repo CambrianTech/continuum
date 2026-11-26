@@ -33,7 +33,6 @@ use crate::component::{Need, Urgency};
 pub mod lane;
 pub mod control;
 pub mod device;
-pub mod fetcher;
 pub mod sim;
 pub mod trace;
 pub mod tuner;

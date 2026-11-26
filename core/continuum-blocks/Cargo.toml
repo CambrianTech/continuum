@@ -6,7 +6,12 @@ description = "One block layer for every memory tier (UNIFIED-PAGING.md): region
 
 [dependencies]
 continuum-host = { workspace = true } # mapped_region: the file mapping a Flash-backed block lives in
+continuum-sage = { workspace = true } # the Streamer is a SAGE component
+continuum-base = { workspace = true } # probes on the Streamer's moves
+tracing = { workspace = true } # continuum_base::probe! expands to it
 thiserror = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+tokio = { workspace = true }
+uuid = { workspace = true }

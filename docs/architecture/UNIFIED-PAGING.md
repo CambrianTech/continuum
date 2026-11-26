@@ -211,12 +211,14 @@ them out. Moving a block never interprets it.
 **`Link`: how bytes go from one tier to another, one adapter per pair.**
 
 ```rust
-pub trait Link: Send + Sync {
-    fn pair(&self) -> (TierKind, TierKind);
-    fn rates(&self) -> TierRates;                                   // measured on this node
-    fn start(&self, from: &Region, to: &mut Region) -> Result<Transfer, LinkRefusal>;
+// as built (continuum-blocks/src/link.rs, 2026-11-26); a pair's link is found through the node's Links table
+pub trait Link<K>: Send + Sync {
+    fn name(&self) -> &'static str;
+    fn start(&self, block: &mut Block<K>, to: Placement) -> Result<Transfer, LinkRefusal>;  // answers at once
 }
-pub struct Transfer { fence: Box<dyn residency::Fence> }   // the fence type that exists today
+pub struct Transfer { bytes, started, to: Placement, done: Box<dyn Completion>, into: Option<Region> }
+// into: the destination its tier reserved before the copy; Transfer::land gives it to the block only when
+// done fires, so the source stays charged and valid until then, and a refused move leaves the block as it was
 ```
 
 | Link | Between | What moves |
@@ -819,7 +821,7 @@ branch is the defect.
   driver stages through, of each layer's whole stream tensor (all its positions, used or not). The Dedicated
   adapter instead holds her storage as ONE device allocation (every layer's K and V for her window, viewed as the
   layers' tensors) and her parked copy as ONE pinned host block of the same layout: park is one device-to-host
-  async copy, restore one host-to-device, each fenced by its own event (the fetcher's `Landed`). No per-layer
+  async copy, restore one host-to-device, each fenced by its own event (the Streamer's `Landed`). No per-layer
   calls, no staging, no `state_seq_get_data` (a serializer) on this path, only her window's bytes. Row copy is
   deleted, not kept as a fallback: a mind with no device room stays parked in pinned memory until the placer makes
   room.
