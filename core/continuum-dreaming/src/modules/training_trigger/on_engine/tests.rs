@@ -275,6 +275,37 @@ mod held_off {
         kept.measured();
     }
 
+    // what this catches (the 5090, 2026-11-26: 97 Loaded, 0 Seated in four minutes): a seat whose
+    // optimizer was refused was held for that lease alone, so its own weights, freed by its release,
+    // covered the hold, and it was measured, loaded and refused again in a loop. It waits until the
+    // whole seat (weights, optimizer and workspace) fits.
+    #[tokio::test]
+    async fn a_seat_refused_its_optimizer_waits_for_the_whole_seat_not_its_own_freed_weights() {
+        use std::num::NonZeroU32;
+        let (state, key, _home, _dir, _guard) = waiting().await;
+        let occupied = crate::inference::training_admission::try_training_memory(&state.authority.resources, Admission::Free(&state.authority.serving), "occupier", crate::resources::ResourceKind::Vram, 600 << 20)
+            .expect("test: the authority answers")
+            .expect("test: 600 MiB of the 1 GiB is granted");
+        let kept = Arc::new(Kept::default());
+        let port: Arc<dyn LearnPort> = kept.clone();
+        state.seat_bucket(&port, &key).await.expect("test: the bucket seats");
+        let seat = kept.measured();
+        let vram = |role, bytes| vec![MemoryRow { device: "CUDA0".into(), buffer_type: "CUDA0".into(), role, bytes, host: false }];
+        state.on_said(&port, Said::Seat { seat, state: SeatState::Measured { weights: vram(MemoryRole::Weights, 300 << 20) } }).await;
+        assert!(matches!(kept.0.lock().last(), Some(Learning::Load { .. })), "its weights fit: it loads");
+        let loaded = SeatState::Loaded { optimizer: vram(MemoryRole::OptimizerStatic, 200 << 20), workspace: vram(MemoryRole::SharedComputeRequired, 1 << 20), reply_rows: NonZeroU32::MIN };
+        state.on_said(&port, Said::Seat { seat, state: loaded }).await;
+        assert!(matches!(kept.0.lock().last(), Some(Learning::Release { .. })), "its optimizer refused: the seat is let go");
+        let told = kept.told();
+        state.on_said(&port, Said::Seat { seat, state: SeatState::Released }).await;
+        assert_eq!(kept.told(), told, "its own freed weights do not seat it again: the whole seat does not fit");
+
+        drop(occupied);
+        state.on_free(&port, &crate::resources::Free::of(&state.authority.resources.board()), "qwen").await;
+        assert_eq!(kept.told(), told + 1, "the whole seat fits: measured again");
+        kept.measured();
+    }
+
     // what this catches (Codex on 9d856843): a release said while the refused seat was still being
     // let go. Its wake finds the bucket still seated and seats nothing, and no later change ever
     // comes, so the bucket would wait forever. The seat's own Released sees the memory free and

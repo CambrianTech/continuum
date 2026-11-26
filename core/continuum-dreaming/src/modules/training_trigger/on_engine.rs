@@ -76,6 +76,9 @@ struct EngineSeat {
     /// No more lessons for this seat (one was too long or refused): what it learned is saved and it
     /// is let go, and the next pass seats the bucket again sized for what waits.
     finishing: bool,
+    /// The weight rows the engine measured for this seat: part of the whole seat a hold for memory
+    /// waits for, since seating it again leases them again.
+    weights: Vec<MemoryRow>,
 }
 
 /// A generation the engine saved: where, how many optimizer steps it holds, and the positions it
@@ -197,6 +200,14 @@ impl RowsSeen {
     }
 }
 
+/// One lease the trainer asks the authority for: `rows` for `consumer`, as part of the whole seat
+/// `whole` (every row seating it again leases), which a refusal for memory waits for.
+struct Lease<'a> {
+    consumer: &'a str,
+    rows: &'a [MemoryRow],
+    whole: &'a [MemoryRow],
+}
+
 /// What the authority refused: `needed` bytes of `kind`.
 struct Short {
     kind: ResourceKind,
@@ -207,6 +218,20 @@ struct Short {
 /// nothing free yet).
 fn short(free: &Free, kind: ResourceKind, needed: u64) -> bool {
     free.kind(kind).is_none_or(|governed| governed.available < needed)
+}
+
+/// The bytes of `kind` that `rows` lease, counted the way the authority leases them
+/// (`lease_memory`: device rows are VRAM, host rows RAM, held shared compute is no lease).
+fn seat_bytes(rows: &[MemoryRow], kind: ResourceKind) -> u64 {
+    let host = match kind {
+        ResourceKind::Vram => false,
+        ResourceKind::Ram => true,
+        ResourceKind::Disk => return 0, // no seat row leases disk
+    };
+    rows.iter()
+        .filter(|row| row.host == host && row.role != crate::inference::learning::MemoryRole::SharedComputeHeld)
+        .map(|row| row.bytes)
+        .fold(0u64, u64::saturating_add)
 }
 
 /// What `authority` shows free now.
@@ -375,6 +400,7 @@ impl TrainingTriggerState {
             checkpointed,
             names: VecDeque::new(),
             finishing: false,
+            weights: Vec::new(),
         };
         self.on_engine.seats.lock().insert(SeatId(id), seat);
         Ok(())
@@ -442,13 +468,18 @@ impl TrainingTriggerState {
         let consumer = format!("learning:{}:{}", key.persona_id, key.trait_kind);
         match heard {
             Heard::LeaseWeights(rows) => {
-                let leased = self.lease(port, key, &consumer, rows)?;
-                self.with_seat(seat, |held| held.run.load(port.as_ref(), leased));
+                let leased = self.lease(port, key, Lease { consumer: &consumer, rows: &rows, whole: &rows })?;
+                self.with_seat(seat, |held| {
+                    held.weights = rows; // seating it again leases them again
+                    held.run.load(port.as_ref(), leased)
+                });
                 Ok(())
             }
             Heard::LeaseSeat { optimizer, workspace, .. } => {
-                let optimizer = self.lease(port, key, &consumer, optimizer)?;
-                let workspace = self.lease(port, key, &format!("{consumer}:workspace"), workspace)?;
+                // The whole seat: what seating it again takes, its weights included.
+                let whole = self.whole_seat(seat, &optimizer, &workspace);
+                let optimizer = self.lease(port, key, Lease { consumer: &consumer, rows: &optimizer, whole: &whole })?;
+                let workspace = self.lease(port, key, Lease { consumer: &format!("{consumer}:workspace"), rows: &workspace, whole: &whole })?;
                 let view = optimizer.view().map_err(OnEngineError::Coverage)?;
                 self.with_seat(seat, |held| held.run.seat(port.as_ref(), Box::new(view), optimizer, workspace));
                 Ok(())
@@ -591,11 +622,16 @@ impl TrainingTriggerState {
 
     /// Lease `rows` for `consumer`. A refusal for memory holds `key` off: until that much is free, or
     /// (a need past the whole device) for as long as this engine serves.
-    fn lease(&self, port: &Arc<dyn LearnPort>, key: &BucketKey, consumer: &str, rows: Vec<MemoryRow>) -> Result<LeasedMemory, OnEngineError> {
-        let measured = rows.clone(); // what the probe names if the authority refuses it
-        lease_memory(&self.authority, consumer, rows).map_err(|refusal| {
+    /// Lease `rows` for `consumer`. A refusal for memory holds `key` until the WHOLE seat (`whole`,
+    /// every row seating it again leases) fits in the short kind: held for the refused lease alone,
+    /// the seat's own weights freed by its release covered the hold, and it was measured, loaded and
+    /// refused again in a loop (the 5090, 2026-11-26: 97 Loaded, 0 Seated in four minutes).
+    fn lease(&self, port: &Arc<dyn LearnPort>, key: &BucketKey, ask: Lease<'_>) -> Result<LeasedMemory, OnEngineError> {
+        let Lease { consumer, rows, whole } = ask;
+        lease_memory(&self.authority, consumer, rows.iter().cloned()).map_err(|refusal| {
             if let SeatRefusal::AwaitingMemory(TrainingWait::Capacity { kind, needed, .. }) = &refusal {
-                self.on_engine.hold_off(key, port, &free_now(&self.authority), Short { kind: *kind, needed: *needed }, &measured);
+                let seat = seat_bytes(whole, *kind).max(*needed); // a kind the rows do not name is the refused lease alone
+                self.on_engine.hold_off(key, port, &free_now(&self.authority), Short { kind: *kind, needed: seat }, whole);
             }
             OnEngineError::Lease(refusal)
         })
@@ -619,6 +655,17 @@ impl TrainingTriggerState {
     async fn rows_of(&self, key: &BucketKey) -> Result<Vec<Arrival>, OnEngineError> {
         let store = self.durable.require().map_err(OnEngineError::Journal)?;
         store.arrivals_in(key).await.map_err(OnEngineError::Journal)
+    }
+
+    /// The whole seat `seat` asks for: the weights the engine measured for it, its `optimizer` and its
+    /// `workspace`, every row seating it again leases.
+    fn whole_seat(&self, seat: SeatId, optimizer: &[MemoryRow], workspace: &[MemoryRow]) -> Vec<MemoryRow> {
+        let seats = self.on_engine.seats.lock();
+        let weights: &[MemoryRow] = match seats.get(&seat) {
+            Some(held) => &held.weights,
+            None => &[], // a seat already let go has no weights left to lease again
+        };
+        weights.iter().chain(optimizer).chain(workspace).cloned().collect()
     }
 
     /// Run `act` on `seat` if the trainer still holds it; a command no engine took is probed.
