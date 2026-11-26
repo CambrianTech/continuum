@@ -516,8 +516,10 @@ transfers. OS available bytes already reflect resident allocations. Subtract onl
 yet to land. Charge aliases once and expose unexplained differences between the allocator and OS readings.
 An old observation can guide a forecast. The native allocation and its fence settle the actual result.
 Pressure can change between prepare and consume, including when another Continuum instance makes a claim.
-Instances on one host must prepare against the same physical-pool authority. Independent snapshots of
-OS free memory cannot serialize two grants. A peer offer remains provisional until that peer's authority
+Slice 3b gives the resource authority one elected owner per host, held by a host-scoped OS lock.
+Codex owns the host reservation endpoint. Other instances prepare through that owner's bus endpoint.
+On owner loss, a successor reconciles live allocator receipts and outstanding lease identities before
+granting competing claims. A peer offer remains provisional until that peer's authority
 prepares it. Release a provisional claim on expiry or cancellation using its reservation identity.
 
 SAGE considers feasible actions against the same history. A policy may keep a warm block, demote it,
@@ -532,8 +534,10 @@ Only the resource owner executes the selected action. The policy records the out
 prediction so another algorithm can replay the decision using the same typed history.
 
 When outside pressure consumes a prepared reservation's headroom, validate the claim at consumption.
-If allocation fails, keep the original backing usable, release unused commitments and wake the same
-seat on a fresh capacity observation. Aging includes time already spent waiting. A competing application
+If allocation fails, keep the original backing usable and release unused commitments. Observations
+continue while a seat waits, while it runs, and after it finishes. Each change can alter placement.
+Only a successful prepare covering the entire seat sends Granted to the trainer. Preserve the
+original seat identity and its waiting age. A competing application
 quitting, a transfer completing, and our own build ending can all change the preferred placement.
 Re-evaluate on those events and as observations age. Include the cost of undoing a move before bringing
 a block back. An executable path or an application name is unnecessary for these decisions.
@@ -543,7 +547,12 @@ windows on each node. Establish the baseline, introduce a competing GPU and host
 then release it while the same lesson remains outstanding. Capture observations around both transitions
 inside the windows. Record build and artifact identity, request and lesson IDs, per-pool free bytes,
 prepared and committed bytes, physical bytes released, destination and move time, serving latency,
-and the interval from available capacity to grant. Verify that foreground work continues, that two
+and the interval from available capacity to grant. The proposed test command is
+`placement-pressure --host-mib 1024 --device-mib 1024 --hold-seconds 900`. Its separate process
+touches every host page and repeatedly executes a fixed GPU buffer pass using CUDA or Metal.
+Report actual resident bytes, allocation failures, pass latency and release time. On unified memory
+charge distinct physical backing once. These sizes belong to the repeatable fixture alone.
+Verify that foreground work continues, that two
 instances cannot spend the same headroom, and that the lesson produces one durable generation after
 capacity returns. Restore and exercise that generation. Replay local GPU pressure with ample disk
 space to detect false VRAM credits, and replay unified-memory pressure with aliased host and device
