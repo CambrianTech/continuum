@@ -603,6 +603,16 @@ algorithm over any unit, and `cambrian-flex` was never built. So the join is the
   is in flight, taken back by a lease that waits. A seat: its lesson rows (Fit within the ceiling already
   sizes it). A turn's prompt: its own flex, unchanged.
 
+**Never evict, never abort: resize or cache out** (Joel, 2026-11-26: "rather than evict or abort it resizes
+by priority or caches out"). A `Shrink` is on one tier, and its holder answers it the cheapest way it has:
+*resize* (a workspace re-reserved for a smaller batch, a lesson at fewer rows, a stream sized to its
+occupant's window), *cache out* (its bytes demoted a tier: VRAM to pinned to flash, paged back on its next
+touch with no recompute; the cached copy becomes its holding on the lower tier), or *collapse* (a cheaper
+level: older context summarized behind a handle). Each elastic holding declares its ways with their measured
+cost (the quality or speed a resize loses; a move's time and the tier it lands on), the law weighs them with
+the priorities, and the way taken and what it cost is the receipt the policy learns from. A refusal stays
+only for a proven "never here".
+
 **Everything feeds back** (Joel, 2026-11-26: "everything memory related needs to feed back"). No holder's
 `floor`, `want` or `priority` is a constant someone picked; each is the last measurement of what it is, and
 every decision writes the receipt the next one reads:
