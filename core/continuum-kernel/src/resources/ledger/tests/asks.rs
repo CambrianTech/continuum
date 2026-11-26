@@ -103,3 +103,29 @@ fn every_kernel_lease_is_an_entry_in_the_core_and_leaves_with_it() {
     assert!(l.core.status(b).is_none(), "shrunk to nothing: its entry leaves too");
     assert_eq!(l.available(ResourceKind::Vram), 10_000);
 }
+
+// what this catches (the 5090 at e73480d4e, 2026-11-26: the core's private commitment grew 53.6 -> 93.3 GB):
+// bookkeeping the core keeps per lease, ask or carved stage left behind after it ends, growing with every
+// cycle. Thousands of take, ask, carve, shrink and release cycles leave the core's tables as they started.
+#[test]
+fn churn_leaves_nothing_behind_in_the_core() {
+    let mut l = ResourceLeaseLedger::new();
+    l.set_capacity(ResourceKind::Vram, 1_000_000);
+    for cycle in 0..5_000u64 {
+        let id = |what: &str| format!("{what}-{cycle}");
+        l.acquire(&req("serving", ResourceKind::Vram, 1_000, ReclaimPolicy::Graceful), id("lease"), cycle).expect("test: fits");
+        l.acquire(&req("learning:her", ResourceKind::Vram, 3_000, ReclaimPolicy::Graceful), id("reserve"), cycle).expect("test: fits");
+        l.carve(&id("reserve"), &req("learning:her", ResourceKind::Vram, 1_000, ReclaimPolicy::Graceful), &id("stage"), cycle).expect("test: carved");
+        let Ok(Asked::Waiting { ask, .. }) = l.ask(&req("learning:him", ResourceKind::Vram, 2_000_000, ReclaimPolicy::Graceful), &id("never"), cycle) else {
+            // past capacity: refused, nothing kept
+            l.shrink(&id("lease"), 1_000).expect("test: shrink to nothing");
+            l.release(&id("reserve")).expect("test: release");
+            l.release(&id("stage")).expect("test: release");
+            continue;
+        };
+        assert!(l.withdraw(ask));
+    }
+    assert_eq!(l.core.held_entries(), (0, 0), "every ended lease, ask and stage left the core");
+    assert_eq!(l.available(ResourceKind::Vram), 1_000_000);
+    assert!(l.leases.is_empty() && l.asking.is_empty());
+}
