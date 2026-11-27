@@ -401,6 +401,31 @@ mod held_off {
         kept.measured();
     }
 
+    // what this catches (Codex on #6292): a seat told to measure before it is registered. The learner
+    // hears on its own worker, so the engine's Measured can be handled before the telling returns; a
+    // seat nobody holds yet drops it, and the seat waits forever. At the tell, it is already held.
+    #[tokio::test]
+    async fn a_seat_is_registered_before_the_engine_is_told_to_measure_it() {
+        struct Checking {
+            state: std::sync::OnceLock<std::sync::Weak<TrainingTriggerState>>,
+            key: BucketKey,
+            held_at_tell: parking_lot::Mutex<Vec<bool>>,
+        }
+        impl LearnPort for Checking {
+            fn tell(&self, _learning: Learning) -> Result<(), Unavailable> {
+                let held = self.state.get().and_then(std::sync::Weak::upgrade).is_some_and(|state| state.seated_on_engine(&self.key));
+                self.held_at_tell.lock().push(held);
+                Ok(())
+            }
+        }
+        let (state, key, _home, _dir, _guard) = waiting().await;
+        let checking = Arc::new(Checking { state: std::sync::OnceLock::new(), key: key.clone(), held_at_tell: parking_lot::Mutex::new(Vec::new()) });
+        let _ = checking.state.set(Arc::downgrade(&state));
+        let port: Arc<dyn LearnPort> = checking.clone();
+        state.seat_bucket(&port, &key).await.expect("test: the bucket seats");
+        assert_eq!(*checking.held_at_tell.lock(), [true], "the seat is held when its Measure is told, so an immediate Measured finds it");
+    }
+
     // what this catches (the 5090, #6287's window, card d1e5675c): an answer for one bucket that waits
     // while another bucket is being seated. The trainer seats a bucket under that bucket's gate alone;
     // a seat of any other bucket takes its next act at once, so a long seating holds only its own.

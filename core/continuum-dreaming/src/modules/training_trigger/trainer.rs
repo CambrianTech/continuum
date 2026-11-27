@@ -150,8 +150,11 @@ impl Component for Trainer {
             Wake::Arrived(_) => "arrival",
             Wake::FollowUp(follow_up) => {
                 let state = Arc::clone(&self.state);
-                // owned, so shutdown's join waits for a seating or a sweep in flight
-                let taken = self.state.run_operation(OwnedKind::Recover, None, async move {
+                let persona = match &follow_up {
+                    FollowUp::Seat(key) | FollowUp::Sweep(key) => key.persona_id,
+                };
+                // owned, so shutdown's join waits for a seating or a sweep in flight, and names it
+                let taken = self.state.run_operation(OwnedKind::FollowUp, Some(persona), async move {
                     match super::on_engine::port() {
                         Some(port) => state.follow_up(&port, follow_up).await,
                         None => continuum_base::probe!(class = "training.on_engine.no_port", follow_up = ?follow_up,

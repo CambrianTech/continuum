@@ -137,11 +137,17 @@ pub(crate) struct SeatRun<G> {
 }
 
 impl<G: Send> SeatRun<G> {
-    /// Measure the seat `measure` names: the first thing told for it.
-    pub(crate) fn measure(port: &dyn LearnPort, measure: Measure) -> Result<Self, NotTold> {
-        let seat = measure.seat;
+    /// The run of seat `seat`, about to be measured. It is registered before the engine is told
+    /// ([`Self::tell_measure`]): the learner hears on its own worker and can hear the Measured before
+    /// the telling returns, and an answer for a seat nobody holds is dropped (Codex on #6292).
+    pub(crate) fn measuring(seat: SeatId) -> Self {
+        Self { seat, phase: Phase::Measuring, before: Phase::Measuring, in_flight: None, progress: HashMap::new(), checkpoints: VecDeque::new(), guards: Vec::new(), workspace: None, within: None }
+    }
+
+    /// Tell the engine to measure the seat `measure` names: the first thing told for it.
+    pub(crate) fn tell_measure(port: &dyn LearnPort, measure: Measure) -> Result<(), NotTold> {
         port.tell(Learning::Measure(measure))?;
-        Ok(Self { seat, phase: Phase::Measuring, before: Phase::Measuring, in_flight: None, progress: HashMap::new(), checkpoints: VecDeque::new(), guards: Vec::new(), workspace: None, within: None })
+        Ok(())
     }
 
     /// Whether a lesson can be told now: seated, none in flight.

@@ -20,6 +20,7 @@ use uuid::Uuid;
 use super::durable::{Arrival, Generation, Position};
 use super::in_place::{bucket_stem, decide, start, Decided, Decision, Pending};
 pub(crate) use follow_up::FollowUp;
+use phases::{Phase, Phases};
 use super::seat_run::{Heard, NotTold, SeatRun};
 use super::{BucketKey, TrainingTriggerState};
 use crate::genome::learner::example::learn_messages;
@@ -449,14 +450,21 @@ impl TrainingTriggerState {
         let rows_ms = read.elapsed().as_millis() as u64;
         let rows_read = rows.as_ref().ok().map(Vec::len); // none: the journal could not be read
         let seating = std::time::Instant::now();
+        let mut drop_ms = None; // none: no rows were read to drop
         let seated = match rows {
-            Ok(rows) => self.seat_on_engine(port, key, &rows).await,
+            Ok(rows) => {
+                let seated = self.seat_on_engine(port, key, &rows).await;
+                let dropping = std::time::Instant::now();
+                drop(rows); // timed: a bucket's rows can hold tens of thousands of examples
+                drop_ms = Some(dropping.elapsed().as_millis() as u64);
+                seated
+            }
             Err(why) => Err(why),
         };
         // each phase timed, so where a pass spends its time is read from one probe, never from gaps
         // between others (the 5090, card d1e5675c: 442 s between two buckets' decisions, unattributed)
         continuum_base::probe!(class = "training.on_engine.seat_bucket", persona = %key.persona_id, trait_kind = %key.trait_kind, gate_wait_ms, rows_ms, rows_read = ?rows_read,
-            seat_ms = seating.elapsed().as_millis() as u64, ok = seated.is_ok(), "one bucket's seating, by phase");
+            seat_ms = seating.elapsed().as_millis() as u64, drop_ms = ?drop_ms, ok = seated.is_ok(), "one bucket's seating, by phase");
         // a reserve only ever serves a seat: a pass that seated nothing (nothing pending, not now, a
         // refusal) gives it back, or it is held from everyone with nothing to spend it on
         if !self.on_engine.seated(key) {
@@ -468,7 +476,9 @@ impl TrainingTriggerState {
     /// Decide and measure `key`'s seat, sized for her next lesson.
     async fn seat_on_engine(self: &Arc<Self>, port: &Arc<dyn LearnPort>, key: &BucketKey, rows: &[Arrival]) -> Result<(), OnEngineError> {
         let Some(first) = rows.first() else { return Ok(()) };
+        let mut phases = Phases::start();
         let signature = self.signature_of(key, rows).await;
+        phases.mark(Phase::Signature);
         let in_flight: Vec<(Uuid, crate::genome::signature::GeneSignature)> = {
             let seats = self.on_engine.seats.lock();
             super::in_place::in_flight(key, seats.iter().map(|(id, held)| (&held.key, id.0, held.signature.as_ref())))
@@ -477,10 +487,12 @@ impl TrainingTriggerState {
         let Decision::Learn(Decided { policy, signature, generation }) = decide(self, key, pending, &in_flight).await.map_err(OnEngineError::Journal)? else {
             return Ok(());
         };
+        phases.mark(Phase::Decide);
         let checkpointed: HashMap<Uuid, u32> = generation.iter().flat_map(|g| g.positions.iter()).map(|p| (p.submission, p.learned)).collect();
         let Some((_, sized_for)) = next_lesson(rows, &checkpointed, &HashMap::new()) else {
             return Ok(()); // everything pending is already in her newest generation
         };
+        phases.mark(Phase::Size);
         let id = Uuid::new_v4();
         let shadow = match &generation {
             Some(generation) => ShadowSource::Generation(PathBuf::from(&generation.path)),
@@ -496,13 +508,10 @@ impl TrainingTriggerState {
         let from_generation = matches!(shadow, ShadowSource::Generation(_));
         let lesson_messages = sized_for.messages.len();
         let measure = Measure { seat: SeatId(id), mind: PersonaId(key.persona_id), shadow, optimizer: Optimizer::adamw(policy.learning_rate), sized_for };
-        let run = SeatRun::measure(port.as_ref(), measure)?;
-        continuum_base::probe!(class = "training.on_engine.measure_told", persona = %key.persona_id, trait_kind = %key.trait_kind, seat = %id, from_generation, lesson_messages,
-            "a seat was measured on the node engine; its Measured (or Refused) is what follows");
         let examples_owed = owed::examples_owed(rows, &checkpointed, &HashMap::new()); // nothing progressed yet: a new seat
         let seat = EngineSeat {
             key: key.clone(),
-            run,
+            run: SeatRun::measuring(SeatId(id)),
             signature,
             persona_name: first.persona_name.clone(),
             binding: Arc::from(format!("{}:{}:{}", key.persona_id, key.trait_kind, key.base_model)),
@@ -515,8 +524,20 @@ impl TrainingTriggerState {
             next: None,
             since: std::time::Instant::now(),
         };
+        phases.mark(Phase::Build);
+        // registered before it is told: the learner hears on its own worker, and a Measured for a
+        // seat nobody holds would be dropped (Codex on #6292). A refused tell takes it back out.
         self.on_engine.seats.lock().insert(SeatId(id), seat);
+        phases.mark(Phase::Register);
+        if let Err(not_told) = SeatRun::<LeasedMemory>::tell_measure(port.as_ref(), measure) {
+            self.on_engine.seats.lock().remove(&SeatId(id));
+            return Err(not_told.into());
+        }
+        phases.mark(Phase::Tell);
         self.say_owed();
+        phases.mark(Phase::Owe);
+        continuum_base::probe!(class = "training.on_engine.measure_told", persona = %key.persona_id, trait_kind = %key.trait_kind, seat = %id, from_generation, lesson_messages, phases_ms = ?phases.ms(),
+            "a seat was measured on the node engine, its seating timed by phase; its Measured (or Refused) is what follows");
         Ok(())
     }
 
@@ -815,6 +836,7 @@ impl TrainingTriggerState {
 mod follow_up;
 mod give_back;
 mod owed;
+mod phases;
 
 #[cfg(test)]
 mod tests;

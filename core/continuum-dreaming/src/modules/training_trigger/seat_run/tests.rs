@@ -78,8 +78,10 @@ fn guard() -> (Box<Guard>, Arc<AtomicBool>) {
 fn measured(port: &Port) -> SeatRun<G> {
     let shadow = ShadowSource::Fresh(FreshShadow { name: "s.gguf".into(), rank: 8, alpha: 16.0, targets: vec!["attn_q".into()], top_layers: 4, seed: 7 });
     let optimizer = Optimizer::AdamW { learning_rate: 1e-4, beta1: 0.9, beta2: 0.999, eps: 1e-8, weight_decay: 0.0 };
-    let measure = Measure { seat: SeatId(Uuid::new_v4()), mind: PersonaId(Uuid::new_v4()), shadow, optimizer, sized_for: lesson() };
-    SeatRun::measure(port, measure).expect("test: the port is open")
+    let seat = SeatId(Uuid::new_v4());
+    let measure = Measure { seat, mind: PersonaId(Uuid::new_v4()), shadow, optimizer, sized_for: lesson() };
+    SeatRun::<G>::tell_measure(port, measure).expect("test: the port is open");
+    SeatRun::measuring(seat)
 }
 
 /// Room for any seat: a fit the engine never sizes a lesson down for.

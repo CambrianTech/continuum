@@ -12,8 +12,12 @@ use uuid::Uuid;
 /// What an owned operation does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OwnedKind {
-    /// The serving wake's recovery pass (not joined by shutdown: the wake stops it).
+    /// The trainer's recovery pass, woken by serving or an arrival.
     Recover,
+    /// The learner taking a seat's next act on what the engine or the authority said (card d1e5675c).
+    Hear,
+    /// The trainer taking what a seat's answer left: a bucket seated again or a generation offered.
+    FollowUp,
     Submit,
     Retire,
     /// Moving a bucket stranded under a base spelling to the catalog id (genome/training-trigger/rekey).

@@ -74,9 +74,9 @@ impl Component for Learner {
         let state = Arc::clone(&self.state);
         // owned, so shutdown's join waits for a seat's act in flight
         let followed = match heard {
-            Heard::Said(said) => self.state.run_operation(OwnedKind::Recover, None, async move { state.heard_from_engine(said).await.into_iter().collect::<Vec<_>>() }).await,
+            Heard::Said(said) => self.state.run_operation(OwnedKind::Hear, None, async move { state.heard_from_engine(said).await.into_iter().collect::<Vec<_>>() }).await,
             // only the buckets held for memory are looked at: never a whole pass per board change
-            Heard::Free(free) => self.state.run_operation(OwnedKind::Recover, None, async move { state.heard_free(&free).await }).await,
+            Heard::Free(free) => self.state.run_operation(OwnedKind::Hear, None, async move { state.heard_free(&free).await }).await,
         };
         match followed {
             // what the act left (a bucket to seat again, a candidate to offer) is long: the trainer's
