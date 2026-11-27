@@ -6,18 +6,18 @@ use std::collections::{BTreeMap, HashMap};
 
 use uuid::Uuid;
 
-use super::super::durable::Arrival;
+use super::super::durable::Counted;
 use super::super::in_place::start;
 use super::super::TrainingTriggerState;
 use crate::inference::learning::{LearnerOwed, Owed, PersonaId};
 
 /// The examples `rows` still owe past the newest committed generation (`checkpointed`) and the seat's
 /// own `progress`.
-pub(super) fn examples_owed(rows: &[Arrival], checkpointed: &HashMap<Uuid, u32>, progress: &HashMap<Uuid, u32>) -> usize {
+pub(super) fn examples_owed(rows: &[Counted], checkpointed: &HashMap<Uuid, u32>, progress: &HashMap<Uuid, u32>) -> usize {
     rows.iter()
         .map(|row| {
             let learned = start(row.learned, checkpointed.get(&row.id).copied(), progress.get(&row.id).copied());
-            row.examples.len().saturating_sub(learned as usize) // as: a u32 fits a usize on every target this builds for
+            row.examples.saturating_sub(u64::from(learned)) as usize // as: a row's count fits a usize on every 64-bit target this builds for
         })
         .fold(0, usize::saturating_add)
 }

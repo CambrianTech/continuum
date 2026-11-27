@@ -32,6 +32,13 @@ pub(in crate::modules::training_trigger) struct Submission {
     /// every example is. Absent on rows written before in-place learning: none learned.
     #[serde(default)]
     pub(super) learned: u32,
+    /// How many examples `batch` holds, written with the row, so a reader counts a bucket's pending
+    /// examples from this column and never decodes a batch to count (card d1e5675c: on the 5090,
+    /// decoding Kimi's 784 rows took 34.7 s and freeing them 340.4 s, under her bucket's gate).
+    /// Absent only on a row written before the column: the first count of it reads its batch once
+    /// and writes the count back ([`DurableStore::pending_counts`]).
+    #[serde(default)]
+    pub(super) example_count: Option<u64>,
     /// The row her outstanding examples were carried to, on another base
     /// (`genome/training-trigger/transfer`). A carried row keeps what it learned here, leaves pending
     /// and is never pending again: only a pending row is carried, and a pending row names no dispatch, so

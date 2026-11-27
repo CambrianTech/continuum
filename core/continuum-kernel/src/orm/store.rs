@@ -166,6 +166,22 @@ where
         self.find_matching(QueryBuilder::new(T::COLLECTION).build()).await
     }
 
+    /// Load the rows `query` matches as projection `P`, the columns its select names, paired with
+    /// their row ids: no other column is decoded, so a reader that needs counts never pays for a
+    /// payload (card d1e5675c: decoding one bucket's payloads took 34.7 s and freeing them 340.4 s).
+    pub async fn find_projected<P: DeserializeOwned>(&self, query: StorageQuery) -> Result<Vec<(Uuid, P)>, OrmStoreError> {
+        let result = self.adapter.query(query).await;
+        let records = unwrap_adapter(result, "query", T::COLLECTION)?;
+        records
+            .into_iter()
+            .map(|r| -> Result<(Uuid, P), OrmStoreError> {
+                let id = Uuid::parse_str(&r.id).map_err(OrmStoreError::InvalidUuid)?;
+                let projected: P = r.decode().map_err(OrmStoreError::DeserializeFailed)?;
+                Ok((id, projected))
+            })
+            .collect()
+    }
+
     /// Load the rows `query` selects, paired with their row ids. The query must
     /// target this store's collection.
     pub async fn find_matching(&self, query: StorageQuery) -> Result<Vec<(Uuid, T)>, OrmStoreError> {

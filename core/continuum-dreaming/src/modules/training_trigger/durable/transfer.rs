@@ -174,6 +174,7 @@ impl TrainingTriggerState {
             let sequence = self.next_sequence.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1)).map_err(|_| TransferRefused::SequenceExhausted)?;
             let mut batch = source.batch.clone();
             batch.examples = source.batch.examples.iter().skip(source.learned as usize).cloned().collect();
+            let example_count = batch.examples.len() as u64; // as: a usize fits a u64 on every target this builds for
             let row = Submission {
                 base,
                 sequence,
@@ -185,6 +186,7 @@ impl TrainingTriggerState {
                 dispatch_id: None,
                 retirement_id: None,
                 learned: 0,
+                example_count: Some(example_count),
                 carried_to: None,
                 carried_from: Some(id),
                 carried_offset: source.learned,

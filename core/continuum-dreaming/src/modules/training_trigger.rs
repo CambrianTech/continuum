@@ -199,7 +199,7 @@ impl TrainingTriggerState {
     pub(crate) async fn bucket_example_count(&self, persona_id: Uuid, trait_kind: &str, base_model: &str) -> Option<usize> {
         let key = BucketKey { persona_id, trait_kind: trait_kind.to_string(), base_model: base_model.to_string() };
         let unlearned = self.unlearned_in(&key).await.ok()?;
-        (unlearned > 0).then_some(unlearned as usize)
+        (unlearned > 0).then_some(unlearned as usize) // as: a test fixture's count fits
     }
 
     /// The live model catalog, as it reads now: what a submit resolves its base against.

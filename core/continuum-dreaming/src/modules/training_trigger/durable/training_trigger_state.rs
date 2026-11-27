@@ -267,6 +267,7 @@ impl TrainingTriggerState {
                     "training submission sequence exhausted".to_string(),
                 )
             })?;
+        let example_count = batch.examples.len() as u64; // as: a usize fits a u64 on every target this builds for
         let row = Submission {
             base,
             sequence,
@@ -278,6 +279,7 @@ impl TrainingTriggerState {
             dispatch_id: None,
             retirement_id: None,
             learned: 0,
+            example_count: Some(example_count),
             carried_to: None,
             carried_from: None,
             carried_offset: 0,
@@ -315,9 +317,10 @@ impl TrainingTriggerState {
         self.say(|out| out.arrived(sequence));
     }
 
-    /// How many examples bucket `key` holds pending and not yet learned.
-    pub(crate) async fn unlearned_in(&self, key: &BucketKey) -> Result<u32, String> {
-        self.durable.require()?.unlearned_in(key).await
+    /// How many examples bucket `key` holds pending and not yet learned, counted from its rows' columns.
+    pub(crate) async fn unlearned_in(&self, key: &BucketKey) -> Result<u64, super::JournalRead> {
+        let store = self.durable.get().ok_or(super::JournalRead::NotInstalled)?;
+        Ok(store.pending_counts(key).await?.iter().map(|row| row.examples.saturating_sub(u64::from(row.learned))).sum())
     }
 
     /// What holds this bucket's learning: a gene of hers on trial for it, or her surprise too low

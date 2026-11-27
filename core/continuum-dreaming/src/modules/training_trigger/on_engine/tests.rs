@@ -2,17 +2,8 @@
 use super::*;
 use crate::commands::training_trigger::test_support::ex;
 
-fn row(id: Uuid, learned: u32, examples: usize) -> Arrival {
-    Arrival {
-        id,
-        sequence: 1,
-        key: BucketKey { persona_id: Uuid::nil(), trait_kind: "geography".into(), base_model: "qwen".into() },
-        persona_name: "fixture".into(),
-        examples: (0..examples).map(|i| ex(&format!("q{i}"), &format!("a{i}"))).collect(),
-        learned,
-        lora: None,
-        schedule: None,
-    }
+fn row(id: Uuid, learned: u32, examples: u64) -> Counted {
+    Counted { id, sequence: 1, learned, examples }
 }
 
 // what this catches: a seat told a lesson its bucket already holds (in the journal, in the newest
@@ -23,14 +14,14 @@ fn the_next_lesson_is_past_the_journal_the_generation_and_the_seat() {
     let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
     let rows = vec![row(a, 1, 3), row(b, 0, 2)];
     let none = HashMap::new();
-    let (position, _) = next_lesson(&rows, &none, &none).expect("test: a waits");
+    let position = next_lesson(&rows, &none, &none).expect("test: a waits");
     assert_eq!(position, Position { submission: a, learned: 1 }, "past the journal's cursor");
 
     let checkpointed = HashMap::from([(a, 2)]);
-    assert_eq!(next_lesson(&rows, &checkpointed, &none).map(|(p, _)| p), Some(Position { submission: a, learned: 2 }), "past the generation");
+    assert_eq!(next_lesson(&rows, &checkpointed, &none), Some(Position { submission: a, learned: 2 }), "past the generation");
 
     let progress = HashMap::from([(a, 3)]);
-    assert_eq!(next_lesson(&rows, &checkpointed, &progress).map(|(p, _)| p), Some(Position { submission: b, learned: 0 }), "a is done this seat: b is next");
+    assert_eq!(next_lesson(&rows, &checkpointed, &progress), Some(Position { submission: b, learned: 0 }), "a is done this seat: b is next");
 
     let progress = HashMap::from([(a, 3), (b, 2)]);
     assert!(next_lesson(&rows, &checkpointed, &progress).is_none(), "nothing left");

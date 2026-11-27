@@ -17,7 +17,7 @@ use std::sync::{Arc, Weak};
 
 use uuid::Uuid;
 
-use super::durable::{Arrival, Generation, Position};
+use super::durable::{Arrival, Counted, Generation, Position};
 use super::in_place::{bucket_stem, decide, start, Decided, Decision, Pending};
 pub(crate) use follow_up::FollowUp;
 use phases::{Phase, Phases};
@@ -40,6 +40,9 @@ pub(crate) enum OnEngineError {
     /// The training journal refused (the durable store's own failures are text).
     #[error("the training journal: {0}")]
     Journal(String),
+    /// A counted read of her examples: rows.iter().map(|row| row.examples as usize).sum(), signature }; // as: a row's count fits a usize on every 64-bit target this builds fors failed (card d1e5675c).
+    #[error("her rows: {0}")]
+    Rows(#[from] super::durable::JournalRead),
     #[error("its memory was not leased: {0}")]
     Lease(SeatRefusal),
     /// The leases do not cover what the engine measured.
@@ -257,11 +260,11 @@ impl OnEngine {
 /// The rows a signature was minted from: each submission and how many examples it held. A new
 /// submission or more examples in one makes it a different set.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct RowsSeen(Vec<(Uuid, usize)>);
+struct RowsSeen(Vec<(Uuid, u64)>);
 
 impl RowsSeen {
-    fn of(rows: &[Arrival]) -> Self {
-        Self(rows.iter().map(|row| (row.id, row.examples.len())).collect())
+    fn of(rows: &[Counted]) -> Self {
+        Self(rows.iter().map(|row| (row.id, row.examples)).collect())
     }
 }
 
@@ -356,14 +359,20 @@ fn seat_of(said: &Said) -> SeatId {
     }
 }
 
-/// PURE: the next lesson of `rows`, past what the journal, the newest generation (`checkpointed`)
-/// and the seat's volatile `progress` hold.
-fn next_lesson(rows: &[Arrival], checkpointed: &HashMap<Uuid, u32>, progress: &HashMap<Uuid, u32>) -> Option<(Position, Lesson)> {
+/// PURE: where the next lesson of `rows` is, past what the journal, the newest generation
+/// (`checkpointed`) and the seat's volatile `progress` hold: counted, no batch read (card d1e5675c).
+fn next_lesson(rows: &[Counted], checkpointed: &HashMap<Uuid, u32>, progress: &HashMap<Uuid, u32>) -> Option<Position> {
     rows.iter().find_map(|row| {
         let learned = start(row.learned, checkpointed.get(&row.id).copied(), progress.get(&row.id).copied());
-        let example = row.examples.get(usize::try_from(learned).ok()?)?;
-        Some((Position { submission: row.id, learned }, learn_messages(example)))
+        (u64::from(learned) < row.examples).then_some(Position { submission: row.id, learned })
     })
+}
+
+/// The lesson at `position`: the one example it names, read from its own row.
+async fn lesson_at(store: &super::durable::DurableStore, position: Position) -> Result<Lesson, OnEngineError> {
+    let row = store.arrival_of(position.submission).await?;
+    let example = usize::try_from(position.learned).ok().and_then(|index| row.examples.get(index));
+    example.map(learn_messages).ok_or(OnEngineError::Unanswered("a counted lesson is not in its row"))
 }
 
 /// Tell `held` to save what it learned as a new generation in the engine train dir.
@@ -446,25 +455,18 @@ impl TrainingTriggerState {
             return Ok(());
         }
         let read = std::time::Instant::now();
-        let rows = self.rows_of(key).await;
+        let rows = self.counts_of(key).await;
         let rows_ms = read.elapsed().as_millis() as u64;
         let rows_read = rows.as_ref().ok().map(Vec::len); // none: the journal could not be read
         let seating = std::time::Instant::now();
-        let mut drop_ms = None; // none: no rows were read to drop
         let seated = match rows {
-            Ok(rows) => {
-                let seated = self.seat_on_engine(port, key, &rows).await;
-                let dropping = std::time::Instant::now();
-                drop(rows); // timed: a bucket's rows can hold tens of thousands of examples
-                drop_ms = Some(dropping.elapsed().as_millis() as u64);
-                seated
-            }
+            Ok(rows) => self.seat_on_engine(port, key, &rows).await,
             Err(why) => Err(why),
         };
         // each phase timed, so where a pass spends its time is read from one probe, never from gaps
         // between others (the 5090, card d1e5675c: 442 s between two buckets' decisions, unattributed)
         continuum_base::probe!(class = "training.on_engine.seat_bucket", persona = %key.persona_id, trait_kind = %key.trait_kind, gate_wait_ms, rows_ms, rows_read = ?rows_read,
-            seat_ms = seating.elapsed().as_millis() as u64, drop_ms = ?drop_ms, ok = seated.is_ok(), "one bucket's seating, by phase");
+            seat_ms = seating.elapsed().as_millis() as u64, ok = seated.is_ok(), "one bucket's seating, by phase");
         // a reserve only ever serves a seat: a pass that seated nothing (nothing pending, not now, a
         // refusal) gives it back, or it is held from everyone with nothing to spend it on
         if !self.on_engine.seated(key) {
@@ -474,24 +476,29 @@ impl TrainingTriggerState {
     }
 
     /// Decide and measure `key`'s seat, sized for her next lesson.
-    async fn seat_on_engine(self: &Arc<Self>, port: &Arc<dyn LearnPort>, key: &BucketKey, rows: &[Arrival]) -> Result<(), OnEngineError> {
+    async fn seat_on_engine(self: &Arc<Self>, port: &Arc<dyn LearnPort>, key: &BucketKey, rows: &[Counted]) -> Result<(), OnEngineError> {
         let Some(first) = rows.first() else { return Ok(()) };
         let mut phases = Phases::start();
+        let store = self.durable.require().map_err(OnEngineError::Journal)?;
+        // her policy and name from her oldest pending row alone, one row decoded (card d1e5675c)
+        let first = store.arrival_of(first.id).await?;
+        phases.mark(Phase::Head);
         let signature = self.signature_of(key, rows).await;
         phases.mark(Phase::Signature);
         let in_flight: Vec<(Uuid, crate::genome::signature::GeneSignature)> = {
             let seats = self.on_engine.seats.lock();
             super::in_place::in_flight(key, seats.iter().map(|(id, held)| (&held.key, id.0, held.signature.as_ref())))
         };
-        let pending = Pending { row: first, examples: rows.iter().map(|row| row.examples.len()).sum(), signature };
+        let pending = Pending { row: &first, examples: rows.iter().map(|row| row.examples as usize).sum(), signature }; // as: a u32 fits a usize on every target this builds for
         let Decision::Learn(Decided { policy, signature, generation }) = decide(self, key, pending, &in_flight).await.map_err(OnEngineError::Journal)? else {
             return Ok(());
         };
         phases.mark(Phase::Decide);
         let checkpointed: HashMap<Uuid, u32> = generation.iter().flat_map(|g| g.positions.iter()).map(|p| (p.submission, p.learned)).collect();
-        let Some((_, sized_for)) = next_lesson(rows, &checkpointed, &HashMap::new()) else {
+        let Some(position) = next_lesson(rows, &checkpointed, &HashMap::new()) else {
             return Ok(()); // everything pending is already in her newest generation
         };
+        let sized_for = lesson_at(&store, position).await?;
         phases.mark(Phase::Size);
         let id = Uuid::new_v4();
         let shadow = match &generation {
@@ -656,15 +663,34 @@ impl TrainingTriggerState {
     /// Tell the seat's next act: its next lesson, or (none waiting, or finishing) a checkpoint of
     /// what it learned, or its release.
     async fn advance(self: &Arc<Self>, port: &Arc<dyn LearnPort>, seat: SeatId, key: &BucketKey) -> Result<(), OnEngineError> {
-        let rows = self.rows_of(key).await?;
+        // counted, never decoded: on the 5090 each lesson read and freed her whole history (card d1e5675c)
+        let rows = self.counts_of(key).await?;
+        let next = {
+            let mut seats = self.on_engine.seats.lock();
+            let Some(held) = seats.get_mut(&seat) else { return Ok(()) };
+            held.examples_owed = owed::examples_owed(&rows, &held.checkpointed, held.run.progress());
+            if !held.run.ready() {
+                return Ok(());
+            }
+            match held.finishing || held.asked_back.asked() {
+                true => None,
+                false => next_lesson(&rows, &held.checkpointed, held.run.progress()),
+            }
+        };
+        // the one example it names, read outside the seats lock. The bucket's gate is held across
+        // both (its caller takes it), so no other answer of this bucket moves the seat in between.
+        let lesson = match next {
+            Some(position) => {
+                let store = self.durable.require().map_err(OnEngineError::Journal)?;
+                Some((position, lesson_at(&store, position).await?))
+            }
+            None => None,
+        };
         let mut seats = self.on_engine.seats.lock();
         let Some(held) = seats.get_mut(&seat) else { return Ok(()) };
-        held.examples_owed = owed::examples_owed(&rows, &held.checkpointed, held.run.progress());
-        if !held.run.ready() {
-            return Ok(());
-        }
+        // asked to give back while the lesson was read: it finishes instead, as if asked before
         if !held.finishing && !held.asked_back.asked() {
-            if let Some((position, lesson)) = next_lesson(&rows, &held.checkpointed, held.run.progress()) {
+            if let Some((position, lesson)) = lesson {
                 let workspace = held.run.workspace().ok_or(OnEngineError::Unanswered("a ready seat holds no workspace lease"))?;
                 let admission = workspace.view().map_err(OnEngineError::Coverage)?;
                 held.run.learn(port.as_ref(), position, lesson, Box::new(admission))?;
@@ -779,24 +805,40 @@ impl TrainingTriggerState {
         })
     }
 
-    /// `key`'s competence signature over `rows`: the one minted for these same rows if there is one,
-    /// otherwise minted now (every example embedded) and kept for the next pass.
-    async fn signature_of(&self, key: &BucketKey, rows: &[Arrival]) -> Option<crate::genome::signature::GeneSignature> {
-        let seen = RowsSeen::of(rows);
+    /// `key`'s competence signature over the rows `counted`: the one minted for these same rows if there
+    /// is one, otherwise minted now (every example embedded) and kept for the next pass. Minting is the
+    /// one read of her whole pending history left (card d1e5675c), and only when her rows changed; the
+    /// rows are freed on a blocking thread, so no runtime worker waits on the free (the 5090: 340.4 s for
+    /// Kimi's 784). A signature built from per-submission parts replaces it (step 2 of that card).
+    async fn signature_of(&self, key: &BucketKey, counted: &[Counted]) -> Option<crate::genome::signature::GeneSignature> {
+        let seen = RowsSeen::of(counted);
         if let Some((minted_from, signature)) = self.on_engine.signatures.lock().get(key) {
             if *minted_from == seen {
                 return Some(signature.clone());
             }
         }
-        let minted = super::competence::mint_signature(key.persona_id, format!("inline:{}", key.trait_kind), &key.trait_kind, rows.iter().flat_map(|row| row.examples.iter())).await?;
+        let rows = match self.durable.require() {
+            Ok(store) => store.arrivals_in(key).await,
+            Err(why) => Err(why),
+        };
+        let rows = match rows {
+            Ok(rows) => rows,
+            Err(why) => {
+                continuum_base::probe!(class = "training.on_engine.signature_unread", persona = %key.persona_id, reason = %why, "her rows could not be read to mint a signature; the competence routes without one this pass");
+                return None;
+            }
+        };
+        let minted = super::competence::mint_signature(key.persona_id, format!("inline:{}", key.trait_kind), &key.trait_kind, rows.iter().flat_map(|row| row.examples.iter())).await;
+        drop(tokio::task::spawn_blocking(move || drop(rows))); // freed off the runtime's workers; nothing waits on it
+        let minted = minted?;
         self.on_engine.signatures.lock().insert(key.clone(), (seen, minted.clone()));
         Some(minted)
     }
 
-    /// `key`'s pending rows.
-    async fn rows_of(&self, key: &BucketKey) -> Result<Vec<Arrival>, OnEngineError> {
+    /// `key`'s pending rows as counting reads them: no batch decoded (card d1e5675c).
+    async fn counts_of(&self, key: &BucketKey) -> Result<Vec<Counted>, OnEngineError> {
         let store = self.durable.require().map_err(OnEngineError::Journal)?;
-        store.arrivals_in(key).await.map_err(OnEngineError::Journal)
+        Ok(store.pending_counts(key).await?)
     }
 
     /// The whole seat `seat` asks for: the weights the engine measured for it, its `optimizer` and its

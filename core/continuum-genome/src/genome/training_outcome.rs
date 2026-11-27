@@ -129,8 +129,8 @@ pub struct SubmitOutcome {
     pub outcome: Option<String>,
     /// BatchAppended: examples now pending in the bucket, not yet learned in place.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub current_count: Option<u32>,
+    #[ts(optional, type = "number")]
+    pub current_count: Option<u64>,
     /// BatchAppended after a fill that was HELD: what the examples wait for (a job of
     /// hers already training this competence, a trial judging a gene for it, or the
     /// gene this fill adopted for trial).
@@ -161,19 +161,20 @@ impl SubmitOutcome {
         }
     }
 
-    pub fn batch_appended(current_count: u32) -> Self {
+    pub fn batch_appended(current_count: u64) -> Self {
         Self { outcome: Some("BatchAppended".into()), current_count: Some(current_count), ..Self::base(true) }
     }
 
     /// A fill held without a job of its own: appended, and the outcome names what the
     /// examples wait for.
-    pub fn batch_held(current_count: u32, took: Took) -> Self {
+    pub fn batch_held(current_count: u64, took: Took) -> Self {
         Self { held_by: Some(took), ..Self::batch_appended(current_count) }
     }
 
-    pub fn refused(kind: &str, error: String) -> Self {
+    /// Refused with `error`, said in its own words at this wire boundary.
+    pub fn refused(kind: &str, error: impl std::fmt::Display) -> Self {
         Self {
-            error: Some(error),
+            error: Some(error.to_string()),
             error_kind: Some(kind.into()),
             ..Self::base(false)
         }

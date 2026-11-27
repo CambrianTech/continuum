@@ -20,6 +20,46 @@ pub(crate) struct Arrival {
     pub(crate) schedule: Option<ScheduleParams>,
 }
 
+/// One pending submission as counting reads it: no batch decoded (card d1e5675c).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Counted {
+    pub(crate) id: Uuid,
+    pub(crate) sequence: u64,
+    /// Examples already learned, in order.
+    pub(crate) learned: u32,
+    /// Examples the row holds.
+    pub(crate) examples: u64,
+}
+
+/// Why a counted read of the journal failed: typed, so a caller matches it.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum JournalRead {
+    #[error("the training journal: {0}")]
+    Store(#[from] crate::orm::store::OrmStoreError),
+    #[error("submission {0} is not in the journal")]
+    Missing(Uuid),
+    #[error("the training journal is not installed yet")]
+    NotInstalled,
+}
+
+/// The counting columns of a submission row, read without its payload (a projected query).
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CountColumns {
+    sequence: u64,
+    #[serde(default)] // the row's own default: absent on rows written before in-place learning, none learned
+    learned: u32,
+    #[serde(default)] // absent on rows written before the column: counted once from the batch, never guessed
+    example_count: Option<u64>,
+}
+
+impl CountColumns {
+    /// The id is selected for the row it pairs with (`OrmStore::find_projected`), never decoded here.
+    fn names() -> Vec<String> {
+        ["id", "sequence", "learned", "exampleCount"].map(String::from).to_vec()
+    }
+}
+
 /// The bucket columns of a submission row, read without its payload (a projected query).
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -43,8 +83,13 @@ impl BucketColumns {
 
 /// A pending submission row as the learner reads it.
 fn arrival(row: Submission) -> Result<Arrival, String> {
-    Ok(Arrival {
-        id: entity_id(&row.base)?,
+    Ok(arrival_at(entity_id(&row.base)?, row))
+}
+
+/// Submission `row`, whose id is `id`, as the learner reads it.
+fn arrival_at(id: Uuid, row: Submission) -> Arrival {
+    Arrival {
+        id,
         sequence: row.sequence,
         key: BucketKey { persona_id: row.persona_id, trait_kind: row.trait_kind, base_model: row.base_model },
         learned: row.learned,
@@ -52,7 +97,7 @@ fn arrival(row: Submission) -> Result<Arrival, String> {
         lora: row.batch.lora,
         schedule: row.batch.schedule,
         examples: row.batch.examples,
-    })
+    }
 }
 
 impl DurableStore {
@@ -130,21 +175,54 @@ impl DurableStore {
             .collect()
     }
 
-    /// How many examples bucket `key` holds pending and not yet learned, read from its pending rows.
-    pub(in crate::modules::training_trigger) async fn unlearned_in(&self, key: &BucketKey) -> Result<u32, String> {
-        let mut unlearned = 0u32;
+    /// How many examples bucket `key` holds pending and not yet learned, counted from its rows' columns.
+    /// Bucket `key`'s pending rows, oldest first, as counting reads them: ids, cursors and example
+    /// counts from a projected query, never a batch (card d1e5675c). A row written before the count
+    /// column has its batch read once here and the count written back, so it is never read again.
+    pub(in crate::modules::training_trigger) async fn pending_counts(&self, key: &BucketKey) -> Result<Vec<Counted>, JournalRead> {
+        const PAGE: usize = 1024;
+        let mut counted = Vec::new();
         let mut after = 0u64;
         loop {
-            let page = self.pending_page(key, after, 256).await?;
-            let full = page.len() == 256;
-            for row in &page {
-                unlearned = unlearned.saturating_add((row.batch.examples.len() as u32).saturating_sub(row.learned));
-                after = after.max(row.sequence);
+            let query = key
+                .query(Submission::COLLECTION)
+                .filter_eq("isPending", true)
+                .filter("sequence", QueryOperator::Gt(after.into()))
+                .sort_asc("sequence")
+                .limit(PAGE)
+                .select(CountColumns::names());
+            let rows: Vec<(Uuid, CountColumns)> = self.submissions.find_projected(query.build()).await?;
+            let full = rows.len() == PAGE;
+            for (id, columns) in rows {
+                after = after.max(columns.sequence);
+                let examples = match columns.example_count {
+                    Some(examples) => examples,
+                    None => self.count_examples_of(id).await?,
+                };
+                counted.push(Counted { id, sequence: columns.sequence, learned: columns.learned, examples });
             }
             if !full {
-                return Ok(unlearned);
+                return Ok(counted);
             }
         }
+    }
+
+    /// Count submission `id`'s examples from its batch and write the count to its row: once per row
+    /// written before the count column.
+    async fn count_examples_of(&self, id: Uuid) -> Result<u64, JournalRead> {
+        let mut row = self.submissions.find_by_id(id).await?.ok_or(JournalRead::Missing(id))?;
+        let examples = row.batch.examples.len() as u64; // as: a usize fits a u64 on every target this builds for
+        row.example_count = Some(examples);
+        self.submissions.update(id, &row).await?;
+        continuum_base::probe!(class = "training.journal.count_backfilled", submission = %id, examples, "a row written before the count column was counted once and its count written");
+        Ok(examples)
+    }
+
+    /// Submission `id` as the learner reads it, one row decoded: its next lesson and her policy are
+    /// read from it, never from her whole history.
+    pub(in crate::modules::training_trigger) async fn arrival_of(&self, id: Uuid) -> Result<Arrival, JournalRead> {
+        let row = self.submissions.find_by_id(id).await?.ok_or(JournalRead::Missing(id))?;
+        Ok(arrival_at(id, row))
     }
 
     /// The examples submission `id` carries, pending or not: what a generation consumed from it.
@@ -165,6 +243,7 @@ impl DurableStore {
             return Err(format!("submission {id} already learned {} examples; a cursor never moves back to {learned}", row.learned));
         }
         row.learned = learned;
+        row.example_count = Some(u64::from(total)); // counted here too: a row the learner moves is never counted from its batch again
         row.is_pending = learned < total;
         self.submissions.update(id, &row).await.map_err(|e| e.to_string())
     }
@@ -205,6 +284,7 @@ pub(super) mod tests {
             dispatch_id: None,
             retirement_id: None,
             learned: 0,
+            example_count: Some(examples as u64), // as: a fixture count fits
             carried_to: None,
             carried_from: None,
             carried_offset: 0,
@@ -214,6 +294,30 @@ pub(super) mod tests {
 
     // what this catches: the learned cursor moving backwards, past its examples, or leaving a row
     // pending once every example is learned (or pending-free before then). Arrivals read it back.
+    // what this catches (card d1e5675c, the 5090: decoding Kimi's 784 rows took 34.7 s and freeing them
+    // 340.4 s): a count that differs from the rows it counts, or a row written before the count column
+    // that is guessed (zero) instead of counted, or counted from its batch on every read.
+    #[tokio::test]
+    async fn pending_counts_match_the_rows_and_a_row_without_its_count_is_counted_once() {
+        let (adapter, _dir) = crate::orm::store::fresh_adapter().await;
+        let store = DurableStore::new(adapter).await.expect("test: store");
+        let (counted_id, counted) = submission(1, 3);
+        let key = counted.key();
+        store.submissions.save(counted_id, &counted).await.expect("test: saved");
+        let (legacy_id, mut legacy) = submission(2, 5);
+        legacy.example_count = None; // written before the column
+        store.submissions.save(legacy_id, &legacy).await.expect("test: saved");
+        store.record_learned(counted_id, 1).await.expect("test: one learned");
+
+        let counts = store.pending_counts(&key).await.expect("test: counted");
+        let rows = store.arrivals_in(&key).await.expect("test: its rows");
+        let from_rows: Vec<Counted> = rows.iter().map(|row| Counted { id: row.id, sequence: row.sequence, learned: row.learned, examples: row.examples.len() as u64 }).collect();
+        assert_eq!(counts, from_rows, "counted from the columns, the same as decoded from the rows");
+        assert_eq!(counts.iter().map(|row| row.examples - u64::from(row.learned)).sum::<u64>(), 2 + 5, "unlearned from the counts");
+        let written = store.submissions.find_by_id(legacy_id).await.expect("test: read").expect("test: present");
+        assert_eq!(written.example_count, Some(5), "the legacy row's count was written back, so it is never counted from its batch again");
+    }
+
     #[tokio::test]
     async fn the_learned_cursor_advances_and_retires_the_row_when_every_example_is_learned() {
         let (adapter, _dir) = crate::orm::store::fresh_adapter().await;

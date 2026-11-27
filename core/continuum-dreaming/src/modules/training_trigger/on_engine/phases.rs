@@ -7,6 +7,8 @@ use std::time::Instant;
 /// One step of seating a bucket on the engine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Phase {
+    /// Her oldest pending row, decoded alone for her policy and name.
+    Head,
     /// The competence signature minted from her pending rows.
     Signature,
     /// Which gene she learns, and whether now.
