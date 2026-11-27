@@ -111,6 +111,22 @@ impl Blocks {
         drop(native); // the fork's tensors over her mapping go before the mapping does
         Ok(memory.hand_over(kv)?)
     }
+
+    /// Hand her checkpoint over beside her blocks, before [`Self::hand_over`] consumes them: written to
+    /// `path` for the stop's `generation` only while it is still valid against these blocks, and made
+    /// durable, so a manifest names it only once it is whole.
+    pub fn hand_over_checkpoint(&self, checkpoint: &PersonaCheckpoint, path: &std::path::Path, generation: u64) -> Result<(), HandOverRefusal> {
+        checkpoint.write_file(&self.native, path, generation)?;
+        continuum_host::durable::fence_path(path)?;
+        Ok(())
+    }
+
+    /// Her checkpoint back into `into` from what the stop of `generation` handed over, once these blocks
+    /// were restored from her record of it ([`UnifiedTier::restore`]): bound to her restored cells, so it
+    /// rewinds as one taken before the stop.
+    pub fn restore_checkpoint(&mut self, into: &mut PersonaCheckpoint, path: &std::path::Path, generation: u64) -> Result<(), PersonaRefusal> {
+        into.read_file(&mut self.native, path, generation)
+    }
 }
 
 /// Her owner stamp for the fork: a fold of her 128-bit id, the same in every process, so the blocks

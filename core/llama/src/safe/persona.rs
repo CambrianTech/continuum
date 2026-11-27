@@ -240,6 +240,25 @@ impl PersonaCheckpoint {
         // SAFETY: `self.ptr` is live for this handle.
         unsafe { sys::llama_persona_checkpoint_bytes(self.ptr.as_ptr()) }
     }
+
+    /// Write it to `path` beside her record of the stop's `generation` (through `<path>.tmp` and a
+    /// rename), with the parked `blocks` it is still valid against: her owner, the cells it was taken
+    /// from, uncut at or below it since. Anything else is refused and nothing is written. The caller
+    /// makes it durable before naming it in a manifest.
+    pub fn write_file(&self, blocks: &PersonaBlocks, path: &std::path::Path, generation: u64) -> Result<(), PersonaRefusal> {
+        let path = path_c(path)?;
+        // SAFETY: both pointers are live; the fork only reads them and writes the file.
+        status(unsafe { sys::llama_persona_checkpoint_write_file(blocks.ptr.as_ptr(), self.ptr.as_ptr(), path.as_ptr(), generation) })
+    }
+
+    /// Fill it from `path`, written by the stop of `generation`, for `blocks` already read back from
+    /// her record of that generation: checked against them, then bound to their restored cells, so it
+    /// rewinds as one taken before the stop. A refusal leaves nothing taken.
+    pub fn read_file(&mut self, blocks: &mut PersonaBlocks, path: &std::path::Path, generation: u64) -> Result<(), PersonaRefusal> {
+        let path = path_c(path)?;
+        // SAFETY: both pointers are live; the fork checks the whole file before committing anything.
+        status(unsafe { sys::llama_persona_checkpoint_read_file(blocks.ptr.as_ptr(), path.as_ptr(), generation, self.ptr.as_ptr()) })
+    }
 }
 
 impl Drop for PersonaCheckpoint {

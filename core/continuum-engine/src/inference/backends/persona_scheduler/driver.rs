@@ -190,10 +190,10 @@ fn resume(tier: &mut UnifiedTier<'_, '_>, preserved: &mut preserve::Preserved, m
         let id = PersonaId(mind.persona);
         let epoch = Epoch(mind.epoch);
         match preserved.restore(tier, &mind) {
-            Ok((blocks, held)) => {
+            Ok(preserve::Restored { blocks, held, checkpoint }) => {
                 continuum_base::probe!(class = "persona.engine.resumed", persona = %mind.persona, tokens = held.len() as u64, in_place = mind.kv.is_some(), "a mind came back from her preserved files");
                 // a mind resumed from disk keeps her genes and their files, never the adapters themselves
-                let parts = Parts { blocks, tokens: History::from(held), genome: Basis::resumed(mind.basis, mind.genes), learning: (), decode: Tenure::Resident };
+                let genome = Basis::resumed(mind.basis, mind.genes); let parts = Parts { blocks, tokens: History::from(held).with_view(checkpoint, &genome), genome, learning: (), decode: Tenure::Resident };
                 parked.insert(id, Mind::new(id, epoch, parts));
             }
             Err(refused) => {
@@ -598,7 +598,7 @@ impl Driver<'_, '_> {
         }
         let her = self.parked.remove(&id).ok_or(PreserveError::NotReturned)?;
         let (epoch, parts) = (her.epoch().0, her.into_parts());
-        let leaving = preserve::Leaving { persona: id.0, epoch, basis: parts.genome.genes, genes: &parts.genome.sources, blocks: parts.blocks, held: &parts.tokens.held };
+        let leaving = preserve::Leaving { checkpoint: parts.tokens.view_checkpoint(&parts.genome), persona: id.0, epoch, basis: parts.genome.genes, genes: &parts.genome.sources, blocks: parts.blocks, held: &parts.tokens.held };
         Ok(store.hand_over(leaving, generation)?)
     }
 
