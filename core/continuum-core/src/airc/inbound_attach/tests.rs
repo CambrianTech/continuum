@@ -654,3 +654,45 @@ async fn publish_transcript_event_with_header_uses_event_id_for_unknown_sender()
     // Unknown sender → no override → uses event.event_id, NOT HEADER_CONTINUUM_EVENT_ID.
     assert_eq!(imported[0].message_id, EventId::from_u128(0xABCDEF).as_uuid(), "unknown sender: no header override");
 }
+
+// Mirror end-to-end for the real fix path: a KNOWN operator/agent sender publishes through
+// publish_as_sender (setting HEADER_CONTINUUM_EVENT_ID), the loopback comes back through
+// publish_transcript_event, attribution_gate validates the header for known senders,
+// and posted_from_message overrides message_id — one row, never two. This is the exact path
+// that produced double-rows before the fix: chat/send persists under id A, publishes with
+// HEADER_CONTINUUM_EVENT_ID=A, the daemon streams it back, and without the override the
+// imported line uses event.event_id (different from A), creating a second row in the store.
+#[tokio::test]
+async fn known_sender_header_continuum_event_id_overrides_to_one_row() {
+    let bus = MessageBus::new();
+    let lines = continuum_mind::chat::line_store::RecordingImporter::default();
+
+    // Inject a peer as "known" (simulating operator/agent runtime registration).
+    let known_peer_id = PeerId::from_u128(0x42);
+    super::inject_known_sender(known_peer_id);
+
+    // Event with HEADER_CONTINUUM_EVENT_ID = A from the known peer.
+    let validated_msg_id = Uuid::from_u128(0xDEADBEEF); // id chat/send persisted under.
+    let mut headers = airc_core::Headers::new();
+    headers.insert(crate::routing::airc_realtime_wire::HEADER_CONTINUUM_EVENT_ID.to_string(), validated_msg_id.to_string());
+
+    // Start from the helper, override peer_id and event_id for this test.
+    let mut event = transcript_event(Some(Body::text("hello room")), headers);
+    event.peer_id = known_peer_id;
+    event.event_id = EventId::from_u128(0x1234); // Different from A — what airc generates.
+
+    // Publish through the loopback path (simulates daemon streaming it back).
+    publish_transcript_event(&Arc::new(event), &bus, &lines).await.expect("import must succeed");
+
+    // Exactly one line with message_id == A (the validated header, not event.event_id).
+    let imported = lines.0.lock().expect("test: lock").clone();
+    assert_eq!(imported.len(), 1, "exactly one line stored after loopback from known sender");
+    assert_eq!(
+        imported[0].message_id, validated_msg_id,
+        "message_id must be the validated HEADER_CONTINUUM_EVENT_ID (A), not event.event_id"
+    );
+
+    // Redeliver — should be deduplicated as a duplicate.
+    publish_transcript_event(&Arc::new(event.clone()), &bus, &lines).await.expect("redelivery is not an error");
+    assert_eq!(imported.len(), 1, "redelivery does not create a second row (idempotent import)");
+}

@@ -28,9 +28,34 @@ use crate::runtime::MessageBus;
 use std::collections::HashSet;
 
 /// A set of peer ids whose HEADER_CONTINUUM_EVENT_ID the inbound gate trusts.
-/// Built once at boot from operator and agent runtimes so attribution_gate
-/// has no global state — tests pass a mock set directly.
 pub type KnownSenders = HashSet<airc_core::PeerId>;
+
+/// Injectable known senders handle — tests insert peers here before calling
+/// publish_transcript_event. Production populates lazily at boot after both
+/// operator and agent runtimes are registered, avoiding the snapshot trap
+/// where an early install captures unregistered runtime state.
+/// Injectable known senders handle — tests insert peers here before calling
+/// publish_transcript_event. Production populates lazily at boot after both
+/// operator and agent runtimes are registered.
+static KNOWN_SENDERS_HANDLE: std::sync::LazyLock<parking_lot::RwLock<KnownSenders>> =
+    std::sync::LazyLock::new(|| parking_lot::RwLock::new(KnownSenders::default()));
+
+/// Populate from operator and agent runtimes once at boot (after registration).
+pub fn populate_known_senders() {
+    let mut handles = KNOWN_SENDERS_HANDLE.write();
+    if let Some(rt) = crate::persona::operator_peer::operator_runtime() {
+        handles.insert(rt.airc().peer_id());
+    }
+    if let Some(rt) = crate::persona::operator_peer::agent_runtime() {
+        handles.insert(rt.airc().peer_id());
+    }
+}
+
+/// Test-only: register a specific peer as known.
+#[cfg(test)]
+pub fn inject_known_sender(peer_id: airc_core::PeerId) {
+    KNOWN_SENDERS_HANDLE.write().insert(peer_id);
+}
 
 /// One attach stream per ROOM, spawned at most once — the registry the room
 /// ADOPTION path (positron_presence's refresher, #2606) calls so every room
@@ -743,6 +768,10 @@ mod tests;
 /// Used to validate that HEADER_CONTINUUM_EVENT_ID came from our own publish_as_sender
 /// path rather than an unvalidated foreign event.
 fn is_known_sender(peer_id: &airc_core::PeerId) -> bool {
+    // Check injectable handle first — populated by tests or production boot.
+    if KNOWN_SENDERS_HANDLE.read().contains(peer_id) { return true; }
+    // Production fallback: direct runtime check (for cases where populate_known_senders
+    // hasn't been called yet). The handle takes precedence when available.
     if let Some(rt) = crate::persona::operator_peer::operator_runtime() {
         if rt.airc().peer_id() == *peer_id { return true; }
     }
@@ -751,8 +780,3 @@ fn is_known_sender(peer_id: &airc_core::PeerId) -> bool {
     }
     false
 }
-
-/// A set of peer ids whose HEADER_CONTINUUM_EVENT_ID the inbound gate trusts.
-/// Built once at boot from operator and agent runtimes so attribution_gate
-/// has no global state — tests pass a mock set directly.
-pub type KnownSenders = HashSet<airc_core::PeerId>;
