@@ -23,16 +23,54 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(args: Vec<String>) -> Result<ExitCode, String> {
-    let state = continuum_base::home::continuum_home()?.join("state");
+/// Why a hold command did not run, by its facts.
+#[derive(Debug)]
+enum HoldCommandError {
+    /// The continuum home could not be resolved (`continuum_base::home`'s own reason).
+    Home(String),
+    /// A required argument is absent: which one.
+    Missing(&'static str),
+    TtlNotSeconds { text: String, cause: std::num::ParseIntError },
+    NotAToken { text: String, cause: uuid::Error },
+    File(std::io::Error),
+    Usage,
+}
+
+impl std::fmt::Display for HoldCommandError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            HoldCommandError::Home(why) => write!(f, "the continuum home: {why}"),
+            HoldCommandError::Missing(what) => write!(f, "{what} is required"),
+            HoldCommandError::TtlNotSeconds { text, cause } => write!(f, "the TTL '{text}' is not seconds: {cause}"),
+            HoldCommandError::NotAToken { text, cause } => write!(f, "'{text}' is not a lease token: {cause}"),
+            HoldCommandError::File(cause) => write!(f, "the hold file: {cause}"),
+            HoldCommandError::Usage => write!(
+                f,
+                "usage: continuum-deploy-hold acquire <who> <build> <ttl-secs> | renew <token> <ttl-secs> | release <token>"
+            ),
+        }
+    }
+}
+
+impl From<std::io::Error> for HoldCommandError {
+    fn from(cause: std::io::Error) -> Self {
+        HoldCommandError::File(cause)
+    }
+}
+
+fn run(args: Vec<String>) -> Result<ExitCode, HoldCommandError> {
+    let state = continuum_base::home::continuum_home().map_err(HoldCommandError::Home)?.join("state");
     let clock = || continuum_base::time::EpochMs::now().millis();
-    let secs = |at: usize| -> Result<u64, String> {
-        let text = args.get(at).ok_or("a TTL in seconds is required")?;
-        text.parse::<u64>().map(|s| s.saturating_mul(1000)).map_err(|e| format!("the TTL '{text}' is not seconds: {e}"))
+    let arg = |at: usize, what: &'static str| args.get(at).ok_or(HoldCommandError::Missing(what));
+    let secs = |at: usize| -> Result<u64, HoldCommandError> {
+        let text = arg(at, "a TTL in seconds")?;
+        text.parse::<u64>()
+            .map(|s| s.saturating_mul(1000))
+            .map_err(|cause| HoldCommandError::TtlNotSeconds { text: text.clone(), cause })
     };
-    let token = |at: usize| -> Result<uuid::Uuid, String> {
-        let text = args.get(at).ok_or("the token acquire printed is required")?;
-        uuid::Uuid::parse_str(text).map_err(|e| format!("'{text}' is not a lease token: {e}"))
+    let token = |at: usize| -> Result<uuid::Uuid, HoldCommandError> {
+        let text = arg(at, "the token acquire printed")?;
+        uuid::Uuid::parse_str(text).map_err(|cause| HoldCommandError::NotAToken { text: text.clone(), cause })
     };
     let done = |what: &str, outcome: ByToken| match outcome {
         ByToken::Done => {
@@ -50,9 +88,9 @@ fn run(args: Vec<String>) -> Result<ExitCode, String> {
     };
     match args.first().map(String::as_str) {
         Some("acquire") => {
-            let who = args.get(1).ok_or("who is measuring is required")?;
-            let build = args.get(2).ok_or("the build being measured is required")?;
-            match acquire(&state, &LeaseAsk { who, build, ttl_ms: secs(3)? }, &clock).map_err(|e| e.to_string())? {
+            let who = arg(1, "who is measuring")?;
+            let build = arg(2, "the build being measured")?;
+            match acquire(&state, &LeaseAsk { who, build, ttl_ms: secs(3)? }, &clock)? {
                 Acquired::Leased { token } => {
                     println!("{token}");
                     Ok(ExitCode::SUCCESS)
@@ -63,8 +101,8 @@ fn run(args: Vec<String>) -> Result<ExitCode, String> {
                 }
             }
         }
-        Some("renew") => Ok(done("renewed", renew(&state, token(1)?, secs(2)?, &clock).map_err(|e| e.to_string())?)),
-        Some("release") => Ok(done("released", release(&state, token(1)?).map_err(|e| e.to_string())?)),
-        _ => Err("usage: continuum-deploy-hold acquire <who> <build> <ttl-secs> | renew <token> <ttl-secs> | release <token>".into()),
+        Some("renew") => Ok(done("renewed", renew(&state, token(1)?, secs(2)?, &clock)?)),
+        Some("release") => Ok(done("released", release(&state, token(1)?)?)),
+        _ => Err(HoldCommandError::Usage),
     }
 }

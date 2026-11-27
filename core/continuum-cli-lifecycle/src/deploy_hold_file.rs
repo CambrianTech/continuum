@@ -16,7 +16,29 @@ pub enum HoldRead {
     /// A hold: JSON, or a legacy bash-written text file read as a TTL-less hold whose reason is its text.
     Held(Hold),
     /// The file exists and cannot be read: it holds (never read as no hold), flagged with why.
-    Unreadable(String),
+    Unreadable(Unreadable),
+}
+
+/// Why the hold file could not be read as a typed hold: the facts, never formatted text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Unreadable {
+    /// The file is there but is not a typed hold (an older form `migrate` rewrites, or a stranger's).
+    NotTyped { path: PathBuf, line: usize, column: usize },
+    /// The file could not be read at all.
+    Io { path: PathBuf, kind: io::ErrorKind },
+}
+
+impl std::fmt::Display for Unreadable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Unreadable::NotTyped { path, line, column } => write!(
+                f,
+                "{}: not a typed hold (at line {line}, column {column}); `migrate` rewrites an older form",
+                path.display()
+            ),
+            Unreadable::Io { path, kind } => write!(f, "{}: {kind}", path.display()),
+        }
+    }
 }
 
 impl HoldRead {
@@ -49,10 +71,10 @@ pub fn read(state_dir: &Path) -> HoldRead {
     match std::fs::read_to_string(&path) {
         Ok(text) => match serde_json::from_str::<Hold>(&text) {
             Ok(hold) => HoldRead::Held(hold),
-            Err(why) => HoldRead::Unreadable(format!("{}: not a typed hold ({why}); `migrate` rewrites an older form", path.display())),
+            Err(why) => HoldRead::Unreadable(Unreadable::NotTyped { path, line: why.line(), column: why.column() }),
         },
         Err(missing) if missing.kind() == io::ErrorKind::NotFound => HoldRead::Missing,
-        Err(other) => HoldRead::Unreadable(format!("{}: {other}", path.display())),
+        Err(other) => HoldRead::Unreadable(Unreadable::Io { path, kind: other.kind() }),
     }
 }
 
@@ -73,7 +95,9 @@ pub enum Migrated {
     /// An older hold rewritten in the typed form as an operator's, its reason, time and TTL kept.
     Rewritten(Hold),
     /// A file neither typed nor an older form: left as it is, so it holds and is flagged.
-    Refused(String),
+    Refused(Unreadable),
+    /// The file was unreadable, and reading it again to migrate failed too.
+    RefusedRereading { first: Unreadable, again: io::ErrorKind },
 }
 
 /// The one-shot migration of an older hold to the typed form, under the file's lock: JSON without an
@@ -94,7 +118,7 @@ pub fn migrate(state_dir: &Path) -> io::Result<Migrated> {
                 Change::Keep
             }
             Err(unreadable) => {
-                migrated = Migrated::Refused(format!("{why}; reading it again: {unreadable}"));
+                migrated = Migrated::RefusedRereading { first: why.clone(), again: unreadable.kind() };
                 Change::Keep
             }
         },
@@ -291,7 +315,7 @@ mod tests {
         assert_eq!(read(state.path()), HoldRead::Held(ours));
         change(state.path(), |_| Change::Remove).expect("test: a release");
         assert_eq!(read(state.path()), HoldRead::Missing);
-        assert!(HoldRead::Unreadable("x".into()).honored().is_some_and(|hold| hold.ttl_ms.is_none()), "an unreadable file holds");
+        assert!(HoldRead::Unreadable(Unreadable::Io { path: PathBuf::from("x"), kind: io::ErrorKind::PermissionDenied }).honored().is_some_and(|hold| hold.ttl_ms.is_none()), "an unreadable file holds");
     }
 
     // what this catches (Codex on #6288): a measurer releasing a newer run with a stale token, a lease
