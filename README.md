@@ -100,6 +100,11 @@ Working context, experience, engrams, dreaming, curriculum, training, and learne
 
 One mind learning is only the beginning. Continuum represents learned neural adaptations as **genes**: portable LoRA expertise with provenance, evaluation, and lineage. A citizen's **genome** is the composition of those learned adaptations. Genes can be trained by one citizen, evaluated, inherited by another, combined with other adaptations, specialized through new experience, and passed onward again.
 
+**Her genome is paged in by what she is doing.** Like the world in a game, only what the activity in front of her
+needs is resident: the genes for the code she is writing, the call she is in, the course she is taking. The rest
+waits a tier down and pages in when the activity turns to it, so a mind can carry far more expertise than fits on
+the GPU at once, and her phenotype is different in each room she is in.
+
 ```text
 experience
    ↓
@@ -452,9 +457,9 @@ Residency and distributed scheduling become two scales of the same resource-allo
 
 ## One machine learns. The others can inherit.
 
-The Grid is not only a compute mesh. It is a **learning mesh**. A strong node can train a gene. Another citizen can discover it by capability.
+The Grid is not only a compute mesh. It is a **learning mesh**, and the genome is peer to peer. A strong node can train a gene. Another citizen can discover it by capability, for whatever activity she is in.
 
-A different machine can load it. A citizen can combine it with adaptations earned elsewhere. The resulting lineage can retain where each piece came from and what evidence justified it.
+A different machine can page it in. A citizen can combine it with adaptations earned elsewhere. Genes and whole phenotypes are traded and federated across your own machines, other people's grids and open peers, priced like any capacity and trusted by what their receipts prove, never assumed. The resulting lineage retains where each piece came from and what evidence justified it, and her private state stays inside the trust she is given.
 
 ```text
 Citizen A fails
