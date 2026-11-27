@@ -100,10 +100,12 @@ Working context, experience, engrams, dreaming, curriculum, training, and learne
 
 One mind learning is only the beginning. Continuum represents learned neural adaptations as **genes**: portable LoRA expertise with provenance, evaluation, and lineage. A citizen's **genome** is the composition of those learned adaptations. Genes can be trained by one citizen, evaluated, inherited by another, combined with other adaptations, specialized through new experience, and passed onward again.
 
-**Her genome is paged in by what she is doing.** Like the world in a game, only what the activity in front of her
-needs is resident: the genes for the code she is writing, the call she is in, the course she is taking. The rest
-waits a tier down and pages in when the activity turns to it, so a mind can carry far more expertise than fits on
-the GPU at once, and her phenotype is different in each room she is in.
+**Her genome is automatic, as a person's is.** Nobody chooses which of their neurons to use, and she does not choose
+her genes either. Many are active at once, never a chosen few, paged in by what she is thinking and doing, the way a
+game streams the world around the player: the genes for the code she is writing, the call she is in, the course she
+is taking come up as her attention moves, and the rest wait a tier down. A gene she does not hold yet is downloaded
+from a peer when what she is doing calls for it. So a mind carries far more expertise than fits on her GPU, her
+phenotype differs in every room she is in, and none of it is a step anyone has to remember to take.
 
 ```text
 experience
@@ -415,6 +417,11 @@ A lesson learned on one machine can become useful somewhere else.
 
 **The Grid gets smarter, not merely larger.**
 
+That is the bet against the frontier. A frontier model is one very large mind trained once in one datacenter.
+Continuum is everyone's edge hardware, laptops, desktops and gaming GPUs, each running minds that learn every day
+from real work, and sharing what they learn peer to peer as genes any mind pages in when her work calls for it. No
+single machine has to match a frontier model; the society, and the genome it keeps growing, is what competes.
+
 [Read the Grid architecture →](docs/architecture/GRID-ECONOMICS-AND-AFFINITY-ROUTING.md)
 
 <p align="center"><img src="docs/assets/readme/grid.svg" alt="The Grid — your mesh, the state line, the airc interstate, the distributed world" width="100%"></p>
@@ -457,9 +464,9 @@ Residency and distributed scheduling become two scales of the same resource-allo
 
 ## One machine learns. The others can inherit.
 
-The Grid is not only a compute mesh. It is a **learning mesh**, and the genome is peer to peer. A strong node can train a gene. Another citizen can discover it by capability, for whatever activity she is in.
+The Grid is not only a compute mesh. It is a **learning mesh**, and the genome is peer to peer. A strong node can train a gene, and any citizen whose work calls for it pages it in, downloaded from wherever it lives, without anyone choosing.
 
-A different machine can page it in. A citizen can combine it with adaptations earned elsewhere. Genes and whole phenotypes are traded and federated across your own machines, other people's grids and open peers, priced like any capacity and trusted by what their receipts prove, never assumed. The resulting lineage retains where each piece came from and what evidence justified it, and her private state stays inside the trust she is given.
+A different machine can hold it. A citizen can combine it with adaptations earned elsewhere. Genes and whole phenotypes are traded and federated across your own machines, other people's grids and open peers, priced like any capacity and trusted by what their receipts prove, never assumed. The resulting lineage retains where each piece came from and what evidence justified it, and her private state stays inside the trust she is given.
 
 ```text
 Citizen A fails
