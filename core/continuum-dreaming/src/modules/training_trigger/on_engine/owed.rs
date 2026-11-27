@@ -25,12 +25,18 @@ pub(super) fn examples_owed(rows: &[Arrival], checkpointed: &HashMap<Uuid, u32>,
 impl TrainingTriggerState {
     /// Say what every seat owes now. A seat stays while it has examples to learn or progress not yet
     /// committed; one with neither is left out (its Done).
+    ///
+    /// Built and said under the output's one lock (then the seats', the only order either is taken
+    /// in): two buckets acting at once publish in the order they read the seats, so a map read before
+    /// a seat retired can never be said after the map without it (Codex on 1af29edfa).
     pub(super) fn say_owed(&self) {
-        let owed = {
-            let seats = self.on_engine.seats.lock();
-            let owing = seats.iter().filter(|(_, held)| held.examples_owed > 0 || !held.run.progress().is_empty());
-            Owed(owing.map(|(seat, held)| (*seat, LearnerOwed { mind: PersonaId(held.key.persona_id), examples: held.examples_owed, next: held.next, since: held.since })).collect::<BTreeMap<_, _>>())
-        };
-        self.say(|out| out.owe(owed));
+        self.say(|out| {
+            let owed = {
+                let seats = self.on_engine.seats.lock();
+                let owing = seats.iter().filter(|(_, held)| held.examples_owed > 0 || !held.run.progress().is_empty());
+                Owed(owing.map(|(seat, held)| (*seat, LearnerOwed { mind: PersonaId(held.key.persona_id), examples: held.examples_owed, next: held.next, since: held.since })).collect::<BTreeMap<_, _>>())
+            };
+            out.owe(owed);
+        });
     }
 }
