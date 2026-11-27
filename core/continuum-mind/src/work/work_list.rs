@@ -248,41 +248,46 @@ impl ActionCommand for WorkList {
         let filter = p.state.as_deref().map(parse_state).transpose()?;
         let now_ms = EpochMs::now().millis();
 
-        // Fetch main board and optional parent board, then merge cards by UUID (deduplicating).
-        let main_board = board_to_read(&airc, p.room.as_deref()).await?;
-        let parent_board = if let Some(ref parent) = p.parent {
-            Some(board_to_read(&airc, Some(parent)).await?)
-        } else if let Some(ambient) = crate::runtime::command_executor::get_run_context() {
-            if let Some(pr) = ambient.parent_room {
-                let parent_id = pr.to_string();
-                Some(board_to_read(&airc, Some(&parent_id)).await?)
+        // Fetch boards to read: when a specific room is named, read only that board
+        // (and optionally its parent); otherwise span ALL subscribed rooms via the
+        // full horizon — this fixes #81adc95b so citizens seated in finished benchmark
+        // rounds can discover work on their project room without an explicit `parent`
+        // parameter. The existing merge logic handles multiple boards by UUID dedup.
+        let (boards, unreadable): (Vec<_>, Vec<_>) = if p.room.as_ref().map(|r| r.trim()).is_some_and(|r| !r.is_empty()) {
+            // Explicit room requested: read that board + optional parent
+            let main_board = board_to_read(&airc, p.room.as_deref()).await?;
+            let parent_board = if let Some(ref parent) = p.parent {
+                Some(board_to_read(&airc, Some(parent)).await?)
+            } else if let Some(ambient) = crate::runtime::command_executor::get_run_context() {
+                if let Some(pr) = ambient.parent_room {
+                    let parent_id = pr.to_string();
+                    Some(board_to_read(&airc, Some(&parent_id)).await?)
+                } else {
+                    None
+                }
             } else {
                 None
+            };
+            let mut result: Vec<_> = vec![main_board];
+            if let Some(pb) = parent_board {
+                result.push(pb);
             }
+            (result, Vec::new())
         } else {
-            None
+            // No room specified: read ALL subscribed rooms via the full board horizon
+            // so a citizen seated in any room can see work across every board she
+            // belongs to — not just the one she's currently "standing" in.
+            let horizon = board_horizon(&airc).await?;
+            (horizon.boards.into_iter().map(|(_, b)| b.snapshot()).collect(), horizon.unreadable)
         };
 
         // Collect all unique cards (by UUID), keeping the most recently updated version.
         let mut seen: std::collections::HashMap<uuid::Uuid, &airc_work::WorkCard> = std::collections::HashMap::new();
-        for c in &main_board.cards {
-            seen.insert(c.card_id.as_uuid(), c);
-        }
-        if let Some(ref pb) = parent_board {
-            for c in &pb.cards {
-                let uuid = c.card_id.as_uuid();
-                match seen.get(&uuid) {
-                    Some(existing) => {
-                        if c.updated_at_ms > existing.updated_at_ms {
-                            seen.insert(uuid, c);
-                        }
-                    },
-                    None => { seen.insert(uuid, c); }
-                }
+        for board in &boards {
+            for c in &board.cards {
+                seen.insert(c.card_id.as_uuid(), c);
             }
         }
-
-        let all_cards: Vec<&airc_work::WorkCard> = seen.into_values().collect();
 
         // Resolve every distinct owner to a published name in ONE pass.
         let me = ctx
@@ -291,10 +296,12 @@ impl ActionCommand for WorkList {
             .map(|c| c.peer_id.as_uuid())
             .unwrap_or_default();
         let mut owner_peers: Vec<airc_core::PeerId> = Vec::new();
-        for c in &all_cards {
-            if let Some(o) = c.owner {
-                if o.as_uuid() != me && !owner_peers.contains(&o) {
-                    owner_peers.push(o);
+        for board in &boards {
+            for c in &board.cards {
+                if let Some(o) = c.owner {
+                    if o.as_uuid() != me && !owner_peers.contains(&o) {
+                        owner_peers.push(o);
+                    }
                 }
             }
         }
@@ -304,13 +311,15 @@ impl ActionCommand for WorkList {
         )
         .await;
         let reader = airc_core::PeerId::from_uuid(me);
+
+        // Collect all cards from every board for review verdict checking.
+        let all_board_cards: Vec<&airc_work::WorkCard> = boards.iter()
+            .flat_map(|b| b.cards.iter().copied())
+            .collect();
+
         let judges_her_own = |card: &airc_work::WorkCard| {
-            crate::cognition::review_verdict::judged_submission(card, &main_board.cards)
+            crate::cognition::review_verdict::judged_submission(card, &all_board_cards)
                 .is_some_and(|judged| crate::cognition::review_verdict::same_mind(&self.registry, judged.publisher, reader))
-                || parent_board.as_ref().map_or(false, |pb| {
-                    crate::cognition::review_verdict::judged_submission(card, &pb.cards)
-                        .is_some_and(|judged| crate::cognition::review_verdict::same_mind(&self.registry, judged.publisher, reader))
-                })
         };
 
         // Render EVERY card once (holder resolution is the shared projection).
@@ -340,18 +349,13 @@ impl ActionCommand for WorkList {
 
         let total_on_board = rendered.len();
 
-        let main_awaiting = crate::cognition::review_queue::awaiting_reviewer(&main_board).count();
-        let parent_awaiting: usize = if p.parent.is_some() {
-            crate::cognition::review_queue::awaiting_reviewer(&parent_board.as_ref().unwrap()).count()
-        } else { 0 };
-
-        let main_unsubmitted = crate::cognition::review_queue::unsubmitted_pull_requests(&main_board).count();
-        let parent_unsubmitted: usize = if p.parent.is_some() {
-            crate::cognition::review_queue::unsubmitted_pull_requests(&parent_board.as_ref().unwrap()).count()
-        } else { 0 };
-
-        let awaiting_reviewer = main_awaiting + parent_awaiting;
-        let unsubmitted_pull_requests = main_unsubmitted + parent_unsubmitted;
+        // Count review metrics across ALL boards in the horizon.
+        let awaiting_reviewer: usize = boards.iter()
+            .map(|b| crate::cognition::review_queue::awaiting_reviewer(b).count())
+            .sum();
+        let unsubmitted_pull_requests: usize = boards.iter()
+            .map(|b| crate::cognition::review_queue::unsubmitted_pull_requests(b).count())
+            .sum();
 
         // Count claimable cards across the merged board for the zero-result note.
         let claimable_now = rendered.iter().filter(|(card, ..)| card.claimable).count();
