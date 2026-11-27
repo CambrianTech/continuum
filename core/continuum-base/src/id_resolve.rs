@@ -25,6 +25,26 @@
 
 use uuid::Uuid;
 
+/// Errors from id_resolve prefix resolution.
+#[derive(Debug, thiserror::Error)]
+pub enum IdResolveError {
+    /// The input string is not a usable id or handle (too few hex digits).
+    #[error("'{0}' is not a usable {1} — give the full id/handle or its leading short form")]
+    Invalid(String, String),
+
+    /// No candidate matches the given prefix.
+    #[error("no {label} matches id prefix '{prefix}'{detail}")]
+    ZeroMatch {
+        label: String,
+        prefix: String,
+        detail: String,
+    },
+
+    /// Multiple candidates match — more characters needed to disambiguate.
+    #[error("{label} id prefix '{prefix}' is ambiguous ({count} matches) — give more characters")]
+    Ambiguous { label: String, prefix: String, count: usize },
+}
+
 /// How a raw id string should be looked up: a clean full UUID, a leading short-id
 /// prefix to resolve against a candidate set, or genuinely unusable.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -93,14 +113,14 @@ pub fn normalize(s: &str) -> IdMatch {
 /// form starts with it; zero matches or ambiguity fail loud with what WAS found so
 /// the caller (often a model) can correct. `label` names the id kind in the error
 /// (`"card"`, `"persona"`, `"room"`) — teaching, not a silent miss.
-pub fn resolve(s: &str, candidates: &[Uuid], label: &str) -> Result<Uuid, String> {
+pub fn resolve(s: &str, candidates: &[Uuid], label: &str) -> Result<Uuid, IdResolveError> {
     let needle = match normalize(s) {
         IdMatch::Full(id) => return Ok(id),
         IdMatch::Prefix(p) => p,
         IdMatch::Invalid => {
-            return Err(format!(
-                "'{s}' is not a usable {label} id — give the full id or its leading \
-                 short form (at least {MIN_PREFIX_HEX} hex characters)"
+            return Err(IdResolveError::Invalid(
+                s.to_string(),
+                label.to_string()
             ))
         }
     };
@@ -111,13 +131,16 @@ pub fn resolve(s: &str, candidates: &[Uuid], label: &str) -> Result<Uuid, String
 /// legacy tolerant ID path, retain every prefix digit so callers can disambiguate
 /// collisions by supplying more characters. Candidates must come from the owner
 /// and caller scope; this function does not grant access to the resolved object.
-pub fn resolve_handle(s: &str, candidates: &[Uuid], label: &str) -> Result<Uuid, String> {
+pub fn resolve_handle(s: &str, candidates: &[Uuid], label: &str) -> Result<Uuid, IdResolveError> {
     let s = s.trim();
     if let Ok(id) = Uuid::parse_str(s) {
         return Ok(id);
     }
     let Some(needle) = handle_prefix(s) else {
-        return Err(format!("'{s}' is not a usable {label} handle — give a full UUID or at least {MIN_PREFIX_HEX} leading hex characters"));
+        return Err(IdResolveError::Invalid(
+            s.to_string(),
+            label.to_string()
+        ));
     };
     resolve_prefix(&needle, candidates, label)
 }
@@ -152,29 +175,23 @@ pub fn prefix_matches(needle: &str, candidates: &[Uuid]) -> Vec<Uuid> {
     matches
 }
 
-fn resolve_prefix(needle: &str, candidates: &[Uuid], label: &str) -> Result<Uuid, String> {
+fn resolve_prefix(needle: &str, candidates: &[Uuid], label: &str) -> Result<Uuid, IdResolveError> {
     let matches = prefix_matches(needle, candidates);
     match matches.as_slice() {
         [one] => Ok(*one),
-        // Zero match — the live failure mode (2026-07-13: a persona claimed a
-        // FABRICATED id and a peer had to hand it the right one). "Check the id you
-        // were shown" isn't actionable when the persona never held a real id; ENUMERATE
-        // the valid short forms inline so the miss self-corrects on the next turn
-        // instead of stalling on peer coaching. [[px-persona-experience-tools-as-good-ux]]
-        [] => Err(match candidates.len() {
-            0 => format!("no {label}s exist to match id prefix '{needle}' — there are none to choose from right now"),
-            n if n <= MAX_LISTED_CANDIDATES => format!(
-                "no {label} matches id prefix '{needle}' — available {label} ids: {}",
-                candidates.iter().map(short_form).collect::<Vec<_>>().join(", ")
-            ),
-            n => format!(
-                "no {label} matches id prefix '{needle}' among {n} {label}s — check the id you were shown"
-            ),
+        [] => Err(IdResolveError::ZeroMatch {
+            label: label.to_string(),
+            prefix: needle.to_string(),
+            detail: match candidates.len() {
+                0 => " — there are none to choose from right now".into(),
+                n if n <= MAX_LISTED_CANDIDATES => format!(
+                    " — available {label} ids: {}",
+                    candidates.iter().map(short_form).collect::<Vec<_>>().join(", ")
+                ),
+                n => format!(" among {n} {label}s — check the id you were shown"),
+            },
         }),
-        many => Err(format!(
-            "{label} id prefix '{needle}' is ambiguous ({} match) — give more characters",
-            many.len()
-        )),
+        many => Err(IdResolveError::Ambiguous { label: label.to_string(), prefix: needle.to_string(), count: many.len() }),
     }
 }
 

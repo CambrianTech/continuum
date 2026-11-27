@@ -12,15 +12,32 @@
 //! duplication: the headless Rust server must be able to read/write the setting
 //! with no Node and no shell in the loop.
 //!
+//!
 //! The `*_in` / `*_from` variants take an explicit path and hold ALL the logic
 //! so they unit-test against a temp file; the bare [`read`] / [`upsert`] are
 //! thin `dirs::home_dir()` wrappers.
+//!
+//! ## Error types
+//!
+//! All functions return typed errors (see [`ConfigError`]) instead of strings,
+//! so callers can match on failure mode rather than parsing text. This crate is
+//! the floor — every other crate depends on it — and matching on string contents
+//! breaks at the slightest wording change.
 
 use std::fs;
-use std::io::Write;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigError {
+    /// The home directory could not be resolved, so the default path is unavailable.
+    #[error("continuum home dir not found — set $CONTINUUM_HOME or ensure ~/.continuum exists")]
+    HomeNotFound,
 
+    /// A filesystem operation on config.env failed (create_dir_all / file creation / write / rename).
+    #[error("config_env: {0}")]
+    Io(#[from] io::Error),
+}
 /// Default resource-headroom fraction: usable = total × this. 0.8 leaves 20% for
 /// the governor + peer consumers (and, for disk, doubles as the disk-full safety
 /// margin). A dedicated deep-learning FOUNDRY appliance overrides to 1.0.
@@ -45,8 +62,8 @@ pub fn read(key: &str) -> Option<String> {
 /// Upsert one key, preserving every other line. Creates the dir + file if
 /// missing. Replaces the FIRST existing assignment in place (keeps file order),
 /// drops any duplicates, appends if absent.
-pub fn upsert(key: &str, value: &str) -> Result<(), String> {
-    let path = config_path().ok_or("config_env: cannot resolve home dir")?;
+pub fn upsert(key: &str, value: &str) -> Result<(), ConfigError> {
+    let path = config_path().ok_or(ConfigError::HomeNotFound)?;
     upsert_in(&path, key, value)
 }
 
@@ -149,11 +166,11 @@ pub fn read_from(path: &Path, key: &str) -> Option<String> {
 
 /// Path-taking core of [`upsert`] — testable without touching `$HOME`. Writes
 /// through a temp file + rename so a concurrent reader never sees a half-write.
-pub fn upsert_in(path: &Path, key: &str, value: &str) -> Result<(), String> {
+pub fn upsert_in(path: &Path, key: &str, value: &str) -> Result<(), ConfigError> {
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("config_env: create_dir_all {parent:?}: {e}"))?;
+        fs::create_dir_all(parent)?;
     }
+
     let existing = fs::read_to_string(path).unwrap_or_default();
 
     let mut out = String::new();
@@ -188,12 +205,10 @@ pub fn upsert_in(path: &Path, key: &str, value: &str) -> Result<(), String> {
 
     let tmp = path.with_extension("env.tmp");
     {
-        let mut f =
-            fs::File::create(&tmp).map_err(|e| format!("config_env: create {tmp:?}: {e}"))?;
-        f.write_all(out.as_bytes())
-            .map_err(|e| format!("config_env: write {tmp:?}: {e}"))?;
+        let mut f = fs::File::create(&tmp)?;
+        f.write_all(out.as_bytes())?;
     }
-    fs::rename(&tmp, path).map_err(|e| format!("config_env: rename {tmp:?} -> {path:?}: {e}"))?;
+    fs::rename(&tmp, path)?;
     Ok(())
 }
 

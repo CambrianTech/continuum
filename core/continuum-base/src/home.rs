@@ -5,22 +5,41 @@
 //! `$CONTINUUM_HOME` (card f04a437f, line 7).
 
 use std::ffi::{OsStr, OsString};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+use thiserror::Error;
+
+/// Errors that arise while resolving the continuum home directory.
+#[derive(Debug, Error)]
+pub enum HomeError {
+    /// No home directory could be resolved: neither `$CONTINUUM_HOME` nor `~/.continuum`.
+    #[error("no home dir found — set $CONTINUUM_HOME or ensure ~/.continuum is reachable")]
+    NotFound,
+
+    /// The retired `$CONTINUUM_ROOT` points to a different tree than the one resolved.
+    #[error(
+        "$CONTINUUM_ROOT={0} is no longer read: the continuum home is $CONTINUUM_HOME, \
+         else ~/.continuum ({1}). Set CONTINUUM_HOME={0} to keep that tree, or unset \
+         CONTINUUM_ROOT; nothing was moved"
+    )]
+    RetiredRootConflict(PathBuf, PathBuf),
+}
 
 /// The continuum home as a production process resolves it.
-pub fn continuum_home() -> Result<PathBuf, String> {
+pub fn continuum_home() -> Result<PathBuf, HomeError> {
     continuum_home_with(|| None)
 }
 
 /// The continuum home with one step between an explicit `$CONTINUUM_HOME` and the
 /// `~/.continuum` default: the kernel's per-process test home, so a test binary never reaches
 /// the operator's state. A retired `$CONTINUUM_ROOT` naming another tree is refused either way.
-pub fn continuum_home_with(before_default: impl FnOnce() -> Option<PathBuf>) -> Result<PathBuf, String> {
+pub fn continuum_home_with(
+    before_default: impl FnOnce() -> Option<PathBuf>,
+) -> Result<PathBuf, HomeError> {
     let home = set(std::env::var_os("CONTINUUM_HOME"))
         .map(PathBuf::from)
         .or_else(before_default)
         .or_else(|| dirs::home_dir().map(|h| h.join(".continuum")))
-        .ok_or_else(|| "no home dir".to_string())?;
+        .ok_or(HomeError::NotFound)?;
     retired_root(set(std::env::var_os("CONTINUUM_ROOT")).as_deref(), &home)?;
     Ok(home)
 }
@@ -36,17 +55,14 @@ fn set(value: Option<OsString>) -> Option<OsString> {
 /// to anything but the home this process resolved, it would silently open another state tree, so
 /// it is refused, naming the one setting that keeps the operator on the tree they meant. Nothing
 /// is moved.
-fn retired_root(root: Option<&OsStr>, home: &Path) -> Result<(), String> {
-    match root {
-        Some(root) if Path::new(root) != home => Err(format!(
-            "$CONTINUUM_ROOT={} is no longer read: the continuum home is $CONTINUUM_HOME, else ~/.continuum ({} here). \
-             Set CONTINUUM_HOME={} to keep that tree, or unset CONTINUUM_ROOT; nothing was moved",
-            root.to_string_lossy(),
-            home.display(),
-            root.to_string_lossy()
-        )),
-        _ => Ok(()),
+fn retired_root(root: Option<&OsStr>, home: &PathBuf) -> Result<(), HomeError> {
+    if let Some(root) = root {
+        let root_path = PathBuf::from(root);
+        if root_path != *home {
+            return Err(HomeError::RetiredRootConflict(root_path.clone(), home.clone()));
+        }
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -58,11 +74,11 @@ mod tests {
     // naming CONTINUUM_HOME=<that root>; one equal to the home, or none, passes.
     #[test]
     fn a_retired_root_that_names_another_tree_is_refused() {
-        let home = Path::new("/home/op/.continuum");
-        let refusal = retired_root(Some(OsStr::new("/srv/continuum")), home).expect_err("another tree"); // JUSTIFIED: test asserts the refusal
-        assert!(refusal.contains("CONTINUUM_HOME=/srv/continuum"), "{refusal}");
-        assert_eq!(retired_root(Some(home.as_os_str()), home), Ok(()));
-        assert_eq!(retired_root(None, home), Ok(()));
+        let home = PathBuf::from("/home/op/.continuum");
+        let refusal = retired_root(Some(OsStr::new("/srv/continuum")), &home).expect_err("another tree"); // JUSTIFIED: test asserts the refusal
+        assert!(format!("{}", refusal).contains("CONTINUUM_HOME=/srv/continuum"), "{refusal}");
+        assert_eq!(retired_root(Some(home.as_os_str()), &home), Ok(()));
+        assert_eq!(retired_root(None, &home), Ok(()));
     }
 
     /// The env var that puts this test's child process in "assert" mode, naming its scratch home.
