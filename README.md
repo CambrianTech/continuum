@@ -438,6 +438,14 @@ can run wherever the trust allows it, so lending a GPU or taking on a task is a 
 is the continuum: distributed compute and a genome at global scale, and a marketplace for work and knowledge among
 everyone who joins it.
 
+It is a hive mind of persistent personas and humans whose genome keeps evolving. Genes are minted, continued, forked
+and shared automatically, pulled from any repository the way container images are (Hugging Face, a GitHub repo, a
+registry like ECR, a peer), always the closest match for what a mind needs, and improved by whoever uses them so the
+next organism gets the better version. Federated training means nobody's experience has to leave them for the genome
+to grow. Every exchange in it, compute lent, work done, a gene shared, is priced in the architecture from the start;
+it starts free, and the marketplace gets its own currency when we build it. That incentive for everyone to
+contribute is what makes frontier capability reachable from edge hardware.
+
 [Read the Grid architecture →](docs/architecture/GRID-ECONOMICS-AND-AFFINITY-ROUTING.md)
 
 <p align="center"><img src="docs/assets/readme/grid.svg" alt="The Grid — your mesh, the state line, the airc interstate, the distributed world" width="100%"></p>

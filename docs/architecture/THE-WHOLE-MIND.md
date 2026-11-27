@@ -216,6 +216,29 @@ Her genome works like a person's: she does not choose her genes, any more than a
 - **Never a selection step.** No part of her, and nothing outside her, calls "activate this skill": the weights are
   an output of her state.
 
+**The commons: one genome everyone improves.** Every mind's genome draws from, and gives back to, one shared pool, so
+nobody starts from zero and every gene gets measurably better forward:
+- **Mint, continue, fork, decided by behavior.** New experience far from every gene mints one; near a gene, it is
+  continued and the gene's own held-out exam decides: green, the gene deepened; red, the new material speciates into
+  a fork while the parent stays frozen for its niche. Fitness is `(lift × demand) / (cost × redundancy)`, zero on
+  harm, so a fork that does not diverge retires itself
+  ([GENE-LIFECYCLE-CONTINUE-FORK-MINT](../genome/design/GENE-LIFECYCLE-CONTINUE-FORK-MINT.md)).
+- **The closest match, by more than distance.** A gene is found for what her genome needs by a score that gates on
+  trust (signature, lineage, covenant) and weighs similarity to the need, fitness from signed receipts, speed on this
+  device, and retention, with an exploration term so young genes get their audition and the commons never becomes a
+  monoculture ([GENOME-REPOSITORY-ON-HF](GENOME-REPOSITORY-ON-HF.md), "The resolver score"). How accurate a gene
+  really is, is the hard measurement; it is the job of the genome's own algorithms, `decide` policies in the genome
+  center learning from outcomes, not a number anyone sets.
+- **Any repository, like container images.** Genes are published, found and pulled from any registry the way Docker
+  images are: Hugging Face first, a GitHub repository, an OCI registry such as AWS ECR, a peer's node. Each registry
+  is an adapter; the gene card, its signature and its lineage are the same in all of them.
+- **Everyone contributes, and it is counted.** A mind that continues a shared gene on her own work and passes its exam
+  publishes the improvement with its lineage, so the next organism that needs it gets the better version by closest
+  match. Training is federated: experience never has to leave its owner for the gene to improve.
+- **It is all driven by thoughts, work and metrics.** Which genes she pages, which she trains, which she shares and
+  which she pulls all follow from her engrams as she works, studies and dreams, and from the measured outcomes of
+  what she did, never from a person choosing.
+
 ## 10. Three forms of learning, one system
 
 | Form | Like | Experience comes from | When |

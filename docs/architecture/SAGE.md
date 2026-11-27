@@ -184,6 +184,13 @@ something a component or a caller writes:
   memory, the bytes it must read. The placement law weighs running it here against a node with room,
   priced with the transfer of its inputs, the return of its output, queueing and price, and its
   trust; then it runs there under a lease and its completion is fenced like any transfer.
+- **Tools are unlimited and installable.** A command or tool is a module that can be installed on any machine or
+  several, from any repository, the same way genes are pulled; once installed it is reachable as far as its access
+  level allows, so a tool on one node serves every node it trusts.
+- **Prices from the start, a currency later.** Every claim on the ledger already carries a price (SHARED-RESOURCES.md),
+  so a node lending compute, a mind doing work for another, and a gene shared to the commons are each a priced
+  exchange in the architecture. It starts free; the marketplace and its own currency come when we build them, on the
+  same ledger, with nothing above it changing.
 - **Rendering is the first grid workload.** A room's piped 3D world or an avatar is a render stage
   run: placed on the node with the GPU to spare and the shortest path to its viewers, its frames on
   the media plane (POSITRON-EVERY-CITIZEN.md, "Over airc, from anywhere").
