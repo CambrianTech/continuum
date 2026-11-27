@@ -155,8 +155,13 @@ the ideal:
   enough: interest management sends each client only the entities near its view, as state deltas
   on an unreliable datagram channel.
 
-Which one a room uses, and on which node the engine runs, is a placement decision priced like any
-other (THE-LANE-ON-SAGE.md, "Other use cases"): GPU, link and latency against quality.
+It works the same on one laptop: the engine runs on that machine, its frames take the local route,
+and it is one more holder of that GPU's time and memory beside the minds' engine, so the lane and
+the placement law share the GPU between them like everything else (SHARED-RESOURCES.md). On a grid,
+where it renders is a placement problem worth solving well: which node has the GPU to spare, how
+far its frames travel to the viewers, and what rendering it there displaces, weighed against the
+quality each viewer gets (THE-LANE-ON-SAGE.md, "Other use cases"). The same choice decides whether
+a light scene renders on the client instead.
 
 Proposed, to make the state and event planes as clean as the media plane already is:
 - **Binary frames, not JSON**, versioned, the frame's kind and revision in a header, so a client
