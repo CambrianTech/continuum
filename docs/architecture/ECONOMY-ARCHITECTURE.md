@@ -226,8 +226,12 @@ The test for which layer something belongs to: *would a future plutocrat want to
 Contributions earn credit from the first day, even while everything on our own grid is free, because it works far
 better when they do. The pieces, most of whose inputs already exist:
 
-1. **Provenance is forge-alloy.** Every mint rests on a receipt with an alloy behind it: what was supposed to happen,
-   what ran, its artifacts and hashes, its evaluation, its attestation. A contribution without one earns nothing.
+1. **An alloy is the contract and the bill of goods.** forge-alloy already records both halves of a transaction: the
+   recipe is the contract (what is to be done, on what inputs, to what standard, evaluated how), and the attested
+   result is the bill of goods (what actually ran, the artifacts and their hashes, the evaluation, the attestation).
+   So an offer and its acceptance are an alloy's recipe agreed between two parties, and settlement is paid against
+   its attested delivery: a market for work and knowledge whose every trade can be verified by anyone, with no
+   intermediary. Every mint rests on one; a contribution without an alloy earns nothing.
 2. **One credit ledger**, append-only and double-entry, an ORM entity keyed by airc identity and held by each node's
    resource authority (SHARED-RESOURCES.md). Every entry names the receipt it came from; nothing is ever edited.
 3. **A mint component** (a SAGE component, SAGE.md) hears verified receipts and mints once per receipt, idempotent by
