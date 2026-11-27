@@ -42,25 +42,73 @@ fn file(state_dir: &Path) -> PathBuf {
     state_dir.join("deploy-hold")
 }
 
-/// The hold file as it is now.
+/// The hold file as it is now: the typed form only. An older form is Unreadable (it holds, flagged)
+/// until [`migrate`] rewrites it; no default reads an old file as a typed one (Cormac on #6286).
 pub fn read(state_dir: &Path) -> HoldRead {
     let path = file(state_dir);
-    let text = match std::fs::read_to_string(&path) {
-        Ok(text) => text,
-        Err(missing) if missing.kind() == io::ErrorKind::NotFound => return HoldRead::Missing,
-        Err(other) => return HoldRead::Unreadable(format!("{}: {other}", path.display())),
-    };
-    if let Ok(hold) = serde_json::from_str::<Hold>(&text) {
-        return HoldRead::Held(hold);
-    }
-    // a legacy text hold: created when its file was last written, so it is flagged stale in time
-    match std::fs::metadata(&path).and_then(|meta| meta.modified()) {
-        Ok(modified) => match modified.duration_since(std::time::UNIX_EPOCH) {
-            Ok(at) => HoldRead::Held(Hold { reason: text.trim().to_string(), created_ms: at.as_millis() as u64, ttl_ms: None, owner: HoldOwner::Operator }),
-            Err(why) => HoldRead::Unreadable(format!("{}: its modified time is not a time: {why}", path.display())),
+    match std::fs::read_to_string(&path) {
+        Ok(text) => match serde_json::from_str::<Hold>(&text) {
+            Ok(hold) => HoldRead::Held(hold),
+            Err(why) => HoldRead::Unreadable(format!("{}: not a typed hold ({why}); `migrate` rewrites an older form", path.display())),
         },
-        Err(why) => HoldRead::Unreadable(format!("{}: {why}", path.display())),
+        Err(missing) if missing.kind() == io::ErrorKind::NotFound => HoldRead::Missing,
+        Err(other) => HoldRead::Unreadable(format!("{}: {other}", path.display())),
     }
+}
+
+/// The hold as written before holds had an owner (bash's text file, or JSON without `owner`).
+#[derive(serde::Deserialize)]
+struct PreOwner {
+    reason: String,
+    created_ms: u64,
+    #[serde(default)]
+    ttl_ms: Option<u64>,
+}
+
+/// What [`migrate`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Migrated {
+    /// Nothing to migrate: no file, or already typed.
+    Nothing,
+    /// An older hold rewritten in the typed form as an operator's, its reason, time and TTL kept.
+    Rewritten(Hold),
+    /// A file neither typed nor an older form: left as it is, so it holds and is flagged.
+    Refused(String),
+}
+
+/// The one-shot migration of an older hold to the typed form, under the file's lock: JSON without an
+/// owner keeps its fields; bash's text file becomes a TTL-less hold created when the file was written.
+/// Run once when the tracker starts; idempotent.
+pub fn migrate(state_dir: &Path) -> io::Result<Migrated> {
+    let path = file(state_dir);
+    let mut migrated = Migrated::Nothing;
+    change(state_dir, |current| match current {
+        HoldRead::Missing | HoldRead::Held(_) => Change::Keep,
+        HoldRead::Unreadable(why) => match older(&path) {
+            Ok(hold) => {
+                migrated = Migrated::Rewritten(hold.clone());
+                Change::Write(hold)
+            }
+            Err(not_older) => {
+                migrated = Migrated::Refused(format!("{why}; {not_older}"));
+                Change::Keep
+            }
+        },
+    })?;
+    Ok(migrated)
+}
+
+fn older(path: &Path) -> Result<Hold, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("unreadable: {e}"))?;
+    if let Ok(old) = serde_json::from_str::<PreOwner>(&text) {
+        return Ok(Hold { reason: old.reason, created_ms: old.created_ms, ttl_ms: old.ttl_ms, owner: HoldOwner::Operator });
+    }
+    if text.trim_start().starts_with('{') {
+        return Err("JSON that is neither a typed hold nor an older one".into());
+    }
+    let modified = std::fs::metadata(path).and_then(|meta| meta.modified()).map_err(|e| format!("its modified time: {e}"))?;
+    let at = modified.duration_since(std::time::UNIX_EPOCH).map_err(|e| format!("its modified time is before 1970: {e}"))?;
+    Ok(Hold { reason: text.trim().to_string(), created_ms: at.as_millis() as u64, ttl_ms: None, owner: HoldOwner::Operator })
 }
 
 /// Read, decide with `decide`, and apply, under the hold file's own lock (`state/deploy-hold.lock`, taken
@@ -136,17 +184,34 @@ pub fn for_running(build: &Running<'_>, current: &HoldRead, now: u64) -> Change 
 mod tests {
     use super::*;
 
-    // what this catches (Codex on 17660bf67f): a legacy text hold read as no hold and overwritten, an
+    // what this catches (Codex on 17660bf67f; Cormac on #6286): an older hold read as no hold and
+    // overwritten, an older hold read as typed by a silent default instead of an explicit migration, an
     // unreadable file read as no hold, and a change applied to a hold that is not the one decided on.
     #[test]
-    fn a_legacy_hold_is_honored_and_a_change_sees_what_it_replaces() {
+    fn an_older_hold_holds_until_migrated_and_a_change_sees_what_it_replaces() {
         let state = tempfile::tempdir().expect("test: a state dir");
         assert_eq!(read(state.path()), HoldRead::Missing);
-        std::fs::write(state.path().join("deploy-hold"), "operator: live read of #5917\n").expect("test: a legacy hold");
-        let legacy = match read(state.path()) {
-            HoldRead::Held(hold) => hold,
-            other => panic!("a legacy text hold must be held, got {other:?}"),
+        // the M5's own file (2026-11-11): JSON without an owner holds, unreadable, until migrated
+        let pre_owner = r#"{"reason": "canary 10523b95e: live read", "created_ms": 1794381896956, "ttl_ms": 7200000}"#;
+        std::fs::write(state.path().join("deploy-hold"), pre_owner).expect("test: an older JSON hold");
+        assert!(matches!(read(state.path()), HoldRead::Unreadable(_)), "no default reads an old file as typed");
+        assert!(read(state.path()).honored().is_some(), "an unmigrated hold still holds");
+        let migrated = match migrate(state.path()).expect("test: the migration") {
+            Migrated::Rewritten(hold) => hold,
+            other => panic!("an older JSON hold is rewritten, got {other:?}"),
         };
+        assert_eq!((migrated.created_ms, migrated.ttl_ms, &migrated.owner), (1794381896956, Some(7200000), &HoldOwner::Operator));
+        assert_eq!(migrate(state.path()).expect("test: again"), Migrated::Nothing, "the migration is idempotent");
+        // bash's text hold: migrated as a TTL-less operator's hold
+        std::fs::write(state.path().join("deploy-hold"), "operator: live read of #5917\n").expect("test: a legacy hold");
+        let legacy = match migrate(state.path()).expect("test: the text migration") {
+            Migrated::Rewritten(hold) => hold,
+            other => panic!("a text hold is rewritten, got {other:?}"),
+        };
+        assert_eq!(read(state.path()), HoldRead::Held(legacy.clone()));
+        std::fs::write(state.path().join("deploy-hold"), "{\"nonsense\": 1}").expect("test: a stranger");
+        assert!(matches!(migrate(state.path()).expect("test: a refusal"), Migrated::Refused(_)), "a stranger's JSON is never rewritten");
+        std::fs::write(state.path().join("deploy-hold"), serde_json::to_vec(&legacy).expect("test: encode")).expect("test: back to the typed hold");
         assert_eq!((legacy.reason.as_str(), legacy.ttl_ms), ("operator: live read of #5917", None));
         let seen = change(state.path(), |current| {
             assert_eq!(current, &HoldRead::Held(legacy.clone()), "the change decides on the hold as it is");

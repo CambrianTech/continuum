@@ -544,6 +544,16 @@ impl ServiceModule for DeployTrackerModule {
         // unknown, once per boot, on the receipt (`deploy.actuate.outcome`).
         // A pre-1970 clock reads 0 here: the decision degrades safely.
         self.actuator.report_boot_outcome(running_sha(), EpochMs::now().millis());
+        // an older hold file becomes the typed form once, explicitly, said on its probe
+        use continuum_cli_lifecycle::deploy_hold_file::{migrate, Migrated};
+        match migrate(&self.state_dir) {
+            Ok(Migrated::Nothing) => {}
+            Ok(Migrated::Rewritten(hold)) => continuum_base::probe!(class = "deploy.hold.migrated", reason = %hold.reason, created_ms = hold.created_ms,
+                "an older deploy hold was rewritten in the typed form as an operator's"),
+            Ok(Migrated::Refused(why)) => continuum_base::probe!(class = "deploy.hold.migration_refused", why = %why,
+                "the deploy hold file is neither typed nor an older form: left as it is, it holds"),
+            Err(why) => return Err(format!("migrating the deploy hold in {}: {why}", self.state_dir.display())),
+        }
         Ok(())
     }
 

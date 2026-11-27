@@ -47,15 +47,13 @@ pub struct Hold {
     #[serde(default)]
     pub ttl_ms: Option<u64>,
     /// Who wrote it: only its owner renews or releases it (`deploy_hold_file`).
-    #[serde(default)]
     pub owner: HoldOwner,
 }
 
 /// Who holds the tracker.
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum HoldOwner {
-    /// An operator, by hand or by an older writer: never touched by the tracker.
-    #[default]
+    /// An operator, by hand (or an older hold, once migrated): never touched by the tracker.
     Operator,
     /// The tracker itself, for a deliberately deployed build not on canary, through its live window.
     Candidate { build: String },
