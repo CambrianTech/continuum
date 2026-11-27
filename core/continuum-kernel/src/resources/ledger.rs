@@ -676,7 +676,10 @@ impl ResourceLeaseLedger {
                 lease_id: lease_id.to_string(),
             })?;
         let lease = &mut held.lease;
-        lease.bytes = lease.bytes.saturating_sub(freed_bytes);
+        // never more than the lease held: a holder that over-reports must not tell the core it freed more
+        // than the lease was (Fable on #6287)
+        let freed_bytes = freed_bytes.min(lease.bytes);
+        lease.bytes -= freed_bytes;
         if let Some(view) = &held.view { view.bytes.store(lease.bytes, Ordering::Release); }
         let (remaining, kind, ask) = (lease.bytes, lease.kind, held.ask);
         if remaining == 0 {
