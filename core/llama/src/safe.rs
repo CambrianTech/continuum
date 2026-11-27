@@ -10,6 +10,8 @@ use std::sync::Once;
 use crate::sys;
 
 mod backend_init;
+mod native_log;
+pub use native_log::{set_native_log_sink, NativeLog, NativeLogSink};
 pub use backend_init::*;
 mod expert_eval_cb;
 pub use expert_eval_cb::*;

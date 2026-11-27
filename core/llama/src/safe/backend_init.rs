@@ -31,6 +31,7 @@ pub fn supports_gpu_offload() -> bool {
 pub fn backend_init() {
     BACKEND_INIT.call_once(|| {
         unsafe {
+            native_log::install();
             sys::llama_backend_init();
             sys::ggml_backend_load_all();
 
