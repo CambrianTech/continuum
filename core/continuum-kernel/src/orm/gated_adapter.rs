@@ -133,6 +133,9 @@ impl StorageAdapter for GatedAdapter {
     async fn collection_stats(&self, collection: &str) -> StorageResult<CollectionStats> {
         self.inner.collection_stats(collection).await
     }
+    fn schema_report(&self) -> Vec<super::sqlite::CollectionPlan> {
+        self.inner.schema_report()
+    }
     async fn truncate(&self, collection: &str) -> StorageResult<bool> {
         let collection = collection.to_string();
         self.write(move |a| Box::pin(async move { a.truncate(&collection).await })).await

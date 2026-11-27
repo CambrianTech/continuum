@@ -34,6 +34,8 @@ mod do_ensure_schema;
 use do_ensure_schema::*;
 mod ensure_indexes;
 pub use ensure_indexes::{IndexFailure, IndexPass};
+mod schema_plan;
+pub use schema_plan::{Affinity, CollectionPlan, PhysicalColumn, PhysicalTable, PlanItem, SchemaRead, Standing};
 mod sqlite_adapter;
 mod conditional;
 mod sequenced;

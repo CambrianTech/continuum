@@ -26,7 +26,7 @@ pub const METADATA_KEYS: &[&str] = &[
 pub type RecordData = serde_json::Map<String, Value>;
 
 /// Field type for schema definition
-#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, Eq)]
 #[ts(export, export_to = "../../../protocol/typescript/orm/FieldType.ts")]
 #[serde(rename_all = "lowercase")]
 pub enum FieldType {

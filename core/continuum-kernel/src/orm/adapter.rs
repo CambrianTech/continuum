@@ -153,6 +153,10 @@ pub trait StorageAdapter: Send + Sync {
     /// Get collection statistics
     async fn collection_stats(&self, collection: &str) -> StorageResult<CollectionStats>;
 
+    /// Each collection this store was opened for, planned against its declaration as the store stood
+    /// before anything changed it (ONE-FRAME-ONE-MEMORY.md, "The durable store", step 0a).
+    fn schema_report(&self) -> Vec<super::sqlite::CollectionPlan>;
+
     // ─── Maintenance Operations ──────────────────────────────────────────────
 
     /// Truncate a collection (delete all records)

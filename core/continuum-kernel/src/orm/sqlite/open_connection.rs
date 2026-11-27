@@ -97,6 +97,9 @@ pub struct SqliteAdapter {
     pub(super) declared: Arc<std::sync::RwLock<HashMap<String, Arc<HashMap<String, FieldType>>>>>,
     /// Each sequenced collection's committed high-water, published by the committing write.
     pub(super) sequences: Arc<super::sequenced::SequenceRevisions>,
+    /// Each declared collection's plan as this store stood when it was opened for it, before anything
+    /// changed it (ONE-FRAME-ONE-MEMORY.md, "The durable store", step 0a): the inventory a node reports.
+    pub(super) planned: Arc<parking_lot::RwLock<Vec<super::schema_plan::CollectionPlan>>>,
 }
 
 impl SqliteAdapter {
@@ -108,6 +111,7 @@ impl SqliteAdapter {
             last_pressure_check: Arc::new(AtomicU64::new(0)),
             declared: Arc::new(std::sync::RwLock::new(HashMap::new())),
             sequences: Arc::default(),
+            planned: Arc::default(),
         }
     }
 
@@ -220,7 +224,7 @@ pub(super) fn evolve_table_schema(conn: &Connection, table: &str, data: &Value, 
         Ok(mut stmt) => stmt
             .query_map([], |row| row.get::<_, String>(1))
             .map(|rows| rows.filter_map(|r| r.ok()).collect())
-            .unwrap_or_default(),
+            .unwrap_or_default(), // unwrap_or_default: an unreadable column list adds no column (this evolve is deleted in step 0c)
         Err(_) => return false,
     };
 
@@ -255,6 +259,15 @@ pub(super) fn evolve_table_schema(conn: &Connection, table: &str, data: &Value, 
         }
     }
     added > 0
+}
+
+/// Whether `table` is absent from the store's catalog: asked of SQLite's own schema table, never read
+/// from an error's text. Used on a failed read only, so a read of a collection nothing has written yet
+/// answers empty, while every other failure stays the failure it is. An unreadable catalog is not
+/// absence, and the caller reports its original error.
+fn table_absent(conn: &Connection, table: &str) -> bool {
+    conn.query_row("SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = ?1", [table], |row| row.get::<_, i64>(0))
+        .is_ok_and(|count| count == 0)
 }
 
 pub(super) fn projection_dummy(select: &Option<Vec<String>>) -> Option<Value> {
@@ -343,8 +356,8 @@ pub(super) fn do_read(
     let mut stmt = match conn.prepare(&sql) {
         Ok(s) => s,
         Err(e) => {
-            // If table doesn't exist, return "not found" instead of error
-            if e.to_string().contains("no such table") {
+            // a collection nothing has written yet holds no record
+            if table_absent(conn, &table) {
                 return StorageResult::err(format!("Record not found: {}", id));
             }
             return StorageResult::err(format!("Prepare failed: {}", e));
@@ -391,8 +404,8 @@ pub(super) fn do_query(
     let mut stmt = match conn.prepare(&sql) {
         Ok(s) => s,
         Err(e) => {
-            // Table doesn't exist → empty results (not an error)
-            if e.to_string().contains("no such table") {
+            // a collection nothing has written yet holds no rows
+            if table_absent(conn, &table) {
                 return StorageResult::ok(Vec::new());
             }
             return StorageResult::err(format!("Prepare failed: {}", e));
@@ -435,8 +448,8 @@ pub(super) fn do_count(conn: &Connection, query: StorageQuery) -> StorageResult<
     match conn.query_row(&sql, params_ref.as_slice(), |row| row.get::<_, i64>(0)) {
         Ok(count) => StorageResult::ok(count as usize),
         Err(e) => {
-            // Table doesn't exist → count is 0 (not an error)
-            if e.to_string().contains("no such table") {
+            // a collection nothing has written yet counts no rows
+            if table_absent(conn, &table) {
                 return StorageResult::ok(0);
             }
             StorageResult::err(format!("Count failed: {}", e))

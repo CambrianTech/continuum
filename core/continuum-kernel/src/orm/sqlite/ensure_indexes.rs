@@ -115,9 +115,11 @@ impl SqliteAdapter {
             Ok(conn) => conn,
             Err(e) => return unavailable(e),
         };
+        let planned = std::sync::Arc::clone(&self.planned);
         let pass = tokio::task::spawn_blocking(move || {
             let conn = conn.lock().map_err(|_| "SQLite writer lock poisoned".to_string())?;
             Ok::<_, String>(schemas.iter().fold(IndexPass::default(), |mut total, schema| {
+                super::schema_plan::record(&planned, &conn, schema); // the store as it stood, before its indexes
                 total.absorb(do_ensure_indexes(&conn, schema));
                 total
             }))
