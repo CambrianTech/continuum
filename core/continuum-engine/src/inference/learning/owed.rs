@@ -28,8 +28,10 @@ pub struct LearnerOwed {
     /// Her next lesson's rows as the engine measured them (its `Loaded`), `None` until measured: the
     /// trainer never counts tokens, which have one owner.
     pub next: Option<Rows>,
-    /// When this seat began owing: the lane's aging reads it (learning is a share class, whose
-    /// guarantee is its queue in check).
+    /// When this seat was created. The work was owed before that, but the trainer has no earlier time to
+    /// report: its journal keeps arrival order, not arrival time (Fable on #6287). It is a lower bound on how
+    /// long the work has waited, and the lane's aging reads it (learning is a share class, whose guarantee is
+    /// its queue in check).
     pub since: Instant,
 }
 

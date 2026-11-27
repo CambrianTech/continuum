@@ -20,14 +20,23 @@ pub trait ShrinkHolder: Send + Sync {
 
 impl ResourceDaemon {
     /// Mark `guard`'s lease elastic and register `holder` for it: the law may now ask it to give back.
+    ///
+    /// The holder is registered BEFORE the lease turns elastic, in the same governor section (governor, then
+    /// holders: `deliver_shrinks`' order). A wait that already outranks the lease is told Shrink at once and the
+    /// core says each shrink once, so a holder registered after the section released could miss it: a tick in
+    /// that gap would collect it, find no holder and drop it, and nothing would ask again (Fable and Codex on
+    /// #6287 at 6083030588). Here no tick can run between the two.
     pub fn hold_elastic(&self, guard: &LeaseGuard, elastic: Elastic, holder: Arc<dyn ShrinkHolder>) -> Result<(), LeaseError> {
         let mut governor = self.governor.lock();
-        governor.make_elastic(guard.lease_id(), elastic)?;
         let ask = governor.ask_of(guard.lease_id()).ok_or_else(|| LeaseError::MissingLease { lease_id: guard.lease_id().to_owned() })?;
+        self.holders.lock().insert(ask, holder);
+        if let Err(missing) = governor.make_elastic(guard.lease_id(), elastic) {
+            self.holders.lock().remove(&ask); // not elastic after all: nothing may be asked of it
+            return Err(missing);
+        }
         self.publish_locked(&governor);
         drop(governor);
-        self.holders.lock().insert(ask, holder);
-        self.deliver_shrinks(); // a wait that already outranks it asks it now
+        self.deliver_shrinks(); // a wait that already outranks it is asked now
         Ok(())
     }
 

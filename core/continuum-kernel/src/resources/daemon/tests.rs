@@ -810,6 +810,28 @@
         assert_eq!(vram_free(&daemon), Some(300));
     }
 
+    // what this catches (Fable and Codex on #6287 at 6083030588): a wait that ALREADY outranks a lease when it
+    // turns elastic. Its shrink is said once, so a holder registered after the governor section released could
+    // miss it, and the wait would never get room. The holder now registers in the same section, before the
+    // lease turns elastic, so hold_elastic itself delivers that shrink exactly once. (The gap a daemon tick
+    // could fall into is gone structurally; no test can force a tick into it without a hook in production.)
+    #[tokio::test]
+    async fn a_wait_that_already_outranks_is_asked_of_the_new_holder_once() {
+        let src = Arc::new(MockCapacitySource::new(ResourceKind::Vram, 1_000));
+        let config = DaemonConfig { tick_interval: Duration::from_secs(3600), min_reclaim_budget: Duration::from_millis(100), governor: GovernorConfig { min_dwell_ms: 0, graceful_grace_ms: 50 } };
+        let daemon = ResourceDaemon::start(vec![src], vec![], config);
+        let seat = daemon.acquire_guarded(&req("learning:her", 600, u64::MAX, ReclaimPolicy::Graceful)).expect("test: the seat fits");
+        let Ok(Ask::Waiting { ticket: turn, .. }) = daemon.ask(&req("serving", 700, u64::MAX, ReclaimPolicy::Pinned)) else { panic!("test: the turn waits") };
+        turn.prioritize(200); // the turn outranks before the seat is elastic: nothing to ask yet
+        let holder = Arc::new(Answering { asked: std::sync::Mutex::new(Vec::new()), answer: ReclaimOutcome { freed_bytes: 0, status: ReclaimStatus::Deferred, detail: None } });
+        let registered: Arc<dyn crate::resources::ShrinkHolder> = holder.clone();
+        daemon.hold_elastic(&seat, crate::resources::Elastic { floor: 0, priority: 10 }, registered).expect("test: the seat is elastic");
+        daemon.deliver_shrinks();
+        let asked = holder.asked.lock().expect("test: the holder's log").clone(); // expect: the test's own lock
+        assert_eq!(asked.len(), 1, "the waiting turn's shrink reached the new holder, once");
+        assert_eq!((asked[0].held, asked[0].to), (600, 300));
+    }
+
     // what this catches: bytes a holder gives back at once not credited until some later release.
     #[tokio::test]
     async fn bytes_given_back_at_once_shrink_the_lease_and_grant_the_wait() {
