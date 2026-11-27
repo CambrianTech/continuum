@@ -18,6 +18,14 @@ pub struct DataSchemaPlanParams {
     pub handle: Option<String>,
 }
 
+/// What `data/schema-plan` answers: one plan per collection the store was opened for.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../protocol/typescript/data/DataSchemaPlanResult.ts")]
+pub struct DataSchemaPlanResult {
+    pub collections: Vec<CollectionPlan>,
+}
+
 crate::action_command! {
     /// Each collection a store was opened for, planned against its declaration: what it would take to
     /// match (a table, columns, indexes), what it holds that no declaration names, and any column whose
@@ -26,10 +34,10 @@ crate::action_command! {
     name: "data/schema-plan",
     access: AiSafe,
     params: DataSchemaPlanParams,
-    output: Vec<CollectionPlan>,
+    output: DataSchemaPlanResult,
     run(this, _ctx, p) => {
         let handle = p.handle.as_deref().unwrap_or("main"); // unwrap_or: no dbPath means the shared store, as every data/ command reads it
         let adapter = this.state.get_adapter(handle).await?;
-        Ok(adapter.schema_report())
+        Ok(DataSchemaPlanResult { collections: adapter.schema_report() })
     }
 }

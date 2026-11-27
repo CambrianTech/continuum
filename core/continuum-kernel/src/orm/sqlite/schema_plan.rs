@@ -14,7 +14,7 @@
 //! as TEXT, 2026-10-13) and serve.
 
 use super::*;
-use crate::orm::{SchemaField, SchemaIndex};
+use crate::orm::SchemaField;
 
 /// A column as the store holds it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -242,6 +242,7 @@ pub(super) fn record(planned: &parking_lot::RwLock<Vec<CollectionPlan>>, conn: &
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::orm::SchemaIndex;
 
     fn field(name: &str, field_type: FieldType, nullable: bool) -> SchemaField {
         SchemaField { name: name.into(), field_type, indexed: false, unique: false, nullable, max_length: None, foreign_key: None }
