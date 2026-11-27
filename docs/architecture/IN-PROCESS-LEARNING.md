@@ -79,7 +79,7 @@ Kept, measured (64-row tiles against the exact step):
 | Metal (M5) | Qwen3.5-0.8B-Q8_0 | cosine 1.0000; stride 1: 8 units, 440 rows; stride 4: 17 units, 824 rows; max 64 rows per unit |
 | Metal (M5) | Qwen3.6-35B-A3B-Q4_K_M | 0.9976, equal to the untiled learn (production layout) |
 | CPU (IntelMac) | Qwen3.5-0.8B, Qwen2.5-0.5B | 1.0000 in all four cases (Cormac, 1eb66d1db) |
-| CUDA (5090) | Qwen3.5-0.8B | open: whole-reply 0.31 and tiled 0.33 against CPU, while CPU-only on the same binary is 0.9999; CUDA's backward is wrong, not the tiling (Codex, 398bf318d) |
+| CUDA (5090) | Qwen3.5-0.8B | at the merged fork 9f2477f49: CPU-only against CUDA, cosine 0.999569 whole and 0.999627 tiled, 319,488 adapter elements (Codex, 2026-11-27 17:29Z); 0.31 and 0.33 at 398bf318d before it |
 
 ## Who decides what
 
@@ -336,7 +336,7 @@ replaces.
 | 3. Her genome as the object, with its region of pages (shadow, optimizer) over her mapped file; the walk; `gene_residency` under the placer; seats, `Fit`, the trainer's leases, the blocking loop and the GGUF page-out deleted | Fable (genome, walk), Cormac (the competence rule into her genome, the ledger) | M5 15-minute window: steps and saves above zero, held-out loss kept, no resident past her bound; on and off measured as page moves (ms), zero serializations |
 | 4. Her `LabelSource`s, as she works first, then corrections, the course room, the dreamer; the journal migrated; `TrainingTriggerModule`, the credit gate and `DreamConsolidationRegion` deleted | Fable (perception, dreamer), Cormac (corrections, courses, the migration) | M5 window: work spans learned per hour above zero with no example submitted; a reviewed correction kept across a restart on unseen tasks against the same base without it (plan goal 8) |
 | 5. The loss sliced over the vocabulary, labelled rows only | Fable | `b` before and after on the 35B; the update's cosine against the unsliced step at least 0.9999 |
-| 6. CUDA's backward correct | Codex, Fable | 5090, 0.8B: tiled and untiled against CPU at least 0.999 (today 0.33) |
+| 6. CUDA's backward correct | Codex, Fable | passed at 9f2477f49: tiled and untiled against CPU 0.999627 and 0.999569 on the 0.8B; the 35B on the 5090 remains |
 | 7. The 5090 live | everyone | 15-minute window: Kimi's lessons (64 GB, 89 GB, 809 GB asked today) learned beside serving; acts per hour not below the matched control |
 | 8. A learn tile in a composed frame | Fable, Codex | after `Batch` executes: aggregate need-weighted rate above separate entries on the same trace |
 
@@ -347,7 +347,7 @@ replaces.
    before slice 5.
 2. **The accumulator in the cost:** a CPU buffer over a pointer never read, or a graph input the cost marks
    host-resident (Codex)?
-3. **CUDA's 0.33 on the 0.8B:** which op, per the bisect with op offload off.
+3. **CUDA on the 35B:** the 0.8B passes at 9f2477f49; the production 35B on the 5090 is the remaining check.
 4. **`least` per backend:** the smallest tile at which the walk is exact, from slice 2's gate on each backend.
 5. **The object model's chapters 0, 3 and 6** live only on `fable/learning-l2-design`. They land on canary, or their
    rules move into the chapters that own them, before slice 3.

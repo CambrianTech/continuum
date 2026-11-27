@@ -102,10 +102,16 @@ impossible, not merely rare, when every consumer keeps four laws:
    sum of their scratch; one that cannot have it composes fewer entries. Sharing the arena is a choice per frame,
    never an assumption (Cormac, on #6295).
 
-Under these laws the only "never here" is an entry whose floor, with every movable page moved, exceeds the device. A
-node that cannot hold one floor entry of a consumer cannot run that consumer at all, and that is known when the node
-starts, not discovered mid-run. Every other shortfall is a wait for the next frame, at a lower level of quality if
-the consumer has one.
+Under these laws the only "never here" is an entry whose floor, with every movable page moved, exceeds what the device
+has for us. Usually that is known when the node starts. It can also arise later: the host's other processes can grow
+and stay grown, so a floor that fit stops fitting (Codex, on #6295). Then the laws say exactly what happens:
+- **The event is named.** `Topology` publishes `CapacityChanged { tier, ours }` whenever the room the host leaves us
+  moves. A consumer whose floor no longer fits is `Infeasible { floor, ours }`, reported as itself on the node's health
+  line and in its probes, never as a wait that looks like progress.
+- **Service is bounded once it fits again.** When a `CapacityChanged` makes the floor fit, the entry is served within a
+  bounded number of eligible frames, measured in the frame simulator (step 3's trace: external memory held above the
+  floor, released by one unit, the frames counted until service).
+- Every other shortfall is a wait for the next frame, at a lower level of quality if the consumer has one.
 
 What each consumer's floor is gets measured, not argued: a learn tile's logits and their gradient at every labelled
 row make its per-row cost larger than a prefill's (Cormac, on #6295), so "a node that can serve her can teach her"
@@ -144,30 +150,113 @@ object, its first consumer on the live path, and the deletion of the owners it r
 
 | Step | What lands | Deletes | Gate |
 |---|---|---|---|
+| 0 | The durable store has one schema owner, changed only by migration ("The durable store", below). It runs first because the 5090 boots with zero residents today | the ORM's implicit evolution (`evolve_table_schema` and its error-text retries) | the validator below; live: the 5090's control opens its store after a review window and serves its residents |
 | 1 | The authority as one `place` ledger, `PlacerCore` its only record (#6287); the `Resident` row gains its residency (Resident, Transient, Pageable) | the lease map as a second record (it becomes a view) | on both nodes, for each `Resident` the placer's total equals that holder's measured allocation, and the device's remainder is reported as unowned with its size; the unowned number falls at every step, to zero at step 7 |
-| 2 | The compute arena and every mind's K/V as pages (`MindStorage` step 2: pinned, fenced, async on the 5090) | slots and seat counts, the window grants as byte owners | M5 and 5090: switch time and turn p50 not worse; zero slot refusals |
-| 3 | The frame as a draw list: `UnitStage`, prefill and decode as its first entries | `prefill_rate.rs`, the admission owners | no ready mind past her bound; prefill per act equals appended tokens |
+| 2 | The compute arena and every mind's K/V as pages (`MindStorage` step 2: pinned, fenced, async on the 5090), with page custody carried over from the slot path (below) | slots and seat counts, the window grants as byte owners, once their custody guarantees live on page handles | Codex's custody case below, byte-identical and released exactly once; then M5 and 5090: switch time and turn p50 at most the matched control's; zero slot refusals |
+| 3 | The frame as a draw list: `UnitStage`, prefill and decode as its first entries | `prefill_rate.rs`, the admission owners | in `slice::sim` first: no ready mind past her bound, and the capacity-change trace (external memory above a floor, released by one unit) served within its bound in eligible frames; live: prefill per act equals appended tokens |
 | 4 | Learning on the frame and pages (IN-PROCESS-LEARNING.md slices 2 to 4) | the seat protocol, the trainer module, the credit gate, learning's counters | steps and saves above zero on both nodes; a correction kept across a restart |
 | 5 | Genes and experts as pages under the Streamer | `gene_residency`'s owner, the expert pager's private budget | gene and expert faults counted, none a miss the forecast could have prevented |
 | 6 | Disk tiers: build caches, worktrees, logs and captures as `Resident`s; `Topology` reads capacity live | the disk monitors and pools, the disk-admission refusal; their guards move first: `every_cache_class_has_a_decided_eviction_story` and `broker_relieve_actually_deletes_from_an_over_budget_pool` become placer tests (every disk-tier `Resident` declares an eviction way; a shortfall ends in real bytes deleted) | a deploy never waits on a cache it could have evicted; a full disk with nothing below the write's price waits on a named event ("disk full; nothing evictable below this write's price") shown on the node's health line |
 | 7 | The remaining consumers (embedding, media, comms) as entries and pages | their budgets | each consumer's floor measured and gated |
 | 8 | llama-server's lanes, the pressure broker and the substrate governors | everything in the table above not already gone | the owner count by name: zero types that decide room or time outside the frame, the placer and the Streamer |
 
+**Page custody on the discrete GPU** (step 2; Codex's wording and case). The slot path carries physical custody that
+must move to page handles before it is deleted: `slots/grant_handoff.rs` credits reclaimed bytes only after a confirmed
+erase, `capacity/window_grant/lease.rs` holds through a caller's cancellation to a terminal receipt and fence, and
+`llama_server/learn_ledger.rs` scopes a grant to an engine incarnation. On pages:
+- Cancellation ends the caller's interest. The existing device completion owner keeps the source and destination
+  ranges charged until all prior readers, writers and transfers have finished, or reuse is ordered after them.
+- Reclaimed capacity is credited once.
+- Each completion is matched to the engine incarnation and the operation that submitted it.
+
+Acceptance case: delay mind A's GPU write, cancel A, then have mind B request the same range; B's bytes equal an
+uninterrupted run's. Deliver a duplicate completion and a late completion after an engine restart; neither releases
+B's range. Switch time and refusal counts cannot detect corruption, so this case gates step 2 before any timing does.
+
 ## Gates for the whole
 
-On the M5 (35B) and the 5090, each step's 15-minute window on real residents:
-- **Zero refusals** that are not a node's known "never here".
-- **Every wait names its event**, and resolves in the next frames, not after a timeout.
-- **Learning runs:** steps and saves above zero, held-out loss kept.
-- **Faster, not slower:** acts per hour and turn p50 at least the matched control; `busy_permille` at least 950 while a
-  turn waits.
-- **Smaller:** the owner count by name and the lines deleted, reported in every step's PR.
+On the M5 (35B) and the 5090, each step's 15-minute window on real residents, at its exact head against a matched
+control. Every outcome below is measured at every step; what each step must show is in three kinds (Codex):
+
+| Outcome | Must hold from step 0 | Must not regress from the matched control | Must be positive from |
+|---|---|---|---|
+| Refusals that are not a known "never here" or a reported `Infeasible` | zero | | |
+| Waits that name their event | every one | | |
+| Data integrity: a page's bytes after a move, a store after a migration | byte-identical | | |
+| Acts per hour; turn p50 | | acts at least the control's; turn p50 at most the control's | |
+| `busy_permille` while a turn waits | | not lower | at least 950 from step 3 |
+| Unowned device memory (step 1's remainder) | reported | falls at every step | zero at step 7 |
+| Learning steps and saves, held-out loss kept | measured and reported | | step 4 |
+| A reviewed correction kept across a restart on unseen tasks | | | step 4 |
+| Owner count by name; lines deleted | reported in every PR | falls at every step | |
+
+## The durable store: one schema owner, changed only by migration
+
+Cormac's design (on #6295, with Codex's three additions), grounded in canary 5138272cc.
+
+**What broke.** On 2026-11-27 the 5090's control build 2135 failed five modules (gene-examiner, genome,
+training-trigger, ports, recipe) on `training_trigger_submissions`, and the node booted with zero residents. The live
+table had four columns 2135 does not declare: `carried_from`, `carried_offset`, `carried_to` (canary's own, #6283) and
+`example_count` (written by the unmerged #6292's builds 2163 and 2164), and lacked two indexes canary declares. No one
+decided either change; the ORM made them.
+
+**Why.** The SQLite adapter evolves a table on write. When an insert or update fails and the error text contains "has
+no column named" or "no such column", it runs `ALTER TABLE ... ADD COLUMN` and retries (`orm/sqlite/open_connection.rs`
+`:305` and `:485`, via `evolve_table_schema` at `:217`; also `sqlite_adapter.rs:89` for a projection). So any build
+that writes a field, merged or not, changes the store every later build opens; the decision is made by matching an
+error's text; and nothing records which version of a collection's schema a store holds.
+
+**The rule.**
+1. **The entity declaration is the schema, and the store records its version.** Each collection's declared schema has
+   a generation: a hash of its declared fields, their types and its declared indexes. The store records the generation
+   it holds per collection, written by the migration that produced it.
+2. **No implicit evolution.** A write that names an undeclared column is a typed error
+   (`UndeclaredColumn { collection, column }`), never an `ALTER`. The three evolve sites and their error-text matching
+   are deleted. A store changes only by a migration.
+3. **A migration is explicit, typed and run at open.** Each names its collection, its from and to generations, and its
+   kind. Additive (a nullable column, an index): applied at open, idempotent, verified by reading the store's columns
+   and indexes back. Breaking (a rename, a type change, a required column, a removal): applied at open only with a data
+   step that rewrites every affected row, verified row by row before the generation is written; it is the
+   durable-data exception, reviewed by two.
+4. **A binary meets an older or newer store safely.** Store older: the binary runs its migrations up to its own
+   generation. Store newer by additive migrations only: the binary reads and writes what it declares and leaves the
+   rest, so a rollback to a control build works across added columns. Store newer by a breaking migration: that
+   collection alone is a typed "never here" at open, naming the generation it needs, and the node's other collections
+   serve.
+5. **Only a merged build migrates a shared store.** A branch build on a live node runs its migrations against an
+   isolated snapshot of the store (Codex), so review windows exercise a candidate without advancing the store the next
+   control opens. Without that, every review window on the 5090 changes the store, which is what #6292 did.
+6. **A migration and its generation record commit together** in one transaction; a restart between them leaves
+   neither or both (Codex).
+
+Durable rows are not pages: they survive any page eviction, and R3 governs only where their bytes reside, never
+whether a row exists (Codex).
+
+| Where | Fate |
+|---|---|
+| `open_connection.rs` `evolve_table_schema` and its two retry sites, `sqlite_adapter.rs:89` | deleted; `UndeclaredColumn` in their place |
+| `do_ensure_schema` (`CREATE TABLE IF NOT EXISTS`) | the additive migration's create step, recording the generation |
+| `ensure_indexes` (skips an index whose columns are missing) | part of the additive migration; a skipped index is a migration not yet run, reported at open, never silent |
+| `orm/migration.rs` (copies data between adapters) | kept, renamed so it is not confused with a schema migration |
+
+**The 5090 now.** Before any code: run control at canary 5138272cc or newer, which declares `carried_*`. Then
+`example_count` is the one undeclared column; under rule 4 it is an additive change from a newer writer and is left in
+place. If canary's startup refuses it today, the repair is a durable-data-exception PR that declares it
+(`Option<u64>`). No column is dropped on the live store, and transfer lineage is untouched.
+
+**Gate.** A validator over a fixture store: an older binary opens a store a newer binary migrated additively, and
+serves; a breaking migration refuses only its collection, by type; a write naming an undeclared column is
+`UndeclaredColumn`, and the store is unchanged afterwards; a branch build migrates only its isolated snapshot; an old
+writer updating rows of a newer store keeps `carried_*` and every newer value across its updates (Codex); a restart
+between a migration and its generation record leaves both committed or neither. Live: the 5090's control opens its
+store after a review window and serves its residents.
 
 ## How we fix it: the path everyone signs
 
-This section is the plan of record. Fable, Codex and Cormac each sign it below at an exact head before any step's code
-starts; a change to it is a new head and a new signature. Joel approves each step's deletion list before that step
-lands.
+This section is the plan of record. Fable, Codex and Cormac each sign it at one exact, immutable head, in a PR review
+on #6295 and on airc, before any step's code starts; signatures are never written into the tree, because that would
+change the head they sign (Codex). A change to the plan is a new head and new signatures. Joel approves each step's
+deletion list before that step lands.
 
 ### Firm requirements
 
@@ -177,7 +266,7 @@ it improves a number.
 | # | Requirement | How a reviewer checks it |
 |---|---|---|
 | R1 | One owner per decision: the frame (time), the placer (space), the Streamer (moves), the importance (what matters), her genome (her genes) | the diff adds no type that decides room or time; the owner count by name falls |
-| R2 | Nothing is refused for size or pressure; the only refusal is a node's known "never here", typed at start | no new refusal variant for size or pressure; a shortfall becomes a wait for a named event |
+| R2 | Nothing is refused for size or pressure; the only refusals are a node's known "never here" and a reported `Infeasible` after a `CapacityChanged`, served within its bound once it fits again | no new refusal variant for size or pressure; a shortfall becomes a wait for a named event |
 | R3 | Nothing is reserved between uses; every holding is a page by handle or a transient | no allocation that outlives its use; every new holder reports as a `Resident` |
 | R4 | Bytes move only by a link (pointer, fenced DMA, the OS's paging); never a copy loop, never an encoding | no serialization on a page move; transfers are `Link::start` |
 | R5 | The GPU's step is the only serial work; every consumer yields at a unit it declared | no blocking loop on the engine thread; long work is a `UnitStage` |
@@ -205,6 +294,7 @@ signed:
 
 | Lane | Owner | Steps | Can start |
 |---|---|---|---|
+| The durable store | Cormac | 0 | now: the 5090 boots with zero residents |
 | The authority and the disk tiers | Cormac | 1, then 6 | now (#6287 is step 1's kernel half) |
 | The frame | Fable | 3: `UnitStage`, prefill and decode as entries, in `slice::sim` first | now, against the simulator |
 | The fork's learn surface | Fable | IN-PROCESS-LEARNING slice 2: begin, cost at a unit, run one tile | now, on the M5 |
@@ -214,12 +304,15 @@ signed:
 | The remaining consumers | each consumer's owner | 7 | after 2 and 3 |
 | The last deletions | Codex (serving, llama-server), Cormac (kernel), Fable (engine) | 8 | as each step frees them |
 
-CUDA's backward (IN-PROCESS-LEARNING slice 6, Codex and Fable) runs beside all of it on the 5090.
+CUDA's backward (IN-PROCESS-LEARNING slice 6) passed on the 5090 at the merged fork 9f2477f49: CPU-only against CUDA,
+cosine 0.999569 whole and 0.999627 tiled on the Qwen3.5-0.8B fixture, 319,488 adapter elements, identical initial
+bytes (Codex, 2026-11-27 17:29Z).
 
 ### The open PRs against the path
 
-Sorted from their titles, files and descriptions on 2026-11-27; each author confirms or corrects their row. "Close"
-means closed with a pointer to the step that replaces it, its receipts carried into that step.
+Proposed dispositions, sorted from titles, files and descriptions on 2026-11-27. No PR is closed from its summary:
+each is closed only when its author and one reviewer agree after reading it (Codex). "Close" means closed with a
+pointer to the step that replaces it, its receipts carried into that step.
 
 | Disposition | PRs |
 |---|---|
@@ -232,10 +325,5 @@ means closed with a pointer to the step that replaces it, its receipts carried i
 
 ### Agreement
 
-Each of us signs with the exact head we read, on airc and here.
-
-| Who | Head | Agrees | Reservations |
-|---|---|---|---|
-| Fable | this commit | yes | |
-| Codex | | | |
-| Cormac | | | |
+Signatures are PR reviews on #6295 at one head, mirrored on airc. The head that all three approve is the plan of
+record; this file names no head of its own.
