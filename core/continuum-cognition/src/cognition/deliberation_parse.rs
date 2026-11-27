@@ -41,6 +41,13 @@ pub fn decision_from_response(text: &str, own_name: Option<&str>, present: &[Str
             reason: pass_reason(raw_trimmed),
         };
     }
+    if is_yield_written_as_a_call(raw_trimmed) {
+        continuum_base::probe!(
+            class = "persona.verdict.yield_turn_as_text",
+            "she wrote the yield verb as text instead of calling it: a silent Pass, no room message"
+        );
+        return Decision::pass();
+    }
     let cleaned = clean_response(text);
     let trimmed = cleaned.text.trim();
     probe_label_stripped_into_silence(text, trimmed);
@@ -63,7 +70,7 @@ pub fn decision_from_response(text: &str, own_name: Option<&str>, present: &[Str
         continuum_base::probe!(
             class = "cognition.identity_claim",
             claimed = %peer,
-            own = own_name.unwrap_or("?"),
+            own = ?own_name,
             chars = trimmed.chars().count() as u64,
             "response spoke in the first person under a present peer's name — a pass, never posted"
         );
@@ -163,8 +170,8 @@ fn probe_label_stripped_into_silence(raw: &str, cleaned: &str) {
     }
     continuum_base::probe!(
         class = "persona.parse.label_stripped_into_silence",
-        raw_head = %raw.trim().chars().take(120).collect::<String>(),
-        cleaned_head = %cleaned.chars().take(120).collect::<String>(),
+        raw = %raw.trim(),
+        cleaned = %cleaned,
         "a prefix strip is what turned this turn into silence — #349: if the stripped prefix \
          was a CONTENT LABEL (Verdict:/Answer:/Result:) rather than a speaker name, a real \
          answer was just swallowed"
@@ -354,6 +361,19 @@ fn declares_silence_token(text: &str) -> bool {
     false
 }
 
+/// Her whole reply is the yield verb written as a call with no arguments (`yield_turn({})`,
+/// `yield_turn()`): the verb we defined, matched on its NAME like the native call
+/// ([`super::persona_tools::is_yield_turn`]), never on prose. A model that holds the verb
+/// on its native channel sometimes writes it instead (Benchy on the M5, 2026-11-27
+/// 10:08Z: `yield_turn({})` posted to her room as a message and heard by every peer).
+fn is_yield_written_as_a_call(text: &str) -> bool {
+    let Some((name, rest)) = text.split_once('(') else {
+        return false;
+    };
+    let arguments = rest.strip_suffix(')').map(str::trim);
+    super::persona_tools::is_yield_turn(name.trim()) && matches!(arguments, Some("" | "{}"))
+}
+
 /// Word-constituent byte, so the reserved token is only honored as a standalone word.
 fn is_word_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
@@ -374,6 +394,19 @@ mod tests {
     // test in `not_speech.rs` still passes. Fixtured from what IntelMac's citizens
     // actually posted on 2026-09-15; the last case pins that a citizen TALKING about a
     // tool still speaks, which is what anchoring buys.
+    // what this catches (Benchy on the M5, 2026-11-27 10:08Z): the yield verb written as text,
+    // the whole reply, posted to her room as a message. It yields like the native call; a
+    // sentence that mentions the verb still speaks.
+    #[test]
+    fn the_yield_verb_written_as_a_call_yields_at_the_live_seam() {
+        for written in ["yield_turn({})", "yield_turn()", "  yield_turn( {} )\n", "pass_turn({})"] {
+            assert_eq!(decision_from_response(written, Some("Benchy"), &[]), Decision::pass(), "{written:?} must yield");
+        }
+        for speech in ["I'd call yield_turn({}) here, but there is a review to answer.", "yield_turn({}) is how a citizen stays quiet."] {
+            assert!(matches!(decision_from_response(speech, Some("Benchy"), &[]), Decision::Speak { .. }), "{speech:?} must speak");
+        }
+    }
+
     #[test]
     fn a_tool_envelope_is_a_reasoned_pass_at_the_live_seam() {
         for envelope in [
