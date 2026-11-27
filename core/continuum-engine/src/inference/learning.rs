@@ -238,6 +238,10 @@ pub enum StepOutcome {
     Uncertain { steps: u64 },
     /// Longer than the seat was measured for: release it and measure again for `need` tokens.
     TooLong { need: std::num::NonZeroU32 },
+    /// Not learned: on her own sequence it would discard more of the `held` tokens she holds (`shared`
+    /// with the lesson) than its `reply` replaces. It never runs there, at any size: the trainer holds
+    /// it off for her until a lesson can run on a sequence of its own.
+    WouldCutHerContext { shared: u64, held: u64, reply: u64 },
     /// Not learned; the shadow is as it was.
     Refused { why: Arc<str> },
 }

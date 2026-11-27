@@ -311,6 +311,7 @@ fn said_kind(said: &Said) -> &'static str {
             StepOutcome::Uncertain { .. } => "uncertain",
             StepOutcome::TooLong { .. } => "too_long",
             StepOutcome::Refused { .. } => "step_refused",
+            StepOutcome::WouldCutHerContext { .. } => "would_cut_her_context",
         },
         Said::Generation { outcome, .. } => match outcome {
             GenerationOutcome::Saved { .. } => "saved",

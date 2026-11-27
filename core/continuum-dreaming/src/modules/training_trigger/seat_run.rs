@@ -300,6 +300,11 @@ impl<G: Send> SeatRun<G> {
             StepOutcome::TooLong { need } => Heard::TooLong { position, need: *need },
             StepOutcome::Uncertain { .. } => self.uncertain(port),
             StepOutcome::Refused { why } => Heard::StepRefused { position, why: Arc::clone(why) },
+            // the trainer's hold-off for this mind is Cormac's (#6286 review); until then it finishes the seat
+            StepOutcome::WouldCutHerContext { shared, held, reply } => Heard::StepRefused {
+                position,
+                why: format!("the lesson shares {shared} of the {held} tokens she holds and would discard more than its {reply}-token reply").into(),
+            },
         })
     }
 
