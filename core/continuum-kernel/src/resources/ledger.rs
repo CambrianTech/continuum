@@ -21,7 +21,7 @@ use std::sync::{Arc, Weak};
 use std::sync::atomic::{AtomicU64, Ordering};
 use ts_rs::TS;
 
-use continuum_sage::place::{Act, AskId, Bytes, Generation, Need, PlacerCore, TakeAsk};
+use continuum_sage::place::{Act, AskId, Bytes, Need, PlacerCore, TakeAsk};
 
 pub use asks::{Asked, CarveError};
 pub use shrinks::{Elastic, ShrinkDue};
