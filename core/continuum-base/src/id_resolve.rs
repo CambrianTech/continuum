@@ -25,6 +25,26 @@
 
 use uuid::Uuid;
 
+/// Errors from id_resolve prefix resolution.
+#[derive(Debug, PartialEq, thiserror::Error)]
+pub enum IdResolveError {
+    /// The input string is not a usable id or handle (too few hex digits).
+    #[error("'{0}' is not a usable {1} — give the full id/handle or its leading short form")]
+    Invalid(String, String),
+
+    /// No candidate matches the given prefix.
+    #[error("no {label} matches id prefix '{prefix}'{detail}")]
+    ZeroMatch {
+        label: String,
+        prefix: String,
+        detail: String,
+    },
+
+    /// Multiple candidates match — more characters needed to disambiguate.
+    #[error("{label} id prefix '{prefix}' is ambiguous ({count} matches) — give more characters")]
+    Ambiguous { label: String, prefix: String, count: usize },
+}
+
 /// How a raw id string should be looked up: a clean full UUID, a leading short-id
 /// prefix to resolve against a candidate set, or genuinely unusable.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -93,14 +113,14 @@ pub fn normalize(s: &str) -> IdMatch {
 /// form starts with it; zero matches or ambiguity fail loud with what WAS found so
 /// the caller (often a model) can correct. `label` names the id kind in the error
 /// (`"card"`, `"persona"`, `"room"`) — teaching, not a silent miss.
-pub fn resolve(s: &str, candidates: &[Uuid], label: &str) -> Result<Uuid, String> {
+pub fn resolve(s: &str, candidates: &[Uuid], label: &str) -> Result<Uuid, IdResolveError> {
     let needle = match normalize(s) {
         IdMatch::Full(id) => return Ok(id),
         IdMatch::Prefix(p) => p,
         IdMatch::Invalid => {
-            return Err(format!(
-                "'{s}' is not a usable {label} id — give the full id or its leading \
-                 short form (at least {MIN_PREFIX_HEX} hex characters)"
+            return Err(IdResolveError::Invalid(
+                s.to_string(),
+                label.to_string()
             ))
         }
     };
@@ -111,13 +131,16 @@ pub fn resolve(s: &str, candidates: &[Uuid], label: &str) -> Result<Uuid, String
 /// legacy tolerant ID path, retain every prefix digit so callers can disambiguate
 /// collisions by supplying more characters. Candidates must come from the owner
 /// and caller scope; this function does not grant access to the resolved object.
-pub fn resolve_handle(s: &str, candidates: &[Uuid], label: &str) -> Result<Uuid, String> {
+pub fn resolve_handle(s: &str, candidates: &[Uuid], label: &str) -> Result<Uuid, IdResolveError> {
     let s = s.trim();
     if let Ok(id) = Uuid::parse_str(s) {
         return Ok(id);
     }
     let Some(needle) = handle_prefix(s) else {
-        return Err(format!("'{s}' is not a usable {label} handle — give a full UUID or at least {MIN_PREFIX_HEX} leading hex characters"));
+        return Err(IdResolveError::Invalid(
+            s.to_string(),
+            label.to_string()
+        ));
     };
     resolve_prefix(&needle, candidates, label)
 }
@@ -152,29 +175,23 @@ pub fn prefix_matches(needle: &str, candidates: &[Uuid]) -> Vec<Uuid> {
     matches
 }
 
-fn resolve_prefix(needle: &str, candidates: &[Uuid], label: &str) -> Result<Uuid, String> {
+fn resolve_prefix(needle: &str, candidates: &[Uuid], label: &str) -> Result<Uuid, IdResolveError> {
     let matches = prefix_matches(needle, candidates);
     match matches.as_slice() {
         [one] => Ok(*one),
-        // Zero match — the live failure mode (2026-07-13: a persona claimed a
-        // FABRICATED id and a peer had to hand it the right one). "Check the id you
-        // were shown" isn't actionable when the persona never held a real id; ENUMERATE
-        // the valid short forms inline so the miss self-corrects on the next turn
-        // instead of stalling on peer coaching. [[px-persona-experience-tools-as-good-ux]]
-        [] => Err(match candidates.len() {
-            0 => format!("no {label}s exist to match id prefix '{needle}' — there are none to choose from right now"),
-            n if n <= MAX_LISTED_CANDIDATES => format!(
-                "no {label} matches id prefix '{needle}' — available {label} ids: {}",
-                candidates.iter().map(short_form).collect::<Vec<_>>().join(", ")
-            ),
-            n => format!(
-                "no {label} matches id prefix '{needle}' among {n} {label}s — check the id you were shown"
-            ),
+        [] => Err(IdResolveError::ZeroMatch {
+            label: label.to_string(),
+            prefix: needle.to_string(),
+            detail: match candidates.len() {
+                0 => " — there are none to choose from right now".into(),
+                n if n <= MAX_LISTED_CANDIDATES => format!(
+                    " — available {label} ids: {}",
+                    candidates.iter().map(short_form).collect::<Vec<_>>().join(", ")
+                ),
+                n => format!(" among {n} {label}s — check the id you were shown"),
+            },
         }),
-        many => Err(format!(
-            "{label} id prefix '{needle}' is ambiguous ({} match) — give more characters",
-            many.len()
-        )),
+        many => Err(IdResolveError::Ambiguous { label: label.to_string(), prefix: needle.to_string(), count: many.len() }),
     }
 }
 
@@ -188,7 +205,7 @@ mod tests {
     fn strict_handles_preserve_disambiguating_digits() {
         let a = u("12345678-1000-4000-8000-000000000001");
         let b = u("12345678-2000-4000-8000-000000000002");
-        assert!(resolve_handle("12345678", &[a, b], "execution").unwrap_err().contains("ambiguous"));
+        assert!(resolve_handle("12345678", &[a, b], "execution").unwrap_err().to_string().contains("ambiguous"));
         assert_eq!(resolve_handle("123456781", &[a, b], "execution"), Ok(a));
         assert_eq!(resolve_handle(&a.to_string(), &[a, b], "execution"), Ok(a));
         assert!(resolve_handle("12345678garbage", &[a], "execution").is_err());
@@ -247,15 +264,15 @@ mod tests {
         // persona that fabricated an id (the 2026-07-13 live failure) self-corrects on
         // the next turn instead of waiting for a peer to hand it the right id.
         let e = resolve("deadbeef", &cands, "persona").unwrap_err();
-        assert!(e.contains("persona") && e.contains("no "), "teaches: {e}");
+        assert!(e.to_string().contains("persona") && e.to_string().contains("no "), "teaches: {e}");
         assert!(
-            e.contains("90e758b2") && e.contains("fe4dac17"),
+            e.to_string().contains("90e758b2") && e.to_string().contains("fe4dac17"),
             "lists the valid ids: {e}"
         );
         // ambiguous → loud
         let c = u("90e70000-0000-0000-0000-000000000000");
         let e = resolve("90e7", &[a, c], "persona").unwrap_err();
-        assert!(e.contains("ambiguous"), "teaches: {e}");
+        assert!(e.to_string().contains("ambiguous"), "teaches: {e}");
         // junk → loud
         assert!(resolve("!!", &cands, "persona").is_err());
     }
@@ -270,7 +287,7 @@ mod tests {
         // empty set → plainly says there are none
         let e = resolve("deadbeef", &[], "card").unwrap_err();
         assert!(
-            e.contains("no card") && e.contains("none to choose"),
+            e.to_string().contains("no card") && e.to_string().contains("none to choose"),
             "empty: {e}"
         );
 
@@ -279,9 +296,9 @@ mod tests {
             .map(|i| u(&format!("0000000{i}-0000-0000-0000-000000000000")))
             .collect();
         let e = resolve("deadbeef", &cands, "card").unwrap_err();
-        assert!(e.contains("available card ids"), "lists: {e}");
+        assert!(e.to_string().contains("available card ids"), "lists: {e}");
         assert!(
-            e.contains("00000000") && e.contains("00000002"),
+            e.to_string().contains("00000000") && e.to_string().contains("00000002"),
             "each short form present: {e}"
         );
 
@@ -291,7 +308,7 @@ mod tests {
             .collect();
         let e = resolve("ffffffff", &many, "card").unwrap_err();
         assert!(
-            e.contains(&format!("among {} card", many.len())) && !e.contains("available card ids"),
+            e.to_string().contains(&format!("among {} card", many.len())) && !e.to_string().contains("available card ids"),
             "counts instead of listing: {e}"
         );
     }

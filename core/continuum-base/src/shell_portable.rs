@@ -5,6 +5,25 @@
 
 use std::path::{Path, PathBuf};
 
+/// Errors from shell_portable operations.
+#[derive(Debug, PartialEq, thiserror::Error)]
+pub enum ShellPortableError {
+    /// CONTINUUM_BASH override points to a non-file.
+    #[error("CONTINUUM_BASH is set to `{0}` but that is not a file")]
+    BadOverride(String),
+
+    /// No usable bash found on Windows (only WSL shim available).
+    #[error(
+        "no usable bash found. Windows' `bash.exe` on PATH is the WSL launcher, not a POSIX shell. \
+         Install Git for Windows (which ships bash), or set CONTINUUM_BASH to a bash.exe."
+    )]
+    NoBashFound,
+
+    /// The archive path has no file name component.
+    #[error("{0} names no archive file")]
+    NoFileName(String),
+}
+
 /// Find a native executable without spawning a shell or interpreting PATH by hand.
 pub fn locate_executable(name: &str) -> Option<PathBuf> {
     locate_executable_in(name, &std::env::var_os("PATH")?)
@@ -63,15 +82,13 @@ fn locate_executable_in(name: &str, path: &std::ffi::OsStr) -> Option<PathBuf> {
 /// names the remedy rather than returning a bash that cannot work — a spawn
 /// that resolves to WSL fails deep inside the child with an error the caller
 /// cannot interpret.
-pub fn locate_bash() -> Result<PathBuf, String> {
+pub fn locate_bash() -> Result<PathBuf, ShellPortableError> {
     if let Ok(explicit) = std::env::var("CONTINUUM_BASH") {
         let p = PathBuf::from(&explicit);
         if p.is_file() {
             return Ok(p);
         }
-        return Err(format!(
-            "CONTINUUM_BASH is set to `{explicit}` but that is not a file"
-        ));
+        return Err(ShellPortableError::BadOverride(explicit));
     }
 
     if !cfg!(windows) {
@@ -81,12 +98,7 @@ pub fn locate_bash() -> Result<PathBuf, String> {
     windows_bash_candidates()
         .into_iter()
         .find(|p| p.is_file())
-        .ok_or_else(|| {
-            "no usable bash found. Windows' `bash.exe` on PATH is the WSL launcher, not a \
-             POSIX shell. Install Git for Windows (which ships bash), or set CONTINUUM_BASH \
-             to a bash.exe."
-                .to_string()
-        })
+        .ok_or(ShellPortableError::NoBashFound)
 }
 
 /// The candidate list, in priority order. Split out so the ORDERING and the
@@ -136,9 +148,9 @@ fn is_wsl_shim_dir(dir: &std::path::Path) -> bool {
 /// `mode` is the operation with `f` last (`-xzf`, `-czf`, `-tzf`). A caller adds
 /// `-C`, `-T` and member operands after it; those are directories and lists, which
 /// no tar parses as a host.
-pub fn tar_on(archive: &Path, mode: &str) -> Result<std::process::Command, String> {
+pub fn tar_on(archive: &Path, mode: &str) -> Result<std::process::Command, ShellPortableError> {
     let Some(name) = archive.file_name() else {
-        return Err(format!("{} names no archive file", archive.display()));
+        return Err(ShellPortableError::NoFileName(archive.display().to_string()));
     };
     // A bare name ("x.tar.gz") has an empty parent, which `current_dir` cannot enter:
     // it lives in the caller's own directory (BigMama on #4839).
@@ -238,7 +250,7 @@ mod tests {
         let prior = std::env::var(key).ok();
         std::env::set_var(key, "/definitely/not/a/real/bash-xyzzy");
         let err = locate_bash().expect_err("a non-file override must not resolve");
-        assert!(err.contains("CONTINUUM_BASH"), "must name the knob: {err}");
+        assert!(err.to_string().contains("CONTINUUM_BASH"), "must name the knob: {err}");
         match prior {
             Some(v) => std::env::set_var(key, v),
             None => std::env::remove_var(key),

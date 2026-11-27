@@ -58,13 +58,8 @@ impl Secrets {
     }
 
     /// Get a secret, returning error if missing
-    pub fn require(&self, key: &str) -> Result<&str, String> {
-        self.get(key).ok_or_else(|| {
-            format!(
-                "Missing required secret: {}. Add it to ~/.continuum/config.env",
-                key
-            )
-        })
+    pub fn require(&self, key: &str) -> Result<&str, SecretsError> {
+        self.get(key).ok_or_else(|| SecretsError::Missing(key.to_string()))
     }
 
     /// Check if a secret exists
@@ -72,6 +67,15 @@ impl Secrets {
         self.get(key).is_some()
     }
 
+
+}
+
+/// Errors from secrets operations.
+#[derive(Debug, PartialEq, thiserror::Error)]
+pub enum SecretsError {
+    /// A required secret key is not present in config.env or environment.
+    #[error("Missing required secret: {0}. Add it to ~/.continuum/config.env")]
+    Missing(String),
 }
 
 /// A value starting `~/` names a path under the user's home, as the shell would expand it.
