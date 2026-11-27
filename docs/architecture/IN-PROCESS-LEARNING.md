@@ -23,6 +23,22 @@ A mind learns one reply on her own live serving sequence: the reply's rows are t
 in her cache, then she is restored under her stable gene set, so serving finds her exactly as it left her. Other
 minds decode between the learner's units.
 
+**A lesson never costs her context.** Her own sequence holds a lesson only when the lesson's context is what she
+already holds (a lesson of her latest act). A lesson of another context (an older act, another room) would cut her
+history to the prefix it shares and leave its own context in her place: on the M5, 2026-11-27 04:28Z, Aiko held
+226,638 tokens, an academy lesson shared 1, and her next turn, answering a direct question, prefilled all 226k
+behind the other minds. Today such a lesson is `StepOutcome::WouldCutHerContext`, checked before anything of hers
+moves (#6286), and the trainer holds it off for her.
+
+Its home is **a sequence of its own** (designed, Codex's spec 2026-11-27):
+- the lesson is admitted to a destination sequence only after its capacity is checked, never assuming a fixed seq id;
+- it starts from what it shares with her by an exact prefix checkpoint taken under the same adapter basis, or
+  prefills from zero; never `seq_cp` on a hybrid, whose recurrent copy ignores positions and aliases her tail, so it
+  cannot recreate her state at a short prefix;
+- the exact tile walk runs there with the cache topology it was measured for;
+- after it learns, is refused or is cancelled, her own sequence is verified unchanged: KV rows, recurrent state,
+  tokens and her next logits.
+
 Built:
 - the `Learner` over a context in the llama crate (`core/llama/src/safe/learn.rs`), its refusals typed from
   `llama_opt_failure`;

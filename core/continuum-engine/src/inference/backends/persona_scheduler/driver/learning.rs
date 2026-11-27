@@ -389,8 +389,10 @@ impl Driver<'_, '_> {
         let mind = mind_of(seated.mind);
         // native learning begins only when her state ends at the lesson's context: what she holds of it
         // is reused, the rest prefilled forward-only (no shadow, no gradient)
-        if let Err(why) = self.bring_to_lesson_context(seated.rendered) {
-            return refused(format!("she could not be brought to the lesson's context: {why}"));
+        match self.bring_to_lesson_context(seated.rendered) {
+            Ok(()) => {}
+            Err(Unbrought::WouldCut(cut)) => return (cut, None),
+            Err(Unbrought::Refused(why)) => return refused(format!("she could not be brought to the lesson's context: {why}")),
         }
         // her history read where it lies (130k tokens is 520 KB): never cloned to be read; it now ends at
         // the lesson's context, so the reply is her reply rows alone and restores no tail (her next turn
@@ -437,10 +439,15 @@ impl Driver<'_, '_> {
     /// lesson from scratch (the 5090, 2026-11-26: seats quoted 244 GB to 48.8 TB of workspace, a
     /// 100k-token lesson measured as a 100k-row training graph). Gradients do not reach the context's
     /// own keys and values: the frozen-prefix approximation that makes learning a small addition.
-    fn bring_to_lesson_context(&mut self, rendered: &Rendered) -> Result<(), String> {
-        let last_context = rendered.reply_from.checked_sub(1).ok_or("the lesson has no context before its reply")?;
+    fn bring_to_lesson_context(&mut self, rendered: &Rendered) -> Result<(), Unbrought> {
         let her = self.engine.active_mut().ok_or("she is not bound")?;
-        let shared = common_prefix(&her.parts().tokens.held, &rendered.tokens).min(last_context);
+        let prefix = lesson_prefix(&her.parts().tokens.held, rendered)?;
+        let LessonPrefix { shared, last_context } = prefix;
+        // before anything of hers moves (Codex on #6286): a lesson of another context would cut her
+        // whole history for its own
+        if let Some(cut) = would_cut_her_context(&her.parts().tokens.held, prefix, rendered) {
+            return Err(Unbrought::WouldCut(cut));
+        }
         // a resumed mind's adapters are loaded again from the files kept with her blocks, so she learns
         // whether or not a turn of hers has handed them back (the M5, 2026-11-26)
         let genes = her.parts_mut().genome.held_or_loaded(self.model)?;
@@ -487,6 +494,51 @@ impl Driver<'_, '_> {
     }
 }
 
+/// Why she was not brought to a lesson's context: the lesson would cut hers (a typed step outcome the
+/// trainer holds the lesson off on, Cormac on #6286), or the engine refused a step of it.
+enum Unbrought {
+    WouldCut(StepOutcome),
+    Refused(String),
+}
+
+impl From<String> for Unbrought {
+    fn from(why: String) -> Self {
+        Unbrought::Refused(why)
+    }
+}
+
+impl From<&str> for Unbrought {
+    fn from(why: &str) -> Self {
+        Unbrought::Refused(why.to_string())
+    }
+}
+
+/// How much of a lesson's context she holds: `shared` tokens of the `last_context` the lesson needs.
+#[derive(Clone, Copy)]
+struct LessonPrefix {
+    shared: usize,
+    last_context: usize,
+}
+
+/// What she holds of a lesson's context: the prefix ends one token before
+/// her reply, so the reply's first token is sampled from a re-decoded context token.
+fn lesson_prefix(held: &[i32], rendered: &Rendered) -> Result<LessonPrefix, &'static str> {
+    let last_context = rendered.reply_from.checked_sub(1).ok_or("the lesson has no context before its reply")?;
+    Ok(LessonPrefix { shared: common_prefix(held, &rendered.tokens).min(last_context), last_context })
+}
+
+/// The lesson's outcome when learning it on her own sequence would discard more of the `held` tokens
+/// she holds than its reply replaces. A lesson holding her whole context (`shared == last_context`)
+/// takes the existing restore path and is never refused here (Codex on #6286).
+fn would_cut_her_context(held: &[i32], LessonPrefix { shared, last_context }: LessonPrefix, rendered: &Rendered) -> Option<StepOutcome> {
+    if shared >= last_context {
+        return None;
+    }
+    let discarded = held.len().saturating_sub(shared);
+    let reply = rendered.tokens.len().saturating_sub(rendered.reply_from);
+    (discarded > reply).then(|| StepOutcome::WouldCutHerContext { shared: shared as u64, held: held.len() as u64, reply: reply as u64 })
+}
+
 /// A seated lesson's inputs: whose, how long a lesson it was measured for, its shadow and its tokens.
 struct Seated<'a> {
     mind: PersonaId,
@@ -515,6 +567,33 @@ fn reply_for(mind: MindId, held: &[i32], rendered: &Rendered) -> Option<LearnRep
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (the M5, 2026-11-27 04:28Z): a lesson of another context cutting her whole held
+    // history for its own (Aiko: 226,638 held, 1 shared, her next turn prefilled all of it), while a
+    // lesson of her latest act, which replaces only her reply, still learns.
+    #[test]
+    fn a_lesson_may_discard_only_what_its_reply_replaces() {
+        // through the caller's own prefix (capped one token before her reply), as bring_to_lesson_context
+        // computes it (Codex and Cormac on #6286: the capped prefix once refused her own latest act)
+        let check = |held: &[i32], lesson: &Rendered| {
+            would_cut_her_context(held, lesson_prefix(held, lesson).expect("the lesson has a context"), lesson)
+        };
+        let context: Vec<i32> = (0..1_000).collect();
+        let act: Vec<i32> = context.iter().copied().chain(5_000..5_200).collect();
+        let latest = Rendered { tokens: act.clone(), reply_from: context.len() };
+        // her latest act: she holds her context and her reply, the lesson is the same tokens
+        assert_eq!(check(&act, &latest), None);
+        // she holds only the context (her reply not yet held)
+        assert_eq!(check(&context, &latest), None);
+        // she holds a suffix past the lesson (a newer act of hers): the lesson's context is still hers whole
+        let newer: Vec<i32> = act.iter().copied().chain(7_000..7_400).collect();
+        assert_eq!(check(&newer, &latest), None);
+        // an academy lesson sharing one token of her long history, with a 300-token reply
+        let history: Vec<i32> = (0..226_638).collect();
+        let academy: Vec<i32> = std::iter::once(0).chain(900_000..902_836).collect();
+        let lesson = Rendered { tokens: academy, reply_from: 2_537 };
+        assert_eq!(check(&history, &lesson), Some(StepOutcome::WouldCutHerContext { shared: 1, held: 226_638, reply: 300 }));
+    }
 
     // what this catches: a reply that labels her context (teaching her what she was told), misses
     // her reply's first token, or restores anything but the exact tail she held.

@@ -80,6 +80,35 @@ activity room with its own recipe, so it has the channel layer and the panes lik
 First-class citizenship in the interface is exactly this: the same pages, controls and abilities
 for every citizen.
 
+**Where a citizen is: a set of rooms she belongs to, never one default.** Every citizen belongs to:
+- her own room (her page above);
+- `general`, the lobby everyone is in;
+- the room of each project she works with (the org's room, as `cambriantech`);
+- every activity room she joined or started (a card's room, a course, a call), which she leaves
+  when the activity ends.
+
+Membership is hers, owned by the room registry as typed room ids, and survives restart. Nothing pins
+her to the room she was spawned in, and no part of the core learns a room from airc's current-room
+pointer or an environment variable. A room nobody belongs to and nothing references is retired into
+history.
+
+**She exists in all of them at once; only her focus moves.** A citizen is a multi-activity soul with
+an event-driven mind (THE-WHOLE-MIND): her perception holds a live view of every room she belongs to
+simultaneously, so she sees each activity as it happens, and her attention picks which one her next
+act serves, the way a person in many channels still notices each. Leaving one activity's focus never
+removes her from it.
+
+**Anyone can reach any living soul, wherever she is.** A line addressed to her in any of her rooms is
+heard at once and answered on her next turn, ahead of a lesson, a long act, or a benchmark she is
+running: being in an activity never makes her unreachable. A reply that waits behind her own
+machinery (on the M5, 2026-11-27, a lesson cut Aiko's context and her answer to a direct question
+took 33 minutes) is a defect against this rule, never a state she is in.
+
+**The Academy is a college.** Its rooms are courses with teachers and students, all citizens, humans
+and personas alike; a lecture, office hours, a lab or an exam is a room with its recipe. Teaching is
+one of a citizen's activities like any other, and she stays reachable in all of them while she
+teaches or studies.
+
 **Sections group activities, and are rooms too.** The Academy holds everything learning-related
 (the course form of learning, benchmarks, exams); others are social, work (boards, code) and each
 citizen's pages; the Universe (§4.6) wraps all of them. Sections are dynamic and new ones are

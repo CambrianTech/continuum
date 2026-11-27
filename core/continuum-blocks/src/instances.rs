@@ -34,6 +34,10 @@ impl Instance {
     /// reclaim every directory whose lease no live core holds.
     pub fn join(root: &Path, name: &str) -> io::Result<(Self, Reclaimed)> {
         std::fs::create_dir_all(root)?;
+        // her own lease is taken under the one reclaim lock, so no reclaimer ever opens it between its
+        // creation and its lock and takes a starting copy for a gone one (canary f6648967d, CI run
+        // 45940039043: 13 reclaimed of 12 gone, Cormac)
+        let _one_at_a_time = lock_path(&root.join(".reclaim"), true)?;
         let lease = lock_path(&root.join(format!("{name}.lease")), false)?;
         let dir = root.join(name);
         std::fs::create_dir_all(&dir)?;
@@ -48,15 +52,15 @@ impl Instance {
 }
 
 /// Every other instance under `root` whose lease can be taken is gone: its directory and lease file go.
-/// One joiner reclaims at a time, under `<root>/.reclaim` (a lock outside the scanned leases, taken by
-/// waiting), so no joiner opens a lease another is deleting: on Windows that open is denied while the
+/// One joiner reclaims at a time, under `<root>/.reclaim` (a lock outside the scanned leases, taken by the
+/// caller before its own lease and held through this scan), so no joiner opens a lease another is deleting
+/// or one still being taken: on Windows that open is denied while the
 /// delete is pending (Codex: 12 joiners started together against 12 gone leases, error 5 in round 0).
 /// Another instance's lease is opened only if it exists, never created, so a reclaimed lease is never
 /// resurrected. A lease held by a live core is left alone. Reclaiming is best effort per instance: one
 /// that cannot be removed now is counted as skipped and left for the next joiner, and never fails this
 /// instance's own join.
 fn reclaim(root: &Path, own: &str) -> io::Result<Reclaimed> {
-    let _one_at_a_time = lock_path(&root.join(".reclaim"), true)?;
     let mut reclaimed = Reclaimed::default();
     for entry in std::fs::read_dir(root)? {
         let path = entry?.path();
