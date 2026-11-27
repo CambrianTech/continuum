@@ -14,7 +14,16 @@ use std::process::ExitCode;
 use continuum_cli_lifecycle::deploy_hold_file::{acquire, describe, release, renew, Acquired, ByToken, LeaseAsk};
 
 fn main() -> ExitCode {
-    match run(std::env::args().skip(1).collect()) {
+    // The home is resolved here, where a failure is reported as the process exits; no error type
+    // carries continuum_base's text.
+    let state = match continuum_base::home::continuum_home() {
+        Ok(home) => home.join("state"),
+        Err(why) => {
+            eprintln!("continuum-deploy-hold: the continuum home: {why}");
+            return ExitCode::FAILURE;
+        }
+    };
+    match run(&state, std::env::args().skip(1).collect()) {
         Ok(code) => code,
         Err(why) => {
             eprintln!("continuum-deploy-hold: {why}");
@@ -26,8 +35,6 @@ fn main() -> ExitCode {
 /// Why a hold command did not run, by its facts.
 #[derive(Debug)]
 enum HoldCommandError {
-    /// The continuum home could not be resolved (`continuum_base::home`'s own reason).
-    Home(String),
     /// A required argument is absent: which one.
     Missing(&'static str),
     TtlNotSeconds { text: String, cause: std::num::ParseIntError },
@@ -39,7 +46,6 @@ enum HoldCommandError {
 impl std::fmt::Display for HoldCommandError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            HoldCommandError::Home(why) => write!(f, "the continuum home: {why}"),
             HoldCommandError::Missing(what) => write!(f, "{what} is required"),
             HoldCommandError::TtlNotSeconds { text, cause } => write!(f, "the TTL '{text}' is not seconds: {cause}"),
             HoldCommandError::NotAToken { text, cause } => write!(f, "'{text}' is not a lease token: {cause}"),
@@ -58,8 +64,7 @@ impl From<std::io::Error> for HoldCommandError {
     }
 }
 
-fn run(args: Vec<String>) -> Result<ExitCode, HoldCommandError> {
-    let state = continuum_base::home::continuum_home().map_err(HoldCommandError::Home)?.join("state");
+fn run(state: &std::path::Path, args: Vec<String>) -> Result<ExitCode, HoldCommandError> {
     let clock = || continuum_base::time::EpochMs::now().millis();
     let arg = |at: usize, what: &'static str| args.get(at).ok_or(HoldCommandError::Missing(what));
     let secs = |at: usize| -> Result<u64, HoldCommandError> {
@@ -90,7 +95,7 @@ fn run(args: Vec<String>) -> Result<ExitCode, HoldCommandError> {
         Some("acquire") => {
             let who = arg(1, "who is measuring")?;
             let build = arg(2, "the build being measured")?;
-            match acquire(&state, &LeaseAsk { who, build, ttl_ms: secs(3)? }, &clock)? {
+            match acquire(state, &LeaseAsk { who, build, ttl_ms: secs(3)? }, &clock)? {
                 Acquired::Leased { token } => {
                     println!("{token}");
                     Ok(ExitCode::SUCCESS)
@@ -101,8 +106,8 @@ fn run(args: Vec<String>) -> Result<ExitCode, HoldCommandError> {
                 }
             }
         }
-        Some("renew") => Ok(done("renewed", renew(&state, token(1)?, secs(2)?, &clock)?)),
-        Some("release") => Ok(done("released", release(&state, token(1)?)?)),
+        Some("renew") => Ok(done("renewed", renew(state, token(1)?, secs(2)?, &clock)?)),
+        Some("release") => Ok(done("released", release(state, token(1)?)?)),
         _ => Err(HoldCommandError::Usage),
     }
 }
