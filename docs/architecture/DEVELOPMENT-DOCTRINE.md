@@ -145,7 +145,7 @@ while reducing the concepts and mechanisms required to express it.
 ## Detailed guides
 
 - [Microkernel decomposition](MICROKERNEL-DECOMPOSITION.md): crate boundaries and dependency direction.
-- [Concurrency style guide](CONCURRENCY-STYLE-GUIDE.md): shared concurrent mechanisms.
+- [SAGE.md](SAGE.md): shared concurrent mechanisms.
 - [Proving the doctrine](PROVING-THE-DOCTRINE.md): architectural evidence and validators.
 
 When older guidance conflicts with this doctrine, update it rather than maintain two

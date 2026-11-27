@@ -207,7 +207,7 @@ single source of truth and this file must not drift from it.
    - persona / cognition / `service_loop` → read
      [docs/architecture/PERSONA-COGNITION-PIPELINE.md](docs/architecture/PERSONA-COGNITION-PIPELINE.md) first
    - any new tokio task, watch channel, pool, region, or background tick → read
-     [docs/architecture/CONCURRENCY-STYLE-GUIDE.md](docs/architecture/CONCURRENCY-STYLE-GUIDE.md) first
+     [docs/architecture/SAGE.md](docs/architecture/SAGE.md) first
    - any new test, fixture, mock, or recorder → the test-infrastructure section
      (the primitives already exist; do not reinvent them)
    - benchmarks / `agent/solve` / grading → read

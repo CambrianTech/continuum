@@ -101,8 +101,8 @@ impl EmbedResidency {
     fn claim_on(daemon: Option<Arc<ResourceDaemon>>, need: EmbedNeed) -> Self {
         use crate::resources::ResidentFloor;
         let claim = daemon.as_ref().map(|owner| owner.hold_residency(EMBED_LANE_CONSUMER_ID, [
-            ResidentFloor { kind: ResourceKind::Vram, resident: need.weights.device, headroom: need.context.device },
-            ResidentFloor { kind: ResourceKind::Ram, resident: need.weights.host, headroom: need.context.host },
+            ResidentFloor { kind: ResourceKind::Vram, resident: need.weights.device, headroom: need.context.device, fixed: need.weights.device },
+            ResidentFloor { kind: ResourceKind::Ram, resident: need.weights.host, headroom: need.context.host, fixed: need.weights.host },
         ]));
         let residency = Self { need, daemon, _claim: claim };
         if residency.daemon.is_some() {

@@ -692,6 +692,22 @@
             assert_eq!(l.available(ResourceKind::Ram), host_free, "the host axis is unchanged");
         }
 
+        // what this catches (Cormac on 38736c291): the ceiling charging the host's other processes on the
+        // GPU's axis, the 2026-11-18 refusal again: a lesson sized within it would shrink toward the reply
+        // alone on the M5. Backed, the GPU is bounded by its own capacity less its fixed bytes and by the
+        // host pool's ceiling, which carries the host's other processes once. The weights split is a fixture.
+        #[test]
+        fn a_unified_gpus_ceiling_is_its_fixed_bytes_and_the_host_pools_room() {
+            const WEIGHTS: u64 = 20_000_000_000;
+            let mut l = the_m5(true);
+            l.fix("serving", ResourceKind::Vram, WEIGHTS);
+            let others = HOST_USED - ENGINE_RESIDENT;
+            let pool = RAM_CEILING - WEIGHTS - others;
+            assert_eq!(l.ceiling(ResourceKind::Ram), pool, "the host pool: its capacity less every fixed byte on it and what others hold");
+            assert_eq!(l.ceiling(ResourceKind::Vram), (VRAM_CEILING - WEIGHTS).min(pool), "the GPU: never charged the host's processes on its own axis");
+            assert!(l.ceiling(ResourceKind::Vram) > OPTIMIZER);
+        }
+
         // what this catches: the backing letting the GPU spend bytes it does not have. Our own GPU
         // residency still bounds it, and a host grant leaves the GPU less, never the same bytes twice.
         #[test]
@@ -888,4 +904,85 @@
                 assert_eq!(l.available(ResourceKind::Vram), 32 * MB, "unified={unified}: the late, older sample was refused");
             }
         }
+    }
+
+    // what this catches (the 5090, 2026-11-26: a learning seat refused 5.7 GB with 5 MB free, and nothing
+    // ever woke it): an ask waits instead, a foreground acquire still takes what is free now without
+    // queueing behind it, and releasing what serving holds grants the ask as its lease, unasked again.
+    #[test]
+    fn an_ask_waits_and_becomes_its_lease_when_room_is_released() {
+        let mut l = ResourceLeaseLedger::new();
+        l.set_capacity(ResourceKind::Vram, 10_000);
+        l.acquire(&req("serving", ResourceKind::Vram, 9_980, ReclaimPolicy::Pinned), "serving-1".into(), 0).expect("test: serving fits");
+        let Ok(Asked::Waiting { ask, short }) = l.ask(&req("learning:her", ResourceKind::Vram, 5_000, ReclaimPolicy::Graceful), "seat", 1) else {
+            panic!("test: the seat waits")
+        };
+        assert_eq!(short, 4_980, "the wait names what it lacks");
+        assert!(l.take_granted(ask).is_none(), "nothing granted yet");
+        assert!(l.acquire(&req("vision", ResourceKind::Vram, 10, ReclaimPolicy::Graceful), "vision".into(), 2).is_ok(), "the foreground is never queued behind an ask");
+        l.release("serving-1").expect("test: serving lets go");
+        let granted = l.take_granted(ask).expect("test: granted on the release, without being asked again");
+        assert_eq!((granted.lease_id.as_str(), granted.bytes), ("seat", 5_000));
+        assert!(l.lease("seat").is_some(), "it is a lease like any other");
+        assert_eq!(l.available(ResourceKind::Vram), 10_000 - 10 - 5_000);
+    }
+
+    // what this catches: a seat that stopped wanting its memory still granted it, holding memory no one
+    // uses.
+    #[test]
+    fn a_withdrawn_ask_is_never_granted() {
+        let mut l = ResourceLeaseLedger::new();
+        l.set_capacity(ResourceKind::Vram, 100);
+        l.acquire(&req("serving", ResourceKind::Vram, 100, ReclaimPolicy::Pinned), "serving-1".into(), 0).expect("test: serving fits");
+        let Ok(Asked::Waiting { ask, .. }) = l.ask(&req("learning:her", ResourceKind::Vram, 50, ReclaimPolicy::Graceful), "seat", 1) else {
+            panic!("test: the seat waits")
+        };
+        assert!(l.withdraw(ask));
+        l.release("serving-1").expect("test: serving lets go");
+        assert!(l.take_granted(ask).is_none());
+        assert_eq!(l.available(ResourceKind::Vram), 100);
+        // granted, then withdrawn before its owner took it: released, never held for no one
+        l.acquire(&req("serving", ResourceKind::Vram, 100, ReclaimPolicy::Pinned), "serving-2".into(), 2).expect("test: serving fits");
+        let Ok(Asked::Waiting { ask, .. }) = l.ask(&req("learning:her", ResourceKind::Vram, 50, ReclaimPolicy::Graceful), "seat-2", 3) else {
+            panic!("test: the seat waits")
+        };
+        l.release("serving-2").expect("test: serving lets go");
+        assert!(l.withdraw(ask), "a granted, untaken ask is withdrawn");
+        assert!(l.lease("seat-2").is_none() && l.available(ResourceKind::Vram) == 100, "and its lease released");
+    }
+
+    // what this catches: a seat's stage lease carved from its granted reserve losing the bytes to a waiting
+    // ask in between (the shrink told place and the wait took them), or a carve past the reserve.
+    #[test]
+    fn a_stage_carved_from_its_reserve_keeps_the_bytes_from_every_wait() {
+        let mut l = ResourceLeaseLedger::new();
+        l.set_capacity(ResourceKind::Vram, 10_000);
+        l.acquire(&req("learning:her", ResourceKind::Vram, 5_000, ReclaimPolicy::Graceful), "reserve".into(), 0).expect("test: the reserve fits");
+        l.acquire(&req("serving", ResourceKind::Vram, 5_000, ReclaimPolicy::Pinned), "serving-1".into(), 0).expect("test: serving fits");
+        let Ok(Asked::Waiting { ask, .. }) = l.ask(&req("learning:him", ResourceKind::Vram, 1_000, ReclaimPolicy::Graceful), "his", 1) else {
+            panic!("test: his seat waits")
+        };
+        let stage = l.carve("reserve", &req("learning:her", ResourceKind::Vram, 3_000, ReclaimPolicy::Graceful), "weights", 2).expect("test: carved");
+        assert_eq!(stage.bytes, 3_000);
+        assert_eq!(l.lease("reserve").map(|lease| lease.bytes), Some(2_000), "the reserve keeps the rest");
+        assert!(l.take_granted(ask).is_none(), "the wait never saw the carved bytes");
+        assert!(l.carve("reserve", &req("learning:her", ResourceKind::Vram, 2_001, ReclaimPolicy::Graceful), "over", 3).is_err(), "never past the reserve");
+        l.release("reserve").expect("test: the rest goes back");
+        assert!(l.take_granted(ask).is_some(), "what the reserve gives back is granted to the wait");
+    }
+
+    // what this catches (Codex on 07427e2fe): a stage carved from a reserve past its term, given a fresh term
+    // while the lapsed reserve's charge waits for its fenced release: refused, changing nothing.
+    #[test]
+    fn nothing_is_carved_from_a_lapsed_reserve() {
+        let mut l = ResourceLeaseLedger::new();
+        l.set_capacity(ResourceKind::Vram, 10_000);
+        let reserve = LeaseRequest { ttl_ms: 100, ..req("learning:her", ResourceKind::Vram, 5_000, ReclaimPolicy::Graceful) };
+        l.acquire(&reserve, "reserve".into(), 0).expect("test: the reserve fits");
+        let before = l.available(ResourceKind::Vram);
+        let stage = req("learning:her", ResourceKind::Vram, 1_000, ReclaimPolicy::Graceful);
+        assert!(matches!(l.carve("reserve", &stage, "weights", 100), Err(CarveError::Lease(LeaseError::ExpiredLease { .. }))), "at its term");
+        assert!(matches!(l.carve("reserve", &stage, "weights", 500), Err(CarveError::Lease(LeaseError::ExpiredLease { .. }))), "after it");
+        assert_eq!((l.lease("reserve").map(|lease| lease.bytes), l.available(ResourceKind::Vram)), (Some(5_000), before), "the charge is unchanged");
+        assert!(l.lease("weights").is_none());
     }

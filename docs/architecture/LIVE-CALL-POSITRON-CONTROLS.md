@@ -80,7 +80,7 @@ unknown, never a fabricated ready"*; `series` is empty — *"absence over fabric
 
 Mirror `positron_serving_source.rs`: `spawn_live_emitter(rt, substrate)` → own task,
 `tokio::time::interval`, `StateBuilder::standalone()` (sole writer of its kind), build the
-view, `substrate.store(builder.session(view))`. Matches CONCURRENCY-STYLE-GUIDE.
+view, `substrate.store(builder.session(view))`. Matches SAGE.md.
 
 ### The wire
 

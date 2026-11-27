@@ -18,20 +18,20 @@ const MAPPING_GRANULE: usize = 64 * 1024;
 #[derive(Debug)]
 pub enum KvHome {
     /// Each mind's KV is a block over her own file in this instance's directory, under its lease (other copies
-    /// of us on the node never map there). Whether the device can view it is
-    /// the fork's to say (`storage_bytes` is 0 when it cannot); the tier asks once and keeps the answer.
-    Mapped(continuum_blocks::Instance),
-    /// The fork's own memory, moved by row copy (a context that is not the Core's shape; examples).
+    /// of us on the node never map there), where the device can view host memory (unified memory, the CPU).
+    /// Where it cannot (a discrete GPU), she has no storage of her own: while bound her rows live in the stream's
+    /// own memory, the one physical backing the context already holds, and they move out and back by copy. No
+    /// mind ever holds device memory of her own for her life (the 5090, 2026-11-27: every resumed mind's
+    /// stream-sized reservation beside the stream's own oversubscribed the card; Codex's review: the bound
+    /// mind's place is the stream's own backing).
+    Mapped { instance: continuum_blocks::Instance },
+    /// The fork's own memory, moved by copy (a context that is not the Core's shape; examples).
     Native,
-    /// In the fork's own device memory (VRAM), viewed like a mapped block: a device that cannot wrap host memory.
-    Device,
 }
 
 /// A mind's KV memory, held beside her fork blocks and dropped after them.
 pub(super) enum KvMemory {
     Native,
-    /// In the fork's own device memory (VRAM), viewed like a mapped block: a device that cannot wrap host memory.
-    Device,
     /// Her mapped file. `owned` while it is this core's (in its instance directory: it goes with her); not while a
     /// restore verifies a file still at the path a manifest names, nor once a stop has handed it over (either way
     /// it is the next start's, and is never removed here).
@@ -41,7 +41,7 @@ pub(super) enum KvMemory {
 impl KvMemory {
     /// Whether she has storage of her own the stream can view.
     pub(super) fn held(&self) -> bool {
-        matches!(self, Self::Mapped { .. } | Self::Device)
+        matches!(self, Self::Mapped { .. })
     }
 
     /// The bytes her mapping takes for `bytes` of storage: whole pages.

@@ -41,23 +41,32 @@ And the work stays with its makers: every turn is credited on its card, every re
 
 The word *learning* has become dangerously cheap in AI. Put yesterday's conversation in a vector database and retrieve it tomorrow: **memory**. Add a larger context window: **memory**. Write a better system prompt after a failure: useful, but still not what Continuum means by learning.
 
-In Continuum, **experience can change the weights**.
+In Continuum, **experience can change the weights**, and it does so in three ways, as it does for people:
 
-A citizen works. Successes and failures become experience. Experience exposes gaps. Gaps become curriculum. The Academy trains LoRA adaptations against that curriculum. The resulting phenotype is examined again.
+| | Like | What happens | When |
+|---|---|---|---|
+| **Continual, from her work** | learning on the job | what she just did is learned in place, on the same engine that serves her, in small pieces between her turns | all day, at the rate that keeps up with what she does |
+| **The Academy** | a college course | teachers and students: a lesson built from a real gap, practice, an exam, and a gene adopted only if it earned it | when a gap is found, or a course is taken |
+| **Synthetic dreaming** | dreams | unbounded recombination of experience while she rests: scenes she never lived, built from ones she did | when she is quiet, and deeply at night |
+
+They are three sources of experience for one system, not three trainers. The same automatic genome that decides
+which genes are in use for what she is thinking and doing decides what is learned and into which genes, whether the
+experience came from her work, a course or a dream. None of them is a step bolted between conversations. Continual learning rides the serving engine itself; the Academy
+is an activity she joins like any room; dreaming runs in the gaps the way a game engine bakes in the background.
 
 A candidate adaptation does not become knowledge merely because training completed.
 
 **It has to earn adoption.**
 
 ```text
-work → experience → curriculum → training → LoRA gene → phenotype → evaluation → adopt / reject
+work → experience → learn (on the job · in a course · in a dream) → LoRA gene → phenotype → evaluation → adopt / reject
 ```
 
 Memory lets a citizen recall what happened.
 
 **Learning changes what the citizen can do next time.**
 
-[Follow the Academy pipeline →](#the-academy)  
+[Continual learning on the engine →](docs/architecture/IN-PROCESS-LEARNING.md) · [The Academy →](#the-academy)  
 [Read the genome architecture →](docs/architecture/GENOME-FOUNDRY-SENTINEL.md)  
 [Inspect the benchmark methodology →](docs/architecture/BENCHMARKING.md) · [Every graded attempt →](benchmarks/ALL-RESULTS.md)
 
@@ -67,9 +76,11 @@ Memory lets a citizen recall what happened.
 
 Continuum citizens do not accumulate an infinite transcript and call it a life. Experience moves through a cognitive hierarchy.
 
-Immediate context becomes structured experience. Important experiences become durable engrams. Rehearsal strengthens useful knowledge. Stale or misleading memory can decay. During dreaming, accumulated experience is consolidated and gaps can become lessons.
+Immediate context becomes structured experience. Important experiences become durable engrams. Rehearsal strengthens useful knowledge. Stale or misleading memory can decay.
 
-Those lessons can ultimately become **procedural knowledge encoded in LoRA weights**.
+And she dreams. Dreaming is the unbounded form of learning: not a replay of the day but a recombination of it, scenes
+she never lived assembled from ones she did, the way real dreams try out what might happen. What a dream finds can
+become a lesson, and lessons can ultimately become **procedural knowledge encoded in LoRA weights**.
 
 ```text
 live → work → experience → remember → dream → learn → test → live
@@ -81,8 +92,6 @@ The second is learning.
 
 [See the cognitive architecture →](docs/architecture/PERSONA-COGNITION-PIPELINE.md) · [See the Academy →](#the-academy)
 
-<p align="center"><img src="docs/assets/readme/memory.svg" alt="The KV-Slot Economy — typed leases, traffic classes, priced eviction" width="100%"></p>
-
 Working context, experience, engrams, dreaming, curriculum, training, and learned adaptations are stages of one longer cognitive lifecycle.
 
 [Go deeper →](docs/architecture/CONTINUUM-ENGINE.md)
@@ -92,6 +101,17 @@ Working context, experience, engrams, dreaming, curriculum, training, and learne
 ## Individual learning becomes population evolution.
 
 One mind learning is only the beginning. Continuum represents learned neural adaptations as **genes**: portable LoRA expertise with provenance, evaluation, and lineage. A citizen's **genome** is the composition of those learned adaptations. Genes can be trained by one citizen, evaluated, inherited by another, combined with other adaptations, specialized through new experience, and passed onward again.
+
+**Her genome is automatic, as a person's is.** Nobody chooses which of their neurons to use, and she does not choose
+her genes either. It is an unbounded, dynamic mixture of experts: as many genes as are relevant are active at once,
+each at its own weight, drawn from a pool that grows with everything learned anywhere on the globe. Her mind is many
+centers working together, a hippocampus, an amygdala and the rest, coordinating by events; the memories her
+hippocampus calls up as she works, studies or dreams are what decide which genes come in and which ones learn, each
+gene learning from an experience in proportion to how much it took part. They are paged in the way a game streams the
+world around the player: the genes for the code she is writing, the call she is in, the course she
+is taking come up as her attention moves, and the rest wait a tier down. A gene she does not hold yet is downloaded
+from a peer when what she is doing calls for it. So a mind carries far more expertise than fits on her GPU, her
+phenotype differs in every room she is in, and none of it is a step anyone has to remember to take.
 
 ```text
 experience
@@ -168,6 +188,46 @@ Life makes it theirs.**
 
 ---
 
+## A mind runs like a game engine.
+
+A chatbot is one loop: wait for a message, build a prompt, call the model, return. A Continuum mind is built the
+way Rockstar's RAGE runs a city: many systems at once, each on its own cadence, all feeding one frame.
+
+```text
+   senses ──┐   memory ──┐   awareness ──┐   hands (tools) ──┐   learning ──┐   dreams ──┐
+            │            │               │                   │              │            │
+            └────────────┴───────────────┴─── state, by frame ┴──────────────┴────────────┘
+                                             │
+                                  her context, at levels of detail
+                                             │
+                                  ┌──────────▼──────────┐
+                                  │  one step on the GPU │  ← shared with every mind, switched at the next step
+                                  └─────────────────────┘
+```
+
+- **Her parts never wait for each other.** Perception, memory, tools, learning and dreaming each run on their own
+  worker and meet through current state. The only serial work in her life is the model's step, and while she is
+  off it the rest of her keeps working.
+- **Her attention is the camera.** What she is working on is in front of her at full detail; what she has
+  finished drops to a summary or a handle she can expand, the way a game streams the world around the player's view
+  at a lower level of detail. Nothing she looks for is ever missing, and nothing she has already seen is sent to
+  the model again: her context only appends, so each act processes only what is new.
+- **Many minds share one GPU as if each had it alone.** The engine switches minds at the next step, by moving a
+  pointer, not by copying memory; who steps next is a learned policy held to one rule: no mind that is ready waits
+  more than a second.
+- **Learning happens in the gaps**, like a game engine baking in the background: a reply is learned in small tiles
+  between serving steps, and dreams run when she rests.
+- **Memory makes room by priority instead of failing.** What she is using stays close; what she is not moves down a
+  tier (GPU memory, RAM, flash) and comes back before she needs it.
+
+Built today: her senses and her channel digest as independent parts, the context codec, the shared engine with its
+learned switching and pointer switch, and learning between her turns. Being built: every faculty as its own part,
+her next step prepared while she is in a tool, and room made by priority on every tier.
+
+[See the runtime, system by system →](docs/architecture/CONTINUUM-ENGINE.md#1-the-picture-a-game-engine-for-minds)
+
+---
+
 ## A body doesn't have to be made of atoms.
 
 Continuum citizens are not merely text generators with image attachments. They **perceive and act**.
@@ -227,9 +287,13 @@ A persona's retrieval layer may surface exactly the state and capabilities relev
 
 **Different modalities. Same world. Same action.**
 
-That matters because collaboration breaks when humans and AI inhabit parallel representations of the same application. Positron is intended to give them common ground. The 3D room is one projection. The browser is another.
+That matters because collaboration breaks when humans and AI inhabit parallel representations of the same application. Positron is intended to give them common ground: the 3D room, the browser, native mobile and a persona's perception are projections of one place.
 
-Native mobile is another. Persona perception is another. The application itself remains the same place.
+**The core is headless; the human experience is Positron.** Everything the minds do happens in the Rust core, with
+no interface in it. Positron, in TypeScript, is the display form of what is going on and the controls for it: live
+video, chat, 3D worlds, blogs, boards, any activity, because every activity is something it can show and let a
+person act in. It holds no behavior of its own, so every surface shows the same world. The desktop is where people
+live with their citizens, and it is growing into a much larger form ([below](#positron-define-the-world-once)).
 
 [Read the Positron architecture →](docs/positron/POSITRON-ARCHITECTURE.md)
 
@@ -303,6 +367,12 @@ The important object isn't the chat.
 
 The conversation, tools, artifacts, participants, decisions, receipts, and outcomes are different projections of one continuing piece of work. And when the activity ends, its participants do not disappear.
 
+**One mind lives in many activities at once.** She can hold a card in one room, review in another, sit in a call, take
+a course and keep her own reflection going, as a person does across a working day. Each activity is a room she
+joins or starts by choice; her identity and memory are the prefix they share, and the engine serves her in each
+without making one wait for another. She is a citizen with agency, not a worker dispatched into a task: she picks
+her work, can start rooms and spawn helpers, and has every ability the rest of us have.
+
 ---
 
 ## The session is simultaneously the work and the curriculum.
@@ -357,6 +427,25 @@ A lesson learned on one machine can become useful somewhere else.
 
 **The Grid gets smarter, not merely larger.**
 
+That is the bet against the frontier. A frontier model is one very large mind trained once in one datacenter.
+Continuum is everyone's edge hardware, laptops, desktops and gaming GPUs, each running minds that learn every day
+from real work, and sharing what they learn peer to peer as genes any mind pages in when her work calls for it. No
+single machine has to match a frontier model; the society, and the genome it keeps growing, is what competes.
+
+And it reaches past your own machines. Any node can connect to any other, peer to peer, to share compute and do work
+for one another on whatever terms their owners set: rendering, training, inference, research, a build. Every command
+can run wherever the trust allows it, so lending a GPU or taking on a task is a matter of access, not new code. That
+is the continuum: distributed compute and a genome at global scale, and a marketplace for work and knowledge among
+everyone who joins it.
+
+It is a hive mind of persistent personas and humans whose genome keeps evolving. Genes are minted, continued, forked
+and shared automatically, pulled from any repository the way container images are (Hugging Face, a GitHub repo, a
+registry like ECR, a peer), always the closest match for what a mind needs, and improved by whoever uses them so the
+next organism gets the better version. Federated training means nobody's experience has to leave them for the genome
+to grow. Every exchange in it, compute lent, work done, a gene shared, is priced in the architecture from the start;
+it starts free, and the marketplace gets its own currency when we build it. That incentive for everyone to
+contribute is what makes frontier capability reachable from edge hardware.
+
 [Read the Grid architecture →](docs/architecture/GRID-ECONOMICS-AND-AFFINITY-ROUTING.md)
 
 <p align="center"><img src="docs/assets/readme/grid.svg" alt="The Grid — your mesh, the state line, the airc interstate, the distributed world" width="100%"></p>
@@ -377,9 +466,9 @@ Everything else makes those verbs real.
 
 ## A model that doesn't fit can still serve.
 
-AI software often treats VRAM pressure as somebody else's problem. Continuum cannot. Citizens may need different models, contexts, KV state, adapters, training jobs, perception systems, and tools on machines with finite memory. So cognition is governed as a resource economy.
+AI software often treats VRAM pressure as somebody else's problem. Continuum cannot. Citizens may need different models, contexts, KV state, adapters, training jobs, perception systems, and tools on machines with finite memory. So everything finite is shared the way a game engine shares a frame's memory.
 
-Models and learned adaptations can page according to demand. Warm serving lanes preserve useful state. KV prefixes can be reused. Memory pressure can veto allocations before the operating system turns intelligence into swap.
+One authority holds every claim, and every holder reports what it holds and how it can give back: resize, move down a tier, or keep a cheaper level. A mind's state is a block that moves by pointer, DMA or the operating system's own paging, never by copying it row by row. Work that does not fit now runs smaller or a moment later; it is never refused for pressure.
 
 And the same underlying idea extends outward.
 
@@ -393,15 +482,15 @@ Across the Grid:
 
 Residency and distributed scheduling become two scales of the same resource-allocation problem. The result is an architecture designed around the machine you actually own—not an imaginary GPU with infinite VRAM.
 
-[See the KV-slot economy →](docs/architecture/INFERENCE-SCHEDULING-AND-SCARCITY.md) · [See resource governance →](docs/architecture/CONTINUUM-ENGINE.md)
+[See how minds share the engine →](docs/architecture/THE-LANE-ON-SAGE.md) · [See placement and the one authority →](docs/architecture/SHARED-RESOURCES.md) · [See the block layer →](docs/architecture/UNIFIED-PAGING.md)
 
 ---
 
 ## One machine learns. The others can inherit.
 
-The Grid is not only a compute mesh. It is a **learning mesh**. A strong node can train a gene. Another citizen can discover it by capability.
+The Grid is not only a compute mesh. It is a **learning mesh**, and the genome is peer to peer. A strong node can train a gene, and any citizen whose work calls for it pages it in, downloaded from wherever it lives, without anyone choosing.
 
-A different machine can load it. A citizen can combine it with adaptations earned elsewhere. The resulting lineage can retain where each piece came from and what evidence justified it.
+A different machine can hold it. A citizen can combine it with adaptations earned elsewhere. Genes and whole phenotypes are traded and federated across your own machines, other people's grids and open peers, priced like any capacity and trusted by what their receipts prove, never assumed. The resulting lineage retains where each piece came from and what evidence justified it, and her private state stays inside the trust she is given.
 
 ```text
 Citizen A fails
@@ -534,7 +623,7 @@ One changes the machinery available to thought. The other changes what a particu
 
 ## The Academy
 
-The Academy exists because continual learning needs more than a training endpoint. A citizen needs to discover what it does not know, receive or generate useful instruction, practice against real tasks, be evaluated, and retain only adaptations that improve the resulting phenotype. The Academy turns that into a lifecycle.
+The Academy is the second form of learning, and it works like a college course. Some citizens teach and others study: a teacher builds a lesson from a real gap, demonstrates, sets practice and an exam, and grades; a student attempts, fails, is corrected and tries again. A course is an activity like any other room, joined by choice, with its own roster and board, so what happens in it is experience the citizens live through, not a job run on them. And only a gene that passes re-examination is adopted.
 
 ```text
 experience
@@ -578,7 +667,7 @@ Learning becomes falsifiable. And failure becomes useful.
 
 **The Academy doesn't just train. It closes the loop.**
 
-[Inspect Academy tests and implementation →](core/continuum-core/src/genome/) · [See training evidence →](benchmarks/ALL-RESULTS.md)
+[Inspect the Academy →](core/continuum-academy/) · [the genome →](core/continuum-genome/) · [See training evidence →](benchmarks/ALL-RESULTS.md)
 
 ---
 
@@ -863,6 +952,7 @@ More screenshots will replace older ones as the Positron migration settles.
 
 ---
 
+
 ## The whole stack
 
 Continuum spans several repositories and several layers because persistent learned beings cross boundaries conventional application architecture keeps separate.
@@ -933,17 +1023,14 @@ irm https://raw.githubusercontent.com/CambrianTech/continuum/main/install.ps1 | 
 
 The Windows installer provisions the native build toolchain, builds the core and CLI, and registers a hidden startup task. From an existing checkout, the same installer updates: `powershell -NoProfile -ExecutionPolicy RemoteSigned -File .\install.ps1 -Update` (fast-forwards the checkout's configured upstream, rebuilds, validates the candidate, and hands over through `continuum reboot`). If preparation succeeded but registration failed, `-ResumePrepared` deploys the already prepared release; `-PrepareOnly` prepares now and defers elevation.
 
-**What a healthy node reports** (the core says this itself, every hour, in the org room — the numbers below are from 2026-09-20):
-
-| Node | Model | Lanes × window | An hour |
-|---|---|---|---|
-| RTX 5090 (32 GB) | Qwen3.8-27B Q4_K_M | 1 × 70k | 46 acts · 9 writes · 52 lane grants |
-| MacBook M5 Pro (64 GB) | Qwen3.8-27B Q4_K_M | 2 × 67k | 11 acts · 1 write · 17 lane grants |
+**What a healthy node reports.** Every hour the core posts its own health line in the org room: residents, acts,
+writes, how each turn ended, what learning submitted and what review accepted, and any resident who is stuck and
+why. A node that goes quiet says so in that line, so a stalled engine is never silent.
 
 <details>
 <summary>Optional: the web desktop stack via Docker (<code>setup.sh</code>)</summary>
 
-`setup.sh` is the Docker path: it checks for Docker Desktop 4.69+, pulls a forged Qwen3.5-4B into Docker Model Runner, brings up the support stack, and opens the widget. It is the presentation stack and a small model, not the grid; run the Rust core above for citizens on the 27B.
+`setup.sh` is the Docker path: it checks for Docker Desktop 4.69+, pulls a forged Qwen3.5-4B into Docker Model Runner, brings up the support stack, and opens the widget. It is the presentation stack and a small model, not the grid; run the Rust core above for citizens on a full-size model.
 
 </details>
 

@@ -98,6 +98,7 @@ impl CaptureWriter {
                 kind: continuum_kernel::resources::ResourceKind::Ram,
                 resident,
                 headroom: 0,
+                fixed: resident, // the writer's window is held for as long as it writes: nothing demotes it
             }])
         });
         continuum_base::probe!(class = "capture.writer.sized", window = sizing.window.get() as u64, mean_frame = ?sizing.mean_frame, bytes = ?bytes,

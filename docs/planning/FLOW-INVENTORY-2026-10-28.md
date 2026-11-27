@@ -3,7 +3,7 @@
 A static read of `core/` at `fable/lanes-flow` 01ffb5ca0. No cargo was run; test-only code is excluded.
 Each row gives: location | what it gates or queues | the resource it protects | whether a live conversation waits on it | its category.
 Categories: **A** = flow primitive, **B** = context codec, **C** = real lock (keep), **D** = poll to make event-driven, **E** = dead or duplicate.
-The plan is [FLOW-IMPLEMENTATION-PLAN](../architecture/FLOW-IMPLEMENTATION-PLAN.md).
+The plan is [THE-LANE-ON-SAGE.md](../architecture/THE-LANE-ON-SAGE.md).
 
 **Found by the read:**
 - **The lane admission is dead.** After 7f9226d89, `LanePriority`, the directed reserve, the work ticket and ambient aging (`resource_admission/lanes.rs:399-617`, `progress.rs:171-219`) have no production caller.

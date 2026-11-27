@@ -6,11 +6,11 @@ This doc is the connective tissue **above** the local scheduler and **under** th
 
 **Read-first companions (this doc defers to them on their turf):**
 - [AI-COMMAND-NAMESPACE.md](AI-COMMAND-NAMESPACE.md) — the dumb `ai/*` command surface. **Commands carry no policy knobs.** The fabric is the smart daemon those dumb commands route into.
-- [INFERENCE-SCHEDULING-AND-SCARCITY.md](INFERENCE-SCHEDULING-AND-SCARCITY.md) — slot scheduling *inside one endpoint* (continuous batching, LoRA paging, adaptive quant). The fabric picks **which endpoint**; the scheduler runs the slots **within** the chosen one.
-- [INFERENCE-LANES-REALISTIC.md](INFERENCE-LANES-REALISTIC.md) — the local lane/lease MVP. The fabric treats the local `InferenceCoordinator` as **one endpoint among many.**
+- [THE-LANE-ON-SAGE.md](THE-LANE-ON-SAGE.md) — slot scheduling *inside one endpoint* (continuous batching, LoRA paging, adaptive quant). The fabric picks **which endpoint**; the scheduler runs the slots **within** the chosen one.
+- [THE-LANE-ON-SAGE.md](THE-LANE-ON-SAGE.md) — the local lane/lease MVP. The fabric treats the local `InferenceCoordinator` as **one endpoint among many.**
 - [GRID-ADDRESSING-AND-ROUTING.md](GRID-ADDRESSING-AND-ROUTING.md) — URI grammar, transport selection, the per-URI auth gate, `HandleRef` across the wire. The fabric uses these verbatim to reach remote endpoints; it does not invent a second addressing scheme.
 - [ADAPTER-SYSTEM-ARCHITECTURE.md](ADAPTER-SYSTEM-ARCHITECTURE.md) — the *core↔client* boundary doctrine. Model adapters are a **specialization** of that same "one interface, many swappable impls, run anywhere" principle, pointed at model backends instead of language SDKs.
-- [CONCURRENCY-STYLE-GUIDE.md](CONCURRENCY-STYLE-GUIDE.md) — the RTOS shape the fabric's health/discovery loop MUST conform to (own task + `interval` + `watch<Snapshot>` + atomic gate + `spawn_blocking` + quarantine).
+- [SAGE.md](SAGE.md) — the RTOS shape the fabric's health/discovery loop MUST conform to (own task + `interval` + `watch<Snapshot>` + atomic gate + `spawn_blocking` + quarantine).
 
 ---
 
@@ -100,7 +100,7 @@ This is the most important section. The fabric is ~80% composition. Reinventing 
 2. **Compute-lease boundary: remote does TEXT only.** A grid peer leases *token generation*. The brain, tool execution, vision/audio bridging, and memory stay local. `AircRemoteInferenceAdapter` declares `modalities = text-only` for exactly this reason. (`[[compute-lease-boundary]]`.)
 
 3. **Fail-loud, no fallback — but reroute-to-same-model is healing, not fallback.** This is the subtle, load-bearing distinction:
-   - **Healing (allowed):** local llama-server endpoint dies mid-need → reroute the *same model, same quality* to a grid peer that serves it, or retry after the custodian reloads it. The answer is unchanged; only the *where* changed. The video-player analogy from INFERENCE-SCHEDULING-AND-SCARCITY (drop 4K→1080p without the app noticing) applies **only to dimensions the caller already declared don't-care** (which machine, batch window) — never to model identity or answer quality.
+   - **Healing (allowed):** local llama-server endpoint dies mid-need → reroute the *same model, same quality* to a grid peer that serves it, or retry after the custodian reloads it. The answer is unchanged; only the *where* changed. The video-player analogy from THE-LANE-ON-SAGE (drop 4K→1080p without the app noticing) applies **only to dimensions the caller already declared don't-care** (which machine, batch window) — never to model identity or answer quality.
    - **Fallback (forbidden):** no endpoint can serve the requested model → **do NOT** silently substitute a lesser model, a heuristic stand-in, or a degraded answer. **Fail loud, name the cause** ("no endpoint serves `qwen3-coder`; nearest is peer X which is Blocked, peer Y which is offline"). (`[[fallbacks-are-illegal-fail-loud]]`.)
    - The test: *did the answer's fidelity change?* If no → healing. If yes → fallback → illegal.
 
@@ -108,7 +108,7 @@ This is the most important section. The fabric is ~80% composition. Reinventing 
 
 5. **Custodian owns bytes; fabric holds handles by id.** The fabric never writes model weights, never runs fuse/quant. It calls the custodian to make something warm and routes generation that references it. (§2.)
 
-6. **RTOS concurrency.** The endpoint health/discovery loop is one owned task with its own `interval`, publishing a `watch<FabricSnapshot>`, reading an atomic gate on the hot path, probing endpoints via `spawn_blocking` with a 100ms timeout, quarantining an endpoint after 3 consecutive probe failures. No synchronous probe on the routing hot path; no `Arc<Mutex>` across await; no env-tuned thresholds. (CONCURRENCY-STYLE-GUIDE.md.)
+6. **RTOS concurrency.** The endpoint health/discovery loop is one owned task with its own `interval`, publishing a `watch<FabricSnapshot>`, reading an atomic gate on the hot path, probing endpoints via `spawn_blocking` with a 100ms timeout, quarantining an endpoint after 3 consecutive probe failures. No synchronous probe on the routing hot path; no `Arc<Mutex>` across await; no env-tuned thresholds. (SAGE.md.)
 
 7. **Observability is first-class.** Every routing decision emits a capture event (why this endpoint? what were the candidates and scores? what healed?) through the existing `CaptureSink` pattern, Noop by default at zero hot-path cost, replayable. A route choice you can't replay is a guess. (OBSERVABILITY-AS-SUBSTRATE.md.)
 

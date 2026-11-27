@@ -216,7 +216,7 @@ mod tests {
     fn a_ram_only_board_offers_cpu_capacity_and_an_empty_board_offers_nothing() {
         use crate::resources::{KindLedger, LeaseBoard};
         let ram_only = LeaseBoard {
-            kinds: vec![KindLedger { kind: ResourceKind::Ram, capacity_bytes: 16 << 30, granted_bytes: 0, available_bytes: 8 << 30, measured_bytes: 0, physical_used_bytes: 0, external_bytes: 0, lease_count: 0 }],
+            kinds: vec![KindLedger { kind: ResourceKind::Ram, capacity_bytes: 16 << 30, granted_bytes: 0, available_bytes: 8 << 30, measured_bytes: 0, physical_used_bytes: 0, external_bytes: 0, fixed_bytes: 0, ceiling_bytes: 0, lease_count: 0 }],
             leases: Vec::new(),
             attributions: Vec::new(),
         };

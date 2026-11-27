@@ -32,36 +32,7 @@ pub use shadow::{FreshGeometry, ShadowMeasure};
 
 use super::*;
 
-/// One allocator a buffer comes from: the physical device it lives on, as the backend names it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BufferType(pub(super) NonNull<sys::ggml_backend_buffer_type>);
-
-// SAFETY: a ggml buffer type is a backend-owned singleton that lives for the process and is only
-// read through its query functions, so its pointer may cross threads with the slot that names it.
-unsafe impl Send for BufferType {}
-unsafe impl Sync for BufferType {}
-
-impl BufferType {
-    /// The backend's own name for this buffer type ("CUDA0", "Metal", "CPU", ...).
-    pub fn name(&self) -> Result<&str, std::str::Utf8Error> {
-        unsafe { CStr::from_ptr(sys::ggml_backend_buft_name(self.0.as_ptr())) }.to_str()
-    }
-
-    /// The device's own name ("CUDA0", "MTL0", "CPU", ...), when the buffer type has a device.
-    pub fn device(&self) -> Option<Result<&str, std::str::Utf8Error>> {
-        let device = unsafe { sys::ggml_backend_buft_get_device(self.0.as_ptr()) };
-        if device.is_null() {
-            return None;
-        }
-        let name = unsafe { sys::ggml_backend_dev_name(device) };
-        (!name.is_null()).then(|| unsafe { CStr::from_ptr(name) }.to_str())
-    }
-
-    /// Whether these bytes are host memory (RAM), not device memory.
-    pub fn is_host(&self) -> bool {
-        unsafe { sys::ggml_backend_buft_is_host(self.0.as_ptr()) }
-    }
-}
+pub use super::held::BufferType;
 
 /// The memory owner's answer for one reply's shared workspace. Native code asks it before it
 /// allocates; it must not allocate itself.
@@ -80,12 +51,13 @@ pub enum Optimizer {
     Sgd { learning_rate: f32, weight_decay: f32 },
 }
 
-/// How the backward pass walks the reply's chunks.
+/// How the backward pass walks the reply's chunks. The walk is always exact: each chunk's loss is
+/// carried back through the cached K/V and state of the chunks before it. A plain walk, stopping at
+/// each boundary, lost cosine 0.949 / norm 0.889 against the exact step (Qwen3.5-0.8B, a reply split
+/// at ubatch 64, fork test-walk-exact, M5 Metal, 2026-11-27), and the fork refuses a reply past one
+/// ubatch without it.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Walk {
-    /// Carry each chunk's loss backward through the cached K/V of the chunks before it (one exact
-    /// step per window). false stops the gradient at each chunk boundary.
-    pub exact: bool,
     /// How many cached positions before a chunk receive its gradient; `None` is the whole window.
     pub horizon: Option<NonZeroU32>,
 }
@@ -710,7 +682,7 @@ fn shadow_params(shadow: &Shadow, data: *mut c_void) -> sys::llama_opt_params {
         },
         adapter: shadow.adapter.ptr.as_ptr(),
         recompute: shadow.recompute,
-        walk_exact: shadow.walk.exact,
+        walk_exact: true,
         walk_horizon: native_horizon(shadow.walk.horizon),
         static_admission: Some(optimizer_buffer_admitted),
         static_admission_data: data,

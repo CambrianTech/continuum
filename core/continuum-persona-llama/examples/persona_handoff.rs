@@ -102,7 +102,7 @@ fn run() -> Result<(), String> {
     let control = {
         let mut ctx = model.new_context(params())?;
         let (home, _) = continuum_blocks::Instance::join(&root.path().join("control"), "control").map_err(|e| e.to_string())?;
-        let mut tier = UnifiedTier::new(&mut ctx, KvHome::Mapped(home));
+        let mut tier = UnifiedTier::new(&mut ctx, KvHome::Mapped { instance: home });
         let mind = MindId { persona: PersonaId(uuid::Uuid::new_v4()), epoch: Epoch(1) };
         let mut blocks = tier.blocks_for(mind).map_err(|e| e.to_string())?;
         run_turn(&mut tier, mind, &mut blocks, Turn::first(&prompt, 2 * decode_tokens))?.0
@@ -117,7 +117,7 @@ fn run() -> Result<(), String> {
     let (first_half, at, handed_ms, in_kv) = {
         let mut ctx = model.new_context(params())?;
         let (home, _) = continuum_blocks::Instance::join(&live, "old").map_err(|e| e.to_string())?;
-        let mut tier = UnifiedTier::new(&mut ctx, KvHome::Mapped(home));
+        let mut tier = UnifiedTier::new(&mut ctx, KvHome::Mapped { instance: home });
         let mut blocks = tier.blocks_for(her).map_err(|e| e.to_string())?;
         let (tokens, at) = run_turn(&mut tier, her, &mut blocks, Turn::first(&prompt, decode_tokens))?;
         let t = Instant::now();
@@ -139,7 +139,7 @@ fn run() -> Result<(), String> {
     if reclaimed.instances != 1 || reclaimed.bytes != 0 {
         return Err(format!("the old core's directory should be reclaimed empty, her file handed out of it: {reclaimed:?}"));
     }
-    let mut tier = UnifiedTier::new(&mut ctx, KvHome::Mapped(home));
+    let mut tier = UnifiedTier::new(&mut ctx, KvHome::Mapped { instance: home });
     if tier.restore(her, &record, kv.as_deref(), generation + 1).is_ok() {
         return Err("a record of another generation was taken".into());
     }

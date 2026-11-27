@@ -1,0 +1,213 @@
+//! What a claim can be granted on a place: its own free room, the free room of the physical pool it
+//! draws on, and less every other owner's floor not yet filled. The one rule for "room"
+//! (UNIFIED-PAGING.md, slice 3a; the kernel authority's `available_for`, moved here).
+//!
+//! - **Pools.** A place may draw on another place's physical memory (on unified memory, VRAM on RAM).
+//!   Every amount charged to it is charged to its pool too, once, and its room is the smaller of its
+//!   own and its pool's (Codex: one physical memory, one charge).
+//! - **Floors.** An owner may be guaranteed an amount of a place (a live call's VRAM). Another owner's
+//!   room is net of what that floor still lacks; the floor's owner may fill it. A floor is a guarantee
+//!   like capacity, enforced here, never traded by the law (Fable, on the mapping).
+
+use super::super::claim::{Need, Owner};
+use super::super::quantity::Quantity;
+use super::{Ledger, Stage};
+
+/// `amount` of `place` guaranteed to `owner`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Floor<P, Q> {
+    pub(super) owner: Owner,
+    pub(super) place: P,
+    pub(super) amount: Q,
+}
+
+impl<P: Copy + PartialEq + std::fmt::Debug, Q: Quantity> Ledger<P, Q> {
+    /// `place` draws on `pool`'s physical memory (`None`: its own). Tell it before granting on it.
+    /// A change moves what `place` already has charged from the pool it drew on to the new one, so a
+    /// later release returns it where it was posted (Codex on 7e348e827: a release after the backing
+    /// changed took 40 from a pool that never held it).
+    pub fn back(&mut self, place: P, pool: Option<P>) {
+        let pool = pool.filter(|pool| *pool != place);
+        let was = self.pool_of(place);
+        if was == pool {
+            return;
+        }
+        let Some(charged) = self.accounts(place) else {
+            self.pools.retain(|(at, _)| *at != place);
+            self.pools.extend(pool.map(|pool| (place, pool)));
+            return;
+        };
+        let (held, prepared) = (charged.held.units(), charged.prepared.units());
+        for (at, accounts) in self.places.iter_mut() {
+            if Some(*at) == was {
+                accounts.held = Q::of(accounts.held.units().saturating_sub(held));
+                accounts.prepared = Q::of(accounts.prepared.units().saturating_sub(prepared));
+            }
+            if Some(*at) == pool {
+                accounts.held = Q::of(accounts.held.units().saturating_add(held));
+                accounts.prepared = Q::of(accounts.prepared.units().saturating_add(prepared));
+            }
+        }
+        self.pools.retain(|(at, _)| *at != place);
+        self.pools.extend(pool.map(|pool| (place, pool)));
+    }
+
+    /// Guarantee `owner` `amount` of `place` (zero withdraws the floor).
+    pub fn floor(&mut self, owner: Owner, place: P, amount: Q) {
+        self.floors.retain(|floor| floor.owner != owner || floor.place != place);
+        if amount.units() > 0 {
+            self.floors.push(Floor { owner, place, amount });
+        }
+    }
+
+    /// Replace every floor with `floors`: a guarantee not named again is withdrawn.
+    pub fn floors(&mut self, floors: impl IntoIterator<Item = (Owner, P, Q)>) {
+        self.floors.clear();
+        self.floors.extend(floors.into_iter().filter(|(_, _, amount)| amount.units() > 0).map(|(owner, place, amount)| Floor { owner, place, amount }));
+    }
+
+    /// What `owner` could be granted on `place` now: the smaller of the place's free room and its pool's,
+    /// less what other owners' floors on that physical memory still lack. `None` for a place the ledger
+    /// has not been told of.
+    pub fn room_for(&self, owner: Owner, place: P) -> Option<Q> {
+        self.room_if(owner, place, &[])
+    }
+
+    /// What `owner` could be granted on `place` if `freed` were given back on the places it names (its
+    /// own holding, residency that would go with it): a planning answer, never a grant. Each place's free
+    /// room grows by what is freed on it, never past its capacity, and other owners' floors still bind
+    /// (the kernel authority's replace-myself budget, moved here).
+    pub fn room_if(&self, owner: Owner, place: P, freed: &[(P, Q)]) -> Option<Q> {
+        let on = |at: P| -> Option<u64> {
+            let accounts = self.accounts(at)?;
+            let given = freed.iter().filter(|(on, _)| *on == at).map(|(_, amount)| amount.units()).fold(0u64, u64::saturating_add);
+            // what is given back raises the budget before what is held is taken from it: a place already
+            // over its budget repays that first
+            let claimed = accounts.held.units().saturating_add(accounts.prepared.units());
+            Some(accounts.budget.units().saturating_add(given).saturating_sub(claimed).min(accounts.capacity.units()))
+        };
+        let free = match self.pool_of(place) {
+            Some(pool) => on(place)?.min(on(pool)?),
+            None => on(place)?,
+        };
+        let root = self.root(place);
+        let owed = self
+            .floors
+            .iter()
+            .filter(|floor| floor.owner != owner && self.root(floor.place) == root)
+            .map(|floor| floor.amount.units().saturating_sub(self.holding_of(floor.owner, floor.place).units()))
+            .fold(0u64, u64::saturating_add);
+        Some(Q::of(free.saturating_sub(owed)))
+    }
+
+    /// What `owner`'s `needs` lack now, as one ask: each place against its own room, and each physical
+    /// memory against the sum of every need drawing on it (Codex on 9bf241b3b: 60 on a place and 60 on
+    /// the pool of 100 it draws on were both granted, 120 prepared). One entry per short place, naming
+    /// the most it lacks.
+    pub(super) fn short(&self, owner: Owner, needs: &[Need<P, Q>]) -> Vec<Need<P, Q>> {
+        let mut short: Vec<Need<P, Q>> = Vec::new();
+        let mut lacks = |place: P, wanted: u64, room: Option<Q>| {
+            let lack = match room {
+                Some(room) => wanted.saturating_sub(room.units()),
+                None => wanted, // a place never told has no room
+            };
+            if lack == 0 {
+                return;
+            }
+            match short.iter_mut().find(|at| at.place == place) {
+                Some(at) => at.amount = Q::of(at.amount.units().max(lack)),
+                None => short.push(Need { place, amount: Q::of(lack) }),
+            }
+        };
+        for need in needs {
+            lacks(need.place, need.amount.units(), self.room_for(owner, need.place));
+        }
+        for (root, wanted) in self.by_memory(needs) {
+            lacks(root, wanted, self.room_for(owner, root));
+        }
+        short
+    }
+
+    /// The first need past what its physical memory could ever give, summed over every need of the ask
+    /// drawing on it: `(place, need, capacity)`.
+    pub(super) fn past_capacity(&self, needs: &[Need<P, Q>]) -> Option<(P, Q, Q)> {
+        for need in needs {
+            let capacity = self.pooled_capacity(need.place)?;
+            if need.amount > capacity {
+                return Some((need.place, need.amount, capacity));
+            }
+        }
+        self.by_memory(needs).into_iter().find_map(|(root, wanted)| {
+            let capacity = self.accounts(root)?.capacity;
+            (wanted > capacity.units()).then(|| (root, Q::of(wanted), capacity))
+        })
+    }
+
+    /// The sum of `needs` on each physical memory that more than one of them draws on.
+    fn by_memory(&self, needs: &[Need<P, Q>]) -> Vec<(P, u64)> {
+        let mut sums: Vec<(P, u64, usize)> = Vec::new();
+        for need in needs {
+            let root = self.root(need.place);
+            match sums.iter_mut().find(|(at, _, _)| *at == root) {
+                Some((_, sum, count)) => {
+                    *sum = sum.saturating_add(need.amount.units());
+                    *count += 1;
+                }
+                None => sums.push((root, need.amount.units(), 1)),
+            }
+        }
+        sums.into_iter().filter(|(_, _, count)| *count > 1).map(|(root, sum, _)| (root, sum)).collect()
+    }
+
+    /// Whether `need` fits within what `owner`'s own floor on its place still lacks: a guarantee, so it
+    /// never queues behind another owner's wait.
+    pub(super) fn within_floor(&self, owner: Owner, need: &Need<P, Q>) -> bool {
+        self.floors
+            .iter()
+            .find(|floor| floor.owner == owner && floor.place == need.place)
+            .is_some_and(|floor| need.amount.units() <= floor.amount.units().saturating_sub(self.holding_of(owner, need.place).units()))
+    }
+
+    /// What any owner could be granted on `place` now, floors aside: its free room, bounded by its
+    /// pool's. `None` for a place the ledger has not been told of.
+    pub fn free(&self, place: P) -> Option<Q> {
+        let own = self.accounts(place)?.free();
+        match self.pool_of(place) {
+            Some(pool) => Some(own.min(self.accounts(pool)?.free())),
+            None => Some(own),
+        }
+    }
+
+    /// The place's capacity, bounded by its pool's: the "never here" bound.
+    pub(super) fn pooled_capacity(&self, place: P) -> Option<Q> {
+        let own = self.accounts(place)?.capacity;
+        match self.pool_of(place) {
+            Some(pool) => Some(own.min(self.accounts(pool)?.capacity)),
+            None => Some(own),
+        }
+    }
+
+    pub(super) fn pool_of(&self, place: P) -> Option<P> {
+        self.pools.iter().find(|(at, _)| *at == place).map(|(_, pool)| *pool)
+    }
+
+    /// The physical memory `place` draws on: its pool, or itself.
+    fn root(&self, place: P) -> P {
+        self.pool_of(place).unwrap_or(place) // unwrap_or: a place with no pool is its own physical memory, a fact
+    }
+
+    /// What `owner` holds or has prepared on `place`.
+    fn holding_of(&self, owner: Owner, place: P) -> Q {
+        let on = |needs: &[Need<P, Q>]| needs.iter().filter(|need| need.place == place).map(|need| need.amount.units()).fold(0u64, u64::saturating_add);
+        let units = self
+            .claims
+            .values()
+            .map(|stage| match stage {
+                Stage::Prepared(claim) if claim.owner == owner => claim.prepared.iter().filter(|(need, _)| need.place == place).map(|(need, _)| need.amount.units()).fold(0u64, u64::saturating_add),
+                Stage::Committed { owner: held_by, held, .. } if *held_by == owner => on(held),
+                _ => 0,
+            })
+            .fold(0u64, u64::saturating_add);
+        Q::of(units)
+    }
+}

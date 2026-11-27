@@ -66,6 +66,40 @@ pub fn try_training_memory(daemon: &std::sync::Arc<ResourceDaemon>, admission: A
     }
 }
 
+/// Ask the authority for `bytes` of `kind` for `consumer`: granted now, or waiting as a ticket the caller
+/// keeps until a release grants it (never refused for pressure, only past what the memory could ever
+/// hold). The serving gate is not held while waiting; what is granted is spent through [`try_carve`],
+/// which checks it.
+pub fn ask_training_memory(daemon: &std::sync::Arc<ResourceDaemon>, consumer: &str, kind: ResourceKind, bytes: u64) -> Result<crate::resources::Ask, LeaseError> {
+    daemon.ask(&request(consumer, kind, bytes))
+}
+
+/// [`try_training_memory`], spent from `reserve` (a granted ask its owner keeps) instead of asked for:
+/// the bytes move from the reserve to the new lease in one transition. A serving gate that refuses now
+/// leaves the reserve as it was, for the caller to try again or let go.
+pub fn try_carve(daemon: &std::sync::Arc<ResourceDaemon>, admission: Admission<'_>, stage: Carve<'_>) -> Result<Result<LeaseGuard, TrainingWait>, crate::resources::CarveError> {
+    let Carve { reserve, consumer, bytes } = stage;
+    let decided = match admission {
+        Admission::Free(gate) => gate.hold_for_admission().map(Some),
+        Admission::Within(gate, operation) => gate.admit_within(operation).map(|()| None),
+    };
+    let hold = match decided {
+        Ok(hold) => hold,
+        Err(refusal) => return Ok(Err(TrainingWait::Serving(refusal))),
+    };
+    let Some(kind) = reserve.kind() else { return Err(LeaseError::MissingLease { lease_id: reserve.lease_id().to_owned() }.into()) };
+    let carved = daemon.carve(reserve, &request(consumer, kind, bytes));
+    drop(hold);
+    carved.map(Ok)
+}
+
+/// A stage to spend from a reserve: `bytes` of it, as `consumer`'s own lease.
+pub struct Carve<'a> {
+    pub reserve: &'a LeaseGuard,
+    pub consumer: &'a str,
+    pub bytes: u64,
+}
+
 /// The caller retains this guard through child exit/reap. This non-expiring, pinned lease cannot be
 /// reclaimed while the child runs: the lifetime of the process, not a timer, owns release.
 pub fn acquire_training_memory(consumer: &str, kind: ResourceKind, bytes: u64) -> Result<LeaseGuard, String> {

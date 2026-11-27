@@ -213,7 +213,7 @@ pub struct AwarenessSource;                            // RagSource: renders the
 pub struct MindState { pub cursors: BTreeMap<ActivityId, ActivityCursor>,
                        pub continuation: Option<Continuation>, pub dial: AttentionDial }
 
-// persona/perception_region.rs — the ServiceModule (CONCURRENCY-STYLE-GUIDE shape).
+// persona/perception_region.rs — the ServiceModule (SAGE.md shape).
 pub enum Wake { Perceive { activity: ActivityId, salience: Salience }, Continuation, Resume, Idle, Stop }
 pub struct PerceptionRegion { /* own task; per-membership inbound (attach set); watch::Sender<AwarenessSnapshot>;
                                  wake_tx: mpsc::Sender<Wake>; MindState; atomic gate; quarantine */ }

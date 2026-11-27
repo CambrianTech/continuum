@@ -32,6 +32,8 @@ use crate::component::{Need, Urgency};
 
 pub mod lane;
 pub mod control;
+pub mod device;
+pub mod room;
 pub mod sim;
 pub mod trace;
 pub mod tuner;
@@ -87,6 +89,9 @@ struct Mind {
     pass: f64,
     /// Seconds per step.
     step: Measured,
+    /// Bringing her KV back on the device, the whole copy (0 where a parked mind is a pointer): what a slice before
+    /// her must cover for a prefetch to finish under it.
+    fetch: Measured,
     /// Steps per turn: what predicts her remainder.
     turn_steps: Measured,
     /// Steps taken in the turn now running.
@@ -162,6 +167,7 @@ impl<K: Copy + Eq + Hash + Ord> Slicer<K> {
             Event::Done(mind) => self.done(mind),
             Event::Stepped(mind, took) => self.stepped(mind, *took),
             Event::Switched(mind, took) => self.switched(mind, *took),
+            Event::Fetched(mind, took) => self.fetched(mind, *took),
             Event::Decide(at, _) => return Some(self.next(start + *at)),
         }
         None
@@ -255,6 +261,24 @@ impl<K: Copy + Eq + Hash + Ord> Slicer<K> {
             self.window_switches = 0;
             self.window_worst = 0.0;
         }
+    }
+
+    /// Her KV took this long to come back, measured: what the slice before her must cover.
+    pub fn fetched(&mut self, mind: &K, took: Duration) {
+        if let Some(entry) = self.minds.get_mut(mind) {
+            entry.fetch.add(took.as_secs_f64(), self.policy.smoothing);
+        }
+    }
+
+    /// The fetch of the mind who comes after `running` (the lowest pass among the other ready): a slice shorter than
+    /// it never shortens her wait, since she waits for her KV either way, and only adds switches. None where nobody
+    /// is waiting.
+    fn next_fetch(&self, running: &K) -> Option<f64> {
+        self.minds
+            .iter()
+            .filter(|(k, m)| m.ready && *k != running)
+            .min_by(|(ka, a), (kb, b)| a.pass.total_cmp(&b.pass).then_with(|| ka.cmp(kb)))
+            .map(|(_, m)| m.fetch.seconds())
     }
 
     /// The longest slice that keeps every ready mind inside the wait bound. The lightest mind
@@ -403,7 +427,10 @@ impl<K: Copy + Eq + Hash + Ord> Slicer<K> {
     /// ready set stands now, never under one of her own steps.
     fn slice(&self, mind: &K) -> f64 {
         let step = self.step_of(mind);
-        self.control.slice().min(self.wall()).max(step).max(0.0)
+        // never under the next mind's fetch: under it the slice saves her no wait and costs the lane a switch (the 5090's
+        // day, simulated 2026-11-26: the wall shrank slices below an 8.7 GB copy and the lane spent a seventh of it switching)
+        let floor = self.next_fetch(mind).map_or(step, |fetch| step.max(fetch)); // map_or: nobody next, no fetch to cover
+        self.control.slice().min(self.wall()).max(floor).max(0.0)
     }
 
     /// One mind's step, in seconds: her measured mean, or nothing for a mind not seen stepping yet.
@@ -456,8 +483,13 @@ pub(crate) mod tests {
         pub(crate) const ENGINE: Costs = Costs { step: Duration::from_millis(20), switch: Duration::from_millis(26) };
     }
 
-    use super::sim::{run, MindLoad, Workload};
+    use super::sim::{simulate, Day, MindLoad, Workload};
+    use std::num::NonZeroU64;
     use super::*;
+    use crate::slice::device::Unified;
+    /// The lane's own tests decode only (their minds' prompts are 0), on the M5's measured prefill.
+    const M5: Unified = Unified::M5_AT_64K;
+    const CHUNK: std::num::NonZeroU64 = std::num::NonZeroU64::MIN;
     use fixture::ENGINE;
 
 
@@ -471,7 +503,7 @@ pub(crate) mod tests {
 
     /// A mind decoding without end from `starts`.
     fn decoding(mind: char, urgency: Urgency, starts: Duration) -> MindLoad<char> {
-        MindLoad { mind, need: need(urgency), changes: Vec::new(), step: ENGINE.step, turn: u64::MAX, rest: Duration::ZERO, starts }
+        MindLoad { mind, need: need(urgency), changes: Vec::new(), step: ENGINE.step, turn: u64::MAX, rest: Duration::ZERO, starts, prompt: 0, kv: 0 }
     }
 
     // what this catches: one mind holding the engine for a whole turn while equals wait (the decode
@@ -479,8 +511,8 @@ pub(crate) mod tests {
     // mind's next step comes inside the bound, and switching stays near what the wall allows.
     #[test]
     fn equal_minds_take_turns_inside_the_bound() {
-        let load = Workload { minds: ['a', 'b', 'c'].map(|m| decoding(m, Urgency::Want, Duration::ZERO)).to_vec(), switch: ENGINE.switch };
-        let (report, _) = run(&mut Slicer::new(policy()), &load, Duration::from_secs(60));
+        let load = Workload { minds: ['a', 'b', 'c'].map(|m| decoding(m, Urgency::Want, Duration::ZERO)).to_vec(), switch: ENGINE.switch, chunk: CHUNK };
+        let (report, _) = simulate(&mut Slicer::new(policy()), &load, Day { device: &M5, capacity: NonZeroU64::MAX, algorithm: "baseline", length: Duration::from_secs(60) });
         for mind in ['a', 'b', 'c'] {
             assert!((report.share[&mind] - 1.0 / 3.0).abs() < 0.02, "{mind} got {:.3} of the engine", report.share[&mind]);
         }
@@ -511,11 +543,11 @@ pub(crate) mod tests {
         // rises a minute in, urgent b gets twice a over the rest.
         let mut b = decoding('b', Urgency::Content, Duration::ZERO);
         b.changes = vec![(Duration::from_secs(60), need(Urgency::Urgent))];
-        let load = Workload { minds: vec![decoding('a', Urgency::Want, Duration::ZERO), b], switch: ENGINE.switch };
-        let (before, _) = run(&mut Slicer::new(policy()), &load, Duration::from_secs(60));
+        let load = Workload { minds: vec![decoding('a', Urgency::Want, Duration::ZERO), b], switch: ENGINE.switch, chunk: CHUNK };
+        let (before, _) = simulate(&mut Slicer::new(policy()), &load, Day { device: &M5, capacity: NonZeroU64::MAX, algorithm: "baseline", length: Duration::from_secs(60) });
         let ratio = before.share[&'a'] / before.share[&'b'];
         assert!((ratio - 2.0).abs() < 0.25, "want got {ratio:.2}x of content");
-        let (whole, _) = run(&mut Slicer::new(policy()), &load, Duration::from_secs(180));
+        let (whole, _) = simulate(&mut Slicer::new(policy()), &load, Day { device: &M5, capacity: NonZeroU64::MAX, algorithm: "baseline", length: Duration::from_secs(180) });
         // 60 s at 2:1 for a, then 120 s at 1:2: b's share over the whole run is (1/3 + 2 * 2/3) / 3.
         assert!((whole.share[&'b'] - 5.0 / 9.0).abs() < 0.04, "b's share {:.3} follows the rise", whole.share[&'b']);
         assert!(whole.worst().is_none_or(|w| w <= Duration::from_secs(1)), "through the rise nobody waited past the bound: {:?}", whole.worst());
@@ -555,8 +587,9 @@ pub(crate) mod tests {
         let load = Workload {
             minds: vec![decoding('a', Urgency::Want, Duration::ZERO), decoding('b', Urgency::Want, Duration::from_secs(60))],
             switch: ENGINE.switch,
+            chunk: CHUNK,
         };
-        let (report, _) = run(&mut Slicer::new(policy()), &load, Duration::from_secs(70));
+        let (report, _) = simulate(&mut Slicer::new(policy()), &load, Day { device: &M5, capacity: NonZeroU64::MAX, algorithm: "baseline", length: Duration::from_secs(70) });
         assert!(report.worst_wait.get(&'a').is_some_and(|w| *w <= Duration::from_secs(1)), "a waited {:?}", report.worst_wait.get(&'a'));
         assert!(report.share[&'b'] > 0.0);
     }

@@ -1741,7 +1741,7 @@ implement:
 - docs/architecture/CONTINUUM-ENGINE.md — RTOS contract every URI dispatcher inherits
 - docs/architecture/OBSERVABILITY-AS-SUBSTRATE.md — CaptureSink pattern the verdict log uses
 - docs/architecture/COMMAND-INFRASTRUCTURE-FIELD-MANUAL.md — current command system A.2.1 already lives in
-- docs/architecture/INFERENCE-LANES-REALISTIC.md — lane-allocation surface that becomes addressable per persona-internal URIs
+- docs/architecture/THE-LANE-ON-SAGE.md — lane-allocation surface that becomes addressable per persona-internal URIs
 - docs/architecture/GENOME-FOUNDRY-SENTINEL.md — foundry surface that becomes URI-addressable
 - docs/ARES-MASTER-CONTROL.md — the consumer that validates the addressing model (Phase 6+ "URL Routing")
 - docs/UNIVERSAL-PRIMITIVES.md — the two primitives Slice P extends

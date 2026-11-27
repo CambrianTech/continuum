@@ -112,7 +112,7 @@ Each stage: the ONE owner, its invariant, and what wins where docs or code disag
   is verified; only then is the capacity published.
 - **Priority:** activity temperature (goal 9). Until it is measured, Directed/Work/Ambient is its
   coarse proxy, named as such in code.
-- **Rules:** INFERENCE-LANES-REALISTIC, INFERENCE-SCHEDULING-AND-SCARCITY's slot pools,
+- **Rules:** THE-LANE-ON-SAGE, THE-LANE-ON-SAGE's slot pools,
   KV-CACHE-ECONOMY's `-c = window x lanes`, MINDS-SEATS "a seat is a lane", CONTEXT-IS-A-CAPABILITY-AXIS's
   lane count: SUPERSEDED (marked so, removed from CLAUDE.md's "read first").
 
@@ -1250,7 +1250,7 @@ state and separate measured safety failures from low activity or slow execution.
 
 ## Superseded (marked in the files, removed from "read first")
 
-INFERENCE-LANES-REALISTIC, INFERENCE-SCHEDULING-AND-SCARCITY (slot pools, adaptive quantizer),
+THE-LANE-ON-SAGE, THE-LANE-ON-SAGE (slot pools, adaptive quantizer),
 KV-CACHE-ECONOMY:28 (`-c = window x lanes`), MINDS-SEATS-AND-ADMISSION:62 (seat = lane),
 CONTEXT-IS-A-CAPABILITY-AXIS:44-66 (lane count), CLAUDE.md 3b's "in-process", ONE-BUDGET 3b's
 "flex_allocate deleted", CONTINUUM-ENGINE.md 4.1c's "done" for lane-free deliberation (not done),

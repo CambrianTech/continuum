@@ -9,7 +9,7 @@ Make expertise follow ordinary activity demand automatically, while preserving a
 Read the [adaptive genome lifecycle design](ADAPTIVE-GENOME-LIFECYCLE.md) first. Supporting documents:
 
 - [Persona cognition pipeline](../../architecture/PERSONA-COGNITION-PIPELINE.md): existing mind and live inference path.
-- [Concurrent substrate](../../architecture/CONCURRENCY-STYLE-GUIDE.md): ownership, snapshots, scheduling, and paging.
+- [Concurrent substrate](../../architecture/SAGE.md): ownership, snapshots, scheduling, and paging.
 - [Continue/fork/mint](GENE-LIFECYCLE-CONTINUE-FORK-MINT.md): refinement and evidence for divergence.
 - [HF repository architecture](../../architecture/GENOME-REPOSITORY-ON-HF.md) and [commons trust spine](../GENOME-COMMONS-TRUST-SPINE.md): publication and provenance.
 - [Activity reconciler](../../architecture/ACTIVITY-RECONCILER.md): restart and resumption ownership.

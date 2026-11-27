@@ -4,8 +4,8 @@
 primitives (see §7); introduces one new value object (the *Will* constraint) and one new
 learned component (the *effort predictor*). No new allocators, no hardcoded counts.
 
-Related: [`INFERENCE-SCHEDULING-AND-SCARCITY.md`](INFERENCE-SCHEDULING-AND-SCARCITY.md)
-(the ceiling), [`INFERENCE-LANES-REALISTIC.md`](INFERENCE-LANES-REALISTIC.md) (the floor),
+Related: [`THE-LANE-ON-SAGE.md`](THE-LANE-ON-SAGE.md)
+(the ceiling), [`THE-LANE-ON-SAGE.md`](THE-LANE-ON-SAGE.md) (the floor),
 [`CONCURRENT-MIND-AND-GOVERNOR.md`](CONCURRENT-MIND-AND-GOVERNOR.md),
 [`../cognition/FOCUS-AS-ATTENTION-TEMPERATURE.md`](../cognition/FOCUS-AS-ATTENTION-TEMPERATURE.md),
 [`MODEL-ENDPOINT-FABRIC.md`](MODEL-ENDPOINT-FABRIC.md), [`CONTINUUM-ENGINE.md`](CONTINUUM-ENGINE.md).

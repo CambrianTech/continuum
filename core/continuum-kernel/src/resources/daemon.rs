@@ -338,17 +338,8 @@ impl ResourceDaemon {
         self: &std::sync::Arc<Self>,
         req: &LeaseRequest,
     ) -> Result<LeaseGuard, LeaseError> {
-        // read the sources outside the lock (a slow reader never stalls other allocations), numbered before
-        // reading; then ingest in order and grant under one lock, against the newest accepted sample (this
-        // one, or a newer one a tick took meanwhile) (Codex on #6124)
-        let scans: Vec<_> = self.sources.iter().map(|s| (s.kind(), s.ceiling_bytes(), s.sample(), s.backed_by())).collect();
         let now = EpochMs::now().millis();
-        let mut g = self.governor.lock();
-        for (kind, ceiling, sample, backing) in scans {
-            g.set_capacity(kind, ceiling);
-            g.set_physical_sample(kind, sample);
-            g.set_backing(kind, backing);
-        }
+        let mut g = self.measured_now();
         let lease = g.acquire(req, now)?;
         self.publish_locked(&g);
         Ok(LeaseGuard { daemon: std::sync::Arc::clone(self), lease_id: lease.lease_id, released: false })
@@ -948,6 +939,7 @@ fn drift_should_report(drift: u64, last: &mut u64) -> bool {
     }
 }
 
+pub mod ask;
 mod said;
 pub use said::{Free, KindFree, FREE};
 
@@ -959,6 +951,9 @@ pub struct ResidentFloor {
     pub kind: ResourceKind,
     pub resident: u64,
     pub headroom: u64,
+    /// Of `resident`, what nothing can demote while the owner stays loaded (its weights): the part the
+    /// kind's ceiling is always short of (UNIFIED-PAGING.md, "never here" is a proven limit only).
+    pub fixed: u64,
 }
 
 /// Releases precisely this instance's contribution when its owner unloads.

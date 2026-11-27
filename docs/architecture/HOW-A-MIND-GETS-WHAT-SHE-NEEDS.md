@@ -20,7 +20,7 @@ This document builds on what is already decided and does not repeat it:
 - the grid governance, which this plugs into and does not parallel:
   [GRID-MARKET-CLEARING](GRID-MARKET-CLEARING.md) (nested prices from the pager to the N-node mesh),
   [ADAPTIVE-GRID-INTELLIGENCE](ADAPTIVE-GRID-INTELLIGENCE.md) (placement by measured candidate plans, and
-  learning the policy), [CAPACITY-FABRIC-AND-GOVERNOR](CAPACITY-FABRIC-AND-GOVERNOR.md) (capacity is live,
+  learning the policy), [SHARED-RESOURCES](SHARED-RESOURCES.md#capacity-is-live) (capacity is live,
   held loosely), [BEING-SOCIETY-GOVERNOR](BEING-SOCIETY-GOVERNOR.md) (the governor serves time, never dictates
   work), [CONCURRENT-MIND-AND-GOVERNOR](CONCURRENT-MIND-AND-GOVERNOR.md) (govern resources, never gate the mind).
 

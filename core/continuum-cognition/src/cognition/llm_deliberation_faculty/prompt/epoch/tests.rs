@@ -36,7 +36,6 @@ fn a_view_start_keeps_its_token_grant_with_uneven_message_sizes() {
             }],
             unallocated: 0,
             escalation_needed: false,
-            warnings: Vec::new(),
         };
         let sources: Vec<&dyn Source<ContextMessage>> = vec![&conversation];
         let (view, _) = View::start(&AllocationEstimate::uncalibrated(), Vec::new(), &sources, |claims| {
@@ -212,7 +211,7 @@ fn depth_one_token_under_her_newest() -> (Vec<continuum_context::view::Claim>, c
         required: false,
         state: continuum_context::flex::AllocationState::Satisfied,
     };
-    let plan = continuum_context::flex::FlexAllocation { allocations: vec![grant], unallocated: 0, escalation_needed: false, warnings: Vec::new() };
+    let plan = continuum_context::flex::FlexAllocation { allocations: vec![grant], unallocated: 0, escalation_needed: false };
     (vec![claim], plan)
 }
 
@@ -260,7 +259,6 @@ fn started_conversation(old: usize, long: &str, newest: usize, short: &str, gran
         }],
         unallocated: 0,
         escalation_needed: false,
-        warnings: Vec::new(),
     };
     let sources: Vec<&dyn Source<ContextMessage>> = vec![&conversation];
     let sized = |claims: &[Claim]| start_grants(claims, &plan, grant as usize, None).expect("an optional source is never refused");
@@ -333,7 +331,6 @@ fn a_view_start_keeps_its_token_grant_with_the_measured_template_overhead() {
             }],
             unallocated: 0,
             escalation_needed: false,
-            warnings: Vec::new(),
         };
         let (view, _) = View::start(&cost, Vec::new(), &sources, |claims| start_grants(claims, &plan, granted as usize, None).expect("funded optional source"))
             .expect("matching source grants");

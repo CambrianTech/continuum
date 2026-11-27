@@ -6,7 +6,7 @@ it does not claim that automatic paging or publication already works end to end.
 Extends [continue/fork/mint](GENE-LIFECYCLE-CONTINUE-FORK-MINT.md),
 [HF repositories](../../architecture/GENOME-REPOSITORY-ON-HF.md), and the
 [commons trust spine](../GENOME-COMMONS-TRUST-SPINE.md). Use the existing
-[concurrent substrate](../../architecture/CONCURRENCY-STYLE-GUIDE.md).
+[concurrent substrate](../../architecture/SAGE.md).
 
 ## Two independent controls
 

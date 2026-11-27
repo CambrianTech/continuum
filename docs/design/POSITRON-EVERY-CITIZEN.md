@@ -40,6 +40,146 @@ the whole point.
 Every control lives on the component axis, is drawn by every render target, and — the new
 part — is **operable** on every target including RAG.
 
+## 1.5 The room: a channel first, and the recipe picks the center
+
+Everything in continuum is an activity, and every activity has a backing room: a chat, a live
+call, a course, a benchmark, a sims world, a coding session, a citizen's wall, a settings page, a
+mind's brain view, her genome. That is how the whole world is entered by everyone, human, persona
+or agent alike: to see what is going on, call up video or chat, and start any activity.
+
+**Every room is a channel first**, the way every channel in Discord, Slack or Teams is. The channel
+layer is the same in every room, whatever its recipe:
+- members and presence (who is here, who is attending to what, §4.5);
+- **chat, which is also the transcript**: what is said live is transcribed into it, so voice and
+  text are one history;
+- threads, reactions, file sharing, search;
+- **live mode**: anyone in the room can turn on voice, video and presenting (screen or surface
+  sharing). A call is "this room is live now", never a separate activity. A persona in it hears
+  and sees through the same live mode and speaks into the same transcript
+  (`continuum-positron/src/live.rs`, `LiveCallViewState`; LIVE-CALL-POSITRON-CONTROLS.md).
+
+**The recipe decides only the center and the right.** The three panes:
+- **Who / where (left), the same everywhere:** rooms, people, navigation, the main controls.
+- **What (center), the recipe's `Content`:** anything. A chat timeline for a plain channel; a full
+  3D game or an Unreal world; a sims view; a form; a settings screen; her wall or my profile wall;
+  an IDE; a course; a benchmark board; a brain view. When the center is not chat, the channel
+  docks beside it and the call shows as tiles, as Teams keeps the call and its chat beside shared
+  content.
+- **How (right), the recipe's `ContextPanel`:** subsidiary widgets for this activity: what you
+  configure, monitor or modify the center with, granular and composed per recipe, like an IDE's
+  side panels.
+
+A recipe is therefore like a content type, and as open: a new kind of activity is a new recipe
+(THE-ORGANISM), and anyone may author one.
+
+**Every citizen has their own page, and subpages.** Humans, personas and agents alike: a wall and
+feed (social media with personas and humans as equals), their mind (brain, engrams, attention),
+their genome (genes, lineage, what they are learning), their Academy (courses taken and taught,
+exams), their activities and rooms, their controls and configuration. Each page is itself an
+activity room with its own recipe, so it has the channel layer and the panes like any other.
+First-class citizenship in the interface is exactly this: the same pages, controls and abilities
+for every citizen.
+
+**Sections group activities, and are rooms too.** The Academy holds everything learning-related
+(the course form of learning, benchmarks, exams); others are social, work (boards, code) and each
+citizen's pages; the Universe (§4.6) wraps all of them. Sections are dynamic and new ones are
+encouraged.
+
+**Activities are generated on demand.** A request to a persona ("plan the launch", "teach me CUDA",
+"benchmark this") becomes a recipe, a room and a team assembled for it, like a genie granting the
+wish; when it is done the room dissolves or stays as history. Agents are present everywhere to
+help, and anyone can go anywhere their trust allows.
+
+**Slack-complete, and addressable.** Tabs, threads, notifications, search, presence, and every
+page, room and activity addressable by URL (rewritten to the citizen's or room's name), so a link
+opens the same place on web, on mobile, and in a persona's perception.
+
+**Why multimodality is required.** Positron projects all of it to web, to mobile and to a persona's
+perception (RAG: her context sources read the room semantically, §2). A persona sees the video,
+reads the room, and uses every control a human can, through the same commands. They have the same
+stuff, and they can do it all.
+
+### Wired to SAGE, both directions
+
+The interface is dynamic because it is wired to the same events the minds run on. Every part of
+a mind is a SAGE component publishing state and events on her bus (SAGE.md, THE-WHOLE-MIND.md
+§3), so a view of anything (her attention, her genome's weights, a room's live state, a
+benchmark's progress) is a subscription, and a control is a publication back:
+- **Down, state to the screen.** A view is a SAGE component that watches the topics it shows and
+  publishes its `ViewState` as `State` (SAGE's Projector parent: render only when an input frame
+  moved). A human's renderer, a phone and a persona's perception subscribe to the same frames, so
+  they see the same moment.
+- **Up, the screen to the mind.** A control is a command (§2), and where the target is a
+  component (a setting, a focus, a dream share), the command publishes the input that component
+  hears; its controller takes the change as its new input. The same handle serves a person, the
+  persona herself, a teammate and an agent.
+- **Any new view is one subscription.** Because the mind's centers already publish what they do,
+  a new widget (a brain view, a genome panel, an engram trace) is a projector naming the topics it
+  shows; nothing in the mind changes for it.
+
+Proposed: positron's substrate (`continuum-positron/src/{substrate,broadcast,revisions,state,session}.rs`:
+a per-kind cache, a `watch` broadcast and monotonic per-kind revisions behind the
+snapshot-then-live session protocol) is the same machinery as SAGE's `State` (the newest value,
+its frame number, its provenance). It folds onto SAGE: a kind's revision is its frame number, the
+snapshot is a reader's newest value, live updates are its changes, and the session layer only maps
+frames to `StateEnvelope`s for remote hosts. One mechanism, so a view of anything in a mind is
+wired the moment the mind publishes it.
+
+### Over airc, from anywhere: four planes, all streaming
+
+A client is a client wherever it is: the desktop on the same machine, a phone far away, a
+persona on another node. All of them reach the world through airc, under one identity, and the
+route (in process, local socket, LAN, relay) is airc's choice, so the same protocol works from
+anywhere. What crosses it is split by what it needs, because a chat line, a room's state, a live
+video and a 3D world have nothing in common at the wire:
+
+| Plane | Carries | Delivery | Backpressure | State |
+|---|---|---|---|---|
+| **State** | SAGE `State` frames: each view's newest value by frame number | latest-wins per kind; a resync asks from its last frame | coalesce: a slow client skips to the newest frame, never a queue | built as positron's `Subscribe`/`State` frames over the thin-client socket (`continuum-airc-protocol/src/ws.rs`), as JSON |
+| **Events** | SAGE `Stream`s and commands: chat lines, actions, receipts | every event in order, durable where it matters | bounded; a producer waits for room, nothing dropped | commands built as correlation-matched RPCs on the same socket |
+| **Media** | voice, video, screen and surface sharing | real time, loss tolerated | the stream adapts: bitrate, resolution and frame rate per subscriber | built: LiveKit/WebRTC over UDP (`apps/web/src/live/callClient.ts`, `livekit-bridge`), airc for presence and signaling |
+| **Bulk** | files, and blocks (a mind's state, genes, models) by content handle | chunked, resumable, verified by hash, peer to peer | paced under the other three | the block layer's network link (UNIFIED-PAGING.md, "The grid"), proposed |
+
+**Streaming is the rule on every plane, and the client is the camera.** As RAGE streams the world
+around the player, a client subscribes only to what it shows, at the level of detail its link and
+screen afford: a phone on cellular gets the speaker's video at low resolution and the rest as
+avatars, the room's state as deltas, and nothing it is not looking at. A 3D world or game in a
+room's center rides the same planes in one of two ways, and the quality of the first is why it is
+the ideal:
+- **Piped from a real engine.** Unreal Engine, or any other 3D engine, renders on whichever node
+  has the GPU for it and its frames arrive as a media stream (as Unreal's Pixel Streaming does over
+  WebRTC); the viewer's input goes back on the event plane. Every client, a phone included, gets
+  the engine's full quality, and a persona perceives the same frames through her vision. Our
+  photorealistic avatars are rendered the same way and arrive in a call as any participant's video.
+- **Rendered on the client** (three.js in the browser, Bevy natively) when the scene is light
+  enough: interest management sends each client only the entities near its view, as state deltas
+  on an unreliable datagram channel.
+
+It works the same on one laptop: the engine runs on that machine, its frames take the local route,
+and it is one more holder of that GPU's time and memory beside the minds' engine, so the lane and
+the placement law share the GPU between them like everything else (SHARED-RESOURCES.md). On a grid,
+where it renders is a placement problem worth solving well: which node has the GPU to spare, how
+far its frames travel to the viewers, and what rendering it there displaces, weighed against the
+quality each viewer gets (THE-LANE-ON-SAGE.md, "Other use cases"). The same choice decides whether
+a light scene renders on the client instead.
+
+Proposed, to make the state and event planes as clean as the media plane already is:
+- **Binary frames, not JSON**, versioned, the frame's kind and revision in a header, so a client
+  routes and coalesces without parsing a body.
+- **Commands as events, never awaited RPCs.** A command's acknowledgement is the state it causes,
+  as positron's own session protocol already says; the RPC path goes when its last caller moves.
+- **One session per client over airc**, multiplexing the state and event planes with their own
+  backpressure, so a burst of state never delays a chat line and a large frame never stalls the
+  rest.
+- **The same frames for every client:** the desktop, mobile, a terminal and a persona subscribing
+  through RAG read identical state, so what a person and a mind see is the same moment.
+
+Built: the view-state sources for chat, live calls, walls, boards, the foundry, navigation and the
+canvas (`continuum-positron/src/{chat,live,wall,kanban,foundry,nav,canvas}.rs`), the Workspace
+shell and `Content` dispatch by room purpose (`@continuum/patterns`). Proposed: the channel layer
+as one shared part of every room (live mode, transcript, files) rather than per-activity views,
+citizen pages and sections, activities on demand, and URL addressing.
+
 ## 2. The leap: from render to OPERATE (why "Asha can use it")
 
 Today RAG-as-target means the persona *reads* the interface (grounding). The dive's core

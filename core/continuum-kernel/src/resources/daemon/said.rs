@@ -22,12 +22,27 @@ pub struct KindFree {
     pub kind: ResourceKind,
     pub capacity: u64,
     pub available: u64,
+    /// The most one wait could be granted with everything demotable demoted: capacity less what our
+    /// consumers can never demote while loaded (weights) and what others hold now. What a lesson is sized
+    /// within, never `capacity` (Cormac, 2026-11-26: Fit sized a 29.5 GB ask on a card serving held 30.7 GB of).
+    pub ceiling: u64,
 }
 
 impl Free {
     /// The projection of `board`.
     pub fn of(board: &LeaseBoard) -> Self {
-        Self(board.kinds.iter().map(|ledger| KindFree { kind: ledger.kind, capacity: ledger.capacity_bytes, available: ledger.available_bytes }).collect())
+        Self(
+            board
+                .kinds
+                .iter()
+                .map(|ledger| KindFree {
+                    kind: ledger.kind,
+                    capacity: ledger.capacity_bytes,
+                    available: ledger.available_bytes,
+                    ceiling: ledger.ceiling_bytes,
+                })
+                .collect(),
+        )
     }
 
     /// `kind`, or `None` for a kind the authority does not govern.

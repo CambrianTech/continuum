@@ -3,9 +3,9 @@
 **Status:** draft (BigMama). The governor-interface sections are marked **[M5 OWNS]** — edit
 them directly; they describe her lane and I've only sketched the seam I need from it.
 
-**Precedence:** this defers to [CONCURRENCY-STYLE-GUIDE](CONCURRENCY-STYLE-GUIDE.md),
+**Precedence:** this defers to [SAGE.md](SAGE.md),
 [GENOME-FOUNDRY-SENTINEL](GENOME-FOUNDRY-SENTINEL.md) (`SubstrateGovernor`), and
-[INFERENCE-LANES-REALISTIC](INFERENCE-LANES-REALISTIC.md). If it disagrees with those on a
+[THE-LANE-ON-SAGE](THE-LANE-ON-SAGE.md). If it disagrees with those on a
 substrate question, they win and this gets reconciled.
 
 ## What is proven (keep)
@@ -79,7 +79,7 @@ Rules:
    overcommit thrashes silently instead of OOMing loud). This derivation is task #287,
    my lane.
 2. **Push via `watch`, consume on your tick.** The canonical shape
-   (CONCURRENCY-STYLE-GUIDE): the governor publishes budget revisions on its own
+   (SAGE.md): the governor publishes budget revisions on its own
    cadence through its `watch::Sender<Snapshot>`; `ServingExpertPager` borrows the
    latest at each reconcile tick. Not per-event `PressureBroker` traffic — the broker
    is for relief demands; the budget rides the profile snapshot. Sticky hysteresis on

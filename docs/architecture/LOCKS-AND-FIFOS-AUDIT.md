@@ -18,7 +18,7 @@ are under `core/`.
 A guard or permit lives only as long as the resource it guards is in use. A mind waits on an
 event, never by holding something another mind needs. Work is submitted to queues with
 priorities, and one dispatcher hands out the resource ([[queues-and-signals-never-permits-held-across-work]],
-CONCURRENCY-STYLE-GUIDE.md, plan goal 9).
+SAGE.md, plan goal 9).
 
 ## Ranked findings
 

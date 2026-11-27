@@ -15,6 +15,8 @@ mod expert_eval_cb;
 pub use expert_eval_cb::*;
 mod chat;
 pub use chat::{ChatRefusal, ChatRender, ChatTemplates, ReasoningFormat, SamplingKnobs, TurnSampler};
+mod held;
+pub use held::{BufferHeld, Held, Unaccounted};
 mod learn;
 mod optimizer_slots;
 pub use optimizer_slots::{OptimizerLease, Role, Slot};

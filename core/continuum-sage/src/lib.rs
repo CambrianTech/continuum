@@ -19,27 +19,21 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 #![deny(clippy::await_holding_lock, clippy::significant_drop_in_scrutinee)] // clean on 2026-11-08 (#5858 CI); CI's clippy step enforces it
 
-mod flow;
 mod outbox;
 mod qos;
-mod scheduler;
 pub mod decide;
+pub mod place;
 pub mod slice;
 mod stage;
 pub mod clock;
 pub mod dataflow;
 pub mod component;
-pub mod sim;
 
-pub use flow::{Flow, Grant, Refused};
 pub use outbox::Outbox;
 pub use qos::Qos;
-pub use scheduler::{Aging, Decision, Dropped, Scheduler, Ticket};
 pub use slice::lane::{Decoding, Lane, Turn};
 pub use slice::{Next, Policy, Slicer};
 pub use stage::{spawn_stage, Capacity, Overflow, PushError, Stage, StageInput, StageWorker, Stopped};
 
 #[cfg(test)]
 mod tests;
-#[cfg(test)]
-mod sim_tests;

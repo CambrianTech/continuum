@@ -40,4 +40,13 @@ physicalUsedBytes: number,
  * claims (other processes / OS / a game). Reporting only; a grid contention
  * signal.
  */
-externalBytes: number, leaseCount: number, };
+externalBytes: number, 
+/**
+ * Of `measured`, what nothing can demote while its owner stays loaded (weights).
+ */
+fixedBytes: number, 
+/**
+ * The most one wait could be granted now with everything demotable demoted
+ * ([`ResourceLeaseLedger::ceiling`]): what a lesson is sized within.
+ */
+ceilingBytes: number, leaseCount: number, };

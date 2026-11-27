@@ -2758,9 +2758,14 @@ dependencies = [
 name = "continuum-blocks"
 version = "0.1.0"
 dependencies = [
+ "continuum-base",
  "continuum-host",
+ "continuum-sage",
  "tempfile",
  "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -2933,6 +2938,7 @@ name = "continuum-context"
 version = "0.1.0"
 dependencies = [
  "continuum-base",
+ "continuum-sage",
  "continuum-tool-protocol",
  "serde",
  "serde_json",

@@ -23,6 +23,8 @@ pub enum Event<K> {
     Done(K),
     Stepped(K, Duration),
     Switched(K, Duration),
+    /// Her KV came back on the device in this long, measured: the whole copy, whether or not a slice hid it.
+    Fetched(K, Duration),
     /// It decided at this offset from the run's start, and what.
     Decide(Duration, Next<K>),
 }

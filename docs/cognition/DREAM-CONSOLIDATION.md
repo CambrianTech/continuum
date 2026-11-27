@@ -36,7 +36,7 @@ prompts) and the BLUEHERON/47823 live tests.
   slice 1 (preferring facts *over* their source episodes is a later refinement).
 - **A background cadence exists** — `persona/service_module.rs` `tick()` (~250ms). The
   dream runs as a per-persona sub-task here (own work, not on the response hot path) — per
-  the [CONCURRENCY-STYLE-GUIDE](../architecture/CONCURRENCY-STYLE-GUIDE.md), own
+  the [SAGE.md](../architecture/SAGE.md), own
   task/interval, never blocking a turn.
 - **Inference is available to a background module** — `ai/adapter.rs` `AIProviderAdapter`
   (the inference adapter the persona already uses). The distillation LLM call goes

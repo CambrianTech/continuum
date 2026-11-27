@@ -24,15 +24,18 @@ How the whole thing composes. Read these first; on architecture questions they w
 | Design question | Chapter |
 |---|---|
 | How do modules compose, expose commands and run across nodes? | [Module architecture](architecture/MODULE-ARCHITECTURE.md) |
-| How do the parts of one mind run independently and respond to events? | [Concurrent mind and governor](architecture/CONCURRENT-MIND-AND-GOVERNOR.md). The [stage contract](architecture/STAGE-CONTRACT.md) specifies proposed inputs, outputs, wakeups and completion. |
-| How does a governor share capacity among consumers? | [Shared resources](architecture/SHARED-RESOURCES.md) describes the common owner and resource-specific adapters. |
-| How does memory move between VRAM, pinned and unified RAM, flash and cold disk, with no encoding? | **[Unified paging](architecture/UNIFIED-PAGING.md)**: one block layer (`continuum-blocks`: tiers detected per node, links that are a pointer, a DMA or the OS's paging of a mapped file, and the `Streamer` component that places blocks ahead of use). Every pager (minds' KV, model weights, experts, genes) is its consumer. |
-| How do minds share the GPU: who steps, how a switch is a pointer, how every CPU core stays busy? | **[The lane on SAGE](architecture/THE-LANE-ON-SAGE.md)** (the engine's design, built and measured; read before any engine, lane, swap, KV or paging change) and [SAGE](architecture/SAGE.md), "The lane". [Continuum Engine](architecture/CONTINUUM-ENGINE.md) covers admission, the memory model and context reuse. |
-| How does a resident learn on the serving engine? | [In-process learning](architecture/IN-PROCESS-LEARNING.md) describes the design and migration dependencies. |
+| What is a mind and how does she run: her parts, attention, many activities, memory, the genome, the three forms of learning? | **[The whole mind](architecture/THE-WHOLE-MIND.md)**. |
+| What does every worker stand on: components, the bus, need, the clock, the rules every part keeps? | **[SAGE](architecture/SAGE.md)**. |
+| How does a concern's long work run: what wakes it, what it costs, how much one run does, how it is stopped, what it publishes? | **[The stage contract](architecture/STAGE-CONTRACT.md)**. |
+| How is everything finite that is shared given out and given back: claims, the one authority, holders, every lease type? | **[Shared resources](architecture/SHARED-RESOURCES.md)**. |
+| How does memory move between VRAM, pinned and unified RAM, flash and cold disk, with no encoding? | **[Unified paging](architecture/UNIFIED-PAGING.md)**: the block layer (`continuum-blocks`), its links (a pointer, a DMA, the OS's paging of a mapped file) and the `Streamer`; every pager is its consumer. |
+| Who steps on the engine next and for how long; how a switch is a pointer; how every CPU core stays busy? | **[The lane on SAGE](architecture/THE-LANE-ON-SAGE.md)**. Read before any engine, lane or serving change. |
+| How is a mind's act made fast: the efficiency law, the engine's objects, its context codec, its configuration? | **[Continuum Engine](architecture/CONTINUUM-ENGINE.md)**. |
+| How does a resident learn on the serving engine? | [In-process learning](architecture/IN-PROCESS-LEARNING.md): a reply learned on her live sequence as the exact walk in tiles, how a tile is priced and fitted, and the learner as a stage on the Core. |
 | How are native data, entity schemas, typed queries and migrations represented? | [Rust ORM architecture](infrastructure/RUST-ORM-ARCHITECTURE.md) covers the boundary between storage and serving. [Disk resource reporters](../core/continuum-kernel/src/system_resources/disk_reporters.rs) implement retention accounting. |
 | How does work move between nodes? | [Grid addressing and routing](architecture/GRID-ADDRESSING-AND-ROUTING.md) and [grid capacity](architecture/GRID-ELASTIC-CAPABILITY.md). |
 | How do voice and video reach a resident? | [Live call architecture](live/LIVE-CALL-ARCHITECTURE.md) and [perception facts](architecture/PERCEPTION-FACTS.md). |
-| Where is a slow turn losing time? | [Flow implementation plan](architecture/FLOW-IMPLEMENTATION-PLAN.md) and [runtime probes](architecture/RTOS-DEBUGGER-PROBES.md). |
+| Where is a slow turn losing time? | [Runtime probes](architecture/RTOS-DEBUGGER-PROBES.md), and the lane's measurements in [the lane on SAGE](architecture/THE-LANE-ON-SAGE.md). |
 
 Revise the chapter that owns the contract and link to it from its callers. When a failure changes the design, link the fixing change and its evidence from the affected rule. Mark proposed behavior until the implementation and live result establish it.
 

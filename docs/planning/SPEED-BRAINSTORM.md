@@ -105,7 +105,7 @@ tried live with a before/after receipt.
   eviction designed in KV-CACHE-ECONOMY; today a closure seam at `inference/slots.rs:619`).
   Reward: prefill seconds avoided per byte of residency.
 - **Predictive warming:** restore the mind most likely to act next before her turn (designed
-  in INFERENCE-SCHEDULING-AND-SCARCITY, not built). Reward: restore time hidden.
+  in THE-LANE-ON-SAGE, not built). Reward: restore time hidden.
 - **Checkpoint placement:** where to keep recurrent-state checkpoints on hybrid models so a
   divergence rolls back the least (today only at user-message starts, every ~4k tokens; the
   cold restores diverge at token ~574). Reward: replayed tokens per act.
@@ -131,6 +131,58 @@ before and after, send improvements back upstream (Codex submits).
 | Strata | hot MoE experts in VRAM, the rest in RAM, by measured use | `core/expert-pager-policy` (shipped for streaming MoE, control law in EXPERT-PAGING-CONTROL-LAW.md) extended to live serving, one budget with KV and genes | check before reading code | 2e23c67b |
 | Gufo | prompt-cache restore with thinking on (their reuse died after turn one; TTFT 199 s -> 4.1 s once fixed); the multi-hour soak method | our act-boundary reuse and the comparison harness | MIT | f2782aad |
 | llama.cpp | everything we ride on | keep the fork close, upstream our proven work | MIT | |
+
+### Lessons: sybil-solutions/inference-optimisation-skill (read 2026-11-26)
+
+A hand hill-climb of one server for one user, on Intel Arc, RTX and Apple. Its worked example is our
+model class (Qwen3.5-MoE 35B-A3B hybrid: 30 GDN + 10 full-attention layers, 256 experts, top-8). Read:
+SKILL.md, references/levers.md, references/ceilings.md. Not read: methodology, gotchas, publishing,
+scripts (Python; we take numbers and method, never the harness). Their numbers are priors on their
+hardware, not ours (Joel: "The stats alone are worth knowing. We can beat all of this.").
+
+**Method we take:**
+- **Ceiling first, progress as a fraction of it.** Decode bytes per token = dense + experts × top_k/n
+  + LM head (10-25% of the total on a large vocabulary; 0.382 of 1.648 GB in their example) + KV × context
+  + recurrent state × 2, over measured bandwidth (a device copy, never the spec: 115 vs 153.6 GB/s).
+  Prefill ≈ 2 × active params FLOPs a token at ~50% of measured peak. Their B390 reached ~55% of the
+  decode ceiling and ~94% of the 256K prefill ceiling.
+- **Noise is ±5-10% run to run.** Median of ≥6, control / candidate / control, accept only beating both
+  controls with no regression past ~3%, repeat a surprising win. Three levers inside noise is a plateau.
+- **Unified memory hides GPU allocations from MemAvailable and cgroups**: measure driver residency
+  (`ioreg` / `vm_stat` on Apple). Our Placer's per-tier budget on the M5 must come from that.
+- **Never force-kill mid-batch**: drain, then stop (GPU driver faults seen). Plan S7.
+
+**Their stats (priors to beat):**
+
+| Lever | Measured there |
+|---|---|
+| Persisted JIT / compile caches | startup 113 s -> 43 s; 22 min -> 7 min |
+| Decode graphs | c1 14.4 -> 28.4, 16 -> 32, 11 -> 27 tok/s |
+| Draft LM head pruned to used vocab blocks | +27% (512 of 1,940 blocks, 98.6% coverage), +14%; worth more than an extra draft |
+| Draft length by load | k=4 at c1, 3 at c4, 2 at c16; at 128K 1 draft 29.6 vs 3 drafts 15.5 tok/s |
+| MTP on bandwidth-poor hardware | Apple M4 6.35 -> 3.25 tok/s with 3 drafts; llama.cpp MTP 36.7 vs 45.4 off, hard prompts |
+| Verify as decode-style attention | prefill kernel grew 3.5 ms a 1K context (47 -> 104 ms at 16K) |
+| Sampling on the GPU | ~3 ms a step, +10% c1 |
+| q8_0 KV on a hybrid (KV in 16 of 64 layers) | 45.4 -> 27.0 tok/s on llama.cpp: KV quant is a trade |
+| FP8 KV | halved one FA kernel (39 vs 69-74 TFLOPS); fp16 block dequant + LSE merge: 760 -> 1,059 tok/s |
+| Hybrid state slots | cap concurrency, not KV tokens; exact 1,600-token block vs 2,048: c16 10 -> 14 streams |
+| Prefix caching (engines silently disable it on hybrids) | turn-2 TTFT 36 s -> 0.45 s (66K), 29 s -> 0.95 s (32K) |
+| Prefill chunk vs others' stalls | 8,192 -> 2,048: worst stall 7.1 -> 1.95 s for -4% decode |
+| Int8 prefill GEMMs, Hadamard-rotated | 1.89x linears, NLL +0.17%, top-1 97.2%, decode bit-exact (labelled lossy) |
+| MoE grouped GEMM tiles | 64-row M-block +7% prefill bit-exact; NT=2 +22% at c16 |
+| Fusing small kernels under graphs | 0% three times: the time is in the big kernels |
+| Faster attention library before writing one | +7-18%; hand-written FA 48 vs 61 TFLOPS |
+
+**Where we beat it, by design, not by hand:** every lever above is a constant someone climbed to on one
+box. Ours are SAGE decisions learned per node and workload, each against its ceiling: chunk size is
+already the lane's per-step answer from every waiter's slack (not one tuned number); draft length,
+KV type, batch width and which minds are resident are `decide` use cases with replay; their "one
+change, controls on both sides" is the dyno's A/B run continually; and the grid places work on whichever
+node's ceiling is highest for it. A recipe is one point; a system that learns on every node keeps moving.
+
+**To check on ours:** the M5 decode ceiling for the served 35B as a validator (bytes a token over a
+measured copy); what `llamacpp_adapter`'s per-residency KV quant picks for the hybrid; whether a draft
+runs on the M5 and whether it wins there; GPU sampling (in the backlog, now with a measured reason).
 
 Our specific integration goal (what we have to prove, not a claim about others): many persistent
 minds with senses sharing one engine, each with her own memory paged across GPU, RAM and disk;

@@ -17,8 +17,4 @@ pub enum Qos {
 impl Qos {
     /// Every class, highest first.
     pub const ALL: [Qos; 4] = [Qos::Interactive, Qos::Work, Qos::Utility, Qos::Background];
-
-    pub(crate) fn rank(self) -> u32 {
-        self as u32
-    }
 }

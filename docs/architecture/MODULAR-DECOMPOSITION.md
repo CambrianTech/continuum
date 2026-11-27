@@ -5,7 +5,7 @@ live findings #25 (decompose the monolith), #26 (faculties degrade-not-panic),
 #27 (intra-machine addressing).
 **Parent docs:** [MODULE-ARCHITECTURE](MODULE-ARCHITECTURE.md) ·
 [CONTINUUM-ENGINE](CONTINUUM-ENGINE.md) ·
-[CONCURRENCY-STYLE-GUIDE](CONCURRENCY-STYLE-GUIDE.md) ·
+[SAGE.md](SAGE.md) ·
 [ORGANISM-OS-ARCHITECTURE](ORGANISM-OS-ARCHITECTURE.md) ·
 [ADAPTER-SYSTEM-ARCHITECTURE](ADAPTER-SYSTEM-ARCHITECTURE.md)
 
@@ -87,7 +87,7 @@ anywhere and reach the rest over the bus.
 
 The `ServiceModule` trait already carries `config()` (name, priority, cadence)
 and the runtime quarantines a module after 3 consecutive tick failures
-(CONCURRENCY-STYLE-GUIDE). Decomposition surfaces this at the *service* boundary:
+(SAGE.md). Decomposition surfaces this at the *service* boundary:
 
 - **Health** — each profile exposes `health` for its hosted modules; a
   supervisor (or the container orchestrator) probes it. A degraded module marks
@@ -175,7 +175,7 @@ applied uniformly), the grid is not a layer bolted on top — it is what the mod
 graph looks like when its nodes are placed across machines. Serving the engine as its own
 GPU process (`llama-server`) behind `/v1` was the first decomposition.
 
-## 10. Guardrails (per CONCURRENCY-STYLE-GUIDE)
+## 10. Guardrails (per SAGE.md#rules-every-part-keeps)
 - No parallel manager/coordinator hierarchy — profiles reuse `Runtime` +
   `ModuleRegistry`, not a new orchestrator.
 - Each service still own-task + `interval` tick + `watch` snapshot; no sleep-loops.

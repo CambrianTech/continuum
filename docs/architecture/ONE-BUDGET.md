@@ -3,7 +3,7 @@
 **Status:** design, precedence-winning (2026-10-30; supersedes the 2026-07-20 VRAM-only version of this file).
 Owner of the contract: Fable. Owners of each migration are named in "The rewrite".
 
-**Read first:** [`CONCURRENCY-STYLE-GUIDE.md`](CONCURRENCY-STYLE-GUIDE.md) (the daemon shape),
+**Read first:** [`SAGE.md`](SAGE.md) (the daemon shape),
 [`CONTINUUM-ENGINE.md`](CONTINUUM-ENGINE.md) (the View, which stays the one codec of what she sees).
 
 ## Why
@@ -112,7 +112,7 @@ the area:
 | 4 | Host RAM: every cache/ring in the RAM inventory takes a `GrantRx`; delete their literals; sentinel watchdog reads its grant | crate owners per the placement map; Fable for cognition/mind |
 | 5 | Disk: class handles, writers migrated, KEEP/age constants deleted, unbounded writers claimed, resolved home everywhere | BigMama (live/media), Cormac (genome/dreaming), Codex (engine), Fable (cognition/mind/capture) |
 | 6 | A mind's context: window from her KV grant; every prompt reader from the turn grant; the 12 out-of-View pushes become Sources; `ContextBudget` reduced to the grant's view or deleted | Fable |
-| 7 | Superseded docs folded here and deleted (RESOURCE-ARCHITECTURE, CAPACITY-FABRIC-AND-GOVERNOR, MOE-SERVING-GOVERNED-BUDGET, EVERY-MODEL-INCLUDED-VIA-L1-BUDGET, STORAGE-SERVING-TIER-GOVERNOR, LIVE-AVATAR-BUDGET where they define a second rule) | Fable |
+| 7 | Superseded docs folded here and deleted (RESOURCE-ARCHITECTURE, MOE-SERVING-GOVERNED-BUDGET, EVERY-MODEL-INCLUDED-VIA-L1-BUDGET, STORAGE-SERVING-TIER-GOVERNOR, LIVE-AVATAR-BUDGET where they define a second rule) | Fable |
 
 ### Slice 0: enforcement before any migration
 
@@ -592,7 +592,7 @@ gets its drain by being defined, and one without a declaration does not compile.
    - *Durable* (identity, trust, genes, task records, unfinished work, a mind's memory): never deleted by
      pressure; a durable class over its grant is a refusal or an escalation the authority publishes, with the
      bytes named.
-3. **A drain is a background stage of the class owner**, on the authority's tick (CONCURRENCY-STYLE-GUIDE: own
+3. **A drain is a background stage of the class owner**, on the authority's tick (SAGE.md: own
    task, interval, bounded batches, blocking work in `spawn_blocking`, never a lock or transaction across a
    wait). It never runs on a boot or open path and never blocks a reader or writer; a pass can stop anywhere and
    resume. A shrinking grant is the request; the class acknowledges what it actually reclaimed (contract

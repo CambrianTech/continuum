@@ -181,16 +181,39 @@ impl ResourceGovernor {
         self.ledger.release(lease_id)
     }
 
+    /// Ask for `req`: granted now, or waiting until room is released (the ledger's `ask`).
+    pub fn ask(&mut self, req: &LeaseRequest, now_ms: u64) -> Result<super::ledger::Asked, LeaseError> {
+        let lease_id = self.mint_id(&req.consumer_id);
+        self.ledger.ask(req, &lease_id, now_ms)
+    }
+
+    /// Spend part of the lease `reserve` as a lease of its own (the ledger's `carve`).
+    pub fn carve(&mut self, reserve: &str, req: &LeaseRequest, now_ms: u64) -> Result<ResourceLease, super::ledger::CarveError> {
+        let lease_id = self.mint_id(&req.consumer_id);
+        self.ledger.carve(reserve, req, &lease_id, now_ms)
+    }
+
+    pub fn withdraw(&mut self, ask: continuum_sage::place::ClaimId) -> bool {
+        self.ledger.withdraw(ask)
+    }
+
+    pub fn take_granted(&mut self, ask: continuum_sage::place::ClaimId) -> Option<ResourceLease> {
+        self.ledger.take_granted(ask)
+    }
+
     pub(super) fn adjust_residency(&mut self, consumer: &str, pools: &[super::daemon::ResidentFloor], change: fn(u64, u64) -> u64) {
         let mut footprints = Vec::new();
         for kind in ResourceKind::ALL {
             let mut resident = self.ledger.measured_by(consumer, kind);
             let mut floor = self.ledger.reservation(consumer, kind);
+            let mut fixed = self.ledger.fixed_by(consumer, kind);
             for pool in pools.iter().filter(|pool| pool.kind == kind) {
                 resident = change(resident, pool.resident);
                 floor = change(floor, pool.resident.saturating_add(pool.headroom));
+                fixed = change(fixed, pool.fixed.min(pool.resident));
             }
             self.ledger.reserve(consumer, kind, floor);
+            self.ledger.fix(consumer, kind, fixed);
             if resident > 0 {
                 footprints.push(ConsumerFootprint { kind, bytes: resident, detail: "native resident allocation".into() });
             }

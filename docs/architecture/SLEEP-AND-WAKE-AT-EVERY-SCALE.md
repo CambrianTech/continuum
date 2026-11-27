@@ -27,8 +27,8 @@ eviction owner and the last copy is never evicted, a concern the brain never had
 
 Companions: [ONE-RESIDENT-MODEL-PATIENT-DOCTOR-DREAM](ONE-RESIDENT-MODEL-PATIENT-DOCTOR-DREAM.md)
 (the DREAM stage, §8-9), [CONCURRENT-MIND-AND-GOVERNOR](CONCURRENT-MIND-AND-GOVERNOR.md),
-[BEING-SOCIETY-GOVERNOR](BEING-SOCIETY-GOVERNOR.md), [CAPACITY-FABRIC-AND-GOVERNOR](CAPACITY-FABRIC-AND-GOVERNOR.md),
-[INFERENCE-LANES-REALISTIC](INFERENCE-LANES-REALISTIC.md), [CONCURRENCY-STYLE-GUIDE](CONCURRENCY-STYLE-GUIDE.md).
+[BEING-SOCIETY-GOVERNOR](BEING-SOCIETY-GOVERNOR.md), [SHARED-RESOURCES](SHARED-RESOURCES.md),
+[THE-LANE-ON-SAGE](THE-LANE-ON-SAGE.md), [SAGE.md](SAGE.md).
 This document owns one question those leave open: **when does a mind dream, how deeply, and how
 fast does she wake.**
 
@@ -124,7 +124,7 @@ The anti-pattern every one of these replaced: wait until full, then stop the wor
 |---|---|---|---|
 | Pressure | her unlearned examples | the sum over the minds it serves, with each mind's age | the minds homed on the node, plus leased-in ones |
 | Opportunity | nobody directed at her | idle slots, no queued turns | a node where nobody is engaged, spare GPU on a peer |
-| Arousal / wake | the amygdala trips; her dream pauses at the next chunk | a slot becomes busy; the engine yields at the chunk boundary (fork `/train/pause`, `before_window`) | a directed turn routes to the mind's home; a borrowed node returns the lease (CAPACITY-FABRIC §4: a recallable loan, never a block) |
+| Arousal / wake | the amygdala trips; her dream pauses at the next chunk | a slot becomes busy; the engine yields at the chunk boundary (fork `/train/pause`, `before_window`) | a directed turn routes to the mind's home; a borrowed node returns the lease (SHARED-RESOURCES.md#capacity-is-live: a recallable loan, never a block) |
 | Share | pulled by her drive, deferred by her urgency | the sum of what its minds pull, capped by the lane total and the wake latency (aging: oldest debt is never starved) | pulled to where night is: an idle node offers dream steps to minds whose home is busy |
 | Wake latency | one dream chunk | one dream chunk + slot scheduling | the lease recall + one chunk |
 
@@ -177,7 +177,7 @@ input), the same rule as serving: the engine batches, nothing queues minds in fr
 ## 8. Open questions (for Codex, Cormac, BigMama)
 
 - The shape of `sleep_drive`: a logistic in pressure whose midpoint opportunity moves, or a sum of
-  two terms? Fit both on the simulator (CAPACITY-FABRIC §9) before the road.
+  two terms? Fit both on the simulator (SHARED-RESOURCES.md#capacity-is-live) before the road.
 - Urgency's source: the activity's recipe declares stakes, or her cognition sets it per act? (Agency
   says hers, and it is: she gives her work its stakes; others can tell her what is at stake for them, never set it.)
 - Pressure weighting: does a correction (negative affect after her turn) weigh more than a pass?

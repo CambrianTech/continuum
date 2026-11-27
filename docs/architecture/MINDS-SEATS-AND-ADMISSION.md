@@ -239,7 +239,7 @@ What this adds to the design above:
   covering every trait including the personality gene, with each trait's edits recorded as her
   own changes over the seeded default.
 - **Being online is placement, decided by the grid.** The allocator (this document's admission,
-  and FLOW-IMPLEMENTATION-PLAN §6e's grants from demand events) decides who is online now,
+  and THE-LANE-ON-SAGE.md's grants from demand events) decides who is online now,
   where, and on which base model. Engagement wakes a mind (a mention, a card, a call, a peer's
   request); quiet lets her go dormant with her home, memory and work intact.
 - **The base model is per placement, the mind is not.** The same mind may run on a 35B MoE on

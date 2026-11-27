@@ -16,8 +16,8 @@ canonical paths. Follow-up tasks queued per bypass.
 
 **Parents:**
 - [`AI-COMMAND-NAMESPACE.md`](AI-COMMAND-NAMESPACE.md)
-- [`INFERENCE-SCHEDULING-AND-SCARCITY.md`](INFERENCE-SCHEDULING-AND-SCARCITY.md)
-- [`INFERENCE-LANES-REALISTIC.md`](INFERENCE-LANES-REALISTIC.md)
+- [`THE-LANE-ON-SAGE.md`](THE-LANE-ON-SAGE.md)
+- [`THE-LANE-ON-SAGE.md`](THE-LANE-ON-SAGE.md)
 
 ---
 
@@ -64,7 +64,7 @@ the implementation.
 ### `modules/ai_provider.rs:802, 1036` — AIProviderModule command handlers
 
 These ARE the legacy command surface (pre-handle-store). Canonical
-for the routes they implement. As of [[INFERENCE-LANES-REALISTIC.md]]
+for the routes they implement. As of [[THE-LANE-ON-SAGE.md]]
 the modern surface is `ai/inference/*` commands → handle store;
 the AIProviderModule legacy paths should eventually migrate but for
 now they're the command handler itself, not a bypass.

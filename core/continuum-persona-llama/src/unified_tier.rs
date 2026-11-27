@@ -145,11 +145,17 @@ impl<'c, 'm> UnifiedTier<'c, 'm> {
         Self { ctx, streams: [None; STREAMS], last_rebind: None, in_flight: None, applied_genes: None, home, batch }
     }
 
+    /// What the context holds now, per allocator (UNIFIED-PAGING.md, slice 3b).
+    pub fn held(&self, into: &mut llama::Held) -> Result<(), llama::Unaccounted> {
+        self.ctx.held(into)
+    }
+
     /// Her KV memory: a block over her own file, attached so the stream views it, where this node's
-    /// device can view host memory; the fork's own otherwise (the fork's `storage_bytes` is 0 then, and
-    /// the tier keeps that answer for every later mind).
+    /// device can view host memory. Where it cannot (a discrete GPU), none of her own: bound, her rows are
+    /// the stream's own memory, and they move out and back by copy, so the context's one backing is the
+    /// only device memory any mind uses (UNIFIED-PAGING.md, "A mind's memory").
     fn kv_memory(&mut self, mind: MindId, native: &mut PersonaBlocks) -> Result<KvMemory, TierRefusal> {
-        let KvHome::Mapped(instance) = &self.home else { return Ok(KvMemory::Native) };
+        let KvHome::Mapped { instance } = &mut self.home else { return Ok(KvMemory::Native) };
         let dir = instance.dir().to_path_buf();
         let bytes = PersonaBlocks::storage_bytes(self.ctx);
         if bytes == 0 {
@@ -158,15 +164,7 @@ impl<'c, 'm> UnifiedTier<'c, 'm> {
             return Ok(KvMemory::Native);
         }
         if !PersonaBlocks::storage_viewable(self.ctx) {
-            // a device that cannot wrap host memory (CUDA): her storage in the fork's own device memory, viewed the
-            // same way; where it does not fit she moves by row copy until room is made (the Placer's decision)
-            return Ok(match native.reserve_storage(self.ctx) {
-                Ok(()) => KvMemory::Device,
-                Err(refusal) => {
-                    continuum_base::probe!(class = "persona.kv_home.no_device_room", persona = %mind.persona.0, why = %refusal, bytes = bytes as u64, "her KV storage did not fit in device memory: she moves by row copy");
-                    KvMemory::Native
-                }
-            });
+            return Ok(KvMemory::Native);
         }
         let path = dir.join(live_name(mind));
         let (memory, at, len) = KvMemory::mapped(mind, path, bytes).map_err(|_| refused(mind, "her KV file could not be mapped"))?;
@@ -243,7 +241,7 @@ impl<'c, 'm> UnifiedTier<'c, 'm> {
             blocks.saved = Saved::Restored;
             return Ok(blocks);
         };
-        let KvHome::Mapped(instance) = &self.home else { return Err(refused(mind, "her KV file needs a mapped home on this node")) };
+        let KvHome::Mapped { instance, .. } = &self.home else { return Err(refused(mind, "her KV file needs a mapped home on this node")) };
         let live = live_file(instance, mind);
         let bytes = PersonaBlocks::storage_bytes(self.ctx);
         if bytes == 0 || !PersonaBlocks::storage_viewable(self.ctx) {

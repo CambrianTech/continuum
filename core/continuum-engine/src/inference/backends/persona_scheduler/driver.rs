@@ -103,6 +103,8 @@ mod basis;
 mod divergence;
 use basis::Basis;
 mod prefix;
+mod on_board;
+mod prefill_rate;
 pub(crate) use learning::{Job as LearningJob, Lesson as LearningLesson, Measuring as LearningMeasuring};
 
 use ending::{Ending, Stop, Suspension};
@@ -158,6 +160,8 @@ struct Driver<'c, 'm> {
     lane: lane::Lanes,
     /// What the trainer told, worked between her turns.
     learning: learning::Learning,
+    /// What the Core holds, on the resource board (driver/on_board.rs).
+    on_board: on_board::CoreHeld,
     /// The stop has suspended every mind: no new turn is taken.
     stopping: bool,
 }
@@ -278,7 +282,7 @@ pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
     };
     let mut lane = lane;
     lane.resume(store.dir(), &config.model);
-    let mut tier = UnifiedTier::new(&mut ctx, KvHome::Mapped(instance));
+    let mut tier = UnifiedTier::new(&mut ctx, KvHome::Mapped { instance });
     let parked = resume(&mut tier, &mut store, &config.model, &log);
     log.info(&format!("persona scheduler ready: {geometry:?} (one mind decodes at a time; {} minds resumed)", parked.len()));
     state.send_replace(EngineState::Ready(geometry));
@@ -297,8 +301,10 @@ pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
         model_id: config.model.clone(),
         stopping: false,
         learning: learning::Learning::default(),
+        on_board: on_board::CoreHeld::new(),
         lane,
     };
+    driver.on_board.read(driver.engine.tier());
     // The frame loop (CONTINUUM-ENGINE 4.15): submissions are drained without blocking, and each
     // frame advances ONE turn by ONE step (a prefill chunk or a token), chosen by the SAGE lane
     // (driver/lane.rs): any mind past her wait bound steps next, an addressed mind takes the next step. What
@@ -687,6 +693,7 @@ impl Driver<'_, '_> {
         } else {
             turn.spent.prefill += took;
         }
+        prefill_rate::observe(turn, prefill_from);
         self.record.send(record::Fact::Busy { started: stepping, ended: stepped });
         if turn.spent.milestones.step(advanced.is_ok()) {
             let progress = transition::At::FirstProgress { since_admit_ms: record::whole_ms(turn.submitted.elapsed()), step_ms: record::whole_ms(took), prefill: !decoding };

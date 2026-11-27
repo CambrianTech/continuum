@@ -364,11 +364,11 @@ visible debt.
 
 1. **This doc** (substrate doctrine) — the WHY behind everything.
 2. **[CONTINUUM-ENGINE.md](CONTINUUM-ENGINE.md)** — the runtime contract every module inherits.
-3. **[CONCURRENCY-STYLE-GUIDE.md](CONCURRENCY-STYLE-GUIDE.md)** — the canonical RTOS shape (interval, watch, atomic gate, quarantine).
+3. **[SAGE.md](SAGE.md)** — the canonical RTOS shape (interval, watch, atomic gate, quarantine).
 4. **[OBSERVABILITY-AS-SUBSTRATE.md](OBSERVABILITY-AS-SUBSTRATE.md)** — half the substrate is structured capture of decisions.
 5. **[PERSONA-COGNITION-PIPELINE.md](PERSONA-COGNITION-PIPELINE.md)** — what a persona actually IS.
 6. **[GENOME-FOUNDRY-SENTINEL.md](GENOME-FOUNDRY-SENTINEL.md)** — the artifact-sharing economy on top of the substrate.
-7. **[INFERENCE-LANES-REALISTIC.md](INFERENCE-LANES-REALISTIC.md)** — the realistic floor for inference scheduling.
+7. **[THE-LANE-ON-SAGE.md](THE-LANE-ON-SAGE.md)** — the realistic floor for inference scheduling.
 8. **`COGNITION-AS-FLOW.md`** (Doc 2, in flight) — the concrete redesign of cognition as event-fanout.
 9. **`HARDWARE-ANALOGS-CATALOG.md`** (Doc 3, in flight) — the explicit brain ↔ substrate primitive mapping.
 
@@ -418,7 +418,7 @@ review.
 
 - It is not the substrate's API reference. See the per-module docs
   for those.
-- It is not the implementation guide. See [`CONCURRENCY-STYLE-GUIDE`]
+- It is not the implementation guide. See [`SAGE.md`]
   for the RTOS shape.
 - It is not the test discipline doc. See CLAUDE.md § "test
   infrastructure" for that.

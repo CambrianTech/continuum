@@ -1,6 +1,7 @@
 #![cfg(test)]
     use super::*;
     use crate::resources::capacity::MockCapacitySource;
+    use crate::resources::Ask;
     use crate::resources::consumer::{ConsumerFootprint, ReclaimRequest, ReclaimStatus};
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -713,4 +714,54 @@
         assert_eq!(free(2), 6_000, "an unchanged board says nothing");
         drop(guard);
         assert_eq!(free(3), 10_000, "a release is said, with nothing else changing");
+    }
+
+    // what this catches (Codex's contract for the trainer, 2026-11-26): kernel leases take everything, a
+    // seat's ask waits, a kernel release grants it as a lease its owner takes without asking again, and a
+    // ticket dropped while waiting leaves no wait behind.
+    #[tokio::test]
+    async fn an_ask_waits_on_the_authority_and_is_granted_on_release() {
+        let src = Arc::new(MockCapacitySource::new(ResourceKind::Vram, 10_000));
+        let config = DaemonConfig { tick_interval: Duration::from_secs(3600), min_reclaim_budget: Duration::from_millis(100), governor: GovernorConfig { min_dwell_ms: 0, graceful_grace_ms: 50 } };
+        let daemon = ResourceDaemon::start(vec![src], vec![], config);
+        let serving = daemon.acquire_guarded(&req("serving", 10_000, u64::MAX, ReclaimPolicy::Pinned)).expect("test: serving takes everything");
+        let Ok(Ask::Waiting { ticket: mut seat, short }) = daemon.ask(&req("learning:her", 5_000, u64::MAX, ReclaimPolicy::Graceful)) else {
+            panic!("test: the seat waits")
+        };
+        assert_eq!(short, 5_000);
+        assert!(seat.granted().is_none(), "nothing released yet");
+        let Ok(Ask::Waiting { ticket: gone, .. }) = daemon.ask(&req("learning:him", 1_000, u64::MAX, ReclaimPolicy::Graceful)) else {
+            panic!("test: a second seat waits")
+        };
+        drop(gone); // its owner stopped wanting it
+        drop(serving); // a kernel release
+        let lease = seat.granted().expect("test: granted on the release, not asked again");
+        assert_eq!(lease.bytes(), 5_000);
+        assert_eq!(daemon.board().kinds.iter().find(|k| k.kind == ResourceKind::Vram).map(|k| k.available_bytes), Some(5_000), "the withdrawn seat holds nothing");
+        drop(lease);
+        assert_eq!(daemon.board().kinds.iter().find(|k| k.kind == ResourceKind::Vram).map(|k| k.available_bytes), Some(10_000));
+    }
+
+    // what this catches (Cormac and Codex, the 5090, 2026-11-26): a lesson sized within the whole card
+    // asked for 29.5 GB while the core held 30.7 GB of it, and waited forever. The ceiling is capacity
+    // less what nothing can demote (residents' weights) and what others hold; a residency let go moves its
+    // bytes to external until the physical reading drops, so it never opens room that is not there. The
+    // byte counts are the 5090's board at 15:07Z; the core's weights split is a fixture, not a reading.
+    #[tokio::test(start_paused = true)]
+    async fn the_ceiling_is_capacity_less_fixed_weights_and_what_others_hold() {
+        const CAPACITY: u64 = 34_190_917_632;
+        const USED: u64 = 32_436_649_984;
+        const CORE: u64 = 30_721_118_208;
+        const CORE_WEIGHTS: u64 = 17_000_000_000;
+        const EMBED: u64 = 633_205_120;
+        let source = Arc::new(MockCapacitySource::new(ResourceKind::Vram, CAPACITY));
+        source.set_used(USED);
+        let daemon = ResourceDaemon::start(vec![source as Arc<dyn CapacitySource>], vec![], DaemonConfig::default());
+        let ceiling = |daemon: &ResourceDaemon| Free::of(&daemon.board()).kind(ResourceKind::Vram).map(|kind| kind.ceiling);
+        let _embed = daemon.hold_residency("embed", [ResidentFloor { kind: ResourceKind::Vram, resident: EMBED, headroom: 0, fixed: EMBED }]);
+        let core = daemon.hold_residency("core", [ResidentFloor { kind: ResourceKind::Vram, resident: CORE, headroom: 0, fixed: CORE_WEIGHTS }]);
+        let external = USED - CORE - EMBED;
+        assert_eq!(ceiling(&daemon), Some(CAPACITY - CORE_WEIGHTS - EMBED - external), "the core's KV and workspace count toward the ceiling, its weights never");
+        drop(core);
+        assert_eq!(ceiling(&daemon), Some(CAPACITY - EMBED - (USED - EMBED)), "let go but still resident: external, not room");
     }

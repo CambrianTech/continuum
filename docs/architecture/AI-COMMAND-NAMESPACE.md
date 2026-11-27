@@ -17,7 +17,7 @@ consolidation under `ai/*` is task #106.
 - [`EVERY-MODEL-INCLUDED-VIA-L1-BUDGET.md`](EVERY-MODEL-INCLUDED-VIA-L1-BUDGET.md) — inclusivity thesis
 
 **Siblings:**
-- [`INFERENCE-SCHEDULING-AND-SCARCITY.md`](INFERENCE-SCHEDULING-AND-SCARCITY.md) — the daemons behind the commands
+- [`THE-LANE-ON-SAGE.md`](THE-LANE-ON-SAGE.md) — the daemons behind the commands
 - [`COGNITION-ALGORITHMS.md`](COGNITION-ALGORITHMS.md) — what the AI surface serves
 
 ---
@@ -141,7 +141,7 @@ Each modality has a trait + a registry + many concrete impls:
   replay, registered as production peers per
   [`inference-is-an-adapter`])
 - Remote-grid impls (route to a peer machine over airc; same trait,
-  remote execution — see [`INFERENCE-SCHEDULING-AND-SCARCITY.md`]
+  remote execution — see [`THE-LANE-ON-SAGE.md`]
   §"Cross-grid")
 
 The trait is the contract. Callers don't care which impl handles
@@ -202,7 +202,7 @@ What this means in practice:
 The command surface stays stable as the daemons grow arbitrarily
 smart. Adding sophistication never breaks callers. This is the
 substrate's universal narrow-interface / rich-implementation OOP
-rule. See [`INFERENCE-SCHEDULING-AND-SCARCITY.md`] for the
+rule. See [`THE-LANE-ON-SAGE.md`] for the
 inference daemon's design; equivalents exist (or will exist) per
 modality.
 

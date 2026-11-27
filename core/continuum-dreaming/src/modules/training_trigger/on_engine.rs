@@ -22,10 +22,10 @@ use super::in_place::{bucket_stem, decide, start, Decided, Decision, Pending};
 use super::seat_run::{Heard, NotTold, SeatRun};
 use super::{BucketKey, TrainingTriggerState};
 use crate::genome::learner::example::learn_messages;
-use crate::genome::learner::seat::{lease_memory, Authority, LeasedMemory, SeatRefusal};
+use crate::genome::learner::seat::{lease_memory_within, Authority, LeasedMemory, SeatRefusal};
 use crate::inference::learning::{leased, Fit, LearnPort, Lesson, Measure, MemoryRow, Optimizer, PersonaId, Said, SeatId, ShadowSource};
 use crate::inference::training_admission::TrainingWait;
-use crate::resources::{Free, ResourceKind};
+use crate::resources::{Ask, AskTicket, Free, LeaseGuard, ResourceKind};
 use crate::inference::learning::FreshShadow;
 use continuum_kernel::system_resources::disk_reporters::ClassWriter;
 
@@ -95,8 +95,10 @@ enum HeldOff {
     /// never memory to wait for. Seated again only on another node engine (the 5090, 2026-11-24: a
     /// fresh shadow measured at 428,581,700,665,600 VRAM bytes was measured again on every wake).
     Defect { engine: Weak<dyn LearnPort> },
-    /// Short of memory: seated again once `needed` bytes of `kind` are free on the authority's board.
-    Memory { kind: ResourceKind, needed: u64 },
+    /// Short of memory: the whole seat was asked of the authority, and the bucket is held until the
+    /// ask is granted. The grant becomes the bucket's reserve, and its seat's stages are carved from it
+    /// with no second ask (Codex's contract, 2026-11-26). Dropping the hold withdraws the ask.
+    Asked { ticket: AskTicket },
 }
 
 /// The seats the trainer holds on the node engine, and the buckets it holds off.
@@ -104,6 +106,9 @@ enum HeldOff {
 pub(crate) struct OnEngine {
     seats: parking_lot::Mutex<HashMap<SeatId, EngineSeat>>,
     held_off: parking_lot::Mutex<HashMap<BucketKey, HeldOff>>,
+    /// Each bucket's granted reserve: what its ask was granted, carved stage by stage as its seat
+    /// leases, and released (what is left of it) once the seat is seated or let go.
+    reserves: parking_lot::Mutex<HashMap<BucketKey, Vec<LeaseGuard>>>,
     /// Each bucket's minted competence signature, with the rows it was minted from: minting embeds
     /// every example, so it is minted again only when the bucket's rows change (Codex on the 5090
     /// replay, 2026-11-25: a bucket decide() answered NotNow was re-embedded on every wake).
@@ -124,20 +129,27 @@ impl OnEngine {
         self.seats.lock().get(&seat).map(|held| held.key.clone())
     }
 
-    /// Whether `key` is still held off on `port`, with `free` what the authority shows: a defect
-    /// while the same engine serves, a memory wait while too little is free. A hold that no longer
-    /// applies is dropped.
-    fn holds(&self, key: &BucketKey, port: &Arc<dyn LearnPort>, free: &Free) -> bool {
+    /// Whether `key` is still held off on `port`: a defect while the same engine serves, an ask until it
+    /// is granted. A granted ask becomes the bucket's reserve and the hold is dropped.
+    fn holds(&self, key: &BucketKey, port: &Arc<dyn LearnPort>) -> bool {
         let mut held = self.held_off.lock();
-        let still = match held.get(key) {
+        let still = match held.get_mut(key) {
             None => return false,
             Some(HeldOff::Defect { engine }) => std::ptr::addr_eq(engine.as_ptr(), Arc::as_ptr(port)),
-            Some(HeldOff::Memory { kind, needed }) => short(free, *kind, *needed),
+            Some(HeldOff::Asked { ticket }) => !self.reserve_granted(key, ticket),
         };
         if !still {
             held.remove(key);
         }
         still
+    }
+
+    /// Take `ticket`'s grant into `key`'s reserve, if it was granted.
+    fn reserve_granted(&self, key: &BucketKey, ticket: &mut AskTicket) -> bool {
+        let Some(granted) = ticket.granted() else { return false };
+        let key = key.clone();
+        self.reserves.lock().entry(key).or_default().push(granted);
+        true
     }
 
     /// Say the pending buckets this engine does not serve the base of, when they or the served base
@@ -159,53 +171,78 @@ impl OnEngine {
 
     /// Whether any bucket waits for memory.
     fn waits_for_memory(&self) -> bool {
-        self.held_off.lock().values().any(|hold| matches!(hold, HeldOff::Memory { .. }))
+        self.held_off.lock().values().any(|hold| matches!(hold, HeldOff::Asked { .. }))
     }
 
-    /// The buckets held for memory that `free` now covers and that hold no seat, their holds
-    /// dropped: what a release wakes. A bucket whose seat is still being let go is left to its
-    /// Released ([`Self::covered`]).
-    fn freed(&self, free: &Free) -> Vec<BucketKey> {
+    /// The buckets whose asks were granted and that hold no seat, their grants taken into their reserves
+    /// and their holds dropped: what a release wakes. A bucket whose seat is still being let go is left
+    /// to its Released ([`Self::covered`]).
+    fn freed(&self) -> Vec<BucketKey> {
         let seats = self.seats.lock();
         let mut held = self.held_off.lock();
-        let ready: Vec<BucketKey> = held
-            .iter()
-            .filter(|(key, hold)| matches!(hold, HeldOff::Memory { kind, needed } if !short(free, *kind, *needed)) && !seats.values().any(|seat| seat.key == **key))
-            .map(|(key, _)| key.clone())
-            .collect();
+        let mut ready = Vec::new();
+        for (key, hold) in held.iter_mut() {
+            if seats.values().any(|seat| seat.key == *key) {
+                continue;
+            }
+            if let HeldOff::Asked { ticket } = hold {
+                if self.reserve_granted(key, ticket) {
+                    ready.push(key.clone());
+                }
+            }
+        }
         for key in &ready {
             held.remove(key);
         }
         ready
     }
 
-    /// Whether `key`, its seat just let go, is held for memory that `free` now covers (the hold
-    /// dropped). A release said while that seat was still being let go woke nothing for it, so its
-    /// Released seats it again.
-    fn covered(&self, key: &BucketKey, free: &Free) -> bool {
+    /// Whether `key`, its seat just let go, had its ask granted (the grant taken into its reserve and
+    /// the hold dropped). A release said while that seat was still being let go woke nothing for it, so
+    /// its Released seats it again.
+    fn covered(&self, key: &BucketKey) -> bool {
         let mut held = self.held_off.lock();
-        let covered = matches!(held.get(key), Some(HeldOff::Memory { kind, needed }) if !short(free, *kind, *needed));
+        let covered = match held.get_mut(key) {
+            Some(HeldOff::Asked { ticket }) => self.reserve_granted(key, ticket),
+            _ => false,
+        };
         if covered {
             held.remove(key);
         }
         covered
     }
 
-    /// Hold `key` off after the authority refused `needed` bytes of `kind` for `rows`.
-    fn hold_off(&self, key: &BucketKey, port: &Arc<dyn LearnPort>, free: &Free, wait: Short, rows: &[MemoryRow]) {
-        let Short { kind, needed } = wait;
-        let capacity = free.kind(kind).map(|governed| governed.capacity);
+    /// `key`'s reserve is spent or no longer wanted (its seat is seated, or let go): what is left of it
+    /// goes back to the authority.
+    fn release_reserve(&self, key: &BucketKey) {
+        self.reserves.lock().remove(key);
+    }
+
+    /// Hold `key` off after the authority refused `needed` bytes of `kind` for `rows`: a defect past the
+    /// whole governed device, otherwise an ask for that much, which waits until it is granted (granted at
+    /// once, it is the bucket's reserve and nothing is held).
+    fn hold_off(&self, key: &BucketKey, port: &Arc<dyn LearnPort>, wait: Short, ask: impl FnOnce(ResourceKind, u64) -> Result<Ask, crate::resources::LeaseError>) {
+        let Short { kind, needed, capacity } = wait;
+        let defect = |why: &str| {
+            continuum_base::probe!(class = "training.on_engine.measure_defect", persona = %key.persona_id, kind = ?kind, needed, capacity = ?capacity, why = why,
+                "the engine measured more than the whole governed device holds: a measurement defect, not a wait; this bucket is not seated again on this engine");
+            HeldOff::Defect { engine: Arc::downgrade(port) }
+        };
         let held = match capacity {
-            Some(capacity) if needed > capacity => {
-                continuum_base::probe!(class = "training.on_engine.measure_defect", persona = %key.persona_id, kind = ?kind, needed, capacity, rows = ?rows,
-                    "the engine measured more than the whole governed device holds: a measurement defect, not a wait; this bucket is not seated again on this engine");
-                HeldOff::Defect { engine: Arc::downgrade(port) }
-            }
-            _ => {
-                continuum_base::probe!(class = "training.on_engine.awaiting_memory", persona = %key.persona_id, kind = ?kind, needed, capacity = ?capacity,
-                    "short of memory: this bucket is not measured again until the authority says that much is free");
-                HeldOff::Memory { kind, needed }
-            }
+            Some(capacity) if needed > capacity => defect("past the governed capacity"),
+            _ => match ask(kind, needed) {
+                Ok(Ask::Granted(granted)) => {
+                    let key = key.clone();
+                    self.reserves.lock().entry(key).or_default().push(granted);
+                    return;
+                }
+                Ok(Ask::Waiting { ticket, short }) => {
+                    continuum_base::probe!(class = "training.on_engine.awaiting_memory", persona = %key.persona_id, kind = ?kind, needed, short, capacity = ?capacity,
+                        "short of memory: the whole seat is asked of the authority, and this bucket waits for the grant");
+                    HeldOff::Asked { ticket }
+                }
+                Err(refused) => defect(&format!("the authority refused the ask: {refused:?}")),
+            },
         };
         self.held_off.lock().insert(key.clone(), held);
     }
@@ -230,24 +267,21 @@ struct Lease<'a> {
     whole: &'a [MemoryRow],
 }
 
-/// What the authority refused: `needed` bytes of `kind`.
+/// What the authority refused: `needed` bytes of `kind`, of the `capacity` it governs of that kind
+/// (`None` when it governs none).
 struct Short {
     kind: ResourceKind,
     needed: u64,
+    capacity: Option<u64>,
 }
 
-/// Whether `free` shows less than `needed` bytes of `kind` free (a kind it does not govern has
-/// nothing free yet).
-fn short(free: &Free, kind: ResourceKind, needed: u64) -> bool {
-    free.kind(kind).is_none_or(|governed| governed.available < needed)
-}
-
-/// What a seat may lease of each kind beside its `weights`: what the authority governs of that kind
-/// less them. A kind it does not govern leaves none, as [`short`] reads it, and weights past a byte
-/// count leave none.
+/// What a seat may lease of each kind beside its `weights`: the kind's ceiling (capacity less what
+/// nothing can demote and what others hold now) less them. Never capacity: on the 5090 a lesson sized
+/// within the whole card asked for 29.5 GB serving held 30.7 GB of, and waited forever (Cormac,
+/// 2026-11-26). A kind the authority does not govern leaves none, and weights past a byte count leave none.
 fn fit_beside(free: &Free, weights: &[MemoryRow]) -> Fit {
     let room = |kind: ResourceKind| match (free.kind(kind), leased(weights, kind)) {
-        (Some(governed), Some(held)) => governed.capacity.saturating_sub(held),
+        (Some(governed), Some(held)) => governed.ceiling.saturating_sub(held),
         (None, _) | (_, None) => 0,
     };
     Fit { vram: room(ResourceKind::Vram), ram: room(ResourceKind::Ram) }
@@ -364,13 +398,14 @@ impl TrainingTriggerState {
         }
     }
 
-    /// What is free, said by the authority, for the buckets held for memory on the node engine.
-    pub(crate) async fn heard_free(self: &Arc<Self>, free: &Free) {
+    /// The authority said its board changed: a release may have granted the asks of buckets held for
+    /// memory (what is free is the authority's to grant, not the trainer's to read).
+    pub(crate) async fn heard_free(self: &Arc<Self>, _changed: &Free) {
         if !self.on_engine.waits_for_memory() {
             return; // nothing held: the engine is not asked what it serves
         }
         let (Some(port), Some(served)) = (port(), served_model().await) else { return };
-        self.on_free(&port, free, &served).await;
+        self.on_free(&port, &served).await;
     }
 
     /// Seat every bucket whose base `served_model` serves and that has a lesson waiting, through
@@ -394,7 +429,7 @@ impl TrainingTriggerState {
     /// nothing here to seat (Codex on #6226), and the moved rows learn under their new key.
     pub(crate) async fn seat_bucket(self: &Arc<Self>, port: &Arc<dyn LearnPort>, key: &BucketKey) -> Result<(), OnEngineError> {
         let _gate = self.submit_gates.acquire(key).await;
-        if self.on_engine.seated(key) || self.on_engine.holds(key, port, &free_now(&self.authority)) {
+        if self.on_engine.seated(key) || self.on_engine.holds(key, port) {
             return Ok(());
         }
         let rows = self.rows_of(key).await?;
@@ -484,16 +519,15 @@ impl TrainingTriggerState {
                 }
             }
             // let go while its hold was being armed: what was freed meanwhile woke nothing for it
-            Ok(()) if ended && self.on_engine.covered(&key, &free_now(&self.authority)) => self.seat_again(port, &key).await,
+            Ok(()) if ended && self.on_engine.covered(&key) => self.seat_again(port, &key).await,
             Ok(()) => {}
         }
     }
 
-    /// The authority said what is free: seat each bucket held for memory that it now covers, on
-    /// `port` while it serves `served_model`. Only held buckets are read; with none held this is
-    /// nothing.
-    pub(crate) async fn on_free(self: &Arc<Self>, port: &Arc<dyn LearnPort>, free: &Free, served_model: &str) {
-        for key in self.on_engine.freed(free) {
+    /// The authority's board changed: seat each bucket held for memory whose ask it granted, on `port`
+    /// while it serves `served_model`. Only held buckets are read; with none held this is nothing.
+    pub(crate) async fn on_free(self: &Arc<Self>, port: &Arc<dyn LearnPort>, served_model: &str) {
+        for key in self.on_engine.freed() {
             if key.base_model == served_model {
                 self.seat_again(port, &key).await;
             }
@@ -529,6 +563,7 @@ impl TrainingTriggerState {
                 let workspace = self.lease(port, key, Lease { consumer: &format!("{consumer}:workspace"), rows: &workspace, whole: &whole })?;
                 let view = optimizer.view().map_err(OnEngineError::Coverage)?;
                 self.with_seat(seat, |held| held.run.seat(port.as_ref(), Box::new(view), optimizer, workspace));
+                self.on_engine.release_reserve(key); // every stage is leased: what is left of the reserve goes back
                 Ok(())
             }
             Heard::Seated { .. } | Heard::Learned { .. } | Heard::Again { .. } => self.advance(port, seat, key).await,
@@ -562,6 +597,7 @@ impl TrainingTriggerState {
             }
             Heard::NotSeated { .. } | Heard::Released => {
                 self.on_engine.seats.lock().remove(&seat); // its guards drop here: nothing of it remains on the engine
+                self.on_engine.release_reserve(key); // and what is left of its reserve
                 Ok(())
             }
         }
@@ -667,19 +703,26 @@ impl TrainingTriggerState {
         Ok(())
     }
 
-    /// Lease `rows` for `consumer`. A refusal for memory holds `key` off: until that much is free, or
-    /// (a need past the whole device) for as long as this engine serves.
-    /// Lease `rows` for `consumer`. A refusal for memory holds `key` until the WHOLE seat (`whole`,
-    /// every row seating it again leases) fits in the short kind: held for the refused lease alone,
-    /// the seat's own weights freed by its release covered the hold, and it was measured, loaded and
-    /// refused again in a loop (the 5090, 2026-11-26: 97 Loaded, 0 Seated in four minutes).
+    /// Lease `rows` for `consumer`, carved from `key`'s reserve where it holds one. A refusal for memory
+    /// asks the authority for the WHOLE seat (`whole`, every row seating it again leases) of the short
+    /// kind and holds `key` until it is granted: a hold for the refused lease alone was covered by the
+    /// seat's own weights freed by its release, and it was measured, loaded and refused again in a loop
+    /// (the 5090, 2026-11-26: 97 Loaded, 0 Seated in four minutes); a hold that only watched what is free
+    /// was never woken while serving held the device.
     fn lease(&self, port: &Arc<dyn LearnPort>, key: &BucketKey, ask: Lease<'_>) -> Result<LeasedMemory, OnEngineError> {
         let Lease { consumer, rows, whole } = ask;
-        lease_memory(&self.authority, consumer, rows.iter().cloned()).map_err(|refusal| {
+        let leased_now = {
+            let reserves = self.on_engine.reserves.lock();
+            let reserve = reserves.get(key).map_or(&[][..], Vec::as_slice); // map_or: no reserve is an empty one
+            lease_memory_within(&self.authority, reserve, consumer, rows.iter().cloned())
+        };
+        leased_now.map_err(|refusal| {
             if let SeatRefusal::AwaitingMemory(TrainingWait::Capacity { kind, needed, .. }) = &refusal {
-                // a kind the rows do not name, or rows past a byte count, hold for the refused lease alone
+                // a kind the rows do not name, or rows past a byte count, ask for the refused lease alone
                 let seat = leased(whole, *kind).map_or(*needed, |seat| seat.max(*needed));
-                self.on_engine.hold_off(key, port, &free_now(&self.authority), Short { kind: *kind, needed: seat }, whole);
+                let whole_seat = |kind, bytes| crate::inference::training_admission::ask_training_memory(&self.authority.resources, consumer, kind, bytes);
+                let capacity = free_now(&self.authority).kind(*kind).map(|governed| governed.capacity);
+                self.on_engine.hold_off(key, port, Short { kind: *kind, needed: seat, capacity }, whole_seat);
             }
             OnEngineError::Lease(refusal)
         })

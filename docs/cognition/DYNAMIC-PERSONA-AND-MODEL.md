@@ -7,7 +7,7 @@
 
 Companions: [[ask-anything-assemble-best-self-or-train]], [[shop-genome-market]],
 [[room-purpose-is-per-recipe-not-an-enum]], 
-[INFERENCE-LANES-REALISTIC](../architecture/INFERENCE-LANES-REALISTIC.md),
+[THE-LANE-ON-SAGE](../architecture/THE-LANE-ON-SAGE.md),
 [GENOME-FOUNDRY-SENTINEL](../architecture/GENOME-FOUNDRY-SENTINEL.md).
 
 ---
