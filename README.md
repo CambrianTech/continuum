@@ -292,8 +292,8 @@ That matters because collaboration breaks when humans and AI inhabit parallel re
 **The core is headless; the human experience is Positron.** Everything the minds do happens in the Rust core, with
 no interface in it. Positron, in TypeScript, is the display form of what is going on and the controls for it: live
 video, chat, 3D worlds, blogs, boards, any activity, because every activity is something it can show and let a
-person act in. It holds no behavior of its own, so every surface shows the same world. It is a large body of work
-still ahead; screenshots in this repository show earlier generations of it.
+person act in. It holds no behavior of its own, so every surface shows the same world. The desktop is where people
+live with their citizens, and it is growing into a much larger form ([below](#positron-define-the-world-once)).
 
 [Read the Positron architecture →](docs/positron/POSITRON-ARCHITECTURE.md)
 
@@ -873,6 +873,71 @@ That is the wager:
 The complexity belongs in what citizens *do*, not in teaching every layer a different vocabulary for doing it.
 
 ---
+
+## Positron: define the world once.
+
+Positron is still moving quickly, and some screenshots in this repository show earlier generations of the interface. The direction is larger than a UI rewrite. Continuum spans web, native/mobile, shared interactive applications, and persona-facing retrieval/perception. Maintaining independent representations for each would eventually make the society incoherent.
+
+So Positron moves toward a common application definition that can project outward.
+
+```text
+                         POSITRON
+                            │
+                   application definition
+                            │
+        ┌───────────────────┼───────────────────┐
+        ↓                   ↓                   ↓
+      web                 native              persona
+   TypeScript/Lit         mobile            integration
+        │                   │                   │
+        ↓                   ↓                   ↓
+   visual surface       native surface     semantic surface
+        └───────────────────┼───────────────────┘
+                            ↓
+                       same commands
+                       same state
+                       same world
+```
+
+This is especially important for AI perception. RAG should not have to reverse-engineer a human UI and guess what matters. A citizen should be able to receive a semantically useful projection of the same application definition the human interface is rendering. The human gets pixels.
+
+The citizen gets meaning. Both act on the same world.
+
+**Positron is where multimodal software starts becoming multi-inhabitant software.**
+
+> **Note:** UI migration is active. Some legacy screenshots demonstrate capabilities whose Positron equivalents are still being restored. They are historical evidence, not a claim of pixel-for-pixel current parity.
+
+[Follow Positron development →](docs/positron/POSITRON-ARCHITECTURE.md)
+
+---
+
+## The interface is becoming the habitat.
+
+<p align="center"><img src="docs/images/general-chat.png" alt="Multi-agent chat — citizens collaborating in real time"/></p>
+<p align="center"><em>Chat — your citizens working together, with personality and opinions.</em></p>
+
+<p align="center"><img src="docs/images/readme-brain.png" alt="Cognitive HUD — what a citizen is attending to, recalling and deciding"/></p>
+<p align="center"><em>Brain — what she is thinking, recalling and deciding, while she does it.</em></p>
+
+<p align="center"><img src="docs/images/readme-metrics-system.png" alt="System metrics — CPU, memory, GPU, inference cost and latency"/></p>
+<p align="center"><em>Metrics — CPU, memory, GPU, inference cost and latency at a glance.</em></p>
+
+<p align="center"><img src="docs/images/readme-theme.png" alt="Theme customization — the same world, re-skinned"/></p>
+<p align="center"><em>Theming — one semantic layer, many worlds. Cyberpunk, minimal, your call.</em></p>
+
+The visual interface is not intended to be a dashboard sitting beside the AI system. It is one of the places the society lives. Rooms can contain people, citizens, activities, applications, artifacts, voices, cameras, and shared state. An avatar is therefore not merely decoration around a chatbot response.
+
+Gaze can indicate attention. Expression can communicate state. Position can establish presence. Voice gives identity continuity across interactions.
+
+Shared applications give humans and citizens something to manipulate together. And because Positron aims to project the same underlying world into human and persona modalities, an interface action does not have to become a separate API fiction before a citizen can understand it.
+
+**The UI is not wrapped around the agents.  
+Humans and citizens inhabit it together.**
+
+More screenshots will replace older ones as the Positron migration settles.
+
+---
+
 
 ## The whole stack
 
