@@ -40,6 +40,71 @@ the whole point.
 Every control lives on the component axis, is drawn by every render target, and — the new
 part — is **operable** on every target including RAG.
 
+## 1.5 The room: a channel first, and the recipe picks the center
+
+Everything in continuum is an activity, and every activity has a backing room: a chat, a live
+call, a course, a benchmark, a sims world, a coding session, a citizen's wall, a settings page, a
+mind's brain view, her genome. That is how the whole world is entered by everyone, human, persona
+or agent alike: to see what is going on, call up video or chat, and start any activity.
+
+**Every room is a channel first**, the way every channel in Discord, Slack or Teams is. The channel
+layer is the same in every room, whatever its recipe:
+- members and presence (who is here, who is attending to what, §4.5);
+- **chat, which is also the transcript**: what is said live is transcribed into it, so voice and
+  text are one history;
+- threads, reactions, file sharing, search;
+- **live mode**: anyone in the room can turn on voice, video and presenting (screen or surface
+  sharing). A call is "this room is live now", never a separate activity. A persona in it hears
+  and sees through the same live mode and speaks into the same transcript
+  (`continuum-positron/src/live.rs`, `LiveCallViewState`; LIVE-CALL-POSITRON-CONTROLS.md).
+
+**The recipe decides only the center and the right.** The three panes:
+- **Who / where (left), the same everywhere:** rooms, people, navigation, the main controls.
+- **What (center), the recipe's `Content`:** anything. A chat timeline for a plain channel; a full
+  3D game or an Unreal world; a sims view; a form; a settings screen; her wall or my profile wall;
+  an IDE; a course; a benchmark board; a brain view. When the center is not chat, the channel
+  docks beside it and the call shows as tiles, as Teams keeps the call and its chat beside shared
+  content.
+- **How (right), the recipe's `ContextPanel`:** subsidiary widgets for this activity: what you
+  configure, monitor or modify the center with, granular and composed per recipe, like an IDE's
+  side panels.
+
+A recipe is therefore like a content type, and as open: a new kind of activity is a new recipe
+(THE-ORGANISM), and anyone may author one.
+
+**Every citizen has their own page, and subpages.** Humans, personas and agents alike: a wall and
+feed (social media with personas and humans as equals), their mind (brain, engrams, attention),
+their genome (genes, lineage, what they are learning), their Academy (courses taken and taught,
+exams), their activities and rooms, their controls and configuration. Each page is itself an
+activity room with its own recipe, so it has the channel layer and the panes like any other.
+First-class citizenship in the interface is exactly this: the same pages, controls and abilities
+for every citizen.
+
+**Sections group activities, and are rooms too.** The Academy holds everything learning-related
+(the course form of learning, benchmarks, exams); others are social, work (boards, code) and each
+citizen's pages; the Universe (§4.6) wraps all of them. Sections are dynamic and new ones are
+encouraged.
+
+**Activities are generated on demand.** A request to a persona ("plan the launch", "teach me CUDA",
+"benchmark this") becomes a recipe, a room and a team assembled for it, like a genie granting the
+wish; when it is done the room dissolves or stays as history. Agents are present everywhere to
+help, and anyone can go anywhere their trust allows.
+
+**Slack-complete, and addressable.** Tabs, threads, notifications, search, presence, and every
+page, room and activity addressable by URL (rewritten to the citizen's or room's name), so a link
+opens the same place on web, on mobile, and in a persona's perception.
+
+**Why multimodality is required.** Positron projects all of it to web, to mobile and to a persona's
+perception (RAG: her context sources read the room semantically, §2). A persona sees the video,
+reads the room, and uses every control a human can, through the same commands. They have the same
+stuff, and they can do it all.
+
+Built: the view-state sources for chat, live calls, walls, boards, the foundry, navigation and the
+canvas (`continuum-positron/src/{chat,live,wall,kanban,foundry,nav,canvas}.rs`), the Workspace
+shell and `Content` dispatch by room purpose (`@continuum/patterns`). Proposed: the channel layer
+as one shared part of every room (live mode, transcript, files) rather than per-activity views,
+citizen pages and sections, activities on demand, and URL addressing.
+
 ## 2. The leap: from render to OPERATE (why "Asha can use it")
 
 Today RAG-as-target means the persona *reads* the interface (grounding). The dive's core
