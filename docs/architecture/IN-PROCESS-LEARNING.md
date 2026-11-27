@@ -164,7 +164,7 @@ resident, so the walk's API holds no write to her sequence at all:
 
 ```rust
 /// The rows a lesson learns from: read-only views by handle (her K/V pages, the capture), never her sequence.
-pub struct LivedSpan<'a> { /* page handles, positions, the adapter generation it was lived under */ }
+pub struct LivedSpan<'a> { /* page handles, positions, the adapter generation, and each row's routed experts, as lived */ }
 /// What the walk may write: its own pages (accumulator, checkpoints) and its tile's scratch.
 pub struct WalkScratch<'a> { /* transient and walk-owned pages only */ }
 
@@ -173,6 +173,13 @@ impl Walk {
 }
 ```
 
+
+**Routing is part of what was lived** (Cormac, on the 35B). On a mixture-of-experts base, a near-tie in a row's top-k
+can choose a different expert when the arithmetic differs slightly (a tile of 64 rows against one of 512, CPU against
+CUDA), and the discrete choice turns a 1e-4 difference into a different function. The walk therefore replays each
+row's expert choices as recorded when she lived it, never routing it again: it trains the function she served,
+deterministically, and skips the router's top-k. The recorded choices ride with the span (a few bytes per row per
+layer), captured where serving already computes them.
 Rewinding recurrent state happens in the walk's scratch, reconstructed from a checkpoint; her own state is never
 restored over. While she speaks during a lesson, serving owns her advancing tail, the walk reads only the span it
 named, and a turn appended after that span is untouched by construction. The commit introduces a version boundary,
@@ -370,7 +377,8 @@ replaces.
 0. **The 35B's tiled update disagrees with the untiled one** (CPU: cosine 0.9790 at 64-row tiles, a difference 20.46% of
    the reference update's L2 norm, while 512 rows match byte for byte; CUDA 0.9924). Method (Codex): find the first
    tile boundary where values diverge, then raise the precision of only the state or accumulator crossing that
-   boundary. If agreement returns, those bytes need the fidelity and everything else stays compact. Gates slice 2.
+   boundary. If agreement returns, those bytes need the fidelity and everything else stays compact. Gates slice 2, measured
+   with routing pinned to the reference run's expert choices, so the walk's exactness is separated from routing flips (Cormac).
 1. **What the 12.2 MB per row is.** Measured as a total, not yet by tensor. The full-vocabulary logits and their
    gradient are the inference to check first (about 1 MB per F32 copy at a 248k vocabulary). The breakdown comes
    before slice 5.
