@@ -8,7 +8,7 @@ The settled pieces already exist; this page wires them together and changes noth
 - **the lane:** `continuum_sage::slice`, its `Lane`, `Slicer` and `Tuner`;
 - **the rules:** SAGE.md, "The lane: the one serial piece, sliced so fine nobody notices".
 - **what it schedules:** stage runs whose unit it chooses, one form for every concern on a shared capacity (a mind,
-  her prefill, a learner, a link's transfers): [STAGE-CONTRACT.md](STAGE-CONTRACT.md), section 5.
+  her prefill, a learner, a link's transfers): [STAGE-CONTRACT.md](STAGE-CONTRACT.md#units-how-much-one-run-does).
 
 ## How it works (as before, and as it stays)
 

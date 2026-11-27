@@ -1,80 +1,119 @@
 # In-process learning on the persona engine
 
-Status: design, 2026-11-18. Owner: Fable (engine, llama crate); Codex (serving, admission callers).
-Read with [ONE-RESIDENT-MODEL-PATIENT-DOCTOR-DREAM.md](ONE-RESIDENT-MODEL-PATIENT-DOCTOR-DREAM.md)
-and CONTINUUM-ENGINE.md 4.14 (the persona engine: one mind decodes at a time).
+Owners: Fable (fork walk, llama crate, driver), Cormac (trainer, authority side), Codex (serving, admission,
+review). Read with [ONE-RESIDENT-MODEL-PATIENT-DOCTOR-DREAM.md](ONE-RESIDENT-MODEL-PATIENT-DOCTOR-DREAM.md); the
+learner is a stage run on the lane ([STAGE-CONTRACT.md](STAGE-CONTRACT.md)), its memory is held through the block
+layer and the authority ([UNIFIED-PAGING.md](UNIFIED-PAGING.md), [SHARED-RESOURCES.md](SHARED-RESOURCES.md)).
 
 [Runtime architecture](../README.md#runtime-architecture)
 
 **Contents**
 
-- [Why this comes before deleting the lanes](#why-this-comes-before-deleting-the-lanes)
-- [What moves, and where](#what-moves-and-where)
-- [The driver's one queue](#the-drivers-one-queue)
-- [How the trainer reaches it](#how-the-trainer-reaches-it)
-- [Slices, each with its validator](#slices-each-with-its-validator)
+- [The shape](#the-shape)
+- [A reply learns as the exact walk, in tiles](#a-reply-learns-as-the-exact-walk-in-tiles)
+- [Pricing a tile](#pricing-a-tile)
+- [Fitting: smaller or later, never refused](#fitting-smaller-or-later-never-refused)
+- [The learner on the Core](#the-learner-on-the-core)
+- [Gates](#gates)
+- [Open questions](#open-questions)
 
-## Why this comes before deleting the lanes
+## The shape
 
-Today a mind learns only inside llama-server. The trainer
-(`continuum-dreaming/src/modules/training_trigger.rs:221`) finds its engine through
-`lane_registry::live_lane()`, which needs a llama-server process. The Rust side POSTs `/learn`
-(`continuum-engine/src/inference/llama_server/learn_step.rs:60`), and the fork's C++ runs the step
-on the server's own context (`tools/server/server-context-learn.inc`, 647 lines at pin `a88f255cc`:
-`llama_opt_init`, then `llama_opt_learn_begin` and `llama_opt_learn_graph_step` / `_drain`). The
-llama crate has no wrapper for any of it.
+A mind learns one reply on her own live serving sequence: the reply's rows are trained against the lesson already
+in her cache, then she is restored under her stable gene set, so serving finds her exactly as it left her. Other
+minds decode between the learner's units.
 
-Deleting the lanes and llama-server first would stop every mind from learning. Learning is the goal
-(a reviewed correction kept across restart, applied to unseen tasks), so it moves in-process first.
+Built (in tree on `fable/workspace-3b`):
+- the `Learner` over a context in the llama crate (`core/llama/src/safe/learn.rs`), its refusals typed from
+  `llama_opt_failure`;
+- `Job::Learn` on the driver (`persona_scheduler/driver/learning.rs`), interleaved with turns;
+- the trainer reaching it through `LearnPort` (`continuum-dreaming/src/modules/training_trigger/on_engine.rs`).
 
-## What moves, and where
+Still to delete: llama-server's learn endpoint (`tools/server/server-context-learn.inc`) and the HTTP adapter, once
+no caller remains.
 
-The fork's API already has the shape the persona engine needs. `llama_opt_learn_begin` trains one
-reply on one sequence of a serving context. Each `llama_opt_learn_step` / `_graph_step` runs at
-most one chunk. Other sequences may decode between steps. Afterwards the reply is restored under
-her stable gene set, so serving's state is what it was.
+## A reply learns as the exact walk, in tiles
 
-| Today (C++, in llama-server) | Moves to | Owner |
+**Why tiles.** A reply's backward holds every reply row's activations against every lesson row it attends. Learned
+as one graph, Kimi's lessons measured 64.4 GB, 91.5 GB and 1.9 TB on a 34.2 GB card (the 5090, 2026-11-26). The
+reply is what is trained and is never cut, so the graph is cut instead: the reply learns in tiles of rows.
+
+**Why exact.** A later row's loss flows back through the earlier rows' K/V and recurrent state. Independent tiles
+lose that. The fork's exact walk carries each tile's gradient into the cached rows before it, through a host K/V
+gradient accumulator and recurrent checkpoints, so the tiled update is the whole graph's update.
+
+**How it runs** (`llama-context-learn-tiles.cpp`, fork `fable/context-memory-rows`):
+- forward, one tile per unit: decode under the shadow, a recurrent checkpoint every `stride` tiles;
+- reverse, last tile to first: rewind to the checkpoint, replay to the tile, train it with its gradient carried
+  into the tiles before; never below the served prefix;
+- one optimizer update with the whole reply's label denominator, then the restore;
+- `stride` comes from the host budget (`plan.stride_for`): fewer checkpoints, more replay, same gradient;
+- every unit is bounded by its tile, replays and prefix decodes included (pending spans, fork fa85c3379), and
+  reports `{ decoded, trained }` (`llama_opt_learn_last_unit`, fork 1eb66d1db).
+
+**One path.** A reply past one ubatch learns only through this walk. The untiled step had let `decode()` split a
+chunk into ubatches with a backward each, a plain walk whatever `walk_exact` said: cosine 0.949 / norm 0.889 on
+Qwen3.5-0.8B and 0.960 / 0.944 on Qwen3.6-35B-A3B against the exact step at ubatch 64 (M5 Metal), on every live
+reply past the Core's `n_ubatch` (2048). Fixed at fork 398bf318d (not yet pinned) and binding dbe8d18d1a
+(`Walk.exact` deleted). Proposed next: the fork's learn surface collapses to begin, cost at a unit, run a unit; the
+whole-reply graph is the walk at `unit >= reply`, and the other entries are deleted (STAGE-CONTRACT.md, "Units").
+
+**Measured** (64-row tiles against the exact step):
+
+| Backend | Model | Result |
 |---|---|---|
-| The `llama_opt_*` calls | `llama` crate `safe/learn.rs`: a `Learner` over `&mut Context`, typed `LearnRefusal` from `llama_opt_failure`, the status as an enum | Fable |
-| The residency mirror and its admission callbacks (`static_admission`, `workspace_admission`) | A Rust `LearnAdmission` trait the callbacks call. Codex implements it over `training_admission` and the ResourceDaemon: measured incremental bytes, held until the step completes | Fable (trait), Codex (implementation) |
-| The learn ledger (grants: `period_ms`, `max_chunk_us`, `share_ppm`; committed steps) | The time-share policy stays with the existing grant issuer. The driver consumes ONE versioned grant and measures its elapsed chunks and drains. There is no second quota and no dedicated lane | Codex (issuer), Fable (driver) |
-| Shadow selection per mind (`llama_opt_init` with her shadow adapter) and the preflight (`llama_opt_measure_shadow_graph`) | The driver, when it binds her for a learn | Fable |
-| `POST /learn`, `/learn/grants` and the residency endpoints | Removed with llama-server, after the trainer reaches the scheduler | Codex |
+| Metal (M5) | Qwen3.5-0.8B-Q8_0 | cosine 1.0000; stride 1: 8 units, 440 rows; stride 4: 17 units, 824 rows; max 64 rows per unit |
+| Metal (M5) | Qwen3.6-35B-A3B-Q4_K_M | 0.9976, equal to the untiled learn (production layout) |
+| CPU (IntelMac) | Qwen3.5-0.8B, Qwen2.5-0.5B | 1.0000 in all four cases (Cormac, 1eb66d1db) |
+| CUDA (5090) | Qwen3.5-0.8B | 0.498, open: a single tile is exact; failing with no model layers on the GPU while op offload stays on (Codex, Cormac) |
 
-## The driver's one queue
+## Pricing a tile
 
-`Job::{Turn, Learn}` on one mpsc queue, one thread, one context (agreed 2026-11-18):
+Proposed. Today `measure_within` (`driver/learning.rs`) prices the whole-reply graph (`opt_measure_memory` at
+`chunk = reply_rows`), which is Kimi's 1.9 TB. The walk is priced instead at its worst tile, the reply's last at
+the full horizon (largest attention window, longest gradient tap), built with the walk's own flags and allocating
+nothing. It reports two rows, never one sum: the device workspace of that graph, and the host accumulator and
+checkpoints from the walk's own formulas at its host budget, so measure and run cannot disagree. Every other tile's
+graph is no larger.
 
-- A `Turn` runs as today: switch, prefill her new tail, decode.
-- A `Learn` binds her and her shadow, calls `learn_begin`, then runs one chunk per `step`. Between
-  chunks the driver serves any waiting `Turn`, so a turn waits at most one chunk (`max_chunk_us`),
-  never a whole reply. `max_chunk_us` is a target, not a bound: her first-token wait also includes the drain, the rebind, any queued turns and decode, and that added delay is proven by contention and fault traces. When a waiting turn needs the context exclusively, the driver calls `drain`,
-  which stops new gradient chunks and restores the served tail. Steps already committed stay
-  committed.
-- Nothing decodes in parallel. A learn chunk and a decode never overlap; they alternate.
+## Fitting: smaller or later, never refused
 
-## How the trainer reaches it
+Proposed; each replaces a refusal in today's code.
+- **A tile too large splits in place.** Its rows are decoded and its checkpoint held, so its reverse trains it as
+  halves, last to first, down to one ubatch: the same exact step on a smaller graph. Replaces "a tile did not fit:
+  learn this reply at a smaller tile".
+- **The host budget sets the stride**, never a refusal. Replaces "past its budget". The budget is the seat's Ram
+  lease from the authority, so stride and lease cannot drift (Cormac).
+- **A shared cache never reaches the walk.** The Core is one stream with one bound occupant (`STREAMS = 1`,
+  `continuum-persona-llama/src/unified_tier.rs`; the same on the 5090, Codex), checked when the context is built.
+- **A shrink resizes before it releases.** A target at or above the floor tile's workspace is answered by a
+  smaller tile from the next unit; only a target below it checkpoints and releases (Cormac).
 
-The trainer calls a `LearnPort` trait with one method per verb it uses today (`seat`, `learn`,
-`release`). The in-process `Scheduler` implements it, and the trainer moves to it in ONE production
-cutover. No engine means a typed `Unavailable`, never a runtime fallback to HTTP. The HTTP
-`LearningEngine` and `live_lane` are deleted in that cutover or right after it.
+## The learner on the Core
 
-## Slices, each with its validator
+Proposed: the learner is a stage whose unit is a tile, scheduled by the lane like a mind's step
+(STAGE-CONTRACT.md, "Units"; THE-LANE-ON-SAGE.md).
+- Its class is `Content`: no per-unit bound; its guarantee is its queue kept in check (`Urgency::act_bound`).
+- What it owes is state, latest-wins: `learning/owed`, `Owed(BTreeMap<SeatId, LearnerOwed>)`, a seat leaving the
+  map is its Done (Cormac, `cormac/step3` 1af29edfa, unmerged).
+- Its share of the Core is what the scheduler's choices add up to, from feedback, never a constant.
+- Its scratch is one claim on the authority held per tile size and resized when the size moves, not asked per unit.
+- Between units its shadow, optimizer, checkpoints and accumulator stay resident and are reported like any holding.
+- What counts is the optimizer update: provisional per update id until its generation commits, written off on
+  restore or cancel (Cormac, Codex). Tiles advanced are never a reward.
 
-1. **L1, llama crate wrapper.** `Learner` and `LearnRefusal` with no policy. Validator: on a 0.5B
-   model, one reply trains, its loss drops, and the sequence holds exactly what it held before.
-2. **L2, `Job::Learn` on the driver.** Chunks interleave with turns. Validator: a learn and two
-   minds' turns on one context. Each turn's first token waits at most one chunk, and each mind's
-   native prefix is intact afterwards.
-3. **L3, the trainer through `LearnPort`.** Validators, with no llama-server running:
-   - the in-place trainer's existing tests pass;
-   - her native prefix is equivalent before and after a learn;
-   - a committed step survives an interruption and its retry without being applied twice;
-   - held-out quality holds after a reload, alongside throughput on the 35B model.
-4. **Then:** delete llama-server's learn endpoints, the HTTP adapter, `live_lane`, and the lanes
-   (Codex's serving half, Fable's engine half).
+## Gates
 
-Live gate after L3: one admitted learning step on a live resident, with throughput held, on the
-M5 and on BigMama.
+1. `test-walk-exact` on Metal, CPU and CUDA (0.8B) and on the 35B on Metal (the M5's production form): tiled
+   against untiled on the same backend at the model's measured floor, every unit within its tile.
+2. The tile measure is at least the workspace each tile actually admits, at 64, 128 and 512 rows.
+3. A tile too large learns at a smaller one, never an abort.
+4. Kimi's 64 GB, 91 GB and 1.9 TB lessons learned on the 5090 beside serving, held-out loss kept.
+5. A loaded window on the M5 with the 35B: the learner's queue in check, no resident past her bound, every unit
+   recorded, zero `measure_defect`.
+
+## Open questions
+
+1. The accumulator's tensors in the measure: a CPU buffer over a pointer never read, or a graph input the measure
+   marks host-resident (Codex)?
+2. CUDA's 0.498 on the 0.8B: which op, per the bisect with op offload off.

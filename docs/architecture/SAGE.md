@@ -111,7 +111,7 @@ room moment it last built from, builds and publishes her channel digest only whe
 Extracted from `Component` at each pattern's second real instance:
 
 - **Long work is a stage run with a unit** (not a new parent): a `Component` whose work divides declares its
-  lever, and the scheduler chooses how much each run does ([STAGE-CONTRACT.md](STAGE-CONTRACT.md), section 5).
+  lever, and the scheduler chooses how much each run does ([STAGE-CONTRACT.md](STAGE-CONTRACT.md#units-how-much-one-run-does)).
 
 - **Projector** (keyed cached rendering: watch a state, per key know the moment last rendered, render
   only on change, publish keyed): first instance the channel digest; second, the next grounding source.
