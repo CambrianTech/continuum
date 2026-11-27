@@ -75,6 +75,11 @@ her bus and its need, coordinating only by events and state, never by calling on
 run with a unit the scheduler sizes ([STAGE-CONTRACT.md](STAGE-CONTRACT.md)). A new faculty is one center, never a
 redesign. No center runs her; what she does is what their exchange settles on.
 
+**The set of centers is open.** Because every center only publishes and subscribes, a new one (a sense, an
+appraiser, a planner, a center for a new kind of activity) is added by declaring what it hears and says: it can
+listen to any data any other center publishes and publish its own for any of them, with no existing center edited
+and no central list to update. Her mind grows the way SAGE does, one subscription at a time.
+
 | Part | What it does | State |
 |---|---|---|
 | **Senses** | turns what reaches her rooms (chat, airc, the board, tool results, call media) into perception, one inbound seam | built, a component (`continuum-mind/src/persona/senses/worker.rs`) |
