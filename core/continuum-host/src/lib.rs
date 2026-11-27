@@ -13,6 +13,7 @@ pub mod durable;
 pub mod file_identity;
 pub mod host_memory;
 pub mod local_stream;
+pub mod mapped_region;
 pub mod output_handoff;
 pub mod own_group;
 pub mod positioned;

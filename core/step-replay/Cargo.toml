@@ -11,5 +11,5 @@ longer in her prompt, and runs of identical acts. std + serde only; reads any no
 """
 
 [dependencies]
-continuum-base = { path = "../continuum-base" }
+continuum-base = { workspace = true }
 serde_json = { workspace = true }

@@ -14,5 +14,4 @@ pub mod pipeline;
 pub mod protocol;
 pub mod residency;
 pub mod schedule;
-pub mod seats;
 pub mod turn;

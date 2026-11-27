@@ -6,16 +6,16 @@ publish = false
 repository = "https://github.com/CambrianTech/continuum"
 
 [dependencies]
-continuum-process = { path = "../continuum-process" }
-continuum-kernel = { path = "../continuum-kernel" }
-continuum-engine = { path = "../continuum-engine" }
+continuum-process = { workspace = true }
+continuum-kernel = { workspace = true }
+continuum-engine = { workspace = true }
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
-continuum-base = { path = "../continuum-base" }
-continuum-host = { path = "../continuum-host" } # durable placement of git metadata and notes in her layer
-continuum-git = { path = "../continuum-git" } # a dead git's index.lock in a citizen's workspace (card d7765b90)
+continuum-base = { workspace = true }
+continuum-host = { workspace = true } # durable placement of git metadata and notes in her layer
+continuum-git = { workspace = true } # a dead git's index.lock in a citizen's workspace (card d7765b90)
 schemars = { workspace = true }
 reqwest = { workspace = true, features = ["json", "multipart", "stream"] }
 dashmap = { workspace = true }  # Lock-free concurrent HashMap
@@ -39,7 +39,7 @@ syn = { workspace = true, features = ["parsing"] }
 proc-macro2 = { workspace = true, features = ["span-locations"] }  # Span::start for line numbers in the Rust syntax reader
 
 [dev-dependencies]
-continuum-kernel = { path = "../continuum-kernel", features = ["test-fixtures"] }  # every test build of this crate gets the per-process continuum home (card d11d9827)
+continuum-kernel = { workspace = true, features = ["test-fixtures"] }  # every test build of this crate gets the per-process continuum home (card d11d9827)
 tokio = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }                   # Temp directories for code module tests
 futures = { workspace = true }

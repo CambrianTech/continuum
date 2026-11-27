@@ -143,6 +143,23 @@ pub fn lock(dir: &Dir, name: &Path, wait: bool) -> io::Result<Lock> {
     Ok(Lock { _file: file })
 }
 
+/// Lock an existing lock file at `path` exclusively, without waiting and without ever creating it:
+/// `None` when the file is gone, or is being deleted (Windows answers a file whose delete is pending
+/// with access denied), so a caller reclaiming another holder's lock never resurrects one a racing
+/// reclaimer just removed. `WouldBlock` when a live holder has it.
+pub fn lock_existing(path: &Path) -> io::Result<Option<Lock>> {
+    let file = match std::fs::OpenOptions::new().read(true).write(true).open(path) {
+        Ok(file) => file,
+        Err(gone) if matches!(gone.kind(), io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied) => return Ok(None),
+        Err(other) => return Err(other),
+    };
+    match file.try_lock() {
+        Ok(()) => Ok(Some(Lock { _file: file })),
+        Err(TryLockError::WouldBlock) => Err(io::Error::from(io::ErrorKind::WouldBlock)),
+        Err(TryLockError::Error(error)) => Err(error),
+    }
+}
+
 /// Lock the file at `path` (its directory opened and held).
 pub fn lock_path(path: &Path, wait: bool) -> io::Result<Lock> {
     let (dir, name) = split(path)?;

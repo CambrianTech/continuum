@@ -6,8 +6,8 @@ publish = false
 description = "Grounding sources and their delivery contract: the flex RAG budget, cached sources, grounding invalidation. A leaf of the cognition crate tree (docs/architecture/COGNITION-CRATE-TREE.md)."
 
 [dependencies]
-continuum-base = { path = "../continuum-base" }
-continuum-kernel = { path = "../continuum-kernel" }
+continuum-base = { workspace = true }
+continuum-kernel = { workspace = true }
 airc-core.workspace = true
 airc-lib.workspace = true
 async-trait.workspace = true
@@ -19,7 +19,7 @@ tracing.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
-continuum-kernel = { path = "../continuum-kernel", features = ["test-fixtures"] }
+continuum-kernel = { workspace = true, features = ["test-fixtures"] }
 tokio = { workspace = true, features = ["test-util"] }
 
 [features]

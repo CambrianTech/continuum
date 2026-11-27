@@ -30,7 +30,7 @@ fn for_launch_populates_all_overrides_from_the_launch() {
         PathBuf::from("/tmp/test-qwen2.5-0.5b-instruct-q4_k_m.gguf")
     );
     assert_eq!(adapter.default_model, launch.model_id);
-    assert!(matches!(adapter.generation, GenerationSupport::Enabled { context: 2048, .. }));
+    assert!(matches!(adapter.generation, GenerationSupport::Enabled { context: 2048 }));
     assert_eq!(adapter.n_seq_max_override, Some(1));
     assert_eq!(adapter.n_ubatch_override, Some(512));
     assert_eq!(adapter.n_gpu_layers_override, Some(0));

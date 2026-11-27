@@ -6,14 +6,14 @@ publish = false
 repository = "https://github.com/CambrianTech/continuum"
 
 [dependencies]
-continuum-kernel = { path = "../continuum-kernel" }
-continuum-engine = { path = "../continuum-engine" }
+continuum-kernel = { workspace = true }
+continuum-engine = { workspace = true }
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 ron = { workspace = true }     # RON scene descriptions (Bevy-idiomatic on-disk format)
 uuid.workspace = true
-continuum-base = { path = "../continuum-base" }
+continuum-base = { workspace = true }
 schemars = { workspace = true }
 thiserror.workspace = true
 inventory = { workspace = true }
@@ -44,7 +44,7 @@ tracing.workspace = true
 rand.workspace = true  # For test audio generation
 ts-rs.workspace = true  # TypeScript type generation
 livekit = { workspace = true, optional = true }
-continuum-bridge-protocol = { path = "../livekit-protocol" }
+continuum-bridge-protocol = { workspace = true }
 bevy = { version = "0.18", optional = true, default-features = false, features = [
     "bevy_render",
     "bevy_core_pipeline",
@@ -78,7 +78,7 @@ metal = { workspace = true }
 objc = { workspace = true }    # Objective-C runtime — for Metal APIs not wrapped by metal crate
 
 [dev-dependencies]
-continuum-kernel = { path = "../continuum-kernel", features = ["test-fixtures"] }  # every test build of this crate gets the per-process continuum home (card d11d9827)
+continuum-kernel = { workspace = true, features = ["test-fixtures"] }  # every test build of this crate gets the per-process continuum home (card d11d9827)
 tokio = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }                   # Temp directories for code module tests
 futures = { workspace = true }

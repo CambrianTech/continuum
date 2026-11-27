@@ -40,28 +40,16 @@ pub(super) fn embed_model(model: &Model, texts: &[String]) -> Result<Vec<Vec<f32
     EmbeddingBatch::tokenize(model, texts)?.embed(model)
 }
 
-/// A caller-issued nonzero generation pool and the minds it seats at once; model metadata cannot
-/// create one.
+/// A caller-issued nonzero generation window; model metadata cannot create one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct GenerationAllocation {
-    tokens: std::num::NonZeroU32,
-    seats: std::num::NonZeroU32,
-}
+pub struct GenerationAllocation(std::num::NonZeroU32);
 
 impl GenerationAllocation {
-    /// A pool for one mind.
     pub fn new(tokens: std::num::NonZeroU32) -> Self {
-        Self { tokens, seats: std::num::NonZeroU32::MIN }
-    }
-    /// A pool of `tokens` cells that `seats` minds grow into, each in place.
-    pub fn seated(tokens: std::num::NonZeroU32, seats: std::num::NonZeroU32) -> Self {
-        Self { tokens, seats }
+        Self(tokens)
     }
     pub fn tokens(self) -> u32 {
-        self.tokens.get()
-    }
-    pub fn seats(self) -> std::num::NonZeroU32 {
-        self.seats
+        self.0.get()
     }
 }
 

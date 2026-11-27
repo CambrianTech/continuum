@@ -132,7 +132,7 @@ impl LlamaCppAdapter {
             model_path: launch.gguf_path.clone(),
             last_throughput_tok_s: Arc::new(RwLock::new(0.0)),
             default_model: launch.model_id.clone(),
-            generation: GenerationSupport::Enabled { context: launch.context_length, seats: std::num::NonZeroU32::MIN.saturating_add(launch.n_seq_max.saturating_sub(1)) },
+            generation: GenerationSupport::Enabled { context: launch.context_length },
             kv_quant_policy: crate::inference::kv_quant::KvQuantPolicy::default(),
             n_seq_max_override: Some(launch.n_seq_max),
             n_ubatch_override: Some(launch.n_ubatch),
@@ -147,7 +147,7 @@ impl LlamaCppAdapter {
     /// avoid leaving 24GB processes lingering when llama.cpp's Metal
     /// cleanup SIGABRTs prevent clean exit (see PR #17869).
     pub fn with_context_length(mut self, n: u32) -> Self {
-        self.generation = GenerationSupport::Enabled { context: n, seats: self.seats() };
+        self.generation = GenerationSupport::Enabled { context: n };
         self
     }
 
@@ -188,14 +188,6 @@ impl LlamaCppAdapter {
     /// Coordinators use this to size their admission budgets — if
     /// the adapter reports None, max_concurrency is effectively 1
     /// regardless of what the lane budget says.
-    /// The minds the generation pool seats at once; an adapter not yet generative serves one.
-    fn seats(&self) -> std::num::NonZeroU32 {
-        match self.generation {
-            GenerationSupport::Enabled { seats, .. } => seats,
-            GenerationSupport::EmbeddingOnly => std::num::NonZeroU32::MIN,
-        }
-    }
-
     pub fn n_seq_max(&self) -> Option<u32> {
         self.n_seq_max_override
     }
@@ -214,7 +206,7 @@ impl LlamaCppAdapter {
         budget: &crate::inference::recipe_budget::RecipeBudget,
     ) -> Self {
         let seed_sum = budget.sum_of_seed_tokens();
-        self.generation = GenerationSupport::Enabled { context: seed_sum, seats: self.seats() };
+        self.generation = GenerationSupport::Enabled { context: seed_sum };
         self
     }
 

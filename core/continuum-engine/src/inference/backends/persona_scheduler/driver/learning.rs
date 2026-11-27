@@ -331,12 +331,13 @@ impl Driver<'_, '_> {
         if let Err(unbound) = self.switch_to(seated.mind, false) {
             return refused(format!("she could not be bound to learn: {unbound}"));
         }
-        let held = match self.engine.active_mut() {
-            Some(her) => her.parts().tokens.held.clone(),
+        let mind = mind_of(seated.mind);
+        // her history read where it lies (130k tokens is 520 KB): never cloned to be read
+        let reply = match self.engine.active_mut() {
+            Some(her) => reply_for(mind, &her.parts().tokens.held, seated.rendered),
             None => return refused("she was not bound after the switch".into()),
         };
-        let mind = mind_of(seated.mind);
-        let Some(reply) = reply_for(mind, &held, seated.rendered) else {
+        let Some(reply) = reply else {
             return refused("the lesson has no reply past what she holds".into());
         };
         if reply.tokens.len() > seated.reply_rows.get() as usize {
@@ -345,27 +346,37 @@ impl Driver<'_, '_> {
             }
             return refused(format!("{} reply tokens past the {} the seat was measured for", reply.tokens.len(), seated.reply_rows));
         }
-        // A reply that ran ends at her served prefix, nothing past it: her next turn prefills what
-        // follows under her own genes. One that failed may have left the lesson's tokens on her
-        // sequence, so she holds nothing and her next turn prefills from the start.
         let Ok(served) = usize::try_from(reply.n_cached) else {
             return refused(format!("a served prefix of {} positions", reply.n_cached));
         };
-        let (learned, holds) = match self.engine.attach_shadow(mind, seated.shadow) {
-            Ok(()) => match self.engine.learn_active(seated.shadow, &reply, admission, go_on) {
-                Ok(Finished::Learned { steps, loss, .. }) => ((StepOutcome::Learned { steps, loss }, None), Some(served)),
-                Ok(Finished::Unchanged { .. }) => ((StepOutcome::Unchanged, None), Some(served)),
-                Ok(Finished::Uncertain { steps, .. }) => ((StepOutcome::Uncertain { steps }, None), Some(served)),
-                Ok(Finished::Failed { refusal, .. }) => {
-                    ((StepOutcome::Refused { why: "her served prefix was not confirmed: the seat is quarantined".into() }, Some(refusal.to_string().into())), Some(0))
-                }
-                Err((refusal, _admission)) => (refused(refusal.to_string()), None),
-            },
-            Err(refusal) => (refused(refusal.to_string()), None),
-        };
-        if let (Some(end), Some(her)) = (holds, self.engine.active_mut()) {
-            her.parts_mut().tokens.cut(end);
+        // native learning begins only when her state ends at the served prefix (a hybrid's recurrent
+        // state cannot be cut back, so she is rewound to a checkpoint and prefilled under her genes)
+        if let Err(why) = self.to_served_prefix(served) {
+            return refused(format!("she could not be brought to her served prefix: {why}"));
         }
+        // Her reply is built from what she holds NOW: on a hybrid the reposition cut her history to the
+        // served prefix, so the reply restores no tail (re-decoding it natively would run under the shadow
+        // and leave her recurrent state past her history); her next turn prefills it under her own genes.
+        // On an attention-only model nothing was cut and the reply is the one built above.
+        let reply = match self.engine.active_mut() {
+            Some(her) => reply_for(mind, &her.parts().tokens.held, seated.rendered),
+            None => return refused("she was not bound after reaching her served prefix".into()),
+        };
+        let Some(reply) = reply else {
+            return refused("the lesson has no reply past her served prefix".into());
+        };
+        let learned = match self.engine.attach_shadow(mind, seated.shadow) {
+            Ok(()) => match self.engine.learn_active(seated.shadow, &reply, admission, go_on) {
+                Ok(Finished::Learned { steps, loss, .. }) => (StepOutcome::Learned { steps, loss }, None),
+                Ok(Finished::Unchanged { .. }) => (StepOutcome::Unchanged, None),
+                Ok(Finished::Uncertain { steps, .. }) => (StepOutcome::Uncertain { steps }, None),
+                Ok(Finished::Failed { refusal, .. }) => {
+                    (StepOutcome::Refused { why: "her restoration was not confirmed: the seat is quarantined".into() }, Some(refusal.to_string().into()))
+                }
+                Err((refusal, _admission)) => refused(refusal.to_string()),
+            },
+            Err(refusal) => refused(refusal.to_string()),
+        };
         match self.engine.detach_shadow(mind) {
             Ok(()) => learned,
             Err(attached) => (learned.0, Some(attached.to_string().into())),
@@ -383,7 +394,7 @@ struct Seated<'a> {
 
 /// Her reply on her own sequence: from the longest prefix she holds of the lesson (never past the
 /// token before her reply, whose label is the reply's first token), the lesson's tokens with a label
-/// on every one whose next token is hers. After it she holds that prefix and nothing past it.
+/// on every one whose next token is hers, and the tail she held past that prefix, restored after.
 fn reply_for(mind: MindId, held: &[i32], rendered: &Rendered) -> Option<LearnReply> {
     let last_context = rendered.reply_from.checked_sub(1)?;
     let n_cached = common_prefix(held, &rendered.tokens).min(last_context);
@@ -394,7 +405,8 @@ fn reply_for(mind: MindId, held: &[i32], rendered: &Rendered) -> Option<LearnRep
             _ => Label::Unlabelled,
         })
         .collect();
-    Some(LearnReply { mind, n_cached: i32::try_from(n_cached).ok()?, tokens, labels })
+    let restore = held[n_cached..].to_vec();
+    Some(LearnReply { mind, n_cached: i32::try_from(n_cached).ok()?, tokens, labels, restore })
 }
 
 #[cfg(test)]
@@ -402,15 +414,16 @@ mod tests {
     use super::*;
 
     // what this catches: a reply that labels her context (teaching her what she was told), misses
-    // her reply's first token.
+    // her reply's first token, or restores anything but the exact tail she held.
     #[test]
-    fn her_reply_learns_from_the_prefix_she_holds() {
+    fn her_reply_learns_from_the_prefix_she_holds_and_restores_her_tail() {
         let rendered = Rendered { tokens: vec![1, 2, 3, 4, 50, 51], reply_from: 4 };
         let held = [1, 2, 9, 9];
         let reply = reply_for(mind_of(PersonaId(uuid::Uuid::nil())), &held, &rendered).expect("test: a reply");
         assert_eq!(reply.n_cached, 2, "learned from the prefix she holds");
         assert_eq!(reply.tokens, vec![3, 4, 50, 51]);
         assert_eq!(reply.labels, vec![Label::Unlabelled, Label::Target(50), Label::Target(51), Label::Unlabelled], "only her reply is a target");
+        assert_eq!(reply.restore, vec![9, 9], "her exact tail comes back");
     }
 
     // what this catches: a lesson she already holds whole learned from past her reply's start, so
@@ -421,5 +434,6 @@ mod tests {
         let reply = reply_for(mind_of(PersonaId(uuid::Uuid::nil())), &[1, 2, 3, 50, 7], &rendered).expect("test: a reply");
         assert_eq!(reply.n_cached, 2);
         assert_eq!(reply.labels, vec![Label::Target(50), Label::Unlabelled]);
+        assert_eq!(reply.restore, vec![3, 50, 7]);
     }
 }

@@ -422,6 +422,13 @@ impl Model {
     /// "context window" is needed; if a smaller `n_ctx` is intentional
     /// (e.g. memory pressure on a tier with low VRAM), pass it explicitly
     /// rather than redefining the model's natural capability.
+    /// Whether a sequence carries recurrent state (a recurrent or hybrid model): that state cannot be
+    /// cut back to an earlier position, only restored from a checkpoint taken there.
+    pub fn has_recurrent_state(&self) -> bool {
+        // SAFETY: `self.ptr` is a live model.
+        unsafe { sys::llama_model_is_recurrent(self.ptr.as_ptr()) || sys::llama_model_is_hybrid(self.ptr.as_ptr()) }
+    }
+
     pub fn n_ctx_train(&self) -> u32 {
         let n = unsafe { sys::llama_model_n_ctx_train(self.ptr.as_ptr()) };
         if n > 0 {
@@ -494,7 +501,6 @@ impl Model {
         ffi.n_batch = params.n_batch;
         ffi.n_ubatch = params.n_ubatch;
         ffi.n_seq_max = params.n_seq_max;
-        ffi.kv_unified = params.kv_layout == KvLayout::Pool;
         ffi.flash_attn_type = match params.flash_attn {
             FlashAttn::Auto => sys::llama_flash_attn_type_LLAMA_FLASH_ATTN_TYPE_AUTO,
             FlashAttn::Enabled => sys::llama_flash_attn_type_LLAMA_FLASH_ATTN_TYPE_ENABLED,

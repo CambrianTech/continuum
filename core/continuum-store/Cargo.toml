@@ -14,9 +14,9 @@ repository = "https://github.com/CambrianTech/continuum"
 # its old path.
 
 [dependencies]
-continuum-kernel = { path = "../continuum-kernel" }
-continuum-embedding = { path = "../continuum-embedding" }
-continuum-base = { path = "../continuum-base" }
+continuum-kernel = { workspace = true }
+continuum-embedding = { workspace = true }
+continuum-base = { workspace = true }
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -33,8 +33,8 @@ futures = { workspace = true }
 inventory = { workspace = true }  # the action_command! / register_command! expansions submit descriptors
 
 [dev-dependencies]
-continuum-kernel = { path = "../continuum-kernel", features = ["test-fixtures"] }  # every test build gets the per-process continuum home (card d11d9827)
-continuum-genome = { path = "../continuum-genome", features = ["test-fixtures"] }  # the recall collections the tests clear
+continuum-kernel = { workspace = true, features = ["test-fixtures"] }  # every test build gets the per-process continuum home (card d11d9827)
+continuum-genome = { workspace = true, features = ["test-fixtures"] }  # the recall collections the tests clear
 tokio = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }
 

@@ -65,37 +65,25 @@ fn transfer(n: u128, direction: Direction, drops: &Drops) -> (Transfer, Rc<Cell<
     (Transfer { tag, landed: Rc::clone(&landed), drops: drops.clone() }, landed)
 }
 
-/// Stage, land and seat persona `n` on `roles`.
-fn seat(roles: &mut Roles<Unit, Transfer>, n: u128, drops: &Drops) {
+/// Stage, land and bind persona `n` on `roles`.
+fn bind(roles: &mut Roles<Unit, Transfer>, n: u128, drops: &Drops) -> Option<PersonaId> {
     let (fence, landed) = transfer(n, Direction::In, drops);
     assert!(roles.stage(mind(n, drops), fence).is_ok(), "test: stage {n}");
     landed.set(true);
-    assert_eq!(roles.seat(), Ok(id(n)), "test: seat {n}");
+    roles.handoff().expect("test: handoff") // expect: the test's own precondition
 }
 
-fn active(roles: &Roles<Unit, Transfer>) -> Option<PersonaId> {
-    roles.active().map(Identified::persona)
-}
-
-// what this catches: every switch copying the active mind's whole state out and the next one in
-// (63-259 ms per switch on the M5, 2026-11-24, one sequence for the whole Core). Seated minds stay in
-// place; a switch between them only changes which one is active: no transfer begins and nothing moves.
-// One is active at a time, so two minds never decode at once (the M5's --parallel 5, 2026-11-18).
+// what this catches: two minds decoding at once (the M5's --parallel 5, 2026-11-18). A Core holds
+// one active mind; staging the next never makes her active.
 #[test]
-fn a_switch_between_seated_minds_moves_nothing_and_one_is_active() {
+fn one_mind_is_active_and_the_next_is_staged_not_decoding() {
     let drops = Drops::default();
     let mut roles: Roles<Unit, Transfer> = Roles::default();
-    seat(&mut roles, 1, &drops);
-    seat(&mut roles, 2, &drops);
-    assert_eq!(active(&roles), None, "seating never makes her active");
-    assert_eq!(roles.activate(id(1)), Ok(None));
-    assert_eq!(roles.activate(id(2)), Ok(Some(id(1))));
-    assert_eq!(roles.activate(id(1)), Ok(Some(id(2))));
-    assert_eq!(active(&roles), Some(id(1)));
-    assert!(roles.is_seated(id(2)), "the other stays seated");
-    assert_eq!((roles.staged(), roles.retiring(), roles.awaiting_copy_out()), (None, None, None), "no transfer");
-    assert_eq!(drops.count(), 2, "only the two copy-in fences were dropped, by seating");
-    assert_eq!(roles.activate(id(3)), Err(SeatedRefusal::NotSeated { persona: id(3) }), "an unseated mind is never active");
+    assert_eq!(bind(&mut roles, 1, &drops), None);
+    let (fence, _landed) = transfer(2, Direction::In, &drops);
+    assert!(roles.stage(mind(2, &drops), fence).is_ok());
+    assert_eq!(roles.active().map(Identified::persona), Some(id(1)));
+    assert_eq!(roles.staged(), Some(id(2)));
 }
 
 // what this catches (Codex on #6130): a refused stage dropping the unit and its in-flight copy.
@@ -126,36 +114,33 @@ fn a_refused_stage_returns_the_unit_and_its_fence() {
     assert!(matches!(refused.reason, StageRefusal::WrongFence { .. }));
 }
 
-// what this catches: a mind exposed as seated before her bytes landed (fence-before-ready).
+// what this catches: a mind exposed as ready before her bytes landed (fence-before-ready).
 #[test]
-fn seating_waits_for_the_copy_in_and_changes_nothing_until_then() {
+fn handoff_waits_for_the_copy_in_and_changes_nothing_until_then() {
     let drops = Drops::default();
     let mut roles: Roles<Unit, Transfer> = Roles::default();
     let (fence, landed) = transfer(1, Direction::In, &drops);
     assert!(roles.stage(mind(1, &drops), fence).is_ok());
-    assert_eq!(roles.seat(), Err(SeatRefusal::NotReady { staged: id(1) }));
-    assert!(!roles.is_seated(id(1)));
+    assert_eq!(roles.handoff(), Err(HandoffRefusal::NotReady { staged: id(1) }));
+    assert!(roles.active().is_none());
     landed.set(true);
-    assert_eq!(roles.seat(), Ok(id(1)));
-    assert_eq!(roles.seat(), Err(SeatRefusal::NothingStaged));
+    assert_eq!(roles.handoff(), Ok(None));
+    assert_eq!(roles.active().map(Identified::persona), Some(id(1)));
 }
 
-// what this catches (Codex on #6130): a copy-out started before the mind left her seat, or a second
-// eviction while one is moving. Evicting takes no fence: she leaves her seat (and stops being active)
-// first, then her copy-out is attached; the release waits for it to land.
+// what this catches (Codex on #6130): a copy-out started before the mind stopped being active.
+// Handoff takes no fence: she leaves active first, then her copy-out is attached; the release
+// waits for it to land, and the next handoff waits for the release.
 #[test]
-fn an_eviction_leaves_the_seat_first_and_releases_only_when_landed() {
+fn the_copy_out_begins_after_the_bind_and_releases_only_when_landed() {
     let drops = Drops::default();
     let mut roles: Roles<Unit, Transfer> = Roles::default();
-    seat(&mut roles, 1, &drops);
-    seat(&mut roles, 2, &drops);
-    assert_eq!(roles.activate(id(1)), Ok(None));
-    assert_eq!(roles.evict(id(1)), Ok(()));
-    assert_eq!((active(&roles), roles.is_seated(id(1)), roles.retiring()), (None, false, Some(id(1))), "she left her seat and is not active");
+    bind(&mut roles, 1, &drops);
+    assert_eq!(bind(&mut roles, 2, &drops), Some(id(1)), "she leaves active as the next binds");
     assert_eq!(roles.release_retired().err(), Some(RetireRefusal::NotBegun { retiring: id(1) }));
 
     let (wrong, _l) = transfer(2, Direction::Out, &drops);
-    let refused = roles.begin_retire(wrong).err().expect("test: the seated mind's copy-out is not hers"); // expect: the test's own precondition
+    let refused = roles.begin_retire(wrong).err().expect("test: the active mind's copy-out is not hers"); // expect: the test's own precondition
     assert!(matches!(refused.reason, RetireRefusal::WrongFence { .. }));
     drop(refused.returned);
 
@@ -164,13 +149,16 @@ fn an_eviction_leaves_the_seat_first_and_releases_only_when_landed() {
     let (again, _l) = transfer(1, Direction::Out, &drops);
     assert!(matches!(roles.begin_retire(again).err().map(|r| r.reason), Some(RetireRefusal::AlreadyMoving { .. })));
     assert_eq!(roles.release_retired().err(), Some(RetireRefusal::NotLanded { retiring: id(1) }));
-    assert_eq!(roles.evict(id(2)), Err(SeatedRefusal::RetireInFlight { retiring: id(1) }), "one copy-out at a time");
+
+    let (fence, l3) = transfer(3, Direction::In, &drops);
+    assert!(roles.stage(mind(3, &drops), fence).is_ok());
+    l3.set(true);
+    assert_eq!(roles.handoff(), Err(HandoffRefusal::RetireInFlight { retiring: id(1) }));
 
     landed.set(true);
     let released = roles.release_retired().expect("test: landed"); // expect: the test's own precondition
     assert_eq!((released.id(), released.parts().tokens.clone()), (id(1), vec![1, 2, 3]), "she travels whole");
-    assert_eq!(roles.evict(id(1)), Err(SeatedRefusal::NotSeated { persona: id(1) }));
-    assert!(roles.is_seated(id(2)), "the other was never touched");
+    assert_eq!(roles.handoff(), Ok(Some(id(2))));
 }
 
 // what this catches: the same mind in two places at once in one Core.
@@ -178,9 +166,9 @@ fn an_eviction_leaves_the_seat_first_and_releases_only_when_landed() {
 fn a_mind_already_in_the_core_is_not_staged_again() {
     let drops = Drops::default();
     let mut roles: Roles<Unit, Transfer> = Roles::default();
-    seat(&mut roles, 1, &drops);
+    bind(&mut roles, 1, &drops);
     let (fence, _l) = transfer(1, Direction::In, &drops);
-    let refused = roles.stage(mind(1, &drops), fence).err().expect("test: already seated"); // expect: the test's own precondition
+    let refused = roles.stage(mind(1, &drops), fence).err().expect("test: already active"); // expect: the test's own precondition
     assert_eq!(refused.reason, StageRefusal::AlreadyPresent { persona: id(1) });
 }
 
@@ -212,9 +200,8 @@ fn the_completion_owner_begins_exactly_the_described_copy_out() {
     let mut tier = TestTier { drops: drops.clone() };
     let mut roles: Roles<Unit, Transfer> = Roles::default();
     assert_eq!(roles.awaiting_copy_out(), None, "nobody awaits a copy-out yet");
-    seat(&mut roles, 1, &drops);
-    seat(&mut roles, 2, &drops);
-    assert_eq!(roles.evict(id(1)), Ok(()));
+    bind(&mut roles, 1, &drops);
+    bind(&mut roles, 2, &drops);
 
     let described = roles.awaiting_copy_out().expect("test: she awaits her copy-out"); // expect: the test's own precondition
     assert_eq!(described, FenceTag { mind: crate::persona::MindId { persona: id(1), epoch: Epoch(1) }, direction: Direction::Out });

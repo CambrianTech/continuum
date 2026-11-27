@@ -120,8 +120,6 @@ impl InProcessEngine {
         // Said to the hot tier, which copies a model on a slower drive up for the next launch; never waits.
         crate::model_registry::artifacts::hot_tier::serve(&gguf_path);
         let context = NonZeroU32::new(target.context_window).ok_or_else(|| InProcessRefusal::ZeroWindow { model: model() })?;
-        // The minds the pool seats at once: the plan's sequences, never fewer than one.
-        let seats = NonZeroU32::MIN.saturating_add(target.lanes.saturating_sub(1));
         // The micro-batch the launched server's `--ubatch-size` applies, lowered (never raised) by the
         // model's own catalog ceiling; a ceiling of zero allows no batch, and is refused.
         let ceiling = target.model.serving.max_ubatch.map_or(crate::inference::lane_args::UBATCH_TOKENS, |cap| cap.min(crate::inference::lane_args::UBATCH_TOKENS));
@@ -138,7 +136,6 @@ impl InProcessEngine {
             model_id: target.model.id.clone(),
             gguf_path,
             context,
-            seats,
             // One decode call per micro-batch: always a whole number of them, as the learner needs.
             n_batch: n_ubatch,
             n_ubatch,
