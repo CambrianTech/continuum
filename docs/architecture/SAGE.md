@@ -163,6 +163,31 @@ Proposed, the economy around it:
   receipts), open peers (earned trust, priced and verified by receipts). A placement never carries what its trust
   level does not allow; a mind's genome and private state stay inside the trust she is given.
 
+## Across the grid
+
+SAGE has to work as well across machines as on one, because the work worth distributing is
+everywhere: rendering a room's 3D world or an avatar, a mind's learning steps, recall over a large
+corpus, a benchmark's runs, a build. The rule is that location is a placement decision, never
+something a component or a caller writes:
+- **Topics are global.** A topic on another node's bus is still a topic: a component subscribes to
+  it by name and the frames arrive over airc, with the same frame numbers and provenance.
+- **Commands declare where they may run.** Proposed: `CommandSpec` gains a placement declaration
+  beside `EFFECT`: local only (it touches this machine's files, devices or her private state), any
+  node of mine, or any trusted peer (p2p). A command declared remote-capable is routed by airc
+  headers to the node the placement law chooses, and its outcome comes back as the events and state
+  it causes, exactly as a local one's does; the caller cannot tell and does not need to.
+- **Stage runs are placed like blocks.** A run declares its cost (STAGE-CONTRACT.md): GPU time,
+  memory, the bytes it must read. The placement law weighs running it here against a node with room,
+  priced with the transfer of its inputs, the return of its output, queueing and price, and its
+  trust; then it runs there under a lease and its completion is fenced like any transfer.
+- **Rendering is the first grid workload.** A room's piped 3D world or an avatar is a render stage
+  run: placed on the node with the GPU to spare and the shortest path to its viewers, its frames on
+  the media plane (POSITRON-EVERY-CITIZEN.md, "Over airc, from anywhere").
+
+Today one case works this way by special purpose: inference served by a peer
+(`continuum-engine/src/inference/airc_remote/`). It becomes the first instance of the general rule,
+and its interceptor is deleted when commands carry their own placement.
+
 ## What still moves onto it
 
 Each row is deleted when its last instance moves:
