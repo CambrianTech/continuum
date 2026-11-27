@@ -48,7 +48,7 @@ One fact, one owner, one ring. The served model's identity is a ring-1 struct; a
 reader looks it up and never re-derives it. The disk level is a ring-0 fact; the room's
 health line (ring 3) renders it. A rate ladder is one function in ring 1 and both axes call
 it. These are not style points; each of them cost a day this week
-(`docs/architecture/INFERENCE-LANES-REALISTIC.md` § "How a lane change is judged" has the
+(`docs/architecture/THE-LANE-ON-SAGE.md` has the
 receipts).
 
 ## The invariant, as a ratchet

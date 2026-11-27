@@ -25,7 +25,7 @@ provider: string, model?: string, systemPrompt?: string, activeAdapters?: Array<
 personaId?: string, 
 /**
  * What the persona is doing — drives the lane's KV budget +
- * class derivation (via [[INFERENCE-LANES-REALISTIC.md]]).
+ * class derivation (via [[THE-LANE-ON-SAGE.md]]).
  * Defaults to `Chat` when omitted. Ignored when the module
  * runs without a coordinator (back-compat path).
  */

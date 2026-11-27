@@ -1,5 +1,5 @@
 //! Lane — the unit of inference budget per
-//! [[INFERENCE-LANES-REALISTIC.md]].
+//! [[THE-LANE-ON-SAGE.md]].
 //!
 //! Joel (2026-05-31): "I think we weren't clever enough with our
 //! lanes. The goal should be to ideally cover the needs of the

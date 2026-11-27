@@ -393,7 +393,7 @@ Across the Grid:
 
 Residency and distributed scheduling become two scales of the same resource-allocation problem. The result is an architecture designed around the machine you actually own—not an imaginary GPU with infinite VRAM.
 
-[See the KV-slot economy →](docs/architecture/INFERENCE-SCHEDULING-AND-SCARCITY.md) · [See resource governance →](docs/architecture/CONTINUUM-ENGINE.md)
+[See the KV-slot economy →](docs/architecture/THE-LANE-ON-SAGE.md) · [See resource governance →](docs/architecture/CONTINUUM-ENGINE.md)
 
 ---
 

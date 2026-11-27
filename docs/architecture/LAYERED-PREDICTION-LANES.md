@@ -7,7 +7,7 @@ TTS seam. No new orchestrator — the merge is the workspace that already exists
 
 Related: [`WILL-DRIVEN-RESOLUTION.md`](WILL-DRIVEN-RESOLUTION.md) (the depth axis),
 [`PERSONA-COGNITION-PIPELINE.md`](PERSONA-COGNITION-PIPELINE.md) (the brain),
-[`INFERENCE-LANES-REALISTIC.md`](INFERENCE-LANES-REALISTIC.md) (serving lanes),
+[`THE-LANE-ON-SAGE.md`](THE-LANE-ON-SAGE.md) (serving lanes),
 [`GRID-ADDRESSING-AND-ROUTING.md`](GRID-ADDRESSING-AND-ROUTING.md) (the grid source).
 
 ---
@@ -100,7 +100,7 @@ sub-second local model in front of its slow remote one.
   serving lane (separate from the resident deliberative model) producing sub-second
   acks, trivial answers, and the *escalate / don't* signal. This promotes #168's
   reflexive tier from "a cheap rung of the big model" to a real, independently-warm
-  lane. (Serving: a second lane per [`INFERENCE-LANES-REALISTIC`](INFERENCE-LANES-REALISTIC.md);
+  lane. (Serving: a second lane per [`THE-LANE-ON-SAGE`](THE-LANE-ON-SAGE.md);
   governor-arbitrated VRAM.)
 - **Slice B — Backchannel as a first-class turn type.** During escalation / deep
   compute, the surface emits genuine engagement ("let me check that…") so the human

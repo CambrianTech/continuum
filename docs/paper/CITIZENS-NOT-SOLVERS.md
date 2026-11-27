@@ -164,7 +164,7 @@ conclusion.
 ## 3. The Substrate
 
 【Compressed architecture section, drawing from CONTINUUM-ENGINE,
-INFERENCE-LANES-REALISTIC, KV-CACHE-ECONOMY, RECIPE-EXECUTION-RUNTIME docs.
+THE-LANE-ON-SAGE, KV-CACHE-ECONOMY, RECIPE-EXECUTION-RUNTIME docs.
 Subsections: 3.1 Citizens (persistence, multi-room, service loop, boredom/
 activity gating); 3.2 Serving economy (one frozen base model, slot-level KV
 affinity, participant-scoped quiesce, decode permits sized to served slots);

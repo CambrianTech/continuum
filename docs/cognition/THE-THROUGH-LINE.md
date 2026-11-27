@@ -101,7 +101,7 @@ This is the "how," in dependency order. Each link is a real, named subsystem.
 1. **One base model, N persona LoRA lanes.** Multiplicity = LoRA overlays
    page-faulting through ONE base via the existing working-set pager, never N
    model instances. A persona is a genome overlay, not a process.
-   ([[persona-is-a-genome-overlay-not-an-instance]], INFERENCE-LANES-REALISTIC.md)
+   ([[persona-is-a-genome-overlay-not-an-instance]], THE-LANE-ON-SAGE.md)
 2. **Deferred cognition.** `WorkspaceCycle` runs faculties; the slow ones
    (`DeferredFaculty`) run on their own tokio task, serve last-good stamped with
    the cycle they reasoned on, off the critical-path barrier. Only the

@@ -203,7 +203,7 @@ cache; two projects share bytes only when digests happen to match.
 
 **Shared-layer residency (Joel, efficiency note):** many personas wear the
 SAME repo layer — so residency is REFCOUNTED, never per-persona: the layer
-loads once (multi-LoRA serving lanes, INFERENCE-LANES-REALISTIC), every
+loads once (multi-LoRA serving lanes, THE-LANE-ON-SAGE), every
 citizen's stack references the one resident copy, and it pages out when the
 last wearer leaves the repo. Four teammates in one repo = one layer in
 VRAM, not four. Same rule up the grid: a 1080Ti node hosting the layer

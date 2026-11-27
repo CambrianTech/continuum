@@ -1,6 +1,6 @@
 //! Capacity fabric — the live, never-block, grid-elastic compute allocator.
 //!
-//! Design: `docs/architecture/CAPACITY-FABRIC-AND-GOVERNOR.md`. This module SEEDS it:
+//! Design: `docs/architecture/SHARED-RESOURCES.md#capacity-is-live`. This module SEEDS it:
 //! the deterministic **simulator** (= VDD gate = training gym) and the allocation-fit that
 //! reproduces-and-kills the 2026-07-16 compute-buffer OOM WITHOUT hardware.
 //!

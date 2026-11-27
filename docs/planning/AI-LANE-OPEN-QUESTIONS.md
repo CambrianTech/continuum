@@ -9,8 +9,8 @@
 
 **Parents:**
 - [`docs/architecture/AI-COMMAND-NAMESPACE.md`](../architecture/AI-COMMAND-NAMESPACE.md) — the surface
-- [`docs/architecture/INFERENCE-SCHEDULING-AND-SCARCITY.md`](../architecture/INFERENCE-SCHEDULING-AND-SCARCITY.md) — the daemons behind it (aspirational ceiling)
-- [`docs/architecture/INFERENCE-LANES-REALISTIC.md`](../architecture/INFERENCE-LANES-REALISTIC.md) — the realistic build plan composing existing prior art (concrete floor)
+- [`docs/architecture/THE-LANE-ON-SAGE.md`](../architecture/THE-LANE-ON-SAGE.md) — the daemons behind it (aspirational ceiling)
+- [`docs/architecture/THE-LANE-ON-SAGE.md`](../architecture/THE-LANE-ON-SAGE.md) — the realistic build plan composing existing prior art (concrete floor)
 - [`docs/architecture/EVERY-MODEL-INCLUDED-VIA-L1-BUDGET.md`](../architecture/EVERY-MODEL-INCLUDED-VIA-L1-BUDGET.md) — the inclusivity thesis
 
 ---
@@ -356,7 +356,7 @@ classifier model. When does the scheduler pick which?
 ### Lane: Realistic lane build (#109 floor)
 
 These questions land alongside the new
-[`INFERENCE-LANES-REALISTIC.md`](../architecture/INFERENCE-LANES-REALISTIC.md)
+[`THE-LANE-ON-SAGE.md`](../architecture/THE-LANE-ON-SAGE.md)
 doc and are the ones the realistic-lane MVP cut has to answer
 before the code goes in.
 

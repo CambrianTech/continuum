@@ -112,7 +112,7 @@ the area:
 | 4 | Host RAM: every cache/ring in the RAM inventory takes a `GrantRx`; delete their literals; sentinel watchdog reads its grant | crate owners per the placement map; Fable for cognition/mind |
 | 5 | Disk: class handles, writers migrated, KEEP/age constants deleted, unbounded writers claimed, resolved home everywhere | BigMama (live/media), Cormac (genome/dreaming), Codex (engine), Fable (cognition/mind/capture) |
 | 6 | A mind's context: window from her KV grant; every prompt reader from the turn grant; the 12 out-of-View pushes become Sources; `ContextBudget` reduced to the grant's view or deleted | Fable |
-| 7 | Superseded docs folded here and deleted (RESOURCE-ARCHITECTURE, CAPACITY-FABRIC-AND-GOVERNOR, MOE-SERVING-GOVERNED-BUDGET, EVERY-MODEL-INCLUDED-VIA-L1-BUDGET, STORAGE-SERVING-TIER-GOVERNOR, LIVE-AVATAR-BUDGET where they define a second rule) | Fable |
+| 7 | Superseded docs folded here and deleted (RESOURCE-ARCHITECTURE, MOE-SERVING-GOVERNED-BUDGET, EVERY-MODEL-INCLUDED-VIA-L1-BUDGET, STORAGE-SERVING-TIER-GOVERNOR, LIVE-AVATAR-BUDGET where they define a second rule) | Fable |
 
 ### Slice 0: enforcement before any migration
 

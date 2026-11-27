@@ -105,7 +105,7 @@ tried live with a before/after receipt.
   eviction designed in KV-CACHE-ECONOMY; today a closure seam at `inference/slots.rs:619`).
   Reward: prefill seconds avoided per byte of residency.
 - **Predictive warming:** restore the mind most likely to act next before her turn (designed
-  in INFERENCE-SCHEDULING-AND-SCARCITY, not built). Reward: restore time hidden.
+  in THE-LANE-ON-SAGE, not built). Reward: restore time hidden.
 - **Checkpoint placement:** where to keep recurrent-state checkpoints on hybrid models so a
   divergence rolls back the least (today only at user-message starts, every ~4k tokens; the
   cold restores diverge at token ~574). Reward: replayed tokens per act.

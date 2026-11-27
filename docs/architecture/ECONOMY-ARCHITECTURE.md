@@ -145,7 +145,7 @@ on provenance we already keep:
   decaying early-contributor multiplier, expressed in the artifact layer.
 
 The self-scaling loop closes here too: minds that [learn to choose their own
-intelligence tier](INFERENCE-LANES-REALISTIC.md) are the *demand side* of
+intelligence tier](THE-LANE-ON-SAGE.md) are the *demand side* of
 this market — routing decisions priced by measured act-latency multiples and
 fitness are what make recall's "use" signal honest, and their receipts are
 the training data for better choosing. The economy and the metacognition are

@@ -68,8 +68,8 @@ So we design for **target SIZES**, not specific GPUs Joel owns:
 - Intel Mac → `HwCapabilityTier::MacIntelMetalDiscrete`
 
 **Parents:**
-- [`docs/architecture/INFERENCE-LANES-REALISTIC.md`](../architecture/INFERENCE-LANES-REALISTIC.md) — realistic floor
-- [`docs/architecture/INFERENCE-SCHEDULING-AND-SCARCITY.md`](../architecture/INFERENCE-SCHEDULING-AND-SCARCITY.md) — aspirational ceiling
+- [`docs/architecture/THE-LANE-ON-SAGE.md`](../architecture/THE-LANE-ON-SAGE.md) — realistic floor
+- [`docs/architecture/THE-LANE-ON-SAGE.md`](../architecture/THE-LANE-ON-SAGE.md) — aspirational ceiling
 
 ---
 
@@ -269,7 +269,7 @@ to either:
 1. Use the heuristic adapter (no real intelligence, but zero
    latency + deterministic for tests).
 2. Offload to a grid peer via [#108
-   AircRemoteInferenceAdapter](../../docs/architecture/INFERENCE-SCHEDULING-AND-SCARCITY.md#cross-grid-inference)
+   AircRemoteInferenceAdapter](../../docs/architecture/THE-LANE-ON-SAGE.md)
    — Joel's 5090 in another room running the same architecture.
 
 ---

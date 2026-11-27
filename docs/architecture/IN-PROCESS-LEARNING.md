@@ -23,7 +23,7 @@ A mind learns one reply on her own live serving sequence: the reply's rows are t
 in her cache, then she is restored under her stable gene set, so serving finds her exactly as it left her. Other
 minds decode between the learner's units.
 
-Built (in tree on `fable/workspace-3b`):
+Built:
 - the `Learner` over a context in the llama crate (`core/llama/src/safe/learn.rs`), its refusals typed from
   `llama_opt_failure`;
 - `Job::Learn` on the driver (`persona_scheduler/driver/learning.rs`), interleaved with turns;
@@ -54,8 +54,8 @@ gradient accumulator and recurrent checkpoints, so the tiled update is the whole
 **One path.** A reply past one ubatch learns only through this walk. The untiled step had let `decode()` split a
 chunk into ubatches with a backward each, a plain walk whatever `walk_exact` said: cosine 0.949 / norm 0.889 on
 Qwen3.5-0.8B and 0.960 / 0.944 on Qwen3.6-35B-A3B against the exact step at ubatch 64 (M5 Metal), on every live
-reply past the Core's `n_ubatch` (2048). Fixed at fork 398bf318d (not yet pinned) and binding dbe8d18d1a
-(`Walk.exact` deleted). Proposed next: the fork's learn surface collapses to begin, cost at a unit, run a unit; the
+reply past the Core's `n_ubatch` (2048). Fixed in the fork (398bf318d, awaiting review before the submodule pin
+moves) and the binding (`Walk` has no `exact` field: the walk is always exact). Proposed next: the fork's learn surface collapses to begin, cost at a unit, run a unit; the
 whole-reply graph is the walk at `unit >= reply`, and the other entries are deleted (STAGE-CONTRACT.md, "Units").
 
 **Measured** (64-row tiles against the exact step):
@@ -65,7 +65,7 @@ whole-reply graph is the walk at `unit >= reply`, and the other entries are dele
 | Metal (M5) | Qwen3.5-0.8B-Q8_0 | cosine 1.0000; stride 1: 8 units, 440 rows; stride 4: 17 units, 824 rows; max 64 rows per unit |
 | Metal (M5) | Qwen3.6-35B-A3B-Q4_K_M | 0.9976, equal to the untiled learn (production layout) |
 | CPU (IntelMac) | Qwen3.5-0.8B, Qwen2.5-0.5B | 1.0000 in all four cases (Cormac, 1eb66d1db) |
-| CUDA (5090) | Qwen3.5-0.8B | 0.498, open: a single tile is exact; failing with no model layers on the GPU while op offload stays on (Codex, Cormac) |
+| CUDA (5090) | Qwen3.5-0.8B | open: with CUDA visible, both the whole-reply and the tiled update differ from CPU's (cosine 0.31 and 0.33), while CPU-only on the same binary is exact (0.9999); so CUDA's backward is wrong, not the tiling (Codex, 398bf318d) |
 
 ## Pricing a tile
 
@@ -95,7 +95,7 @@ Proposed: the learner is a stage whose unit is a tile, scheduled by the lane lik
 (STAGE-CONTRACT.md, "Units"; THE-LANE-ON-SAGE.md).
 - Its class is `Content`: no per-unit bound; its guarantee is its queue kept in check (`Urgency::act_bound`).
 - What it owes is state, latest-wins: `learning/owed`, `Owed(BTreeMap<SeatId, LearnerOwed>)`, a seat leaving the
-  map is its Done (Cormac, `cormac/step3` 1af29edfa, unmerged).
+  map is its Done (Cormac's, in review).
 - Its share of the Core is what the scheduler's choices add up to, from feedback, never a constant.
 - Its scratch is one claim on the authority held per tile size and resized when the size moves, not asked per unit.
 - Between units its shadow, optimizer, checkpoints and accumulator stay resident and are reported like any holding.
@@ -107,7 +107,9 @@ Proposed: the learner is a stage whose unit is a tile, scheduled by the lane lik
 1. `test-walk-exact` on Metal, CPU and CUDA (0.8B) and on the 35B on Metal (the M5's production form): tiled
    against untiled on the same backend at the model's measured floor, every unit within its tile.
 2. The tile measure is at least the workspace each tile actually admits, at 64, 128 and 512 rows.
-3. A tile too large learns at a smaller one, never an abort.
+3. A tile too large learns at a smaller one, never an abort. This replaces the suite's device-refusal case ("a
+   refused chunk graph retried at a smaller horizon"), which tests a refusal and a retry; it fails today on Metal
+   and on CPU (where nothing is refused) and is rewritten to split in place.
 4. Kimi's 64 GB, 91 GB and 1.9 TB lessons learned on the 5090 beside serving, held-out loss kept.
 5. A loaded window on the M5 with the 35B: the learner's queue in check, no resident past her bound, every unit
    recorded, zero `measure_defect`.

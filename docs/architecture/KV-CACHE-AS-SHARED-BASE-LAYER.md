@@ -323,7 +323,7 @@ skeptic in that thread was right to distrust.
 
 - [`COGNITION-CACHE-HIERARCHY.md`](COGNITION-CACHE-HIERARCHY.md) — the *other*
   cache (engrams). Orthogonal.
-- [`INFERENCE-LANES-REALISTIC.md`](INFERENCE-LANES-REALISTIC.md) — lanes are
+- [`THE-LANE-ON-SAGE.md`](THE-LANE-ON-SAGE.md) — lanes are
   where affinity would live.
 - [`MOE-SERVING-GOVERNED-BUDGET.md`](MOE-SERVING-GOVERNED-BUDGET.md) — the
   residency/paging machinery this composes with.

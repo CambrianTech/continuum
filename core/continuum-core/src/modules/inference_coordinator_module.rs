@@ -2,7 +2,7 @@
 //! `InferenceCoordinator` (the multi-persona-one-model lane substrate).
 //!
 //! Closes the last-mile wiring gap on the realistic-lane build
-//! (INFERENCE-LANES-REALISTIC.md): the coordinator, its
+//! (THE-LANE-ON-SAGE.md): the coordinator, its
 //! `evict_under_pressure` walk, and the `CoordinatorResourcePool` bridge
 //! (`ResourcePool::evict_at_least → evict_under_pressure`) were all built
 //! and unit-tested, but nothing stood the coordinator up in production or

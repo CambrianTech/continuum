@@ -582,7 +582,7 @@ backends:
   `ai/*` adapter doctrine: mechanism in one place, model as a declaration.
 - **The session mutex is a resource lease.** Backends sharing the base model
   can't all fire at once — they queue through the lease. This is continuum's
-  inference-lane/slot-pool scarcity (INFERENCE-LANES-REALISTIC), and it is *why*
+  inference-lane/slot-pool scarcity (THE-LANE-ON-SAGE), and it is *why*
   multi-cadence (§2.8) is structural, not a nicety: you physically cannot run
   every expensive faculty every tick.
 - **Cadence is measured, not guessed.** `getBenchmarkedDuration()` — each backend

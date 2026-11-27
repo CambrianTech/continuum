@@ -19,7 +19,7 @@ the companion docs below, and Joel's words of the day.
 Companions, each the owner of its chapter: [CONTINUUM-ENGINE](CONTINUUM-ENGINE.md)
 (the runtime, section 3; her view, section 5; the engine, section 4),
 [CONCURRENT-MIND-AND-GOVERNOR](CONCURRENT-MIND-AND-GOVERNOR.md) and
-[PERSONA-COGNITION-PIPELINE](PERSONA-COGNITION-PIPELINE.md) (the cycle), [CAPACITY-FABRIC-AND-GOVERNOR](CAPACITY-FABRIC-AND-GOVERNOR.md)
+[PERSONA-COGNITION-PIPELINE](PERSONA-COGNITION-PIPELINE.md) (the cycle), [SHARED-RESOURCES](SHARED-RESOURCES.md)
 (capacity), [ONE-RESIDENT-MODEL-PATIENT-DOCTOR-DREAM](ONE-RESIDENT-MODEL-PATIENT-DOCTOR-DREAM.md)
 (learning), [SLEEP-AND-WAKE-AT-EVERY-SCALE](SLEEP-AND-WAKE-AT-EVERY-SCALE.md) (when she dreams),
 [GRID-MARKET-CLEARING](GRID-MARKET-CLEARING.md) (the economy).
@@ -153,7 +153,7 @@ citizen helping, not an operator intervening.
 ... capable of controlling but autonomously continually adjusted, like an MRI. It's got an
 algorithm or ideally ML controlling it too, but if its state is accessible by command we never lose
 either kind."). Every setting has an **autonomous controller** that adjusts it continually (an
-algorithm first, a learned policy when one beats it on receipts: CAPACITY-FABRIC's policy seam) and
+algorithm first, a learned policy when one beats it on receipts: SHARED-RESOURCES's policy seam) and
 is **reachable by command** by her, a teammate, an agent or a person, the way a scanner re-tunes
 itself while its operator can take any parameter. Because both act through the same command state,
 swapping the controller from algorithm to model never removes the manual handle, and a deliberate

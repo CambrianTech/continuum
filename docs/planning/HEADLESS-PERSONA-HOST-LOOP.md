@@ -325,7 +325,7 @@ Integration test happens via the IPC server itself — no real airc daemon, no r
 - [docs/architecture/CONTINUUM-ENGINE.md](../architecture/CONTINUUM-ENGINE.md) — runtime contract every module inherits
 - [docs/architecture/GENOME-FOUNDRY-SENTINEL.md](../architecture/GENOME-FOUNDRY-SENTINEL.md) — tiered artifact sharing
 - [docs/architecture/AI-COMMAND-NAMESPACE.md](../architecture/AI-COMMAND-NAMESPACE.md) — every AI/ML thing under `ai/*`
-- [docs/architecture/INFERENCE-LANES-REALISTIC.md](../architecture/INFERENCE-LANES-REALISTIC.md) — realistic floor: ONE base, N persona lanes
+- [docs/architecture/THE-LANE-ON-SAGE.md](../architecture/THE-LANE-ON-SAGE.md) — realistic floor: ONE base, N persona lanes
 - [docs/planning/ALPHA-GAP-ANALYSIS.md](ALPHA-GAP-ANALYSIS.md) — lane-shaped roadmap
 - [docs/planning/AI-LANE-OPEN-QUESTIONS.md](AI-LANE-OPEN-QUESTIONS.md) — explicit punch list
 

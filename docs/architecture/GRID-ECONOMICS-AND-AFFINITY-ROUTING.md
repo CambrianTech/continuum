@@ -4,10 +4,10 @@
 designed in [GRID-MARKET-CLEARING.md](GRID-MARKET-CLEARING.md) (nested λ-pricing,
 2026-08-08) — read that for the types/slices; this doc remains the economic argument.
 Companion to
-[INFERENCE-LANES-REALISTIC.md](INFERENCE-LANES-REALISTIC.md) (#109, the realistic
+[THE-LANE-ON-SAGE.md](THE-LANE-ON-SAGE.md) (#109, the realistic
 one-base-N-lanes serving floor), [GENOME-FOUNDRY-SENTINEL.md](GENOME-FOUNDRY-SENTINEL.md)
 (L1–L5 genome cache, foundry, demand-aligned recall), and
-[INFERENCE-SCHEDULING-AND-SCARCITY.md](INFERENCE-SCHEDULING-AND-SCARCITY.md) (the
+[THE-LANE-ON-SAGE.md](THE-LANE-ON-SAGE.md) (the
 aspirational ceiling). This doc states the *economic* argument the whole grid rests on and
 turns it into a falsifiable, benchmark-able build plan.
 
@@ -100,7 +100,7 @@ Keep **one shared base resident and hot** per machine (recycled across every per
 page only the differentiating parts — LoRA adapters / later task-specific layers / experts.
 The base is the large shared substrate that never churns; the small later-layer deltas page.
 Mechanism: **base-model sharing + multi-LoRA-on-one-base** — exactly
-[INFERENCE-LANES-REALISTIC.md](INFERENCE-LANES-REALISTIC.md) (#109: one base model, N persona
+[THE-LANE-ON-SAGE.md](THE-LANE-ON-SAGE.md) (#109: one base model, N persona
 lanes as `(persona, TaskKind, ThroughputLease)` through the same model, continuous batching).
 Minimize base paging → maximize base reuse. Later layers are the natural page granularity;
 early layers are the most-shared and should be the last thing ever evicted.
@@ -171,7 +171,7 @@ frontier expert becomes N paged experts on the grid: our form, our economics, ow
 
 | Axis | Mechanism | Where it lives | Status |
 |---|---|---|---|
-| Base recycle + delta page (§3.2) | one base, N LoRA lanes, continuous batching | INFERENCE-LANES-REALISTIC (#109) | closest to in-hand (base + multi-LoRA serving) |
+| Base recycle + delta page (§3.2) | one base, N LoRA lanes, continuous batching | THE-LANE-ON-SAGE (#109) | closest to in-hand (base + multi-LoRA serving) |
 | KV / prefix coalescing (§3.1) | cross-request prefix-KV sharing, one encode per frame | serving lane (`inference/llama_server.rs`) | scheduler work — scoped, not free |
 | Affinity routing (§3.3) | route ask → node holding the hot expert | MoE expert-affinity paging (#180) + command mesh | scoped (#180) |
 | Genome cache / paging bus (§2.3) | L1–L5 hot→grid→market, demand-aligned recall | GENOME-FOUNDRY-SENTINEL | machinery exists; grid tiers scoped |

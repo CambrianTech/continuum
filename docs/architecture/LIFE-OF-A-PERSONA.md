@@ -222,8 +222,8 @@ Slice 13.5 — `&ctx` doctrine + `PersonaSpawnSupervisor` extract-class + `AircC
 ## Where to look next
 
 - **CBAR substrate**: `docs/architecture/CONTINUUM-ENGINE.md` — why ServiceModule has the shape it does.
-- **The inference floor**: `docs/architecture/INFERENCE-LANES-REALISTIC.md` — what the realistic-tier serving looks like (ONE base model + N persona lanes).
-- **The inference ceiling**: `docs/architecture/INFERENCE-SCHEDULING-AND-SCARCITY.md` — what M5 hosting multi-modal Qwen across multiple lanes will look like.
+- **The inference floor**: `docs/architecture/THE-LANE-ON-SAGE.md` — what the realistic-tier serving looks like (ONE base model + N persona lanes).
+- **The inference ceiling**: `docs/architecture/THE-LANE-ON-SAGE.md` — what M5 hosting multi-modal Qwen across multiple lanes will look like.
 - **Observability**: `docs/architecture/OBSERVABILITY-AS-SUBSTRATE.md` — why half the substrate is structured capture of load-bearing decisions.
 - **The design seam**: `docs/planning/HEADLESS-PERSONA-HOST-LOOP.md` — slice 13's design doc; the rationale for `PersonaSpawnSupervisor` + `BootSummary` + `AircCitizen`.
 - **What's pending**: `docs/planning/ALPHA-GAP-ANALYSIS.md` — the lane-shaped roadmap.

@@ -116,7 +116,7 @@ pub struct OpenParams {
     #[ts(optional, type = "string")]
     pub persona_id: Option<Uuid>,
     /// What the persona is doing — drives the lane's KV budget +
-    /// class derivation (via [[INFERENCE-LANES-REALISTIC.md]]).
+    /// class derivation (via [[THE-LANE-ON-SAGE.md]]).
     /// Defaults to `Chat` when omitted. Ignored when the module
     /// runs without a coordinator (back-compat path).
     #[serde(skip_serializing_if = "Option::is_none")]

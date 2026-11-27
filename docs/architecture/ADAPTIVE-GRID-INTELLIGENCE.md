@@ -23,7 +23,7 @@ This extends existing designs, not a new scheduler or control plane:
 
 - [Concurrent mind](CONCURRENT-MIND-AND-GOVERNOR.md): autonomous concurrent demand,
   event-driven concerns, ready buffers and coherent workspace decisions.
-- [Capacity fabric](CAPACITY-FABRIC-AND-GOVERNOR.md): live resource observations,
+- [Capacity fabric](SHARED-RESOURCES.md#capacity-is-live): live resource observations,
   pressure and revocable leases.
 - [Market clearing](GRID-MARKET-CLEARING.md): local allocation against resource
   prices, bounded neighbor information and the existing governor.

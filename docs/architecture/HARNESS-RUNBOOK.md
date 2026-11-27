@@ -12,7 +12,7 @@
 > - [PERFORMANCE-HARNESS-FRAMEWORK.md](PERFORMANCE-HARNESS-FRAMEWORK.md) — the VDD-record schema + per-part performance covenants.
 > - [OBSERVABILITY-AS-SUBSTRATE.md](OBSERVABILITY-AS-SUBSTRATE.md) — the CaptureSink pattern (Noop default at zero cost, Jsonl glass box for replay).
 > - [COGNITION-VDD-TDD-HARNESSES.md](COGNITION-VDD-TDD-HARNESSES.md) — record/replay of a persona turn.
-> - [INFERENCE-LANES-REALISTIC.md](INFERENCE-LANES-REALISTIC.md) — the lane model the latency levers live on.
+> - [THE-LANE-ON-SAGE.md](THE-LANE-ON-SAGE.md) — the lane model the latency levers live on.
 
 ## The big picture in five sentences
 
@@ -117,7 +117,7 @@ GPU. The levers, in rough order of leverage for *many simultaneous personas*:
    caching reuses the KV prefix across turns. Pure speed, a clean locked-variable A/B.
 3. **Continuous batching across persona lanes**. N personas deciding at once should share
    forward passes through one base model, not serialize. This is *the* lever for the
-   "many simultaneous personas" target — see INFERENCE-LANES-REALISTIC.md.
+   "many simultaneous personas" target — see THE-LANE-ON-SAGE.md.
 4. **Warming**. Cold lane spawn pays model-load on the first turn. Keep the hot set
    resident; page LoRAs (genome), not base weights — texture-streaming, not reload.
 5. **Genome learning** *(#32)*. The error bands the gym surfaces (e.g. the recurring

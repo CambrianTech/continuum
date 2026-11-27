@@ -5,7 +5,7 @@ them directly; they describe her lane and I've only sketched the seam I need fro
 
 **Precedence:** this defers to [CONCURRENCY-STYLE-GUIDE](CONCURRENCY-STYLE-GUIDE.md),
 [GENOME-FOUNDRY-SENTINEL](GENOME-FOUNDRY-SENTINEL.md) (`SubstrateGovernor`), and
-[INFERENCE-LANES-REALISTIC](INFERENCE-LANES-REALISTIC.md). If it disagrees with those on a
+[THE-LANE-ON-SAGE](THE-LANE-ON-SAGE.md). If it disagrees with those on a
 substrate question, they win and this gets reconciled.
 
 ## What is proven (keep)

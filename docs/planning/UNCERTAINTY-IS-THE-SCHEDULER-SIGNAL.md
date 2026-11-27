@@ -8,7 +8,7 @@ through `uu` verbs alone.
 **Owner docs this extends:** [THE-MIND-AND-THE-BEING](../architecture/THE-MIND-AND-THE-BEING.md)
 (the mind is genome + memory + identity, not a model),
 [BEING-SOCIETY-GOVERNOR](../architecture/BEING-SOCIETY-GOVERNOR.md) (the governor negotiates
-capacity), [INFERENCE-LANES-REALISTIC](../architecture/INFERENCE-LANES-REALISTIC.md) (one base,
+capacity), [THE-LANE-ON-SAGE](../architecture/THE-LANE-ON-SAGE.md) (one base,
 N lanes), [GENOME-FOUNDRY-SENTINEL](../architecture/GENOME-FOUNDRY-SENTINEL.md) (paging, demand-aligned
 recall), [FOLLOW-THE-SIGNAL-THE-COMPRESSION-LADDER](../architecture/FOLLOW-THE-SIGNAL-THE-COMPRESSION-LADDER.md)
 (dreams consolidate), [ACTIVITY-RECONCILER](../architecture/ACTIVITY-RECONCILER.md) (the board is the
