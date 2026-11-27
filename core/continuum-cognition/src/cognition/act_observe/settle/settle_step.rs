@@ -365,6 +365,9 @@ pub async fn settle_step(
             }
         }
         Some(Decision::Pass { reason }) => SettleStep::Passed { reason },
+        Some(Decision::Blocker { .. }) => SettleStep::Blocker {
+            reason: String::new(),
+        },
         None => SettleStep::Passed { reason: None },
     };
     (step, metrics, step_receipts)

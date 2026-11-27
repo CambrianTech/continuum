@@ -164,6 +164,11 @@ pub enum SettleStep {
     /// tick, the eval grades it an infra failure — never a serene no-op that hides a
     /// broken lane. `error` names the cause verbatim from the adapter.
     InferenceFailed { error: String },
+    /// The substrate intervened — a no-deliverable pattern exceeded the budget-derived
+    /// threshold (card c6c2c446). Returns immediately with Decision::Blocker. This is NOT
+    /// a pass; it signals that the persona's turn is structurally blocked and needs
+    /// escalation or rerouting.
+    Blocker { reason: String },
 }
 
 impl SettleStep {
@@ -231,6 +236,7 @@ impl SettleStep {
             }
             Decision::Act { calls, intent, .. } => SettleStep::Acted { calls, intent },
             Decision::Pass { reason } => SettleStep::Passed { reason },
+            Decision::Blocker { reason } => SettleStep::Blocker { reason },
         };
         (step, metrics, generation_receipts)
     }

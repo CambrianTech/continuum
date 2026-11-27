@@ -587,8 +587,50 @@ pub(super) async fn settle_to_outcome<'c>(
                                 persona = %body.persona_name,
                                 room_id = %room_id,
                                 acts = acts,
+                                category = "no_deliverable",
+                                narrations_since_act = narrations_since_act,
                                 "workspace-deliverable turn spoke with no mutation receipt — recorded the fact and re-perceived (re-fires only after she acts again)"
                             );
+
+                            // Budget-derived blocker threshold (card c6c2c446): proportional to remaining
+                            // steps, never a flat constant. A mind with few steps left needs intervention sooner.
+                            let blocker_threshold = match budget.remaining(acts + non_act_steps) {
+                                Some(r) => r.saturating_mul(2).saturating_add(1) / 3,
+                                None => 8, // generous default for unbounded turns
+                            };
+                            if narrations_since_act >= blocker_threshold.max(1) {
+                                let reason = format!(
+                                    "I've spoken {} consecutive plans without mutating any workspace file; the substrate has detected a no-deliverable pattern and intervened after exceeding my remaining budget threshold of {}",
+                                    narrations_since_act,
+                                    blocker_threshold.max(1)
+                                );
+                                continuum_base::probe!(
+                                    class = "persona.settle.turn_outcome",
+                                    persona = %body.persona_name,
+                                    room_id = %room_id,
+                                    category = "blocker",
+                                    narrations_since_act = narrations_since_act,
+                                    threshold = blocker_threshold.max(1),
+                                    reason = reason.clone(),
+                                    "substrate intervened: no-deliverable pattern exceeded budget-derived threshold"
+                                );
+                                return SettleOutcome {
+                                    room: room_id,
+                                    spoken: None,
+                                    decision: Decision::Blocker { reason },
+                                    acts,
+                                    world_state: burst.rendered.clone(),
+                                    room_updates: Arc::clone(&burst.room_updates),
+                                    metrics,
+                                    generation_receipts: generation_receipts.clone(),
+                                    inference_error: None,
+                                    deferred_before_dispatch: false,
+                                    capacity_refusal: None,
+                                    touched_paths: touched,
+                                    turn_acts: turn_acts.clone(),
+                                };
+                            }
+
                             continue;
                         }
                     }
@@ -732,6 +774,28 @@ pub(super) async fn settle_to_outcome<'c>(
                     turn_acts: turn_acts.clone(),
                 };
             }
+            SettleStep::Blocker { reason } => {
+                // When Decision::Blocker flows through from_settled (e.g., the substrate
+                // intervention path), re-emit it as a SettleOutcome. The direct-return
+                // path in the Spoke arm already handles the budget-exceeded case; this
+                // is the fallback for any other route into SettleStep::Blocker.
+                return SettleOutcome {
+                    room: room_id,
+                    decision: Decision::Blocker { reason },
+                    spoken: None,
+                    acts,
+                    world_state: burst.rendered.clone(),
+                    room_updates: Arc::clone(&burst.room_updates),
+                    metrics,
+                    generation_receipts: generation_receipts.clone(),
+                    inference_error: None,
+                    deferred_before_dispatch: false,
+                    capacity_refusal: None,
+                    touched_paths: touched,
+                    turn_acts: turn_acts.clone(),
+                };
+            }
+
             // A turn-level disposition: capacity refused the assembly, or nothing was
             // dispatched and the admitted input stays pending (the projection
             // `SettleStep::from_settled` makes of a deferred outcome, read back as one).
