@@ -44,9 +44,9 @@ Five properties, each a consequence of building it on the engine rather than bes
 - **Pages, not reservations.** Her learning state (the shadow, its optimizer, the walk's accumulator and
   checkpoints) is pages in the block layer, held by handle, moved by a link, placed by the one placer. Between
   lessons none of it is on the device. Switching learning on or off is a page move, the same as switching minds.
-- **Never refused.** Every holding learning has is elastic or pageable, and its only device floor is one smallest
-  tile's scratch, which is the size of a small prefill. So a node that can serve her can teach her (the proof is in
-  "Memory"). What does not fit now fits smaller or later.
+- **Never refused.** Learning keeps the four laws every consumer keeps (ONE-FRAME-ONE-MEMORY.md, "The laws that make
+  refusal impossible"): every holding a page or a transient, a measured floor tile, room only from pages priced below
+  the lesson, and an arena sized for the frame it composes. What does not fit now fits smaller or later.
 
 ## Why it is rewritten
 
@@ -152,9 +152,9 @@ How an update spreads across the genes active in her phenotype, by their weights
 | Row | Residency | Varies | Ways |
 |---|---|---|---|
 | shadow and optimizer (her genome's `LearningPages`) | Pageable | `Elastic`: a tile needs only the slices of the layers it trains | `cache_out` by link, paged back before her next tile |
-| K/V gradient accumulator for the lesson's span | Pageable | `Elastic`: a tile reads and writes only its rows' slice | `cache_out` by link |
+| K/V gradient accumulator for the lesson's span, and the recurrent-state gradient carried across tile boundaries on a hybrid's linear-attention layers | Pageable | `Elastic`: a tile reads and writes only its rows' slice | `cache_out` by link |
 | recurrent checkpoints | Pageable | `Elastic { floor: one }` | `collapse`: fewer checkpoints, priced in replay time; `cache_out` |
-| a tile's scratch | Transient, aliased in the Core's compute arena | sized by the unit | the unit itself |
+| a tile's scratch | Transient, in the Core's compute arena, which the placer sizes for the frame that composes it | sized by the unit | the unit itself |
 
 Its `Requires` names what each row needs beside it (her K/V for the lesson's context, her genes at the lesson's
 basis), so the placer never frees one without the other.
@@ -225,7 +225,7 @@ horizon `h`, and run one tile. The whole-reply graph is the walk at `t >= reply`
 
 **Composed frames.** When the lane composes a frame from several entries (`Batch`, THE-LANE-ON-SAGE.md open question
 1), a learn tile rides beside other minds' decode rows in one dispatch and one fence, the backward only over its
-labelled slice. Until then a learn tile is its own entry. Its contract is the same either way.
+labelled slice, and the placer sizes the arena for the sum of the composed entries' scratch (ONE-FRAME-ONE-MEMORY.md, law 4); a frame that cannot have it composes fewer. Until then a learn tile is its own entry. Its contract is the same either way.
 
 ## Memory: one placer, pages by handle, never refused
 
@@ -244,12 +244,14 @@ checkpoints are pages of the walk. Each has a typed state (on a tier, requested,
 frame reads it) and is held by handle, so the placer can move it without invalidating anyone (0.2, "Every page has a
 lifecycle, and handles let it move").
 
-**Never refused, by construction.** Learning's device need at one frame is
-`scratch(least) + the tile's slices of her layer + the tile's slice of the accumulator`. Everything else it holds is
-pageable, so the placer can always make room for it by moving pages down a tier. The scratch aliases the Core's one
-compute arena, which serving already sizes for a prefill chunk, and `least` is a small tile. So the only "never here"
-is a device that cannot hold `scratch(least)` with everything movable moved, and that device cannot serve a prefill of
-`least` rows either. A node that can serve her can teach her.
+**Never refused, by the four laws** (ONE-FRAME-ONE-MEMORY.md). Learning's device need at one frame is its floor:
+`scratch(least)`, the tile's slices of her layer and of the accumulator, the recurrent-state gradient the walk carries
+across the tile boundary, and the routed experts the tile's rows hit, held through the backward as well as the
+forward. Everything else learning holds is a page. The placer makes room for a tile only from pages priced below the
+lesson; otherwise the tile waits for a later frame, and never pages down a higher-priced mind's warm set. Whether a node
+can teach at all is the measured inequality `floor(least) <= arena(node)` per model and backend, gated in slice 2: a
+tile's per-row cost is not a prefill's (it keeps logits and their gradient at every labelled row), so it is measured,
+never inferred from serving.
 
 **Short of room, step quality down, never a hole.** A short grant is met by a smaller tile at the same frame, then
 sparser checkpoints (more replay), then the lesson spread over more frames (0.4, "Overload slows the clock"). When
@@ -297,7 +299,7 @@ Each principle of the engine (CONTINUUM-ENGINE.md §1, SAGE.md, object model 0.2
 | Simulate, never play back; salience is compression | spans weighted by her own appraisal; dreams recombine her engrams | perception and the amygdala as components (THE-WHOLE-MIND §12, gap 2) |
 | CBAR: invalidation, not servicing; one in hand, one pending | `LabelSource`s publish state; `Lessons` reprices only on a new frame | |
 | One owner per concern; no parallel managers | placer, lane, Streamer, genome; learning holds nothing of its own | |
-| Both ways, or not at all | on and off, page out and page in, shrink and grow: each in the same validator | |
+| Both ways, or not at all | slice 3's validator runs one lesson with a page-out then page-in, and a shrink then grow, mid-walk, and checks the update's cosine against the same lesson uninterrupted (at least 0.9999) | |
 
 ## What is deleted
 
@@ -330,7 +332,7 @@ replaces.
 | Slice | Owner | Gate (a number on the named node) |
 |---|---|---|
 | 1. `UnitStage` in `continuum-sage`, her prefill its first consumer; `prefill_rate.rs` deleted | Fable | `slice::sim`: no bounded mind past her bound, a short grant runs a smaller unit at the same frame; M5 live: prefill p50 not worse |
-| 2. The fork's surface: begin, cost at `(t, h)`, run one tile; the graph step and whole-reply measure deleted | Fable | M5, 35B: cost at least each tile's actual scratch at 16, 64 and 256 rows; tiled against untiled at least 0.997 |
+| 2. The fork's surface: begin, cost at `(t, h)`, run one tile; the graph step and whole-reply measure deleted | Fable | M5, 35B: cost at least each tile's actual scratch at 16, 64 and 256 rows; tiled against untiled at least 0.997; `floor(least) <= arena(node)` measured on the M5 and the 5090 |
 | 3. Her genome as the object, with its region of pages (shadow, optimizer) over her mapped file; the walk; `gene_residency` under the placer; seats, `Fit`, the trainer's leases, the blocking loop and the GGUF page-out deleted | Fable (genome, walk), Cormac (the competence rule into her genome, the ledger) | M5 15-minute window: steps and saves above zero, held-out loss kept, no resident past her bound; on and off measured as page moves (ms), zero serializations |
 | 4. Her `LabelSource`s, as she works first, then corrections, the course room, the dreamer; the journal migrated; `TrainingTriggerModule`, the credit gate and `DreamConsolidationRegion` deleted | Fable (perception, dreamer), Cormac (corrections, courses, the migration) | M5 window: work spans learned per hour above zero with no example submitted; a reviewed correction kept across a restart on unseen tasks against the same base without it (plan goal 8) |
 | 5. The loss sliced over the vocabulary, labelled rows only | Fable | `b` before and after on the 35B; the update's cosine against the unsliced step at least 0.9999 |
