@@ -280,7 +280,7 @@ pub fn spawn_vitals_emitter(rt: &tokio::runtime::Handle, bus: Arc<MessageBus>) {
             // panic here is a POISONED registry lock — another thread panicked
             // while holding `persona_workspace`'s `cycles` mutex — and one bad
             // tick must NOT silently kill the radiator for the whole process
-            // lifetime (SAGE.md quarantine box). Log + retry next
+            // lifetime (CONCURRENCY-STYLE-GUIDE quarantine box). Log + retry next
             // interval. No `.await` inside, so unwind-safety is straightforward.
             // (Unlike the presence emitter, there is no `presence:resync`-style
             // path: the change-dedup means a chat projection that restarts sees no

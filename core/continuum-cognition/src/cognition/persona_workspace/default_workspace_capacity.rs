@@ -499,7 +499,7 @@ pub(super) fn assemble_workspace_cycle(
     // everything synchronous (`defer_grounding == false`) — their tight settle-loops
     // never yield to the worker, so deferral there would measure a starved mind.
     // No per-source ceiling: each source delivers every item at its levels and her prompt
-    // view's one allocation decides what she sees (THE-LANE-ON-SAGE.md).
+    // view's one allocation decides what she sees (FLOW-IMPLEMENTATION-PLAN §2d).
     for g in cfg.grounding_sources {
         let (source, policy, volatile, deferrability) = g.into_parts();
         let faculty = RagSourceFaculty::new(cfg.persona_id, source, policy).with_volatile_content(volatile);

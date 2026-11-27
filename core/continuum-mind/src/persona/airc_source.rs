@@ -42,7 +42,7 @@ impl AircRagSource {
     }
 
     /// Every unit of the thread, whole, oldest first: the source delivers levels, never a size
-    /// (THE-LANE-ON-SAGE.md). Receipt runs fold to one line per author, and quarantined
+    /// (FLOW-IMPLEMENTATION-PLAN §2d). Receipt runs fold to one line per author, and quarantined
     /// lines never enter.
     fn thread_items(thread: &RoomThread, working: bool) -> Vec<RagItem> {
         let items = thread.items();

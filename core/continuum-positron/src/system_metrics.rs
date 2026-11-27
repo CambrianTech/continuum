@@ -7,7 +7,7 @@
 //! The old sidebar's SYS graph (CPU 58% · MEM 25.3/32G · GPU 6.5/25G with a
 //! sparkline) reborn as a define-once view: the core emitter samples the ONE
 //! shared `SystemResourceMonitor` (never a second probe —
-//! SAGE.md#rules-every-part-keeps) and carries a short ring of normalized samples, so
+//! CONCURRENCY-STYLE-GUIDE) and carries a short ring of normalized samples, so
 //! every surface renders the SAME series — a web sparkline, a terminal bar
 //! strip, a persona's `CPU 58% · MEM 25/32G` grounding line. Core-carried
 //! history (not client-accumulated) is what makes reconnect/resync and the RAG

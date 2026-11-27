@@ -445,7 +445,7 @@ pub trait ServiceModule: Send + Sync + Any {
     /// immediately after `initialize()` resolves" — the right semantics
     /// for the ~30 existing modules whose `initialize` IS the ready edge.
     ///
-    /// Per [[docs/architecture/SAGE.md]]: signals
+    /// Per [[docs/architecture/CONCURRENCY-STYLE-GUIDE.md]]: signals
     /// replace races. Callers wait on `Runtime::wait_for_ready(name)`
     /// (forwarded to this method) instead of polling, sleeping, or
     /// threading bespoke `oneshot::Sender`s through start_server-style

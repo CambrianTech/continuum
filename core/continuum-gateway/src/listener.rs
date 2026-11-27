@@ -1,4 +1,4 @@
-//! The gateway's listener as a resource its module owns (SAGE.md: owned
+//! The gateway's listener as a resource its module owns (CONCURRENCY-STYLE-GUIDE.md: owned
 //! tasks, nothing detached). `initialize` binds it or fails; `drain` closes admission and lets
 //! the calls in flight finish; `shutdown` abandons whatever is still in flight, cutting every
 //! connection (`crate::sever`) so one whose agent stopped reading ends too, and joins the

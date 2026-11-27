@@ -260,7 +260,7 @@ impl ActionCommand for ProbeQuery {
         let project: Option<HashSet<String>> = p.fields.clone().map(|f| f.into_iter().collect());
 
         // Reading up to ~24MB of JSONL is blocking work; it never runs on the async
-        // executor (SAGE.md#rules-every-part-keeps: spawn_blocking for filesystem scans).
+        // executor (CONCURRENCY-STYLE-GUIDE: spawn_blocking for filesystem scans).
         let scan = tokio::task::spawn_blocking(move || {
             scan_ledger(
                 &dir,

@@ -8,7 +8,7 @@
 //! The mind shape: the default-mode network is not *scheduled against* task
 //! attention — it FAILS TO ARISE while task-positive systems are engaged, and a
 //! salient demand doesn't queue behind a dream, it CANCELS it. The RTOS shape
-//! (SAGE.md): one owning task, `tokio::time::interval`, a
+//! (CONCURRENCY-STYLE-GUIDE): one owning task, `tokio::time::interval`, a
 //! `watch::Sender<ActivitySnapshot>` published ON CHANGE, cheap atomic inputs,
 //! zero hot-path cost, no polling consumers — waiters park on the watch.
 //!

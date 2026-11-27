@@ -352,7 +352,7 @@ pub trait RagSource: Send + Sync {
 
     /// Every item this source holds, each at its levels (whole, `summary`, `pointer`). A
     /// source never takes a size: the one allocation in her prompt view decides which level
-    /// each item gets (THE-LANE-ON-SAGE.md). Before this each source was handed its
+    /// each item gets (FLOW-IMPLEMENTATION-PLAN §2d). Before this each source was handed its
     /// own budget (a quarter of the window per grounding faculty, a second flexbox in
     /// `compose_for_turn`) and cut or head-trimmed to it before the view ever saw it.
     ///

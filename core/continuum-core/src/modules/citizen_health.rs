@@ -19,7 +19,7 @@
 //! rest whose reason can no longer occur went with it. A starved or at-the-knee roster
 //! is still named on the line; the mindless rule and the slow clip are the seat remedies.
 //! Cadence follows the RTOS shape: the module's own `tick_interval`, no task of its own
-//! ([[docs/architecture/SAGE.md]]).
+//! ([[docs/architecture/CONCURRENCY-STYLE-GUIDE.md]]).
 
 use continuum_base::time::EpochMs;
 use crate::runtime::{CommandResult, CommandSchema, ModuleConfig, ModulePriority, ServiceModule};

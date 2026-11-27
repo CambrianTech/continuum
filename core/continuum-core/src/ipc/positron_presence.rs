@@ -324,7 +324,7 @@ async fn run_presence_loop(
     // Durable room directory (#258/#262): load what this node already knows,
     // then seed it with ONE deep transcript scan so members whose last event
     // predates the live window exist from the first publish. Disk I/O off
-    // the async tick (spawn_blocking) per docs/architecture/SAGE.md#rules-every-part-keeps.
+    // the async tick (spawn_blocking) per CONCURRENCY-STYLE-GUIDE.
     let mut directory: HashMap<Uuid, RosterSlotView> =
         tokio::task::spawn_blocking(move || load_directory(&room_id))
             .await
@@ -354,7 +354,7 @@ async fn run_presence_loop(
         ),
     }
     // The avatar store map, refreshed off-task (spawn_blocking — disk I/O never
-    // rides the async tick, SAGE.md#rules-every-part-keeps) on a slow cadence: presence
+    // rides the async tick, CONCURRENCY-STYLE-GUIDE) on a slow cadence: presence
     // is 2s, avatar files change on human timescales. Refreshed every
     // AVATAR_RESCAN_TICKS ticks and on a resync cue.
     const AVATAR_RESCAN_TICKS: u32 = 15;
@@ -421,7 +421,7 @@ async fn run_presence_loop(
 /// data is ever substituted; the emitter simply waits for the next good
 /// read.
 /// Refresh the avatar-store map off the async tick (`spawn_blocking` — a
-/// read_dir is disk I/O, SAGE.md#rules-every-part-keeps). A join failure (worker
+/// read_dir is disk I/O, CONCURRENCY-STYLE-GUIDE). A join failure (worker
 /// panic/cancel) keeps the empty map — honest absence, logged, never a crash
 /// of the presence loop.
 async fn rescan_avatars() -> HashMap<Uuid, String> {

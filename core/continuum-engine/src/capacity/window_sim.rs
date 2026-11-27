@@ -1,4 +1,4 @@
-//! The window validator (THE-LANE-ON-SAGE.md): a mind's window follows what she reads.
+//! The window validator (FLOW-IMPLEMENTATION-PLAN §6e): a mind's window follows what she reads.
 //!
 //! A scenario is DATA: a timeline of each mind's demand events (her untrimmed required tokens
 //! plus her completion reserve, published when it moves) over one shared KV pool. A

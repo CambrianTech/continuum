@@ -170,7 +170,7 @@ pub struct LlamaCppAdapter {
     /// must keep this at None / 1. Standard Llama / Qwen-2.5 /
     /// Gemma-2 architectures multiplex cleanly.
     ///
-    /// See [`docs/architecture/THE-LANE-ON-SAGE.md`]
+    /// See [`docs/architecture/INFERENCE-LANES-REALISTIC.md`]
     /// (Step 4) for the rollout plan.
     n_seq_max_override: Option<u32>,
     /// Max ubatch size override — when set, the LlamaCppConfig built at

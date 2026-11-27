@@ -1,6 +1,6 @@
 //! InferenceCoordinator — composes existing substrate primitives
 //! into multi-persona-one-model serving per
-//! [[THE-LANE-ON-SAGE.md]].
+//! [[INFERENCE-LANES-REALISTIC.md]].
 //!
 //! Joel (2026-05-31): "Yeah the inference command doesn't do this.
 //! It's smart subsystems and daemons. Commands are dumb and short."

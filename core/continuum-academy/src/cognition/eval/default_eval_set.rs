@@ -76,7 +76,7 @@ pub(super) static WARM_EVAL_LANES: std::sync::LazyLock<
 /// the winner's lane instead of building a second one, which needs the lookup, the
 /// build and the insert to be one critical section. A `tokio` mutex because it is held
 /// across the spawn `.await` — never a `std` lock across await
-/// (docs/architecture/SAGE.md#rules-every-part-keeps).
+/// (docs/architecture/CONCURRENCY-STYLE-GUIDE.md).
 ///
 /// It ALSO used to be the only thing serializing cold-spawns against the GPU, and that
 /// half has moved down to `EphemeralServingLane::spawn`'s `EPHEMERAL_SPAWN_GATE` where

@@ -36,7 +36,7 @@
 //! ## Causal, not polled (CBAR shape)
 //!
 //! The hold is a `watch` channel — the canonical substrate snapshot shape
-//! (SAGE.md). Acquire/release are EVENTS; a deferred waiter
+//! (CONCURRENCY-STYLE-GUIDE). Acquire/release are EVENTS; a deferred waiter
 //! awaits `changed()` and can never miss a transition (watch keeps the latest
 //! value), so there is no re-check tick, no poll, nothing time-based on the
 //! happy path. `subscribe()` is public so other components can REACT to the

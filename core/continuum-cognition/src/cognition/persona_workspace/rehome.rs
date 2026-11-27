@@ -94,7 +94,7 @@ impl PersonaWorkspaceRegistry {
     /// swapping the shared {adapter, model, context_window} binding on each cycle (see
     /// [`crate::cognition::workspace_cycle::WorkspaceCycle::rebind_model`]). A resident already
     /// bound to it is untouched. A model change rebinds through the ONE shared `adapter`
-    /// (no per-persona HTTP init; THE-LANE-ON-SAGE: one base model, N persona
+    /// (no per-persona HTTP init; INFERENCE-LANES-REALISTIC: one base model, N persona
     /// lanes); a window-only change keeps her own adapter and moves the window. Genome,
     /// working memory, admission and hippocampus are UNTOUCHED (flip-in-place). Returns
     /// how many minds were rebound. Driven by the serving-snapshot reconciler on every

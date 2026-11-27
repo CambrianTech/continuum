@@ -116,7 +116,7 @@ pub struct OpenParams {
     #[ts(optional, type = "string")]
     pub persona_id: Option<Uuid>,
     /// What the persona is doing — drives the lane's KV budget +
-    /// class derivation (via [[THE-LANE-ON-SAGE.md]]).
+    /// class derivation (via [[INFERENCE-LANES-REALISTIC.md]]).
     /// Defaults to `Chat` when omitted. Ignored when the module
     /// runs without a coordinator (back-compat path).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -516,7 +516,7 @@ impl InferenceHandleModule {
         // The local lookup is resolved into an OWNED Option in its own
         // statement so the DashMap `Ref` is dropped before the async
         // registry read — never a lock held across an `await`
-        // (SAGE.md#rules-every-part-keeps: no lock across an await).
+        // (CONCURRENCY-STYLE-GUIDE forbidden move #7).
         let local_adapter = self
             .providers
             .get(&params.provider)

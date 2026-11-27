@@ -96,7 +96,7 @@ impl SamplingProfile {
     /// temperature, top-k/p and the #181 anti-loop pair, from [`ModelSampling`] on the `Model`
     /// row. Blessed/tuned models carry their own `ModelSampling`; unblessed rows carry the
     /// floor. Reply length is not here: it is the reply's claim in her prompt's one
-    /// allocation (THE-LANE-ON-SAGE.md); a window-derived default sat here, read
+    /// allocation (FLOW-IMPLEMENTATION-PLAN §2d); a window-derived default sat here, read
     /// by nothing.
     pub fn from_model(m: &crate::model_registry::types::ModelSampling) -> Self {
         Self {

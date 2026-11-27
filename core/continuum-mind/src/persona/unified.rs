@@ -86,7 +86,7 @@ pub struct PersonaCognition {
 
 /// What [`PersonaCognition::compose_for_turn`] returns: every item of her conversation and
 /// roster sources, whole, for the turn's burst. Nothing here is sized: her prompt view's one
-/// allocation decides what she sees (THE-LANE-ON-SAGE.md).
+/// allocation decides what she sees (FLOW-IMPLEMENTATION-PLAN §2d).
 #[derive(Debug, Clone)]
 pub struct ComposedTurn {
     /// One delivery per bound source, airc first, then the roster.
@@ -186,7 +186,7 @@ impl PersonaCognition {
 
     /// Brain composition for one cognition turn: her conversation (airc) and who is present
     /// (roster), every item whole. No budget and no allocation here: her prompt view's one
-    /// allocation decides what she sees (THE-LANE-ON-SAGE.md). This ran a second
+    /// allocation decides what she sees (FLOW-IMPLEMENTATION-PLAN §2d). This ran a second
     /// flexbox over five sources, of which only these two were read; the engram, doctrine
     /// and awareness deliveries reached only the capture.
     ///

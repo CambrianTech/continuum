@@ -5,7 +5,7 @@
 //! Own task + `tokio::time::interval` + a store into the served [`Substrate`]
 //! — the same emit shape as [`crate::ipc::vitals_emitter`]. It samples the ONE
 //! shared [`SystemResourceMonitor`] the boot already owns (never a second
-//! probe — SAGE.md#rules-every-part-keeps) inside `spawn_blocking`
+//! probe — CONCURRENCY-STYLE-GUIDE's reuse rule) inside `spawn_blocking`
 //! (sysinfo refresh walks /proc / host_statistics — keep the runtime worker
 //! threads clean), keeps a bounded ring of normalized samples, and stores a
 //! [`SystemMetricsViewState`] under `kind="system-metrics"` each tick.

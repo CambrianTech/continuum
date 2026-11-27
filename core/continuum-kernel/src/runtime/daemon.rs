@@ -2,7 +2,7 @@
 //!
 //! # Why this exists
 //!
-//! The retired concurrency guide told every new monitor to *"copy
+//! [CONCURRENCY-STYLE-GUIDE.md] tells every new monitor to *"copy
 //! `MemoryPressureMonitor`"* — own tokio task + `tokio::time::interval` +
 //! `watch::Sender<Snapshot>` + atomic gate + `spawn_blocking`/timeout/quarantine.
 //! That instruction was correct about the *shape* but wrong about the *mechanism*:
@@ -41,8 +41,8 @@
 //!   [`DaemonHandle`], so every reader (`resources/*` commands, the cognition hot
 //!   path, grid gossip) talks to every daemon the same way.
 //!
-//! This is **not** a parallel manager (SAGE.md#rules-every-part-keeps).
-//! It is the missing *base* the "copy this file" instruction
+//! This is **not** CONCURRENCY-STYLE-GUIDE forbidden move #6 (a parallel
+//! manager/coordinator). It is the missing *base* the "copy this file" instruction
 //! is a workaround for — the architect's directed unification, exactly like the
 //! command collapse.
 //!
@@ -64,7 +64,7 @@
 //! [`guarded`] + [`QuarantineLedger`] here, so neither site re-implements the
 //! 3-strikes bookkeeping or the panic/timeout classification.
 //!
-//! [SAGE.md]: ../../../../docs/architecture/SAGE.md
+//! [CONCURRENCY-STYLE-GUIDE.md]: ../../../../docs/architecture/CONCURRENCY-STYLE-GUIDE.md
 
 use std::collections::{HashMap, HashSet};
 use std::future::Future;

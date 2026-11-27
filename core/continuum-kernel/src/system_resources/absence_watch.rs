@@ -13,7 +13,7 @@
 //! Deciding WHY (battery idle sleep, thermal, lid) is the operator's `pmset -g log`, and
 //! the row carries enough to line the two up.
 //!
-//! RTOS shape per SAGE.md: own task, `interval`, no locks, no blocking,
+//! RTOS shape per CONCURRENCY-STYLE-GUIDE: own task, `interval`, no locks, no blocking,
 //! nothing on the hot path; the only side effect is a probe row.
 
 use continuum_base::time::EpochMs;

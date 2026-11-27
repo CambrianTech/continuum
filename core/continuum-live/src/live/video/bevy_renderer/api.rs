@@ -26,7 +26,7 @@ static RENDERER_GPU_MANAGER: OnceLock<Arc<crate::gpu::memory_manager::GpuMemoryM
 /// the first non-trait subsystem to publish this signal, paving the
 /// way for it (and the IPC server, and `MemoryPressureMonitor`) to
 /// become full `ServiceModule` implementors in subsequent slices.
-/// See `docs/architecture/SAGE.md`.
+/// See `docs/architecture/CONCURRENCY-STYLE-GUIDE.md`.
 static BEVY_READY: OnceLock<watch::Sender<bool>> = OnceLock::new();
 
 fn ready_tx() -> &'static watch::Sender<bool> {

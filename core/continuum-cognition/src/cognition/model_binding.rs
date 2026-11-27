@@ -18,7 +18,7 @@ use crate::ai::adapter::AIProviderAdapter;
 pub struct ModelBinding {
     /// The inference adapter, leased per call. `Arc` so the whole cycle shares the
     /// one served-model backend (one base model, N persona lanes — the
-    /// THE-LANE-ON-SAGE shape).
+    /// INFERENCE-LANES-REALISTIC shape).
     pub adapter: Arc<dyn AIProviderAdapter>,
     /// Which model to ask for (`None` → the adapter's own default). The gateway's
     /// single-resident guard checks this against the resident model and refuses a

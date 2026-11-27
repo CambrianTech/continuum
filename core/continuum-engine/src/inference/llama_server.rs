@@ -9,7 +9,7 @@
 //!
 //! Shape: this module is the *leaf* of the serving stack. The
 //! [`crate::modules::serving_daemon::ServingDaemonModule`] is the canonical
-//! ServiceModule (own tick + `watch` publish, per SAGE.md); it
+//! ServiceModule (own tick + `watch` publish, per CONCURRENCY-STYLE-GUIDE.md); it
 //! DECIDES which model to serve and how many lanes, then asks this process-owner
 //! to reconcile the running `llama-server` to that decision. Degrade-never-panic:
 //! a spawn or readiness failure surfaces as [`EnsureOutcome::Degraded`] with a

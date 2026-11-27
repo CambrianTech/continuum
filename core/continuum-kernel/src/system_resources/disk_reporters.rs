@@ -16,7 +16,7 @@
 //! each tree is re-walked no sooner than 20× what its last walk cost
 //! ([`next_scan_delay`]), so a million-entry tree cannot own a core.
 //! One scanner for all paths, not a task per reporter — one concurrent
-//! concern, one task (SAGE.md#rules-every-part-keeps: no parallel managers).
+//! concern, one task (CONCURRENCY-STYLE-GUIDE: no parallel managers).
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};

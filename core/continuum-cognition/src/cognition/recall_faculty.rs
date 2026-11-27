@@ -349,7 +349,7 @@ impl Faculty for RecallFaculty {
         // more than the historical 5, a tight 4B fewer.
         // How many memories, by the served model's capability (its cognitive load, measured);
         // never how many tokens: her view's one allocation prices the block and picks its
-        // level (THE-LANE-ON-SAGE.md), where a window share cut it before.
+        // level (FLOW-IMPLEMENTATION-PLAN §2d), where a window share cut it before.
         let surface_count = recall_count_for_window(self.context_window).min(self.limit);
 
         // Fetch candidates WITHOUT recording hits — we record the hit on what we
