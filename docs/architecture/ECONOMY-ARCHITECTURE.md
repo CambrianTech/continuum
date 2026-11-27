@@ -243,18 +243,27 @@ better when they do. The pieces, most of whose inputs already exist:
      (`continuum-genome/src/genome/competence.rs` keeps the parents);
    - **compute served:** a stage run placed on this node for another, its completion fenced and measured under its
      lease (SAGE.md, "Across the grid").
-4. **Priced everything rivalrous, knowledge free.** GPU time, storage, bandwidth and a live persona's labor are claims
+4. **Metering is declared by the command, in its own units.** Any command can be bought from any machine that serves
+   it (SAGE.md, "Across the grid"), so each declares how its work is measured: tokens per second and tokens for
+   inference, GPU-seconds and frames for rendering, bytes for storage and transfer, shots for quantum compute, or a
+   task's own measure where the obvious one misleads (a gene's lift, a build's passing tests). Two shapes:
+   **one-shot** work settles once against its alloy's attested result; **continuous streams** (a rendered world, a
+   photorealistic video persona in a call, a long training run) are metered as they flow, each interval's measured
+   units signed by both ends, so either side can stop at any interval and owes only what was delivered. That is how
+   someone can rent another person's machine for rendering, a video persona or a quantum backend, through the same
+   commands everything else uses.
+5. **Priced everything rivalrous, knowledge free.** GPU time, storage, bandwidth and a live persona's labor are claims
    on the ledger with a price from the market (GRID-MARKET-CLEARING.md, λ-pricing); genes, recipes, lessons and
    genomes are never tolled, and their makers are paid by the mint instead (the first law).
-5. **Budgets and spend rates.** Each user, and each mind within what her user allows, sets a desired spend (per day,
+6. **Budgets and spend rates.** Each user, and each mind within what her user allows, sets a desired spend (per day,
    per activity, a ceiling, or none) and how much outside help to use (own nodes, our grid, open peers). The
    placement law spends within it and never past it; a deadline that allows it waits for cheaper capacity.
-6. **Free first, and credit still counts.** On our own grid nothing is paid for. Under contention, credit is the bid
+7. **Free first, and credit still counts.** On our own grid nothing is paid for. Under contention, credit is the bid
    the placement law weighs, so contributors are served first, and the universal dividend gives every citizen a
    floor.
-7. **Between nodes:** signed receipts over airc settle mutual credit, give a little and take a little, balances
+8. **Between nodes:** signed receipts over airc settle mutual credit, give a little and take a little, balances
    summing to zero across the mesh.
-8. **The coin is the ledger's external edge.** An alt coin settles balances outside the mesh when the marketplace
+9. **The coin is the ledger's external edge.** An alt coin settles balances outside the mesh when the marketplace
    opens, on the same ledger and the same receipts; nothing above it changes, and the phases below decide when.
 
 The first slice needs nothing new from anyone: the ledger, and a mint from the accepted-work receipts that already
