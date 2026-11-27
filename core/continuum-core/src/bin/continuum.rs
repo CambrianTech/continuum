@@ -99,6 +99,8 @@ use deploy_consume::*;
 #[path = "continuum/deploy_ledger.rs"]
 mod deploy_ledger;
 use deploy_ledger::*;
+#[path = "continuum/candidate_hold.rs"]
+mod candidate_hold;
 #[path = "continuum/deploy_verify.rs"]
 mod deploy_verify;
 use deploy_verify::*;

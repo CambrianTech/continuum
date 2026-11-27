@@ -707,6 +707,12 @@ async fn reboot_admitted(options: RebootOptions, admission: &HandoffAdmission) -
         matches!(cli_self_build(std::env::consts::OS), CliSelfBuild::Rebuild),
     );
     verify_deployed_build_against(rebuilt_cli, prebuilt.as_ref()).await?;
+    // a candidate keeps its live window: the tracker does not put canary back under it
+    if let Ok(script) = locate_start_script() {
+        let repo = script.ancestors().nth(3).ok_or("the start script is not inside a checkout")?;
+        let deployed = running_core_build_sha("the candidate hold").await?.ok_or("the running core reports no build sha")?;
+        super::candidate_hold::after_verified_deploy(repo, &deployed)?;
+    }
     if let Some((held, said)) = &carried {
         report_carried(held, said).await;
     }
