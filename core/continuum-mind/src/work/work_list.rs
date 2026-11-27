@@ -258,13 +258,6 @@ impl ActionCommand for WorkList {
             let main_board = board_to_read(&airc, p.room.as_deref()).await?;
             let parent_board = if let Some(ref parent) = p.parent {
                 Some(board_to_read(&airc, Some(parent)).await?)
-            } else if let Some(ambient) = crate::runtime::command_executor::get_run_context() {
-                if let Some(pr) = ambient.parent_room {
-                    let parent_id = pr.to_string();
-                    Some(board_to_read(&airc, Some(&parent_id)).await?)
-                } else {
-                    None
-                }
             } else {
                 None
             };
@@ -313,20 +306,21 @@ impl ActionCommand for WorkList {
         let reader = airc_core::PeerId::from_uuid(me);
 
         // Collect all cards from every board for review verdict checking.
-        let all_board_cards: Vec<&airc_work::WorkCard> = boards.iter()
-            .flat_map(|b| b.cards.iter().copied())
-            .collect();
+        let mut all_cards_owned: Vec<airc_work::WorkCard> = Vec::new();
+        for b in &boards {
+            all_cards_owned.extend(b.cards.iter().cloned());
+        }
 
         let judges_her_own = |card: &airc_work::WorkCard| {
-            crate::cognition::review_verdict::judged_submission(card, &all_board_cards)
+            crate::cognition::review_verdict::judged_submission(card, &all_cards_owned)
                 .is_some_and(|judged| crate::cognition::review_verdict::same_mind(&self.registry, judged.publisher, reader))
         };
 
         // Render EVERY card once (holder resolution is the shared projection).
-        let rendered: Vec<(WorkListCard, CardState, Option<BoardGroup>, u64)> = all_cards
-            .iter()
-            .map(|c| {
-                let card = *c;  // &WorkCard from &&WorkCard
+        let rendered: Vec<(WorkListCard, CardState, Option<BoardGroup>, u64)> = seen
+            .values()
+            .copied()
+            .map(|card| {
                 let holder = crate::cognition::card_holder::holder(card, me, now_ms, &names);
                 (
                     WorkListCard {
