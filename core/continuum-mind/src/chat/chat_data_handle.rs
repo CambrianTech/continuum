@@ -183,6 +183,12 @@ impl ChatModule {
     /// this as `Err` would tell the caller "your write didn't happen",
     /// which is wrong — half of the write did. The `warning` field is
     /// the right shape: degraded success.
+    ///
+    /// # Idempotency
+    ///
+    /// The store deduplicates on `message_id`: if a row with the same id
+    /// already exists (e.g., from an inbound loopback that wrote first),
+    /// persisting again is a no-op — the original row and its id are kept.
     pub async fn send(&self, params: ChatSendParams) -> Result<ChatSendResult, String> {
         self.send_with_wire(params, WireLeg::Envelope).await
     }

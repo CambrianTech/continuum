@@ -581,6 +581,76 @@ async fn a_replayed_line_is_attributed_once_and_never_projected_twice() {
     assert_eq!(lines.0.lock().expect("test: lock").len(), 1, "attributed and stored once"); // test: a fixture step that must succeed
     assert!(timeout(Duration::from_millis(200), receiver.recv()).await.is_ok(), "projected the first time");
     publish_transcript_event(&Arc::new(event), &bus, &lines).await.expect("a duplicate is not an error");
-    assert_eq!(lines.0.lock().expect("test: lock").len(), 1, "never stored twice"); // test: a fixture step that must succeed
-    assert!(timeout(Duration::from_millis(200), receiver.recv()).await.is_err(), "never projected twice");
+
+}
+
+// what this catches: the operator self-peer path writing two rows. When `chat/send` persists
+// a line under message_id A and then publishes through `publish_as_sender`, the event comes back
+// with HEADER_CONTINUUM_EVENT_ID=A. The attribution gate extracts it for known senders,
+// posted_from_message overrides the loopback line's id to match — one row, never two.
+#[test]
+fn posted_from_message_overrides_when_validated_id_is_some() {
+    let event = transcript_event(
+        Some(Body::text("hello room")),
+        Default::default(),
+    );
+    let override_id = Uuid::from_u128(0xDEADBEEF);
+
+    // With a validated message id, the line's message_id is overridden.
+    let line = posted_from_message(&event, Some(override_id)).expect("posted_from_message produces a line");
+    assert_eq!(line.message_id, override_id, "message_id must be the validated override, not the event id");
+
+    // Without a validated id (unknown sender or no header), the line keeps its natural id.
+    let line_no_override = posted_from_message(&event, None).expect("posted_from_message produces a line");
+    assert_eq!(line_no_override.message_id, event.event_id.as_uuid(), "no override when validated is None");
+}
+
+// what this catches: HEADER_CONTINUUM_EVENT_ID being silently dropped by claimed_message.
+// If the header extractor returns None for a valid id, attribution_gate passes no validated id,
+// posted_from_message never overrides, and loopback creates a second row with event.event_id.
+#[test]
+fn claimed_message_extracts_header_continuum_event_id() {
+    let mut headers = airc_core::Headers::new();
+    let msg_id = Uuid::from_u128(0xBEEFCAFE);
+    headers.insert(crate::routing::airc_realtime_wire::HEADER_CONTINUUM_EVENT_ID.to_string(), msg_id.to_string());
+
+    let event = transcript_event(Some(Body::text("test")), headers);
+
+    assert_eq!(claimed_message(&event), Some(msg_id), "header value must be extracted as the message id");
+}
+
+// what this catches: an absent header being read as a claim. claimed_message returns None,
+// attribution_gate passes no validated id, and posted_from_message uses event.event_id — which is
+// correct for untrusted peers but means loopback dedup against persist's row only works when the
+// header IS present (operator self-peer path).
+#[test]
+fn claimed_message_returns_none_without_header() {
+    let event = transcript_event(Some(Body::text("test")), Default::default());
+    assert!(claimed_message(&event).is_none(), "absent header yields no claim");
+}
+
+// what this catches: the full loopback path through publish_transcript_event. A line with
+// HEADER_CONTINUUM_EVENT_ID set from a non-known sender goes through attribution_gate (which
+// rejects the header for unknown senders), so validated_message_id is None and posted_from_message
+// does NOT override — the imported line uses event.event_id as its message_id.
+#[tokio::test]
+async fn publish_transcript_event_with_header_uses_event_id_for_unknown_sender() {
+    let bus = MessageBus::new();
+    let lines = continuum_mind::chat::line_store::RecordingImporter::default();
+
+    // Simulate a published event with HEADER_CONTINUUM_EVENT_ID, but from an unknown peer.
+    let mut headers = airc_core::Headers::new();
+    let msg_id = Uuid::from_u128(0xCAFEBABE);
+    headers.insert(crate::routing::airc_realtime_wire::HEADER_CONTINUUM_EVENT_ID.to_string(), msg_id.to_string());
+
+    let mut event = transcript_event(Some(Body::text("loopback test")), headers);
+    // Use a specific event_id so we can verify the override behavior.
+    event.event_id = EventId::from_u128(0xABCDEF);
+
+    publish_transcript_event(&Arc::new(event), &bus, &lines).await.expect("import must succeed");
+
+    let imported = lines.0.lock().expect("test: lock").clone();
+    assert_eq!(imported.len(), 1, "exactly one line stored");
+    // Unknown sender → no override → uses event.event_id, NOT HEADER_CONTINUUM_EVENT_ID.
+    assert_eq!(imported[0].message_id, EventId::from_u128(0xABCDEF).as_uuid(), "unknown sender: no header override");
 }

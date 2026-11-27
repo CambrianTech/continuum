@@ -30,6 +30,12 @@ impl ChatSlot {
     }
 
     /// A slot that already holds `executor` (tests and injected executors).
+    pub fn installed(executor: Arc<CommandExecutor>) -> Self {
+        let slot = Self::new();
+        slot.executor.install(executor);
+        slot
+    }
+
 
     /// Install the executor. The same executor again is a no-op; a DIFFERENT one is refused (Codex
     /// on #5698): the slot and the store it ensured stay the first install's.
