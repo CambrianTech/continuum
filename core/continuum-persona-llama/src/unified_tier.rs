@@ -22,7 +22,7 @@ use llama::{Batch, BindRefusal, ChatRefusal, Context, LoraAdapter, PersonaBlocks
 
 mod kv_home;
 mod learn;
-pub use kv_home::{DeviceRoom, KvHome, Room, RoomAsk, Unmetered};
+pub use kv_home::KvHome;
 use kv_home::KvMemory;
 pub use learn::LearnReply;
 
@@ -151,10 +151,11 @@ impl<'c, 'm> UnifiedTier<'c, 'm> {
     }
 
     /// Her KV memory: a block over her own file, attached so the stream views it, where this node's
-    /// device can view host memory; the fork's own otherwise (the fork's `storage_bytes` is 0 then, and
-    /// the tier keeps that answer for every later mind).
+    /// device can view host memory. Where it cannot (a discrete GPU), none of her own: bound, her rows are
+    /// the stream's own memory, and they move out and back by copy, so the context's one backing is the
+    /// only device memory any mind uses (UNIFIED-PAGING.md, "A mind's memory").
     fn kv_memory(&mut self, mind: MindId, native: &mut PersonaBlocks) -> Result<KvMemory, TierRefusal> {
-        let KvHome::Mapped { instance, room } = &mut self.home else { return Ok(KvMemory::Native) };
+        let KvHome::Mapped { instance } = &mut self.home else { return Ok(KvMemory::Native) };
         let dir = instance.dir().to_path_buf();
         let bytes = PersonaBlocks::storage_bytes(self.ctx);
         if bytes == 0 {
@@ -163,25 +164,7 @@ impl<'c, 'm> UnifiedTier<'c, 'm> {
             return Ok(KvMemory::Native);
         }
         if !PersonaBlocks::storage_viewable(self.ctx) {
-            // a device that cannot wrap host memory (CUDA): her storage is device memory for her life, so it is asked
-            // for first and placed on the ledger; refused, she moves by row copy until room is made (the law's)
-            let bytes = bytes as u64;
-            let hold = match room.ask(RoomAsk { persona: mind.persona.0, bytes }) {
-                Room::Granted(hold) => hold,
-                Room::Refused { why, available } => {
-                    continuum_base::probe!(class = "persona.kv_home.no_device_room", persona = %mind.persona.0, why, bytes, available,
-                        "her KV storage was not granted device room: she moves by row copy");
-                    return Ok(KvMemory::Native);
-                }
-            };
-            return Ok(match native.reserve_storage(self.ctx) {
-                Ok(()) => KvMemory::Device { _room: hold },
-                Err(refusal) => {
-                    continuum_base::probe!(class = "persona.kv_home.no_device_room", persona = %mind.persona.0, why = %refusal, bytes,
-                        "granted room, but the device refused her KV storage: she moves by row copy");
-                    KvMemory::Native // the hold drops here: the room goes back
-                }
-            });
+            return Ok(KvMemory::Native);
         }
         let path = dir.join(live_name(mind));
         let (memory, at, len) = KvMemory::mapped(mind, path, bytes).map_err(|_| refused(mind, "her KV file could not be mapped"))?;

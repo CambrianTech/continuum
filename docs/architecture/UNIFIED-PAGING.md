@@ -151,10 +151,16 @@ driver spilled into shared memory until it lost the device (2f8bd03a1). The fix 
 - `MindStorage` answers `storage_for(StorageAsk { mind, window })` with a held object whose drop returns its room,
   and is a `Resident` reporting each mind's storage, tier and how it varies;
 - `Unified`: her storage a block over her mapped file; parked, the OS pages it;
-- `Dedicated`: one device allocation leased from the authority, sized to her window, never the stream; parked, one
-  pinned host block of the same layout; park and restore are one async copy each, fenced. The per-layer row copy
-  (`llama-kv-cache-persona.cpp`) is deleted, not kept; a mind with no device room stays parked until room is made.
-- Deleted with it: the viewable branch in `unified_tier.rs` and `DeviceRoom`.
+- `Dedicated`: the bound mind's place is the stream's own backing, the one physical KV and recurrent allocation the
+  context already holds, never memory beside it (Codex's review: one extra 9.28 GB slot beside the 30.8 GB Core
+  already oversubscribed the 34.2 GB card). Parked, her used rows are one pinned host block of the same layout,
+  leased as RAM; restore copies them into the stream's own memory and park copies them out, asynchronously on a copy
+  stream ordered by events (the last writer before park, restore before the first reader), every rebind through
+  `persona_moved()` so a CUDA graph never replays a stale address. A prefetch slot for the next mind exists only
+  where measured headroom allows it, as one elastic lease (floor one slot while a mind is bound, zero idle).
+- Step 1, built: no mind holds device memory of her own on a discrete GPU (the lifetime `reserve_storage` per mind,
+  `DeviceRoom` and `CoreRoom` deleted), so her rows move through the stream's own memory by the existing copy path.
+  Step 2, proposed: that copy made pinned, asynchronous and fenced as above.
 
 **Proposed: the compute workspace is a block.** A backend's shared compute buffer (serving's graphs and a learner's
 graph run in it) is a block keyed by its allocator generation and backing allocation, its size its region's size.
