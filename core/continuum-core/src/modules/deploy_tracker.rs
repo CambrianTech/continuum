@@ -509,7 +509,12 @@ impl ServiceModule for DeployTrackerModule {
                 "an older deploy hold was rewritten in the typed form as an operator's"),
             Ok(Migrated::Refused(why)) => continuum_base::probe!(class = "deploy.hold.migration_refused", why = %why,
                 "the deploy hold file is neither typed nor an older form: left as it is, it holds"),
-            Err(why) => return Err(format!("migrating the deploy hold in {}: {why}", self.state_dir.display())),
+            Ok(Migrated::RefusedRereading { first, again }) => continuum_base::probe!(class = "deploy.hold.migration_refused",
+                why = %first, again = ?again, "the deploy hold file could not be read again to migrate: left as it is, it holds"),
+            // The tracker still starts: a hold file it cannot migrate reads as unreadable, and an
+            // unreadable hold holds (deploy_hold_file::HoldRead::honored).
+            Err(why) => continuum_base::probe!(class = "deploy.hold.migration_failed", state_dir = %self.state_dir.display(),
+                error = %why, "the deploy hold could not be migrated: an unreadable hold holds, so the tracker waits on it"),
         }
         Ok(())
     }
