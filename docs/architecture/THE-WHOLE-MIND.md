@@ -69,9 +69,11 @@ acting while her deliberation waits its turn on the Core.
 
 ## 3. Her parts
 
-Each part is a `Component` ([SAGE.md](SAGE.md)): it declares what it hears and says on her bus and its need; its long
-work is a stage run with a unit the scheduler sizes ([STAGE-CONTRACT.md](STAGE-CONTRACT.md)). A new faculty is one
-part, never a redesign.
+She is many centers doing work together, as a brain is: the hippocampus, the amygdala, perception, awareness, the
+cortex's deliberation and the rest, each a `Component` ([SAGE.md](SAGE.md)) that declares what it hears and says on
+her bus and its need, coordinating only by events and state, never by calling one another. Its long work is a stage
+run with a unit the scheduler sizes ([STAGE-CONTRACT.md](STAGE-CONTRACT.md)). A new faculty is one center, never a
+redesign. No center runs her; what she does is what their exchange settles on.
 
 | Part | What it does | State |
 |---|---|---|
@@ -79,14 +81,15 @@ part, never a redesign.
 | **Channel digest** | builds her digest of a room only when the room moved | built, a component (`senses/digest.rs`) |
 | **Room thread** | a part per room she is in | built, a component (`continuum-cognition/src/cognition/room/thread/part.rs`) |
 | **Perception** | cursors, deltas and surprise (prediction error against her expectations) | built as code (`perception_region.rs` `SurpriseTally`), not yet a component |
-| **Recall** | her engrams and settled examples of the same shape, by measured similarity | built as a stage run (`deferred_faculty.rs`) |
+| **Hippocampus** | her engrams: indexes what she lives, activates the ones what she perceives resembles (recall), and, through those activations, says which genes are relevant now and which experiences are worth learning (§9) | recall built as a stage run (`deferred_faculty.rs`) over `continuum-memory`; the hippocampus as one center driving the genome proposed |
+| **Amygdala** | appraisal: what matters and how much, on every perception; it sets salience for the reflex and the weight an experience carries into learning | salience built (`cognition/conversation`); the center proposed |
 | **Awareness** | one part that holds what is, fed by every detector | partly (`continuum-mind/src/persona/awareness.rs`); the detector pattern is proposed |
-| **Reflex** | cheap salience on every perception; a trip raises an interrupt | salience built (`cognition/conversation`); the interrupt proposed |
+| **Reflex** | an amygdala trip raises an interrupt | proposed |
 | **Glance and fast voice** | a short call on her warm prefix: does this change what I am doing; speak first words while the deep act runs | proposed |
 | **Deliberation** | her act on the big model, her genes composed | built, on the lane |
 | **Hands** | tools as tasks with handles that wake her when they land | tools built; tasks that wake her proposed |
 | **World model** | tracked beliefs with confidence and provenance, fused from every estimator (§6) | proposed |
-| **Genome** | sets her genes' weights for what she is doing, and how much each learns (§9) | built as a function per turn (`continuum-genome/src/genome/composer.rs`); a component proposed |
+| **Genome** | turns her centers' state (chiefly the hippocampus's active engrams and the amygdala's appraisal) into her genes' weights for use and their shares of learning (§9) | built as a function per turn (`continuum-genome/src/genome/composer.rs`); a component hearing the centers proposed |
 | **Learner** | learns her replies in place between her turns (§10) | built (`Job::Learn`, the trainer component in `continuum-dreaming`) |
 | **Dreams** | consolidation and synthetic recombination while she rests (§10) | consolidation built as a `BrainRegion` (`continuum-academy/src/cognition/dream_consolidation`); to move to a component |
 | **Association** | what she perceives activates what it resembles, followed in the background; a strong match surfaces into awareness | proposed |
@@ -183,15 +186,18 @@ downscaling (a dream also forgets: the adoption gate, decay, retirement).
 
 Her genome works like a person's: she does not choose her genes, any more than anyone chooses which neurons to use.
 
-- **Many at once, at weights.** Dozens of genes are active together, each at its own weight (its adapter scale), the
-  way a mixture of experts routes. Built: the composer weights every gene whose region her perception is inside by
+- **An unbounded, dynamic mixture of experts.** There is no fixed count: as many genes as are relevant are active
+  together, each at its own weight (its adapter scale), and the pool they come from grows with everything learned
+  anywhere, trained for the whole globe if needed. Built: the composer weights every gene whose region her perception is inside by
   how deep inside it is, keeps their summed scale at one trained adapter's magnitude, and holds a gene through a
   hysteresis band so a topic at a region's edge does not flip it (`composer.rs`). The fork applies N adapters at
   their scales in one graph.
-- **Set continually by her own parts.** Proposed: the genome becomes a component of her mind that hears what she is
-  thinking and doing (her perception, her attention across activities, the act in hand) and publishes the weights as
-  state, moment by moment, rather than a function asked once per turn. A change of weights is a change of the
-  engine's adapter scales at a step boundary.
+- **Run by her own engram thoughts.** What pages a gene in, and what trains it, is the engrams her hippocampus
+  activates as she works, dreams or studies, weighed by what her amygdala says matters. A gene is relevant when the
+  engrams she is thinking with are in its region, and an experience trains the genes its engrams are near.
+  Proposed: the genome becomes a component that hears the centers' events (activations, appraisal, her attention
+  across activities) and publishes the weights as state, moment by moment, rather than a function asked once per
+  turn; a change of weights is a change of the engine's adapter scales at a step boundary.
 - **Paged, never capped.** Proposed: the composer's "the heaviest that fit on the device" becomes the block layer's
   job ([UNIFIED-PAGING.md](UNIFIED-PAGING.md)): genes are blocks, the ones her attention weights are paged up ahead of
   use, the rest wait a tier down, so she carries far more expertise than fits on her GPU.
@@ -214,9 +220,10 @@ Her genome works like a person's: she does not choose her genes, any more than a
 | **Synthetic dreaming** | dreams | unbounded recombination of what she lived: scenes she never lived, built from ones she did | when she rests, deeply at night |
 
 They are three sources of experience for one system, never three trainers. **The same genome that weights her genes
-for use decides what is learned and into which genes**: each gene learns from an experience in proportion to how
-much it took part (its weight in the phenotype that produced it), and an experience no gene covers well starts a new
-one. Proposed: learning spread by weight (today a learn step trains one shadow adapter per seat).
+for use decides what is learned and into which genes**, and in all three it is driven by the same thing: the engrams
+her hippocampus activates, whether from her work, a lesson or a dream, weighed by her amygdala. Each gene learns from
+an experience in proportion to how much it took part (its weight in the phenotype that produced it), and an
+experience no gene covers well starts a new one. Proposed: learning spread by weight (today a learn step trains one shadow adapter per seat).
 
 **A gene earns its place.** A change is learned on her shadow and adopted into her stable genome only when its
 examination says it improved her (the Academy's re-examination for a course; her own outcomes for her work; a dream's

@@ -103,9 +103,11 @@ Working context, experience, engrams, dreaming, curriculum, training, and learne
 One mind learning is only the beginning. Continuum represents learned neural adaptations as **genes**: portable LoRA expertise with provenance, evaluation, and lineage. A citizen's **genome** is the composition of those learned adaptations. Genes can be trained by one citizen, evaluated, inherited by another, combined with other adaptations, specialized through new experience, and passed onward again.
 
 **Her genome is automatic, as a person's is.** Nobody chooses which of their neurons to use, and she does not choose
-her genes either. Dozens are active at once, each at its own weight, and her mind's own parts set those weights
-moment by moment from what she is thinking and doing; learning is spread across them the same way, each gene
-learning from an experience in proportion to how much it took part. They are paged in the way a game streams the
+her genes either. It is an unbounded, dynamic mixture of experts: as many genes as are relevant are active at once,
+each at its own weight, drawn from a pool that grows with everything learned anywhere on the globe. Her mind is many
+centers working together, a hippocampus, an amygdala and the rest, coordinating by events; the memories her
+hippocampus calls up as she works, studies or dreams are what decide which genes come in and which ones learn, each
+gene learning from an experience in proportion to how much it took part. They are paged in the way a game streams the
 world around the player: the genes for the code she is writing, the call she is in, the course she
 is taking come up as her attention moves, and the rest wait a tier down. A gene she does not hold yet is downloaded
 from a peer when what she is doing calls for it. So a mind carries far more expertise than fits on her GPU, her
