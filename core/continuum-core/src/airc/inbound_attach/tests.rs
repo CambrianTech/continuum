@@ -667,10 +667,10 @@ async fn known_sender_header_continuum_event_id_overrides_to_one_row() {
     let bus = MessageBus::new();
     let lines = continuum_mind::chat::line_store::RecordingImporter::default();
 
-    // Inject a peer as "known" (simulating operator/agent runtime registration).
+    // Build a KnownSenders set with the test peer inside (simulating operator/agent runtime registration).
     let known_peer_id = PeerId::from_u128(0x42);
-    super::inject_known_sender(known_peer_id);
-
+    let mut known_senders = KnownSenders::new();
+    known_senders.insert(known_peer_id);
     // Event with HEADER_CONTINUUM_EVENT_ID = A from the known peer.
     let validated_msg_id = Uuid::from_u128(0xDEADBEEF); // id chat/send persisted under.
     let mut headers = airc_core::Headers::new();
@@ -682,7 +682,7 @@ async fn known_sender_header_continuum_event_id_overrides_to_one_row() {
     event.event_id = EventId::from_u128(0x1234); // Different from A — what airc generates.
 
     // Publish through the loopback path (simulates daemon streaming it back).
-    publish_transcript_event(&Arc::new(event), &bus, &lines, &KnownSenders::new()).await.expect("import must succeed");
+    publish_transcript_event(&Arc::new(event), &bus, &lines, &known_senders).await.expect("import must succeed");
 
     // Exactly one line with message_id == A (the validated header, not event.event_id).
     let imported = lines.0.lock().expect("test: lock").clone();
@@ -693,6 +693,7 @@ async fn known_sender_header_continuum_event_id_overrides_to_one_row() {
     );
 
     // Redeliver — should be deduplicated as a duplicate.
-    publish_transcript_event(&Arc::new(event.clone()), &bus, &lines, &KnownSenders::new()).await.expect("redelivery is not an error");
-    assert_eq!(imported.len(), 1, "redelivery does not create a second row (idempotent import)");
+    publish_transcript_event(&Arc::new(event.clone()), &bus, &lines, &known_senders).await.expect("redelivery is not an error");
+    let imported_after = lines.0.lock().expect("test: lock").clone();
+    assert_eq!(imported_after.len(), 1, "redelivery does not create a second row (idempotent import)");
 }
