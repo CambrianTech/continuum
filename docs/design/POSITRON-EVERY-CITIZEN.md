@@ -125,6 +125,41 @@ snapshot is a reader's newest value, live updates are its changes, and the sessi
 frames to `StateEnvelope`s for remote hosts. One mechanism, so a view of anything in a mind is
 wired the moment the mind publishes it.
 
+### Over airc, from anywhere: four planes, all streaming
+
+A client is a client wherever it is: the desktop on the same machine, a phone far away, a
+persona on another node. All of them reach the world through airc, under one identity, and the
+route (in process, local socket, LAN, relay) is airc's choice, so the same protocol works from
+anywhere. What crosses it is split by what it needs, because a chat line, a room's state, a live
+video and a 3D world have nothing in common at the wire:
+
+| Plane | Carries | Delivery | Backpressure | State |
+|---|---|---|---|---|
+| **State** | SAGE `State` frames: each view's newest value by frame number | latest-wins per kind; a resync asks from its last frame | coalesce: a slow client skips to the newest frame, never a queue | built as positron's `Subscribe`/`State` frames over the thin-client socket (`continuum-airc-protocol/src/ws.rs`), as JSON |
+| **Events** | SAGE `Stream`s and commands: chat lines, actions, receipts | every event in order, durable where it matters | bounded; a producer waits for room, nothing dropped | commands built as correlation-matched RPCs on the same socket |
+| **Media** | voice, video, screen and surface sharing | real time, loss tolerated | the stream adapts: bitrate, resolution and frame rate per subscriber | built: LiveKit/WebRTC over UDP (`apps/web/src/live/callClient.ts`, `livekit-bridge`), airc for presence and signaling |
+| **Bulk** | files, and blocks (a mind's state, genes, models) by content handle | chunked, resumable, verified by hash, peer to peer | paced under the other three | the block layer's network link (UNIFIED-PAGING.md, "The grid"), proposed |
+
+**Streaming is the rule on every plane, and the client is the camera.** As RAGE streams the world
+around the player, a client subscribes only to what it shows, at the level of detail its link and
+screen afford: a phone on cellular gets the speaker's video at low resolution and the rest as
+avatars, the room's state as deltas, and nothing it is not looking at. A 3D world or game in a
+room's center is the same idea at a higher rate: interest management sends each client only the
+entities near its view, as state deltas on an unreliable datagram channel, or, for a thin device,
+the world rendered remotely and sent as a video stream. Which one is a placement decision priced
+like any other (THE-LANE-ON-SAGE.md, "Other use cases").
+
+Proposed, to make the state and event planes as clean as the media plane already is:
+- **Binary frames, not JSON**, versioned, the frame's kind and revision in a header, so a client
+  routes and coalesces without parsing a body.
+- **Commands as events, never awaited RPCs.** A command's acknowledgement is the state it causes,
+  as positron's own session protocol already says; the RPC path goes when its last caller moves.
+- **One session per client over airc**, multiplexing the state and event planes with their own
+  backpressure, so a burst of state never delays a chat line and a large frame never stalls the
+  rest.
+- **The same frames for every client:** the desktop, mobile, a terminal and a persona subscribing
+  through RAG read identical state, so what a person and a mind see is the same moment.
+
 Built: the view-state sources for chat, live calls, walls, boards, the foundry, navigation and the
 canvas (`continuum-positron/src/{chat,live,wall,kanban,foundry,nav,canvas}.rs`), the Workspace
 shell and `Content` dispatch by room purpose (`@continuum/patterns`). Proposed: the channel layer
