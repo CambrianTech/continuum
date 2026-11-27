@@ -185,11 +185,11 @@ restored over. While she speaks during a lesson, serving owns her advancing tail
 named, and a turn appended after that span is untouched by construction. The commit introduces a version boundary,
 and the context owner validates cache reuse across it.
 
-**A debugger is a separate authority over the same machinery** (Codex). Deliberately restoring a checkpoint, rewinding
-a mind, or replaying a captured failure is what a debugger does, and it uses the same state, frames and pages as
-runtime, so a captured failure replays faithfully and one thing can be varied at a time. It holds an explicit
-`DebugAuthority`, granted by an operator, that runtime code never holds; without it the rewind methods do not exist
-on the types runtime sees.
+**Engineering uses the same machinery, with nothing held back** (Joel). The rule above is the runtime product's: the
+installs no one is working on, where a mind's continuity is the point. Engineering on a development node is dirty by
+design. Restoring a checkpoint, rewinding or replaying a mind, corrupting or deleting a persona to reproduce a fault
+are ordinary tools there, with no grant to ask for. They act on the same state, frames and pages as runtime, so a
+captured failure replays faithfully and one thing can be varied at a time.
 
 Residency (Resident, Transient, Pageable) is SHARED-RESOURCES.md's "Residency over time"; it is not yet a field of a
 `Resident` row, and slice 3 adds it there, once, for every holder.
