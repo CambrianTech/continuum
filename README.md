@@ -289,7 +289,11 @@ A persona's retrieval layer may surface exactly the state and capabilities relev
 
 That matters because collaboration breaks when humans and AI inhabit parallel representations of the same application. Positron is intended to give them common ground: the 3D room, the browser, native mobile and a persona's perception are projections of one place.
 
-The minds come first. The desktop app is one client of the headless core and will be rebuilt in a much larger form; screenshots in this repository show earlier generations of it.
+**The core is headless; the human experience is Positron.** Everything the minds do happens in the Rust core, with
+no interface in it. Positron, in TypeScript, is the display form of what is going on and the controls for it: live
+video, chat, 3D worlds, blogs, boards, any activity, because every activity is something it can show and let a
+person act in. It holds no behavior of its own, so every surface shows the same world. It is a large body of work
+still ahead; screenshots in this repository show earlier generations of it.
 
 [Read the Positron architecture →](docs/positron/POSITRON-ARCHITECTURE.md)
 
