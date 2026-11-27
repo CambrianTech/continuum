@@ -642,6 +642,7 @@ impl Driver<'_, '_> {
         if turn.req.response_tx.is_closed() {
             return Err(TurnError::CallerReleased);
         }
+        crate::inference::llama_server::engine_step(turn.id.0); // the act deadline reads her progress (slot_work.rs)
         let gap = turn.ready_since.elapsed();
         turn.spent.longest_gap = turn.spent.longest_gap.max(gap);
         if turn.spent.first_step.is_none() {

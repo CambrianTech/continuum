@@ -94,3 +94,51 @@ pub fn slot_advanced(previous: Option<SlotWork>, now: Option<SlotWork>) -> bool 
         (Some(p), Some(n)) => p.task == n.task && n.work != p.work,
     }
 }
+
+
+/// In-process generations' work, the other adapter of "is her generation advancing" beside the
+/// HTTP slot above (the M5, 2026-11-27: only the HTTP adapter registered an [`InFlightSlot`], so
+/// for every resident served by the in-process engine the act deadline read `None` and ended
+/// turns still prefilling at 1,500 s: Aiko at 07:32:56Z with 89k tokens done). The persona
+/// scheduler counts each engine step it runs for a mind (a prefill chunk or a decoded token) and
+/// clears the count when her turn ends; the deadline extends while the count moves.
+static ENGINE_WORK: std::sync::LazyLock<dashmap::DashMap<uuid::Uuid, u64>> = std::sync::LazyLock::new(dashmap::DashMap::new);
+
+/// One engine step ran for `persona`'s generation.
+pub(crate) fn engine_step(persona: uuid::Uuid) {
+    *ENGINE_WORK.entry(persona).or_insert(0) += 1;
+}
+
+/// `persona`'s generation ended: nothing of hers is in flight in the engine.
+pub(crate) fn engine_ended(persona: uuid::Uuid) {
+    ENGINE_WORK.remove(&persona);
+}
+
+/// `persona`'s in-process generation as the act deadline reads it: its steps so far, `None`
+/// when the engine runs nothing of hers.
+pub fn engine_work(persona: uuid::Uuid) -> Option<SlotWork> {
+    ENGINE_WORK.get(&persona).map(|steps| SlotWork { task: 0, processing: true, work: *steps })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // what this catches (the M5, 2026-11-27): a resident's in-process turn read as not advancing,
+    // so the act deadline ended it mid-prefill at 1,500 s; her engine steps must read as moving
+    // work, and nothing of hers may read as in flight once her turn ends.
+    #[test]
+    fn an_in_process_generation_reads_as_advancing_while_it_steps() {
+        let her = uuid::Uuid::new_v4();
+        assert_eq!(engine_work(her), None, "nothing of hers runs before her turn");
+        engine_step(her);
+        let before = engine_work(her);
+        engine_step(her);
+        engine_step(her);
+        let after = engine_work(her);
+        assert!(slot_advanced(before, after), "steps between two deadline reads are progress");
+        assert!(!slot_advanced(after, after), "no step between two reads is a stall");
+        engine_ended(her);
+        assert_eq!(engine_work(her), None, "her ended turn leaves nothing in flight");
+    }
+}

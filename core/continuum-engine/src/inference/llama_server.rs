@@ -138,7 +138,8 @@ pub use progress::{condemn, condemnations, engine_condemned, note_serving_ready,
 #[cfg(test)]
 pub(crate) use progress::Condemnations;
 pub(crate) use progress::until_condemned_on;
-pub use slot_work::{in_flight_slot, slot_advanced, slot_work, InFlightSlot, SlotWork};
+pub use slot_work::{engine_work, in_flight_slot, slot_advanced, slot_work, InFlightSlot, SlotWork};
+pub(crate) use slot_work::{engine_ended, engine_step};
 pub(crate) use slot_work::InFlightSlotGuard;
 #[cfg(test)]
 pub(crate) use slot_work::slot_work_of;

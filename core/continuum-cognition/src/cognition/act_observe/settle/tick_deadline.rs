@@ -103,9 +103,12 @@ pub(super) async fn until_act_stalls_or<F: std::future::Future, C: std::future::
             } => {
                 if state.stalled { return Err(Abandoned::at(&queue_rx)); }
                 let pinned = persona.and_then(crate::inference::llama_server::in_flight_slot);
+                // her generation's work from whichever engine serves her: the HTTP slot she is pinned
+                // to, else the in-process engine's steps for her (the M5, 2026-11-27: with only the
+                // HTTP adapter registered, every resident read `None` and was ended mid-prefill)
                 let now = match &pinned {
                     Some(p) => crate::inference::llama_server::slot_work(&p.root, p.slot, act_probe_client()).await,
-                    None => None,
+                    None => persona.and_then(crate::inference::llama_server::engine_work),
                 };
                 // A condemned engine is never extended on: its relaunch cuts this act anyway,
                 // and holding on keeps that relaunch's drain (and the whole node) waiting.
@@ -117,10 +120,11 @@ pub(super) async fn until_act_stalls_or<F: std::future::Future, C: std::future::
                 queue_tx.send_modify(|state| state.extend());
                 continuum_base::probe!(
                     class = "settle.tick.extended",
-                    slot = pinned.as_ref().map(|p| p.slot as u64).unwrap_or(0), // probe field: extension implies a pinned slot
+                    slot = pinned.as_ref().map(|p| p.slot as u64).unwrap_or(0), // 0 when the in-process engine serves her
+                    source = if pinned.is_some() { "http_slot" } else { "in_process_engine" },
                     extensions = extensions as u64,
                     bound_s = bound.as_secs(),
-                    "the act reached its deadline with its generation still advancing on its pinned slot — busy, not dead; one more bound"
+                    "the act reached its deadline with its generation still advancing (its pinned slot, or the in-process engine) — busy, not dead; one more bound"
                 );
             }
         }
