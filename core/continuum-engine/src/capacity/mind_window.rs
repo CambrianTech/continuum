@@ -54,11 +54,12 @@ pub fn mind_window(persona: uuid::Uuid, adapter: &dyn AIProviderAdapter, bound: 
 
 /// Decide her window and, when it is a grant, hold it for the act about to render against it
 /// ([`super::window_grant::ActHold`]). A grant taken between the decision and the hold is waited for (the next grants
-/// evaluation, then she decides again), never a failed turn (card d50e8e66).
+/// evaluation, then she decides again), never a failed turn (card d50e8e66). Her measure's return names the bound
+/// her ungranted wait is held under ([`decide_window`]).
 pub async fn decide_and_hold<D, M, E, F>(persona: uuid::Uuid, decide: D, mut measure: M, evaluation_after: E) -> Result<(Decided, Option<super::window_grant::ActHold>), WindowRefused>
 where
     D: Fn() -> MindWindow,
-    M: FnMut(),
+    M: FnMut() -> std::time::Duration,
     E: Fn(std::time::Instant) -> Result<F, GrantsUnavailable>,
     F: std::future::Future<Output = Result<super::window_grant::GrantEvaluation, WindowRefused>>,
 {
@@ -193,22 +194,30 @@ fn next_evaluation(
 /// evaluation with her demand standing: on the M5 (26960c09d) each queued turn was refused and
 /// re-measured instead, 186 failed turns an hour. Any other reason refuses her turn with the
 /// evaluation's own words, so a defect is named within one publisher cadence, never parked (card
-/// 5e79e1c1). No evaluations are a refusal only when she is ungranted: a decided window needs none.
+/// 5e79e1c1). Waiting for ROOM across evaluations carries its own total bound - her measure names it
+/// when the wait begins, and a wait that outlives it defers with this evaluation's own words instead of
+/// parking to the act's tick floor (card 250d7603).
+/// No evaluations are a refusal only when she is ungranted: a decided window needs none.
 pub async fn decide_window<D, M, E, F>(persona: uuid::Uuid, decide: D, mut measure: M, evaluation_after: E) -> Result<Decided, WindowRefused>
 where
     D: Fn() -> MindWindow,
-    M: FnMut(),
+    M: FnMut() -> std::time::Duration,
     E: Fn(std::time::Instant) -> Result<F, GrantsUnavailable>,
     F: std::future::Future<Output = Result<super::window_grant::GrantEvaluation, WindowRefused>>,
 {
     let mut measured = false;
+    // When her ungranted wait began, and under the bound her measure named for it: a wait that outlives
+    // that bound is starvation, not queuing - she defers with the publisher's words at that moment instead
+    // of parking to the act's tick floor (card 250d7603). Measured on the runtime clock: story time under
+    // start_paused, real monotonic in production.
+    let mut waiting: Option<(tokio::time::Instant, std::time::Duration)> = None;
     loop {
         match decide() {
             MindWindow::Decided(decided) => return Ok(decided),
             MindWindow::Ungranted => {
                 let first = !measured;
                 if first {
-                    measure();
+                    waiting = Some((tokio::time::Instant::now(), measure()));
                     measured = true;
                 }
                 // After her measure: only an evaluation that began later has read her demand.
@@ -221,12 +230,19 @@ where
                 let evaluation = evaluation_after(asked)?.await?;
                 match evaluation.ungranted(persona) {
                     Some(why) if !why.awaits_room() => return Err(WindowRefused::Ungranted(why)),
-                    Some(why) => continuum_base::probe!(
-                        class = "delib.window.waiting",
-                        persona = %persona,
-                        reason = %why,
-                        "her turn waits for a later grants evaluation"
-                    ),
+                    Some(why) => {
+                        // Her named bound across evaluations: outlived, the wait is starvation - defer now with
+                        // this evaluation's own words (card 250d7603).
+                        if waiting.as_ref().is_some_and(|(since, bound)| since.elapsed() >= *bound) {
+                            return Err(WindowRefused::Ungranted(why));
+                        }
+                        continuum_base::probe!(
+                            class = "delib.window.waiting",
+                            persona = %persona,
+                            reason = %why,
+                            "her turn waits for a later grants evaluation"
+                        );
+                    },
                     // Her grant is listed but she is ungranted: it is being reclaimed for a ready mind.
                     // She holds nothing the reclaim takes (`Ungranted::awaits_room`), so she waits for
                     // the evaluation after it, within her turn.
@@ -246,6 +262,7 @@ where
 mod tests {
     use super::*;
     use crate::inference::planning::window_allocator::test_tokens as t;
+    use crate::inference::resource_admission::LANE_WAIT_CEILING;
     use std::cell::Cell;
 
     fn grants(by_mind: &[(uuid::Uuid, u32)]) -> Option<super::super::window_grant::PoolGrants> {
@@ -308,7 +325,7 @@ mod tests {
                 false => MindWindow::Ungranted,
                 true => MindWindow::Decided(Decided::Granted(t(14_860))),
             },
-            || measured.set(measured.get() + 1),
+            || { measured.set(measured.get() + 1); LANE_WAIT_CEILING },
             |at| Ok(next_evaluation(installed.clone(), at)),
         )
         .await;
@@ -332,7 +349,7 @@ mod tests {
         });
         let refused = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            decide_window(her, || MindWindow::Ungranted, || {}, |at| Ok(next_evaluation(installed.clone(), at))),
+            decide_window(her, || MindWindow::Ungranted, || LANE_WAIT_CEILING, |at| Ok(next_evaluation(installed.clone(), at))),
         )
         .await
         .expect("one evaluation ends the wait");
@@ -358,7 +375,7 @@ mod tests {
                 false => MindWindow::Ungranted,
                 true => MindWindow::Decided(Decided::Granted(t(30_000))),
             },
-            || measured.set(measured.get() + 1),
+            || { measured.set(measured.get() + 1); LANE_WAIT_CEILING },
             |at| {
                 evaluations.set(evaluations.get() + 1);
                 reseated.set(evaluations.get() >= 2);
@@ -410,7 +427,7 @@ mod tests {
                     false => MindWindow::Ungranted,
                     true => MindWindow::Decided(Decided::Granted(t(14_860))),
                 },
-                || measured.set(measured.get() + 1),
+                || { measured.set(measured.get() + 1); LANE_WAIT_CEILING },
                 |at| Ok(next_evaluation(installed.clone(), at)),
             ),
         )
@@ -439,14 +456,14 @@ mod tests {
         let (_sender, installed) = tokio::sync::watch::channel(Some(stale));
         let refused = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            decide_window(her, || MindWindow::Ungranted, || {}, |at| Ok(next_evaluation(installed.clone(), at))),
+            decide_window(her, || MindWindow::Ungranted, || LANE_WAIT_CEILING, |at| Ok(next_evaluation(installed.clone(), at))),
         )
         .await
         .expect("bounded by the publisher's cadence");
         assert!(matches!(refused, Err(WindowRefused::PublisherSilent { silent_for: Some(_) })), "{refused:?}");
 
         let (_sender, never) = tokio::sync::watch::channel(None);
-        let refused = decide_window(her, || MindWindow::Ungranted, || {}, |at| Ok(next_evaluation(never.clone(), at))).await;
+        let refused = decide_window(her, || MindWindow::Ungranted, || LANE_WAIT_CEILING, |at| Ok(next_evaluation(never.clone(), at))).await;
         assert_eq!(refused, Err(WindowRefused::PublisherSilent { silent_for: None }));
     }
 
@@ -456,54 +473,49 @@ mod tests {
     async fn no_evaluations_refuse_only_an_ungranted_mind() {
         type Never = std::future::Ready<Result<super::super::window_grant::GrantEvaluation, WindowRefused>>;
         let her = uuid::Uuid::from_u128(4);
-        let refused = decide_window(her, || MindWindow::Ungranted, || {}, |_| Err::<Never, _>(GrantsUnavailable)).await;
+        let refused = decide_window(her, || MindWindow::Ungranted, || LANE_WAIT_CEILING, |_| Err::<Never, _>(GrantsUnavailable)).await;
         assert_eq!(refused, Err(WindowRefused::Unavailable(GrantsUnavailable)));
-        let bound = decide_window(her, || MindWindow::Decided(Decided::Bound(8_192)), || {}, |_| Err::<Never, _>(GrantsUnavailable)).await;
+        let bound = decide_window(her, || MindWindow::Decided(Decided::Bound(8_192)), || LANE_WAIT_CEILING, |_| Err::<Never, _>(GrantsUnavailable)).await;
         assert_eq!(bound, Ok(Decided::Bound(8_192)), "a bound window needs no evaluations");
-    }
-
-    /// The card's budget check, exact at the ceiling - no slack for one beat of publisher cadence:
-    /// a starved mind defers with her act budget intact only if she deferred by LANE_WAIT_CEILING.
-    fn within_budget(elapsed: std::time::Duration) -> bool {
-        elapsed <= crate::inference::resource_admission::LANE_WAIT_CEILING
     }
 
     // what this catches (card 250d7603; observed live on engine pid 33236, build 4f96d32b): a publisher
     // that keeps evaluating on its own cadence and keeps reporting her demand as Waiting::BehindActs
-    // grants her nothing. Each single wait is bounded by the publisher's cadence (PublisherSilent),
-    // but the loop across evaluations has no named bound of its own, so she parks to the act's
-    // TICK_DEADLINE floor (1500s observed; lanes physically free: 2 of 3) instead of deferring at her
-    // own named bound with her act budget intact. The orphan-acting defect that keeps BehindActs true
-    // forever is pinned separately as its own evidence in fair/tests.rs; this pin does not depend on it
-    // - ANY publisher behavior that keeps her ungranted across evaluations must end in a typed
-    // deferral within LANE_WAIT_CEILING, never at the tick floor. Un-ignore with the fix (card
-    // question 2: give the grants wait a bound derived like lane_wait_bound from the queue she is
-    // joining - pure over measurements, so it is reachable within her act without wall-clock
-    // dependence). Canary 666a604d (#6218) registered this wait with the admission clock (her queue
-    // place is its progress; a livelock ends at settle.queue.stalled), but adds no window-side total
-    // bound: this pin still fails against that tip.
-    #[tokio::test(start_paused = true)]
-    #[ignore = "pins card 250d7603: an ungranted mind parks to the tick floor while every evaluation reports her BehindActs; un-ignore once decide_window defers at her named bound"]
-    async fn a_starved_mind_defers_at_her_named_bound_not_the_tick_floor() {
+    // grants her nothing. Each single wait is bounded by the publisher's cadence (PublisherSilent), but
+    // without a TOTAL bound of its own the loop across evaluations parks her to the act's TICK_DEADLINE
+    // floor (1500s observed; lanes physically free: 2 of 3) instead of deferring at her named bound with
+    // her act budget intact. The orphan-acting defect that keeps BehindActs true forever is pinned
+    // separately as its own evidence in fair/tests.rs; this pair does not depend on it - ANY publisher
+    // behavior that keeps her ungranted across evaluations must end in a typed deferral at the bound her
+    // measure named, never at the tick floor. The bound itself is derived like lane_wait_bound from the
+    // queue she joins (card question 2): measured lanes size it, unmeasured take the ceiling - so both
+    // cases below drive the real derivation with known inputs and assert the deferral EXACT in story time
+    // (the beats are event-driven under start_paused; a bound that is a multiple of the beat lands on an
+    // exact evaluation).
+    /// Her starved scenario, run to its end: a healthy publisher beating every half second of story time
+    /// while she stays BehindActs. Returns her refusal, how many times she was measured, and the story
+    /// time it took - so each case can assert where exactly she deferred.
+    async fn starved_until_refused(bound: std::time::Duration) -> (Result<Decided, WindowRefused>, u32, std::time::Duration) {
         use super::super::window_grant::Waiting;
         let her = uuid::Uuid::from_u128(4);
         // The publisher's healthy beat, in story time: evaluations keep flowing (the live seat
-        // re-reported BehindAct hundreds of times an hour), so PublisherSilent never fires on her.
+        // re-reported BehindActs hundreds of times an hour), so PublisherSilent never fires on her.
         let beat = std::time::Duration::from_millis(500);
         let behind_acts = move |at: std::time::Instant| {
             let mut e = evaluation(at, grants(&[]), None).expect("evaluation");
             // Generous cadence: a single wait's PublisherSilent bound (2x cadence) must never fire
-            // inside her outer bound - this pin isolates the missing TOTAL bound across evaluations,
-            // not publisher silence (covered by a_publisher_that_misses_its_cadence_is_named_not_waited_out).
+            // inside her outer bound - this pin isolates the total bound across evaluations, not
+            // publisher silence (covered by a_publisher_that_misses_its_cadence_is_named_not_waited_out).
             e.cadence = std::time::Duration::from_secs(3600);
             e.waiting.insert(her, Waiting::BehindActs { acting: 2 });
             e
         };
-        // The state at park time: her demand reached the publisher and waits BehindAct.
         let (sender, installed) = tokio::sync::watch::channel(Some(behind_acts(std::time::Instant::now())));
         let publisher = tokio::spawn(async move {
             loop {
-                // Her turn first - she processes the previous evaluation or waits for this one - then exactly one healthy beat of story time, advanced by name (the house idiom under start_paused; rule 10 never sleeps): each evaluation arrives as its own event and no burst can overshoot her named bound.
+                // Her turn first - she processes the previous evaluation or waits for this one - then exactly
+                // one healthy beat of story time, advanced by name (the house idiom under start_paused; rule 10
+                // never sleeps): each evaluation arrives as its own event and no burst can overshoot her bound.
                 tokio::task::yield_now().await;
                 tokio::time::advance(beat).await;
                 if sender.send(Some(behind_acts(std::time::Instant::now()))).is_err() {
@@ -514,8 +526,8 @@ mod tests {
         let measured = Cell::new(0);
         let started_at = tokio::time::Instant::now(); // story time: the controlled clock
         let refused = tokio::time::timeout(
-            crate::inference::resource_admission::LANE_WAIT_CEILING + beat * 2,
-            decide_window(her, || MindWindow::Ungranted, || measured.set(measured.get() + 1), |at| {
+            bound + beat * 2,
+            decide_window(her, || MindWindow::Ungranted, || { measured.set(measured.get() + 1); bound }, |at| {
                 // The clone here is right and not a borrow: next_evaluation keeps its receiver across the wait for the evaluation after `asked`, so each of her passes needs an owned handle while installed stays behind for the pass after that.
                 let rx = installed.clone();
                 Ok(next_evaluation(rx, at))
@@ -524,12 +536,31 @@ mod tests {
         .await
         .expect("she defers within her named bound instead of parking to the tick floor (card 250d7603)");
         publisher.abort();
+        (refused, measured.get(), started_at.elapsed())
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_starved_mind_defers_at_her_named_bound_not_the_tick_floor() {
+        // The queue she joins, measured: three held-work callers ahead of her on two lanes whose turns the
+        // lanes have timed (p50 120 s over twelve samples) - the derivation's own test inputs.
+        let bound = crate::inference::resource_admission::lane_wait_bound(3, 2, 120_000, 12)
+            .unwrap_or(LANE_WAIT_CEILING); // unwrap_or: unmeasured lanes use the ceiling (admission.rs's own policy)
+        let (refused, measured, elapsed) = starved_until_refused(bound).await;
         assert!(matches!(refused, Err(WindowRefused::Ungranted(_))), "a typed deferral - her next tick measures and asks again; nothing was dispatched: {refused:?}");
-        assert_eq!(measured.get(), 1, "her demand stood while she waited: measured once");
-        let elapsed = started_at.elapsed();
-        assert!(within_budget(elapsed), "budget intact: deferred at her named bound ({elapsed:?}), not the act's tick floor (25 min)");
-        // The corrected assertion is exact at the ceiling: a deferral one beat over budget must be
-        // rejected, so no late implementation can hide behind the outer diagnostic slack.
-        assert!(!within_budget(crate::inference::resource_admission::LANE_WAIT_CEILING + beat), "an over-bound deferral (one beat past the ceiling) is rejected by the assertion itself");
+        assert_eq!(measured, 1, "her demand stood while she waited: measured once");
+        assert_eq!(elapsed, bound, "exact in story time: deferred at the derived bound ({bound:?}), not the act's tick floor (25 min)");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_starved_mind_defers_at_the_ceiling_when_the_queue_is_unmeasured() {
+        // Unmeasured lanes: no holds timed yet, so the derivation names no bound and she waits under the
+        // ceiling - unknown is not a quantity, but it is still HER OWN named bound under the tick floor.
+        let bound = crate::inference::resource_admission::lane_wait_bound(0, 0, 0, 0)
+            .unwrap_or(LANE_WAIT_CEILING); // unwrap_or: unmeasured lanes use the existing diagnostic ceiling
+        assert_eq!(bound, LANE_WAIT_CEILING, "unmeasured: the derivation names no bound and the ceiling stands");
+        let (refused, measured, elapsed) = starved_until_refused(bound).await;
+        assert!(matches!(refused, Err(WindowRefused::Ungranted(_))), "a typed deferral - her next tick measures and asks again: {refused:?}");
+        assert_eq!(measured, 1, "her demand stood while she waited: measured once");
+        assert_eq!(elapsed, bound, "exact at the ceiling ({bound:?}), not the act's tick floor (25 min)");
     }
 }

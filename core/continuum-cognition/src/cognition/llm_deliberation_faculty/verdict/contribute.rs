@@ -60,6 +60,9 @@ impl LlmDeliberationFaculty {
                 // excess and the grant she then waits for is too small (Fable's audit, 2026-11-09).
                 let (_, calibration) = self.prompt_fit(&loaded);
                 let _measured = self.prompt_view_with_visual_feedback(ws, loaded.context_window, calibration, None);
+                // Her wait's named bound, derived from the queue she just joined (card 250d7603): measured
+                // lanes size it, unmeasured take the ceiling - never a constant where measurement exists.
+                crate::inference::resource_admission::grants_wait_bound()
             },
             crate::capacity::mind_window::evaluation_after,
         ))
