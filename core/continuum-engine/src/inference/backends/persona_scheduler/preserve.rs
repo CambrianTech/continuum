@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use continuum_saved_state::{OwnedFile, Retention, SaveError, SavedState, Singleton, Store};
 
 mod mind_files;
-pub(super) use mind_files::{HandOverError, Leaving};
+pub(super) use mind_files::{HandOverError, Leaving, LeavingCheckpoint, Restored, RestoredCheckpoint};
 
 /// Why preserved minds cannot be opened or published. Each leaves the last complete generation
 /// standing.
@@ -53,6 +53,17 @@ pub(super) struct PreservedMind {
     /// Her KV file: her attention rows, exactly her storage, handed over by a rename.
     pub kv: Option<String>,
     pub tokens: Tokens,
+    /// Her view-end checkpoint, handed over in the same generation as her blocks: the first turn after a
+    /// restart rewinds to it instead of re-prefilling her whole prompt. `None` when she had none to keep.
+    pub checkpoint: Option<PreservedCheckpoint>,
+}
+
+/// Her checkpoint as the manifest names it: its file and the tokens it holds through (exclusive end),
+/// a prefix of her token history under the genes her blocks were computed under.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub(super) struct PreservedCheckpoint {
+    pub file: String,
+    pub end: u64,
 }
 
 /// Her token history, as the manifest names it.
@@ -88,7 +99,7 @@ pub(super) struct PreservedMinds;
 
 impl SavedState for PreservedMinds {
     const KIND: &'static str = "preserved-minds";
-    const FORMAT: u32 = 3;
+    const FORMAT: u32 = 4;
     const RETENTION: Retention = Retention::PerKey { bound: "one per node: the last complete generation, replaced only once a stop's every write landed" };
     type Key = Singleton;
     type Contract = ServedModel;
@@ -97,8 +108,16 @@ impl SavedState for PreservedMinds {
 
     /// Formats 1 and 2 held her rows inside her one block file and her history inline: each becomes a
     /// record holding her rows (the fork reads a format-1 record as one) and a migrating history, so she
-    /// resumes warm, and her next stop writes format 3.
+    /// resumes warm, and her next stop writes the current format. Format 3 kept no checkpoint: each of
+    /// its minds is read as she was, with none (her first turn after it re-prefills once, as before).
     fn upgrade(found: u32, old: serde_json::Value) -> Option<Self::Value> {
+        if found == 3 {
+            let serde_json::Value::Array(mut minds) = old else { return None };
+            for mind in &mut minds {
+                mind.as_object_mut()?.insert("checkpoint".into(), serde_json::Value::Null);
+            }
+            return serde_json::from_value(serde_json::Value::Array(minds)).ok(); // disk boundary: the saved-state envelope's format-3 body
+        }
         let minds: Vec<PreservedMindV2> = matches!(found, 1 | 2).then(|| serde_json::from_value(old).ok()).flatten()?; // disk boundary: the saved-state envelope's format-1/2 body
         Some(minds.into_iter().map(|m| PreservedMind {
             record: m.blocks.unwrap_or_else(|| format!("{}.cpb", m.persona)), // unwrap_or_else: format 1 named no file; hers was fixed
@@ -109,6 +128,7 @@ impl SavedState for PreservedMinds {
             generation: 0, // a format-1 record carries none, and the fork reads it under any
             kv: None,
             tokens: Tokens::Migrating(m.held),
+            checkpoint: None, // a format-1 or format-2 manifest kept no checkpoint
         }).collect())
     }
 }
@@ -141,6 +161,11 @@ impl Generation {
     pub(super) fn tokens(self, persona: uuid::Uuid) -> String {
         format!("{persona}.{:016x}.tok", self.0)
     }
+
+    /// Her checkpoint's name in this generation.
+    pub(super) fn checkpoint(self, persona: uuid::Uuid) -> String {
+        format!("{persona}.{:016x}.ckp", self.0)
+    }
 }
 
 /// The manifest a stop publishes: every mind written this generation, and every other mind of the
@@ -162,7 +187,7 @@ fn unreferenced(dir: &Path, manifest: &[PreservedMind]) -> std::io::Result<Vec<P
     for entry in std::fs::read_dir(dir)? {
         let path = entry?.path();
         let name = path.file_name().and_then(|name| name.to_str()).unwrap_or_default(); // unwrap_or_default: a non-UTF-8 name is no file of ours
-        let ours = [".cpb", ".cpb.tmp", ".kv", ".tok"].iter().any(|suffix| name.ends_with(suffix));
+        let ours = [".cpb", ".cpb.tmp", ".kv", ".tok", ".ckp", ".ckp.tmp"].iter().any(|suffix| name.ends_with(suffix));
         if ours && !named.contains(name) {
             out.push(path);
         }
@@ -177,7 +202,8 @@ impl PreservedMind {
             Tokens::File { name, .. } => Some(name.as_str()),
             Tokens::Migrating(_) => None,
         };
-        std::iter::once(self.record.as_str()).chain(self.kv.as_deref()).chain(tokens)
+        let checkpoint = self.checkpoint.as_ref().map(|checkpoint| checkpoint.file.as_str());
+        std::iter::once(self.record.as_str()).chain(self.kv.as_deref()).chain(tokens).chain(checkpoint)
     }
 }
 
@@ -268,7 +294,7 @@ mod tests {
     use continuum_saved_state::Loaded;
 
     fn mind(n: u128, blocks: &str) -> PreservedMind {
-        PreservedMind { persona: uuid::Uuid::from_u128(n), epoch: 1, basis: String::new(), genes: Vec::new(), generation: 1, record: blocks.to_owned(), kv: None, tokens: Tokens::Migrating(vec![n as i32]) }
+        PreservedMind { persona: uuid::Uuid::from_u128(n), epoch: 1, basis: String::new(), genes: Vec::new(), generation: 1, record: blocks.to_owned(), kv: None, tokens: Tokens::Migrating(vec![n as i32]), checkpoint: None }
     }
 
     // what this catches (Codex on #6159): a stop interrupted between a block write and the manifest
@@ -320,7 +346,7 @@ mod tests {
         std::fs::write(saved_at.path(&file), b"her rows at the large window").expect("test: write"); // expect: the test's own precondition
         // her genes and their files travel with her (a resumed resident learns before her next turn, 2026-11-26)
         let genes = vec![crate::inference::backends::persona_scheduler::Gene { id: "served".into(), path: "/genes/served/adapter.gguf".into(), scale: 1.0 }];
-        let original = vec![PreservedMind { persona: her, epoch: 1, basis: "served:1".into(), genes, generation: 1, record: file.clone(), kv: None, tokens: Tokens::File { name: format!("{her}.tok"), count: 3 } }];
+        let original = vec![PreservedMind { persona: her, epoch: 1, basis: "served:1".into(), genes, generation: 1, record: file.clone(), kv: None, tokens: Tokens::File { name: format!("{her}.tok"), count: 3 }, checkpoint: None }];
         saved_at.publish(&served, &original).expect("test: publish"); // expect: the test's own precondition
 
         // the smaller boot: her manifest loads, her read is refused, so she never enters the warm
@@ -359,34 +385,39 @@ mod tests {
 
     // what this catches: publishing removing a file the manifest names (her record, KV file or history),
     // removing a custody lock (deleting a lock file races the next locker), or leaving a file it no
-    // longer names to fill the disk. After a publish only the named files and the locks remain.
+    // longer names to fill the disk (her checkpoint of an older generation, or a torn one, included).
+    // After a publish only the named files and the locks remain.
     #[test]
     fn a_publish_removes_only_what_it_no_longer_names() {
         let dir = tempfile::tempdir().expect("test: a temp dir"); // expect: the test's own precondition
         let mut preserved = Preserved::at(dir.path().to_path_buf()).expect("test: a store"); // expect: the test's own precondition
-        let files = ["a.g1.cpb", "a.g2.cpb", "a.g2.kv", "a.g2.tok", "a.g1.kv", "a.g1.tok", "b.g1.cpb", "b.g2.cpb.tmp", "a.custody"];
+        let files = ["a.g1.cpb", "a.g2.cpb", "a.g2.kv", "a.g2.tok", "a.g2.ckp", "a.g1.kv", "a.g1.tok", "a.g1.ckp", "a.g2.ckp.tmp", "b.g1.cpb", "b.g2.cpb.tmp", "a.custody"];
         for file in files {
             std::fs::write(preserved.path(file), b"rows").expect("test: write"); // expect: the test's own precondition
         }
-        let a = PreservedMind { kv: Some("a.g2.kv".into()), tokens: Tokens::File { name: "a.g2.tok".into(), count: 1 }, ..mind(1, "a.g2.cpb") };
+        let a = PreservedMind { kv: Some("a.g2.kv".into()), tokens: Tokens::File { name: "a.g2.tok".into(), count: 1 }, checkpoint: Some(PreservedCheckpoint { file: "a.g2.ckp".into(), end: 1 }), ..mind(1, "a.g2.cpb") };
         let kept = preserved.publish(&ServedModel { model: "m".into() }, &[a, mind(2, "b.g1.cpb")]).expect("test: publish"); // expect: the test's own precondition
         assert!(kept.is_empty(), "{kept:?}");
         let mut left: Vec<String> = std::fs::read_dir(dir.path()).expect("test: list").filter_map(|e| e.ok()?.file_name().into_string().ok()).filter(|n| files.contains(&n.as_str())).collect(); // expect: the test's own precondition
         left.sort();
-        assert_eq!(left, ["a.custody", "a.g2.cpb", "a.g2.kv", "a.g2.tok", "b.g1.cpb"].map(str::to_owned));
+        assert_eq!(left, ["a.custody", "a.g2.ckp", "a.g2.cpb", "a.g2.kv", "a.g2.tok", "b.g1.cpb"].map(str::to_owned));
     }
 
     // what this catches (Codex, 2026-11-25: a named cold start loses her continuity): a format change
     // dropping every preserved mind at the first start after it. Format 1 (her blocks at a fixed name)
     // and format 2 (named per generation) both upgrade to a record holding her rows and her history
-    // carried until her next stop, so she resumes warm.
+    // carried until her next stop, so she resumes warm; format 3 (no checkpoint kept) reads as she was.
     #[test]
-    fn a_format_one_or_two_manifest_upgrades_to_a_record_with_her_rows() {
+    fn an_older_manifest_upgrades_and_her_mind_resumes_warm() {
         let id = uuid::Uuid::from_u128(7);
-        let migrated = |record: String| vec![PreservedMind { persona: id, epoch: 3, basis: String::new(), genes: Vec::new(), generation: 0, record, kv: None, tokens: Tokens::Migrating(vec![1, 2]) }];
+        let migrated = |record: String| vec![PreservedMind { persona: id, epoch: 3, basis: String::new(), genes: Vec::new(), generation: 0, record, kv: None, tokens: Tokens::Migrating(vec![1, 2]), checkpoint: None }];
         let one = serde_json::json!([{ "persona": id, "epoch": 3, "basis": "", "held": [1, 2] }]);
         assert_eq!(PreservedMinds::upgrade(1, one), Some(migrated(format!("{id}.cpb"))));
         let two = serde_json::json!([{ "persona": id, "epoch": 3, "basis": "", "held": [1, 2], "blocks": format!("{id}.abc.cpb") }]);
         assert_eq!(PreservedMinds::upgrade(2, two), Some(migrated(format!("{id}.abc.cpb"))));
+        // format 3 kept no checkpoint: each mind as she was, with none
+        let mut three = serde_json::to_value(migrated(format!("{id}.abc.cpb"))).expect("test: a format-3 body"); // expect: the test's own precondition
+        three[0].as_object_mut().expect("test: one mind").remove("checkpoint"); // expect: the test's own precondition
+        assert_eq!(PreservedMinds::upgrade(3, three), Some(migrated(format!("{id}.abc.cpb"))));
     }
 }
