@@ -26,7 +26,7 @@
 use uuid::Uuid;
 
 /// Errors from id_resolve prefix resolution.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, PartialEq, thiserror::Error)]
 pub enum IdResolveError {
     /// The input string is not a usable id or handle (too few hex digits).
     #[error("'{0}' is not a usable {1} — give the full id/handle or its leading short form")]
@@ -205,7 +205,7 @@ mod tests {
     fn strict_handles_preserve_disambiguating_digits() {
         let a = u("12345678-1000-4000-8000-000000000001");
         let b = u("12345678-2000-4000-8000-000000000002");
-        assert!(resolve_handle("12345678", &[a, b], "execution").unwrap_err().contains("ambiguous"));
+        assert!(resolve_handle("12345678", &[a, b], "execution").unwrap_err().to_string().contains("ambiguous"));
         assert_eq!(resolve_handle("123456781", &[a, b], "execution"), Ok(a));
         assert_eq!(resolve_handle(&a.to_string(), &[a, b], "execution"), Ok(a));
         assert!(resolve_handle("12345678garbage", &[a], "execution").is_err());
@@ -264,15 +264,15 @@ mod tests {
         // persona that fabricated an id (the 2026-07-13 live failure) self-corrects on
         // the next turn instead of waiting for a peer to hand it the right id.
         let e = resolve("deadbeef", &cands, "persona").unwrap_err();
-        assert!(e.contains("persona") && e.contains("no "), "teaches: {e}");
+        assert!(e.to_string().contains("persona") && e.to_string().contains("no "), "teaches: {e}");
         assert!(
-            e.contains("90e758b2") && e.contains("fe4dac17"),
+            e.to_string().contains("90e758b2") && e.to_string().contains("fe4dac17"),
             "lists the valid ids: {e}"
         );
         // ambiguous → loud
         let c = u("90e70000-0000-0000-0000-000000000000");
         let e = resolve("90e7", &[a, c], "persona").unwrap_err();
-        assert!(e.contains("ambiguous"), "teaches: {e}");
+        assert!(e.to_string().contains("ambiguous"), "teaches: {e}");
         // junk → loud
         assert!(resolve("!!", &cands, "persona").is_err());
     }
@@ -287,7 +287,7 @@ mod tests {
         // empty set → plainly says there are none
         let e = resolve("deadbeef", &[], "card").unwrap_err();
         assert!(
-            e.contains("no card") && e.contains("none to choose"),
+            e.to_string().contains("no card") && e.to_string().contains("none to choose"),
             "empty: {e}"
         );
 
@@ -296,9 +296,9 @@ mod tests {
             .map(|i| u(&format!("0000000{i}-0000-0000-0000-000000000000")))
             .collect();
         let e = resolve("deadbeef", &cands, "card").unwrap_err();
-        assert!(e.contains("available card ids"), "lists: {e}");
+        assert!(e.to_string().contains("available card ids"), "lists: {e}");
         assert!(
-            e.contains("00000000") && e.contains("00000002"),
+            e.to_string().contains("00000000") && e.to_string().contains("00000002"),
             "each short form present: {e}"
         );
 
@@ -308,7 +308,7 @@ mod tests {
             .collect();
         let e = resolve("ffffffff", &many, "card").unwrap_err();
         assert!(
-            e.contains(&format!("among {} card", many.len())) && !e.contains("available card ids"),
+            e.to_string().contains(&format!("among {} card", many.len())) && !e.to_string().contains("available card ids"),
             "counts instead of listing: {e}"
         );
     }

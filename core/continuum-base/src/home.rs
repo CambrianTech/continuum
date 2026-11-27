@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use thiserror::Error;
 
 /// Errors that arise while resolving the continuum home directory.
-#[derive(Debug, Error)]
+#[derive(Debug, PartialEq, Error)]
 pub enum HomeError {
     /// No home directory could be resolved: neither `$CONTINUUM_HOME` nor `~/.continuum`.
     #[error("no home dir found — set $CONTINUUM_HOME or ensure ~/.continuum is reachable")]
