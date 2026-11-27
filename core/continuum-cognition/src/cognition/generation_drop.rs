@@ -125,7 +125,7 @@ impl InFlight {
     ) -> Self {
         // The step's deadline must know a generation is in flight: one it ends from here is
         // a drop, not a lane wait, though it leaves no receipt behind.
-        crate::cognition::admission_clock::note_dispatched();
+        crate::cognition::admission_clock::note_dispatched(request);
         Self {
             persona: persona.to_string(),
             request: request.map(str::to_owned),

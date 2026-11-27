@@ -18,6 +18,10 @@ required-features = ["test-fixtures"]
 name = "persona_handoff"
 required-features = ["test-fixtures"]
 
+[[example]]
+name = "checkpoint_handoff"
+required-features = ["test-fixtures"]
+
 [dependencies]
 continuum-base = { workspace = true } # probe!: a refused decode reports what the engine held
 continuum-persona-engine = { workspace = true }

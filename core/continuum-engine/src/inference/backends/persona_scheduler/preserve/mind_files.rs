@@ -5,7 +5,9 @@
 //! directory, so a refused restore leaves the last generation whole and a crash after the move leaves her
 //! cold and named. A stop writes her history, then hands her blocks over: her record made durable, her
 //! file synced, unmapped and renamed into the preserved directory. Only once every mind's files are
-//! durable is the manifest naming them published (`Preserved::publish`).
+//! durable is the manifest naming them published (`Preserved::publish`). Her view-end checkpoint travels
+//! the same way, written beside her record while it is still valid against her blocks and read back into
+//! her restored blocks, so her first turn after a restart rewinds to it instead of re-prefilling.
 
 use std::io;
 use std::path::PathBuf;
@@ -13,8 +15,9 @@ use std::path::PathBuf;
 use continuum_persona_engine::persona::{Epoch, MindId, PersonaId};
 use continuum_persona_engine::residency::TierRefusal;
 use continuum_persona_llama::{Blocks, HandOverRefusal, UnifiedTier};
+use llama::{PersonaCheckpoint, PersonaRefusal};
 
-use super::{Generation, Preserved, PreservedMind, Tokens};
+use super::{Generation, Preserved, PreservedCheckpoint, PreservedMind, Tokens};
 
 /// Bytes of one token in her history file: a raw `i32`.
 const TOKEN_BYTES: usize = std::mem::size_of::<i32>();
@@ -52,6 +55,55 @@ pub(in crate::inference::backends::persona_scheduler) struct Leaving<'a> {
     pub genes: &'a [crate::inference::backends::persona_scheduler::Gene],
     pub blocks: Blocks,
     pub held: &'a [i32],
+    /// Her view-end checkpoint, when she keeps one under the genes her blocks were computed under.
+    pub checkpoint: Option<LeavingCheckpoint<'a>>,
+}
+
+/// Her checkpoint as a stop hands it over: its rows and the tokens it holds through (exclusive end).
+pub(in crate::inference::backends::persona_scheduler) struct LeavingCheckpoint<'a> {
+    pub blocks: &'a PersonaCheckpoint,
+    pub end: usize,
+}
+
+/// What a restore brings back: her blocks, her token history, and her checkpoint when it came back too.
+pub(in crate::inference::backends::persona_scheduler) struct Restored {
+    pub blocks: Blocks,
+    pub held: Vec<i32>,
+    pub checkpoint: Option<RestoredCheckpoint>,
+}
+
+/// Her checkpoint back from a restart, bound to her restored cells.
+pub(in crate::inference::backends::persona_scheduler) struct RestoredCheckpoint {
+    pub blocks: PersonaCheckpoint,
+    pub end: usize,
+}
+
+/// Why her checkpoint did not cross a restart. Her blocks and history do either way; only the rewind past
+/// them is lost, so her next turn re-prefills once, and the loss is a probe, never silent.
+#[derive(Debug, thiserror::Error)]
+enum CheckpointLoss {
+    #[error("it holds through {end} tokens, she holds {held}")]
+    Beyond { end: usize, held: usize },
+    #[error("it holds through position {pos:?}, its end names {end} tokens")]
+    Position { pos: Option<u32>, end: usize },
+    #[error("no memory for its rows")]
+    NoMemory,
+    #[error(transparent)]
+    Fork(#[from] PersonaRefusal),
+    #[error(transparent)]
+    HandOver(#[from] HandOverRefusal),
+}
+
+/// Her checkpoint is the one the manifest can name: it holds exactly `end` tokens, all of them hers.
+fn holds_exactly(checkpoint: &PersonaCheckpoint, end: usize, held: usize) -> Result<(), CheckpointLoss> {
+    if end > held {
+        return Err(CheckpointLoss::Beyond { end, held });
+    }
+    let pos = checkpoint.pos();
+    if pos.map(|pos| pos as usize + 1) != Some(end) {
+        return Err(CheckpointLoss::Position { pos, end });
+    }
+    Ok(())
 }
 
 impl Preserved {
@@ -67,7 +119,7 @@ impl Preserved {
     }
 
     /// Her blocks and token history back from the files `mind` names, under her custody.
-    pub(in crate::inference::backends::persona_scheduler) fn restore(&mut self, tier: &mut UnifiedTier<'_, '_>, mind: &PreservedMind) -> Result<(Blocks, Vec<i32>), RestoreRefusal> {
+    pub(in crate::inference::backends::persona_scheduler) fn restore(&mut self, tier: &mut UnifiedTier<'_, '_>, mind: &PreservedMind) -> Result<Restored, RestoreRefusal> {
         self.take_custody(mind.persona).map_err(RestoreRefusal::Custody)?;
         let held = match &mind.tokens {
             Tokens::File { name, count } => self.read_tokens(name, *count)?,
@@ -75,8 +127,24 @@ impl Preserved {
         };
         let id = MindId { persona: PersonaId(mind.persona), epoch: Epoch(mind.epoch) };
         let kv = mind.kv.as_deref().map(|name| self.path(name));
-        let blocks = tier.restore(id, &self.path(&mind.record), kv.as_deref(), mind.generation)?;
-        Ok((blocks, held))
+        let mut blocks = tier.restore(id, &self.path(&mind.record), kv.as_deref(), mind.generation)?;
+        let checkpoint = mind.checkpoint.as_ref().and_then(|kept| {
+            let end = kept.end as usize;
+            let restored = self.restore_checkpoint(&mut blocks, kept, mind.generation, held.len());
+            restored
+                .inspect_err(|lost| continuum_base::probe!(class = "persona.engine.checkpoint_not_restored", persona = %mind.persona, end = end as u64, why = %lost, "her checkpoint did not come back; her first turn re-prefills"))
+                .ok()
+                .map(|blocks| RestoredCheckpoint { blocks, end })
+        });
+        Ok(Restored { blocks, held, checkpoint })
+    }
+
+    /// Her checkpoint from `kept`, read into her restored blocks and holding exactly its end within her history.
+    fn restore_checkpoint(&self, blocks: &mut Blocks, kept: &PreservedCheckpoint, generation: u64, held: usize) -> Result<PersonaCheckpoint, CheckpointLoss> {
+        let mut checkpoint = PersonaCheckpoint::new().ok_or(CheckpointLoss::NoMemory)?;
+        blocks.restore_checkpoint(&mut checkpoint, &self.path(&kept.file), generation)?;
+        holds_exactly(&checkpoint, kept.end as usize, held)?;
+        Ok(checkpoint)
     }
 
     /// Her history from `name`: exactly `count` raw tokens, refused by the file's length before any byte is read,
@@ -99,11 +167,20 @@ impl Preserved {
     /// Hand one mind over in `generation`: her history, then her blocks (record durable, KV file synced,
     /// unmapped and renamed), all under her custody. Returns her manifest entry, published with the stop's.
     pub(in crate::inference::backends::persona_scheduler) fn hand_over(&mut self, her: Leaving<'_>, generation: Generation) -> Result<PreservedMind, HandOverError> {
-        let Leaving { persona, epoch, basis, genes, blocks, held } = her;
+        let Leaving { persona, epoch, basis, genes, blocks, held, checkpoint } = her;
         self.take_custody(persona).map_err(HandOverError::Custody)?;
         let tokens = generation.tokens(persona);
         // her history's own bytes, written as they lie in memory: no per-token encode, no staging copy
         continuum_host::durable::write_replace(&self.path(&tokens), bytemuck::cast_slice(held)).map_err(HandOverError::Tokens)?;
+        // her checkpoint before her blocks go: the fork checks it against them as they are
+        let checkpoint = checkpoint.and_then(|kept| {
+            let file = generation.checkpoint(persona);
+            let written = holds_exactly(kept.blocks, kept.end, held.len()).and_then(|()| blocks.hand_over_checkpoint(kept.blocks, &self.path(&file), generation.number()).map_err(CheckpointLoss::from));
+            written
+                .inspect_err(|lost| continuum_base::probe!(class = "persona.engine.checkpoint_not_preserved", persona = %persona, end = kept.end as u64, why = %lost, "her checkpoint was not handed over; her first turn after the restart re-prefills"))
+                .ok()
+                .map(|()| PreservedCheckpoint { file, end: kept.end as u64 })
+        });
         let (record, kv) = (generation.record(persona), generation.kv(persona));
         let in_kv = blocks.hand_over(&self.path(&record), &self.path(&kv), generation.number())?;
         Ok(PreservedMind {
@@ -115,6 +192,7 @@ impl Preserved {
             record,
             kv: in_kv.then_some(kv),
             tokens: Tokens::File { name: tokens, count: held.len() as u64 },
+            checkpoint,
         })
     }
 }
