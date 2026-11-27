@@ -482,7 +482,7 @@ Across the Grid:
 
 Residency and distributed scheduling become two scales of the same resource-allocation problem. The result is an architecture designed around the machine you actually own—not an imaginary GPU with infinite VRAM.
 
-[See how minds share the engine →](docs/architecture/THE-LANE-ON-SAGE.md) · [See placement and the one authority →](docs/architecture/SHARED-RESOURCES.md) · [See the block layer →](docs/architecture/UNIFIED-PAGING.md)
+[See the node as one engine: one frame, one memory →](docs/architecture/ONE-FRAME-ONE-MEMORY.md) · [See how minds share the engine →](docs/architecture/THE-LANE-ON-SAGE.md) · [See placement and the one authority →](docs/architecture/SHARED-RESOURCES.md) · [See the block layer →](docs/architecture/UNIFIED-PAGING.md)
 
 ---
 
