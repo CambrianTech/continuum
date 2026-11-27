@@ -441,6 +441,11 @@ impl Driver<'_, '_> {
         let last_context = rendered.reply_from.checked_sub(1).ok_or("the lesson has no context before its reply")?;
         let her = self.engine.active_mut().ok_or("she is not bound")?;
         let shared = common_prefix(&her.parts().tokens.held, &rendered.tokens).min(last_context);
+        // a lesson learns on her own sequence, so it may discard of what she holds only what its own reply
+        // replaces: a lesson of another context would cut her whole history for its own (the M5,
+        // 2026-11-27 04:28Z: Aiko held 226,638 tokens, an academy lesson shared 1 of them and left her
+        // 2,537, so her next turn prefilled all 226k again)
+        keeps_her_context(her.parts().tokens.held.len(), shared, rendered.tokens.len(), rendered.reply_from)?;
         // a resumed mind's adapters are loaded again from the files kept with her blocks, so she learns
         // whether or not a turn of hers has handed them back (the M5, 2026-11-26)
         let genes = her.parts_mut().genome.held_or_loaded(self.model)?;
@@ -487,6 +492,17 @@ impl Driver<'_, '_> {
     }
 }
 
+/// Refuses a lesson that would discard more of what she holds (`held` tokens, `shared` with the lesson)
+/// than its own reply replaces (the lesson's `rendered` tokens from `reply_from`).
+fn keeps_her_context(held: usize, shared: usize, rendered: usize, reply_from: usize) -> Result<(), String> {
+    let discarded = held.saturating_sub(shared);
+    let reply = rendered.saturating_sub(reply_from);
+    if discarded > reply {
+        return Err(format!("the lesson shares {shared} of the {held} tokens she holds: learning it here would discard {discarded} of her context for a {reply}-token reply"));
+    }
+    Ok(())
+}
+
 /// A seated lesson's inputs: whose, how long a lesson it was measured for, its shadow and its tokens.
 struct Seated<'a> {
     mind: PersonaId,
@@ -515,6 +531,19 @@ fn reply_for(mind: MindId, held: &[i32], rendered: &Rendered) -> Option<LearnRep
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (the M5, 2026-11-27 04:28Z): a lesson of another context cutting her whole held
+    // history for its own (Aiko: 226,638 held, 1 shared, her next turn prefilled all of it), while a
+    // lesson of her latest act, which replaces only her reply, still learns.
+    #[test]
+    fn a_lesson_may_discard_only_what_its_reply_replaces() {
+        // her latest act: context 1,000 shared, her 200-token reply held past it and relearned
+        assert!(keeps_her_context(1_200, 1_000, 1_200, 1_000).is_ok());
+        // an academy lesson sharing one token of a 226,638-token history, with a 300-token reply
+        assert!(keeps_her_context(226_638, 1, 2_837, 2_537).is_err());
+        // she holds nothing past the shared prefix: nothing of hers is lost
+        assert!(keeps_her_context(500, 500, 900, 700).is_ok());
+    }
 
     // what this catches: a reply that labels her context (teaching her what she was told), misses
     // her reply's first token, or restores anything but the exact tail she held.
