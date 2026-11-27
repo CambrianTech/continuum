@@ -326,11 +326,11 @@ it was checked. Reviewers enforce these on each other; an author does not self-e
 
 ## 🛑 STOP — If You Are About To Edit Persona / Cognition / service_loop
 
-**Required first read** before touching ANY of `core/continuum-core/src/persona/{service_loop,unified,supervisor,rag_inspect}.rs`, anything in `core/continuum-core/src/cognition/`, or `core/continuum-core/src/bin/airc_chat_demo.rs`:
+**Required first read** before touching anything in `core/continuum-mind/src/persona/` (the service loop, senses, awareness, her parts) or `core/continuum-cognition/src/cognition/`:
 
-→ **[docs/architecture/PERSONA-COGNITION-PIPELINE.md](docs/architecture/PERSONA-COGNITION-PIPELINE.md)**
+→ **[docs/architecture/THE-WHOLE-MIND.md](docs/architecture/THE-WHOLE-MIND.md)**
 
-It documents what a persona actually IS (embodied, multi-modal, tool-using, continually-learning citizen with genome paging and L1-L5 memory), the per-persona cognition cycle that already exists in `cognition/` (`analyze` → `score_persona` → `genome.activate_skill` → `compose_for_turn` → `evaluate_response` → `clean_and_validate` → `ToolExecutor` → `audit`), the bypass that's being removed (`inspect_persona_rag_with_inference`), the wire layer that IS validated end-to-end, and the forbidden moves the model keeps reflex-coding under amnesia (text-only `TurnInput`, `will_respond + response_text` chatbot contracts, parallel allocators, hardcoded LCD-tier clamps that handicap capable models).
+It is what a mind IS: a persistent citizen in many activities at once, built like a game engine, whose parts are SAGE components meeting through state, whose attention is the camera over her context and genes, whose genome is an automatic weighted mixture (the composer, never a "choose a skill" call), and who learns from her work, in courses and in dreams through one system. The forbidden moves the model keeps reflex-coding under amnesia: a text-only `TurnInput`, a `will_respond + response_text` chatbot contract, a parallel allocator, a hardcoded lowest-tier clamp that handicaps a capable model, and a step that selects her genes by hand.
 
 **The cost of skipping this doc and re-inferring the architecture from the bypass is rebuilding a chatbot in place of a year of substrate work.** Don't.
 
