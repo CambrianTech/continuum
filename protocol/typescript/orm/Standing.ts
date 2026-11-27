@@ -3,4 +3,4 @@
 /**
  * How a collection's store stands against its declaration.
  */
-export type Standing = "current" | "additive" | "newer" | "breaking";
+export type Standing = "current" | "additive" | "newer" | "breaking" | "unreadable";

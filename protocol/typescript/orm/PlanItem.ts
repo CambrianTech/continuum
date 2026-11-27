@@ -5,4 +5,4 @@ import type { FieldType } from "./FieldType";
 /**
  * One difference between a declared collection and its table.
  */
-export type PlanItem = { "kind": "createTable" } | { "kind": "addColumn", column: string, fieldType: FieldType, required: boolean, } | { "kind": "addIndex", index: string, columns: Array<string>, unique: boolean, } | { "kind": "indexUnbuildable", index: string, missing: Array<string>, } | { "kind": "undeclaredColumn", column: string, } | { "kind": "typeDrift", column: string, declared: Affinity, physical: Affinity, };
+export type PlanItem = { "kind": "createTable" } | { "kind": "addColumn", column: string, fieldType: FieldType, required: boolean, } | { "kind": "addIndex", index: string, columns: Array<string>, unique: boolean, } | { "kind": "indexUnbuildable", index: string, missing: Array<string>, } | { "kind": "undeclaredColumn", column: string, } | { "kind": "typeDrift", column: string, declared: Affinity, physical: Affinity, } | { "kind": "nullDrift", column: string, declaredRequired: boolean, heldNotNull: boolean, } | { "kind": "unreadable", error: string, };

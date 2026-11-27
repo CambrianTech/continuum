@@ -70,8 +70,8 @@ pub(super) fn do_ensure_indexes(conn: &Connection, schema: &CollectionSchema) ->
     };
 
     let columns = match conn
-        .prepare(&format!("PRAGMA table_info({table})"))
-        .and_then(|mut stmt| stmt.query_map([], |row| row.get::<_, String>(1))?.collect::<Result<Vec<_>, _>>())
+        .prepare("SELECT name FROM pragma_table_info(?1)")
+        .and_then(|mut stmt| stmt.query_map([&table], |row| row.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>())
     {
         Ok(columns) => columns,
         Err(e) => {

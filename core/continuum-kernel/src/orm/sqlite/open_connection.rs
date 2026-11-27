@@ -220,9 +220,9 @@ pub(super) fn ensure_table_exists(conn: &Connection, table: &str, data: &Value) 
 /// Codex root on build 6199, 2026-10-13).
 pub(super) fn evolve_table_schema(conn: &Connection, table: &str, data: &Value, types: Option<&HashMap<String, FieldType>>) -> bool {
     // Get existing columns
-    let existing: Vec<String> = match conn.prepare(&format!("PRAGMA table_info({})", table)) {
+    let existing: Vec<String> = match conn.prepare("SELECT name FROM pragma_table_info(?1)") {
         Ok(mut stmt) => stmt
-            .query_map([], |row| row.get::<_, String>(1))
+            .query_map([table], |row| row.get::<_, String>(0))
             .map(|rows| rows.filter_map(|r| r.ok()).collect())
             .unwrap_or_default(), // unwrap_or_default: an unreadable column list adds no column (this evolve is deleted in step 0c)
         Err(_) => return false,

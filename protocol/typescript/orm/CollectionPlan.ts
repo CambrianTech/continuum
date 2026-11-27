@@ -7,6 +7,7 @@ import type { Standing } from "./Standing";
  */
 export type CollectionPlan = { collection: string, table: string, 
 /**
- * The worst of its items: a breaking one decides, then additions, then a newer store.
+ * The worst of its items: an unreadable table decides, then a breaking item, then additions, then a
+ * newer store.
  */
 standing: Standing, items: Array<PlanItem>, };
