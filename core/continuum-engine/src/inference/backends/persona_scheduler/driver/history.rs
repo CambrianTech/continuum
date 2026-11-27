@@ -1,4 +1,4 @@
-use super::{preserve, reuse, Basis, Footprint, Held};
+use super::{reuse, Basis, Footprint, Held};
 
 /// The tokens her blocks hold, and her checkpoint at her last view's end while what she holds still
 /// runs through it.
@@ -108,24 +108,6 @@ impl From<Vec<i32>> for History {
 }
 
 impl History {
-    /// Her view-end checkpoint as a stop hands it over, when it was taken under `under`, the genes her
-    /// blocks were computed under (the only genes her resumed blocks carry).
-    pub(super) fn view_checkpoint(&self, under: &Basis) -> Option<preserve::LeavingCheckpoint<'_>> {
-        let [view, ..] = &self.kept;
-        view.as_ref()
-            .filter(|kept| &kept.basis == under)
-            .map(|kept| preserve::LeavingCheckpoint { blocks: &kept.blocks, end: kept.end })
-    }
-
-    /// Her history back from a restart with her view-end checkpoint, when it came back
-    /// with her blocks, under `basis`, the genes they resume under.
-    pub(super) fn with_view(mut self, view: Option<preserve::RestoredCheckpoint>, basis: &Basis) -> Self {
-        if let Some(view) = view {
-            self.save(Boundary::View, view.blocks, view.end, basis);
-        }
-        self
-    }
-
     /// Her deepest checkpoint at or below `end`, the furthest she can be rewound without passing it.
     pub(super) fn deepest_at_or_below(&self, end: usize) -> Option<usize> {
         self.kept.iter().flatten().map(|kept| kept.end).filter(|&at| at <= end).max()
