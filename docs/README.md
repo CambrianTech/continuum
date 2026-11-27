@@ -24,6 +24,7 @@ How the whole thing composes. Read these first; on architecture questions they w
 | Design question | Chapter |
 |---|---|
 | How do modules compose, expose commands and run across nodes? | [Module architecture](architecture/MODULE-ARCHITECTURE.md) |
+| What is a mind and how does she run: her parts, attention, many activities, memory, the genome, the three forms of learning? | **[The whole mind](architecture/THE-WHOLE-MIND.md)**. |
 | What does every worker stand on: components, the bus, need, the clock, the rules every part keeps? | **[SAGE](architecture/SAGE.md)**. |
 | How does a concern's long work run: what wakes it, what it costs, how much one run does, how it is stopped, what it publishes? | **[The stage contract](architecture/STAGE-CONTRACT.md)**. |
 | How is everything finite that is shared given out and given back: claims, the one authority, holders, every lease type? | **[Shared resources](architecture/SHARED-RESOURCES.md)**. |
