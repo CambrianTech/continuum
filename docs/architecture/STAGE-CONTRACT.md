@@ -211,3 +211,97 @@ work (the mind keeps working, both ways: law 8):
 - a stale run's output refused by the publication rule;
 - an unsupported pause: a typed refusal, never a silent drop;
 - a restart in the middle of each.
+
+## 5. Version 2 (2026-11-27, for review): the unit is the scheduler's lever
+
+Joel, 2026-11-27: "need far more formalized architecture... consistent across concerns so it's unified and easy for
+top level or even the same sage components to manage", then: "take a look at what we already built. We had worker
+thread data flow driven event, publish subscribe". Version 1 already is that form. This week's failures are the
+places where a concern stepped outside it, plus one thing version 1 never said: how much one run does.
+
+**What version 1 already gives every concern, and it stays the one form:**
+- the worker, its bounded intake, the bus (`State` latest-wins, `Stream` every event), `Need`, `Presence`, `rest`
+  and timers (`component::Component`, SAGE.md);
+- the class: `Need`'s `Urgency`. `Want` and `Urgent` are held to `Urgency::act_bound`; `Content` (learning,
+  dreaming) is held to its queue kept in check, never a per-item bound;
+- the run: `triggers`, `cost` (execution and residency, separate claims on the one authority), `run`,
+  `RunOutcome` (this document, section 1);
+- the stop: `ControlRequest` at yield points and the receipts that prove it (`Yielded.residency_kept`,
+  `Cancelled.committed_effects`), and commit-once acknowledgement of what a learn step consumed (section 2);
+- space: `place::Resident`; time on the Core: `slice`; choices with history: `decide`.
+
+**What this week showed (receipts).** Each defect is a concern doing its own version of something above:
+- Learning a reply had five entries (plain chunk step, whole graph, explicit tile, automatic tile, scattered
+  refusals). The plain split, valid only because it was a mode, left every live reply past `n_ubatch` (2048 on the
+  M5) learning a partial gradient: cosine 0.960 / norm 0.944 on Qwen3.6-35B-A3B, 0.949 / 0.889 on Qwen3.5-0.8B
+  (fork 1eb66d1db, M5 Metal). A sixth entry (398bf318d) at once broke the whole-graph caller (Codex).
+- A tile that did not fit failed its step ("learn this reply at a smaller tile"), a refusal for size.
+- Units ran longer than their tile (the prefix decode, the stride replay) until pending spans bounded them (fork
+  fa85c3379); each run's work was reported only after the fact (`llama_opt_learn_last_unit`, fork 1eb66d1db).
+- Shares were constants (`slice::weight`: 1, 2, 4).
+- About ten lease and grant types each decide alone whether their work can run (`GrantLease`, `KvSlotLease`,
+  `HoldLease`, `CoveringLease`, `StickyLease`, `LaneLeaseTerms`, `NodeGrant`, `RegisteredGrant`, `ThroughputJob`).
+- Version 1's control half was never built: no `ControlRequest` is read outside SAGE, `Dispatched` has no task
+  owner, and no `Resident` is implemented.
+
+**The amendment: a run's size is chosen by the scheduler, not by the stage.** Version 1 fixes the chunk ("one
+engine learn step, sized by measurement"). A stage whose work divides now declares how, and runs what it is given:
+
+```rust
+/// How a stage's work divides, in its own quantity (rows, tokens, bytes). Part of `Cost`.
+pub struct Lever<U> { pub least: U, pub most: U, pub left: U }
+
+/// `Cost` gains the lever and the residency of one unit of a size, from the stage's own measure:
+fn cost(&self, revisions: &[InputRevision], unit: U) -> Cost;   // scratch for that unit beside what stays resident
+
+/// The authorized capability in `StageContext` names the unit it was admitted for. `run` does at most that much,
+/// and `RunOutcome::Produced` / the dispatched completion carry what it did:
+pub struct Did<U> { pub did: U, pub lasting: Lasting }          // lasting: what survives (below)
+```
+
+The rules this adds, each from a receipt above:
+1. **A special case is a unit size, never a mode.** A whole-reply graph is `unit >= left`; nothing else enters a
+   stage's work. The fork's learn becomes begin, cost at a unit, run a unit.
+2. **A unit is bounded and declared.** `did <= unit`, asserted where the completion lands.
+3. **No refusal for size or pressure.** A unit whose claim cannot be granted is offered smaller, down to `least`,
+   then waits in its class. Only "never here" is typed, decided when the stage is seated: a layout it cannot run on
+   (the walk takes her own stream).
+4. **Lasting is what is counted.** A learn step's work is its optimizer update: provisional per distinct update id
+   until its generation commits, converted once, written off on restore or cancel (Cormac and Codex, 2026-11-27).
+   Units advanced are never a reward, so cutting the same work finer never looks like more.
+5. **Exactness is checked against itself.** Where a result must not depend on the unit (learning), the gate is
+   `unit = left` against `unit = k` on the same backend, at the model's measured floor, plus one cross-backend
+   reference.
+
+**The scheduler is the parts that exist, composed once.** Per capacity (the Core first): `slice` picks which ready
+stage runs from `Need`; `decide` picks its unit inside the envelope (its time within every bounded class's slack);
+the one authority grants the claim, which is the kernel `ResourceDaemon` on `PlacerCore`, never a second ledger
+(Cormac). A claim is held per unit size and resized when the size changes, not asked per run (Cormac: per-step asks
+cost more than they save). The time a unit takes is fitted by the scheduler from completions; the stage supplies
+the quantities that make equal row counts different work (context decoded, replayed rows, trained rows, bytes
+moved), and lane occupancy is priced through the fence (Codex). Shares per class are `decide`'s output from
+feedback, which deletes `slice::weight`.
+
+**The instances, each a `Component` whose long work is a stage run:**
+
+| Concern | Unit | Lasting | Resident between units | Deletes |
+|---|---|---|---|---|
+| A mind decoding | a step: her token, or a batch composed from several minds' slices (one dispatch, claim and fence; completions attributed per mind; one mind's cancel never retires the others, Codex) | her turn's tokens within the bound | her KV and recurrent state | the turn-long hold |
+| Her prefill | rows up to `n_ubatch` | rows cached | her KV | `prefill_rate`'s private fit |
+| The learner | tile rows; the tile boundary is its yield point | an optimizer update (rule 4) | checkpoints, the gradient accumulator, cursor, optimizer (`Yielded.residency_kept`) | the fork's five entries and its "tile did not fit"; the driver's whole-reply path, `measure_defect`, a seat refused for room; `learning/owed` becomes its published state |
+| A link's streamer | one block | a block landed before its use | blocks in flight | its own pacing |
+
+**The order, one stacked PR each, each deleting more than it adds:**
+1. `Lever`, the unit in the capability, and `Did` in `dataflow`; the composed scheduler in `slice` with `decide`
+   setting shares. Validator: `slice::sim` with a bounded and a content class; the content queue stays in check
+   while no bounded stage passes its bound, and a unit that cannot be claimed runs smaller.
+2. The fork's learn collapses to begin / cost at a unit / run a unit. `test-walk-exact` gates rule 5. Metal, CPU,
+   CUDA on the 0.8B; the 35B on Metal (the M5's production form).
+3. The learner stage on the Core, with version 1's control half built for it first (yield at the tile boundary,
+   cancel with committed effects). Gate: a loaded window on the M5 with the 35B, the learner's queue in check, no
+   resident past her bound.
+4. Prefill and decode as stage runs with units. 5. The streamer. 6. The lease types fold into the authority's claim.
+
+**Question for review.** SAGE has three worker parents: the raw `Stage` (a queue thread), `Component` (which stands
+on it), and `dataflow::Stage` with `StageRunner` (recall). Should `dataflow::Stage` become what a `Component` does
+for long work, so a concern implements one parent?

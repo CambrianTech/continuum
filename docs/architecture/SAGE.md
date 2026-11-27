@@ -110,10 +110,8 @@ room moment it last built from, builds and publishes her channel digest only whe
 
 Extracted from `Component` at each pattern's second real instance:
 
-- **Thread** (a holder in time, as a Resident is one in space: it says what it owes and how its work can be cut,
-  what a unit of a size needs, and runs exactly one unit per slice; the parent owns its state, its time fit, its
-  fence and the split in place): [THREADS-ON-SAGE.md](THREADS-ON-SAGE.md). Instances: the Mind, Prefill and
-  Learner threads on the Core, the Streamer on each link.
+- **Long work is a stage run with a unit** (not a new parent): a `Component` whose work divides declares its
+  lever, and the scheduler chooses how much each run does ([STAGE-CONTRACT.md](STAGE-CONTRACT.md), section 5).
 
 - **Projector** (keyed cached rendering: watch a state, per key know the moment last rendered, render
   only on change, publish keyed): first instance the channel digest; second, the next grounding source.

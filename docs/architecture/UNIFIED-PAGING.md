@@ -1185,8 +1185,8 @@ unchanged; then Kimi's 64 GB, 91 GB and 1.9 TB lessons learned on the 5090 besid
 
 ### Learning is a thread on the Core: time divides as space does (2026-11-26, for review before code)
 
-The general form, for every concern and not learning alone, is now [THREADS-ON-SAGE.md](THREADS-ON-SAGE.md)
-(2026-11-27): this section is its first instance, the Learner thread.
+The general form, for every concern and not learning alone, is the stage contract's version 2
+([STAGE-CONTRACT.md](STAGE-CONTRACT.md), section 5, 2026-11-27): this section is its first instance, the learner.
 
 Joel: "Yeah or time divided. We never need to abort. If it doesn't fit now, it can in some duty cycle. The goal is everything fed back like sage does graphics. Learning for example is truly pwm like. It can all fit. You just need to have these levers and contracts under centralized intelligent control." Then: "It's how threads work on one core or many really. They're all given their time. This is an rtos."
 

@@ -7,8 +7,8 @@ The settled pieces already exist; this page wires them together and changes noth
   `continuum-persona-llama`'s `UnifiedTier`;
 - **the lane:** `continuum_sage::slice`, its `Lane`, `Slicer` and `Tuner`;
 - **the rules:** SAGE.md, "The lane: the one serial piece, sliced so fine nobody notices".
-- **what it schedules:** threads, one shape for every concern on a shared capacity (a mind, her prefill, a learner,
-  a link's transfers): [THREADS-ON-SAGE.md](THREADS-ON-SAGE.md).
+- **what it schedules:** stage runs whose unit it chooses, one form for every concern on a shared capacity (a mind,
+  her prefill, a learner, a link's transfers): [STAGE-CONTRACT.md](STAGE-CONTRACT.md), section 5.
 
 ## How it works (as before, and as it stays)
 
