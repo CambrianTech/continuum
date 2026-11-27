@@ -19,6 +19,7 @@ use uuid::Uuid;
 
 use super::durable::{Arrival, Generation, Position};
 use super::in_place::{bucket_stem, decide, start, Decided, Decision, Pending};
+pub(crate) use follow_up::FollowUp;
 use super::seat_run::{Heard, NotTold, SeatRun};
 use super::{BucketKey, TrainingTriggerState};
 use crate::genome::learner::example::learn_messages;
@@ -395,22 +396,26 @@ pub(crate) fn port() -> Option<Arc<dyn LearnPort>> {
 }
 
 impl TrainingTriggerState {
-    /// A Said heard on the node bus, for the trainer's seats on the node engine.
-    pub(crate) async fn heard_from_engine(self: &Arc<Self>, said: Said) {
+    /// A Said heard on the node bus, for the trainer's seats on the node engine: the seat's next act,
+    /// and what it leaves for the trainer's worker.
+    pub(crate) async fn heard_from_engine(self: &Arc<Self>, said: Said) -> Option<FollowUp> {
         match port() {
             Some(port) => self.on_said(&port, said).await,
-            None => continuum_base::probe!(class = "training.on_engine.no_port", said = ?said, "a Said arrived with no node engine installed: nothing is told for it"),
+            None => {
+                continuum_base::probe!(class = "training.on_engine.no_port", said = ?said, "a Said arrived with no node engine installed: nothing is told for it");
+                None
+            }
         }
     }
 
     /// The authority said its board changed: a release may have granted the asks of buckets held for
     /// memory (what is free is the authority's to grant, not the trainer's to read).
-    pub(crate) async fn heard_free(self: &Arc<Self>, _changed: &Free) {
+    pub(crate) async fn heard_free(self: &Arc<Self>, _changed: &Free) -> Vec<FollowUp> {
         if !self.on_engine.waits_for_memory() {
-            return; // nothing held: the engine is not asked what it serves
+            return Vec::new(); // nothing held: the engine is not asked what it serves
         }
-        let (Some(port), Some(served)) = (port(), served_model().await) else { return };
-        self.on_free(&port, &served).await;
+        let Some(served) = served_model().await else { return Vec::new() };
+        self.on_free(&served)
     }
 
     /// Seat every bucket whose base `served_model` serves and that has a lesson waiting, through
@@ -433,15 +438,25 @@ impl TrainingTriggerState {
     /// read again under the gate: a re-key that moved them after the pass listed the bucket leaves
     /// nothing here to seat (Codex on #6226), and the moved rows learn under their new key.
     pub(crate) async fn seat_bucket(self: &Arc<Self>, port: &Arc<dyn LearnPort>, key: &BucketKey) -> Result<(), OnEngineError> {
+        let began = std::time::Instant::now();
         let _gate = self.submit_gates.acquire(key).await;
+        let gate_wait_ms = began.elapsed().as_millis() as u64;
         if self.on_engine.seated(key) || self.on_engine.holds(key, port) {
             return Ok(());
         }
+        let read = std::time::Instant::now();
         let rows = self.rows_of(key).await;
+        let rows_ms = read.elapsed().as_millis() as u64;
+        let rows_read = rows.as_ref().ok().map(Vec::len); // none: the journal could not be read
+        let seating = std::time::Instant::now();
         let seated = match rows {
             Ok(rows) => self.seat_on_engine(port, key, &rows).await,
             Err(why) => Err(why),
         };
+        // each phase timed, so where a pass spends its time is read from one probe, never from gaps
+        // between others (the 5090, card d1e5675c: 442 s between two buckets' decisions, unattributed)
+        continuum_base::probe!(class = "training.on_engine.seat_bucket", persona = %key.persona_id, trait_kind = %key.trait_kind, gate_wait_ms, rows_ms, rows_read = ?rows_read,
+            seat_ms = seating.elapsed().as_millis() as u64, ok = seated.is_ok(), "one bucket's seating, by phase");
         // a reserve only ever serves a seat: a pass that seated nothing (nothing pending, not now, a
         // refusal) gives it back, or it is held from everyone with nothing to spend it on
         if !self.on_engine.seated(key) {
@@ -506,21 +521,23 @@ impl TrainingTriggerState {
     }
 
     /// What the engine said about one of the trainer's seats: its next act, under the bucket's gate.
-    pub(crate) async fn on_said(self: &Arc<Self>, port: &Arc<dyn LearnPort>, said: Said) {
+    /// What the act leaves (a candidate to offer, a bucket to seat again) is returned for the trainer's
+    /// worker, never taken here: it is long, and this runs on the learner's (card d1e5675c).
+    pub(crate) async fn on_said(self: &Arc<Self>, port: &Arc<dyn LearnPort>, said: Said) -> Option<FollowUp> {
         let seat = seat_of(&said);
-        let Some(key) = self.on_engine.key_of(seat) else {
-            return; // a seat of another trainer, or one already let go
-        };
+        let key = self.on_engine.key_of(seat)?; // none: a seat of another trainer, or one already let go
+        let waited = std::time::Instant::now();
         let gate = self.submit_gates.acquire(&key).await;
+        let gate_wait_ms = waited.elapsed().as_millis() as u64;
         let heard = {
             let mut seats = self.on_engine.seats.lock();
-            let Some(held) = seats.get_mut(&seat) else { return };
+            let held = seats.get_mut(&seat)?;
             held.run.hear(port.as_ref(), &said)
         };
         let (steps, loss) = progress_of(&said);
-        continuum_base::probe!(class = "training.on_engine.said", persona = %key.persona_id, seat = %seat.0, said = ?said_kind(&said), why = why_of(&said), steps = ?steps, loss = ?loss, acted = heard.is_some(),
+        continuum_base::probe!(class = "training.on_engine.said", persona = %key.persona_id, seat = %seat.0, said = ?said_kind(&said), why = why_of(&said), steps = ?steps, loss = ?loss, acted = heard.is_some(), gate_wait_ms,
             "the node engine answered one of the trainer's seats");
-        let Some(heard) = heard else { return };
+        let heard = heard?;
         let saved = matches!(heard, Heard::Saved { .. });
         let ended = matches!(heard, Heard::Released | Heard::NotSeated { .. });
         let acted = self.act(port, seat, &key, heard).await;
@@ -531,37 +548,21 @@ impl TrainingTriggerState {
                 continuum_base::probe!(class = "training.on_engine.act_failed", persona = %key.persona_id, reason = %why,
                     "the trainer could not take its next act on a seat; the seat is let go and the journal keeps what is not committed");
                 self.let_go(port, seat);
+                None
             }
             // a generation committed now is offered as a candidate now, not a pass later
-            Ok(()) if saved => {
-                if let Err(why) = self.sweep_bucket(&key, &key.base_model).await {
-                    continuum_base::probe!(class = "training.in_place.candidate_sweep_failed", persona = %key.persona_id, reason = %why,
-                        "a committed generation's candidate could not be swept now; the next pass takes it");
-                }
-            }
+            Ok(()) if saved => Some(FollowUp::Sweep(key)),
             // let go while its hold was being armed: what was freed meanwhile woke nothing for it
-            Ok(()) if ended && self.on_engine.covered(&key) => self.seat_again(port, &key).await,
-            Ok(()) => {}
+            Ok(()) if ended && self.on_engine.covered(&key) => Some(FollowUp::Seat(key)),
+            Ok(()) => None,
         }
     }
 
-    /// The authority's board changed: seat each bucket held for memory whose ask it granted, on `port`
-    /// while it serves `served_model`. Only held buckets are read; with none held this is nothing.
-    pub(crate) async fn on_free(self: &Arc<Self>, port: &Arc<dyn LearnPort>, served_model: &str) {
-        for key in self.on_engine.freed() {
-            if key.base_model == served_model {
-                self.seat_again(port, &key).await;
-            }
-        }
-    }
-
-    /// Seat `key` again now that what it waited for is free; a failure is probed and the next wake
-    /// tries again.
-    async fn seat_again(self: &Arc<Self>, port: &Arc<dyn LearnPort>, key: &BucketKey) {
-        if let Err(why) = self.seat_bucket(port, key).await {
-            continuum_base::probe!(class = "training.on_engine.seat_failed", persona = %key.persona_id, reason = %why,
-                "a bucket whose memory was freed was not seated; its examples stay pending and the next wake tries again");
-        }
+    /// The authority's board changed: each bucket held for memory whose ask it granted, while the
+    /// engine serves `served_model`, is seated again by the trainer. Only held buckets are read; with
+    /// none held this is nothing.
+    pub(crate) fn on_free(&self, served_model: &str) -> Vec<FollowUp> {
+        self.on_engine.freed().into_iter().filter(|key| key.base_model == served_model).map(FollowUp::Seat).collect()
     }
 
     async fn act(self: &Arc<Self>, port: &Arc<dyn LearnPort>, seat: SeatId, key: &BucketKey, heard: Heard) -> Result<(), OnEngineError> {
@@ -811,6 +812,7 @@ impl TrainingTriggerState {
     }
 }
 
+mod follow_up;
 mod give_back;
 mod owed;
 

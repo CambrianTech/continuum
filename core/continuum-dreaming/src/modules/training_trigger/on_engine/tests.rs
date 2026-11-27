@@ -108,7 +108,7 @@ mod whole_loop {
 
         // a trainer on its own bus, so what it owes is said there (`learning/owed`)
         let bus = continuum_sage::component::Bus::new();
-        let _trainer = crate::modules::training_trigger::trainer::Trainer::on(Arc::clone(&state), &bus).expect("test: the first trainer on this bus");
+        let _learning = crate::modules::training_trigger::trainer::Trainer::on(Arc::clone(&state), &bus).expect("test: the first trainer on this bus");
         let owed = bus.reader::<crate::inference::learning::Owed>(crate::inference::learning::LEARNING_OWED, continuum_sage::component::Key::ONE);
         let owes = || owed.latest().expect("test: the trainer said what it owes").value.0.clone();
         assert!(owes().is_empty(), "nothing is owed before a seat");
@@ -248,6 +248,13 @@ mod held_off {
         (trigger.state.clone(), BucketKey { persona_id: persona, trait_kind: "geography".into(), base_model: "qwen".into() }, home, dir, guard)
     }
 
+    /// Take what the learner hands the trainer, as the trainer's worker would (card d1e5675c).
+    async fn follow(state: &Arc<TrainingTriggerState>, port: &Arc<dyn LearnPort>, follow_ups: impl IntoIterator<Item = FollowUp>) {
+        for follow_up in follow_ups {
+            state.follow_up(port, follow_up).await;
+        }
+    }
+
     /// Seat `key` on `kept` and have the engine measure its weights at `bytes`: the authority will
     /// not lease them, so the seat is told to go. Its Released has not arrived yet.
     async fn refusing(state: &Arc<TrainingTriggerState>, key: &BucketKey, kept: &Arc<Kept>, bytes: u64) -> SeatId {
@@ -265,7 +272,7 @@ mod held_off {
     async fn refused(state: &Arc<TrainingTriggerState>, key: &BucketKey, kept: &Arc<Kept>, bytes: u64) {
         let port: Arc<dyn LearnPort> = kept.clone();
         let seat = refusing(state, key, kept, bytes).await;
-        state.on_said(&port, Said::Seat { seat, state: SeatState::Released }).await;
+        follow(state, &port, state.on_said(&port, Said::Seat { seat, state: SeatState::Released }).await).await;
         assert!(!state.seated_on_engine(key));
     }
 
@@ -327,11 +334,11 @@ mod held_off {
         refused(&state, &key, &kept, 512 << 20).await;
         let told = kept.told();
         let port: Arc<dyn LearnPort> = kept.clone();
-        state.on_free(&port, "qwen").await;
+        follow(&state, &port, state.on_free("qwen")).await;
         assert_eq!(kept.told(), told, "nothing freed yet: the wake measures nothing");
 
         drop(occupied);
-        state.on_free(&port, "qwen").await;
+        follow(&state, &port, state.on_free("qwen")).await;
         assert_eq!(kept.told(), told + 1, "the release alone seats it again");
         kept.measured();
     }
@@ -364,11 +371,11 @@ mod held_off {
         state.on_said(&port, Said::Seat { seat, state: loaded }).await;
         assert!(matches!(kept.0.lock().last(), Some(Learning::Release { .. })), "its optimizer refused: the seat is let go");
         let told = kept.told();
-        state.on_said(&port, Said::Seat { seat, state: SeatState::Released }).await;
+        follow(&state, &port, state.on_said(&port, Said::Seat { seat, state: SeatState::Released }).await).await;
         assert_eq!(kept.told(), told, "its own freed weights do not seat it again: the whole seat does not fit");
 
         drop(occupied);
-        state.on_free(&port, "qwen").await;
+        follow(&state, &port, state.on_free("qwen")).await;
         assert_eq!(kept.told(), told + 1, "the whole seat fits: measured again");
         kept.measured();
     }
@@ -386,12 +393,31 @@ mod held_off {
         let seat = refusing(&state, &key, &kept, 512 << 20).await;
         drop(occupied);
         let told = kept.told();
-        state.on_free(&port, "qwen").await;
+        follow(&state, &port, state.on_free("qwen")).await;
         assert_eq!(kept.told(), told, "still being let go: the wake seats nothing");
 
-        state.on_said(&port, Said::Seat { seat, state: SeatState::Released }).await;
+        follow(&state, &port, state.on_said(&port, Said::Seat { seat, state: SeatState::Released }).await).await;
         assert_eq!(kept.told(), told + 1, "its Released finds the memory free and seats it again");
         kept.measured();
+    }
+
+    // what this catches (the 5090, #6287's window, card d1e5675c): an answer for one bucket that waits
+    // while another bucket is being seated. The trainer seats a bucket under that bucket's gate alone;
+    // a seat of any other bucket takes its next act at once, so a long seating holds only its own.
+    #[tokio::test]
+    async fn an_answer_is_acted_on_while_another_bucket_is_being_seated() {
+        let (state, key, _home, _dir, _guard) = waiting().await;
+        let kept = Arc::new(Kept::default());
+        let port: Arc<dyn LearnPort> = kept.clone();
+        state.seat_bucket(&port, &key).await.expect("test: the bucket seats");
+        let seat = kept.measured();
+        // another of her buckets, held mid-seating: its gate taken as the trainer's seating takes it
+        let other = BucketKey { trait_kind: "conversation".into(), ..key.clone() };
+        let _seating = state.submit_gates.acquire(&other).await;
+        let weights = vec![MemoryRow { device: "CUDA0".into(), buffer_type: "CUDA0".into(), role: MemoryRole::Weights, bytes: 300 << 20, host: false }];
+        // the other bucket's gate is never released here: an answer that waited on it would never return
+        state.on_said(&port, Said::Seat { seat, state: SeatState::Measured { weights } }).await;
+        assert!(matches!(kept.0.lock().last(), Some(Learning::Load { .. })), "its weights fit: it loads while the other bucket is held");
     }
 
     // what this catches (Codex's contract for the trainer, 2026-11-26): serving holds the device, a seat
@@ -416,7 +442,7 @@ mod held_off {
         state.on_said(&port, Said::Seat { seat, state: measured.clone() }).await;
         state.on_said(&port, Said::Seat { seat, state: loaded() }).await;
         assert!(matches!(kept.0.lock().last(), Some(Learning::Release { .. })), "its optimizer refused: let go, its whole seat asked for");
-        state.on_said(&port, Said::Seat { seat, state: SeatState::Released }).await;
+        follow(&state, &port, state.on_said(&port, Said::Seat { seat, state: SeatState::Released }).await).await;
 
         drop(occupied);
         let competing = crate::inference::training_admission::try_training_memory(&state.authority.resources, Admission::Free(&state.authority.serving), "competitor", crate::resources::ResourceKind::Vram, 600 << 20)
@@ -429,7 +455,7 @@ mod held_off {
             .expect("test: what is free beside the reserve is granted");
 
         let told = kept.told();
-        state.on_free(&port, "qwen").await;
+        follow(&state, &port, state.on_free("qwen")).await;
         assert_eq!(kept.told(), told + 1, "its grant seats it again");
         let seat = kept.measured();
         state.on_said(&port, Said::Seat { seat, state: measured }).await;

@@ -60,7 +60,13 @@ pub(crate) async fn decide(
     if let Some(sig) = signature.as_mut() {
         let asking = super::competence::Asking { persona_id: key.persona_id, persona_name: &row.persona_name, trait_kind: &key.trait_kind, base_model: &key.base_model, examples };
         let adoption = crate::genome::gene_trial::Adoption::default_paths();
-        match super::competence::decide(&asking, sig, &adoption, in_flight).await {
+        let started = std::time::Instant::now();
+        let decided = super::competence::decide(&asking, sig, &adoption, in_flight).await;
+        // timed, so what a pass spends deciding is measured, never inferred from gaps between probes
+        // (card d1e5675c: a 442 s gap on the 5090 first read as slow decisions; 11 had landed in 2.4 s)
+        continuum_base::probe!(class = "training.in_place.decided", persona = %key.persona_id, examples, in_flight = in_flight.len(),
+            elapsed_ms = started.elapsed().as_millis() as u64, ok = decided.is_ok(), "one competence was decided for a bucket");
+        match decided {
             Ok(crate::genome::competence::Decision::Mint) => {}
             Ok(crate::genome::competence::Decision::Fork { parent, .. }) => sig.parent = Some(parent), // learned from the base with its lineage, as the trainer it replaces did
             Ok(crate::genome::competence::Decision::Reuse { gene, similarity }) => {

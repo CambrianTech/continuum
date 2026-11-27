@@ -61,6 +61,7 @@ use crate::sdk_codegen::DynCommand;
 
 mod durable;
 pub mod trainer;
+pub mod learner;
 /// The engine-train cleaner: a component that releases shadows nothing holds, on its own worker.
 pub mod cleaner;
 pub(crate) mod competence;
@@ -257,7 +258,13 @@ impl TrainingTriggerState {
             return Ok(());
         };
         self.no_learning_engine_noted.store(false, std::sync::atomic::Ordering::Relaxed);
-        if let Err(why) = self.learn_on_engine(&port, &model).await {
+        // timed end to end, so how long a pass holds the trainer's worker is measured (card d1e5675c)
+        let started = std::time::Instant::now();
+        continuum_base::probe!(class = "training.pass.started", model = %model, "a pass on the node engine began");
+        let learned = self.learn_on_engine(&port, &model).await;
+        continuum_base::probe!(class = "training.pass.ended", model = %model, elapsed_ms = started.elapsed().as_millis() as u64, ok = learned.is_ok(),
+            "a pass on the node engine ended");
+        if let Err(why) = learned {
             continuum_base::probe!(class = "training.on_engine.pass_failed", reason = %why,
                 "a pass on the node engine could not read the journal; durable work stays and the next wake tries again");
         }
@@ -305,8 +312,8 @@ impl TrainingTriggerModule {
         }
     }
 
-    /// The trainer component for this trigger, on `bus`: the caller starts it on its owner.
-    pub fn trainer(&self, bus: &continuum_sage::component::Bus) -> Result<trainer::Trainer, continuum_sage::component::Taken> {
+    /// The trainer and learner components for this trigger, on `bus`: the caller starts both on its owner.
+    pub fn trainer(&self, bus: &continuum_sage::component::Bus) -> Result<trainer::LearningParts, continuum_sage::component::Taken> {
         trainer::Trainer::on(Arc::clone(&self.state), bus)
     }
 }

@@ -9,7 +9,7 @@ pub(super) fn register_ai_provider_and_genome_modules(
     resource_daemon: &Arc<crate::resources::ResourceDaemon>,
     airc_interceptor_cell: &Arc<tokio::sync::OnceCell<Arc<airc_lib::Airc>>>,
     model_catalog: &Arc<crate::model_registry::live::ModelCatalog>,
-    trainer_tx: tokio::sync::oneshot::Sender<crate::modules::training_trigger::trainer::Trainer>,
+    trainer_tx: tokio::sync::oneshot::Sender<crate::modules::training_trigger::trainer::LearningParts>,
 ) {
     // AIProviderModule: Unified AI provider for cloud and local inference
     // Provides ai/generate, ai/providers/list, ai/providers/health

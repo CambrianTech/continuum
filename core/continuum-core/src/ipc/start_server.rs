@@ -70,7 +70,7 @@ pub fn start_server(
     pressure_monitor: Arc<crate::system_resources::MemoryPressureMonitor>,
     disk_pressure_monitor: Arc<crate::system_resources::DiskPressureMonitor>,
     boot_mode: crate::runtime::BootMode,
-    trainer_tx: tokio::sync::oneshot::Sender<crate::modules::training_trigger::trainer::Trainer>,
+    trainer_tx: tokio::sync::oneshot::Sender<crate::modules::training_trigger::trainer::LearningParts>,
 ) -> std::io::Result<()> {
     install_kernel_extensions();
     continuum_base::probe!(class = "boot.step", step = "kernel_extensions_installed", "kernel extensions installed; the socket path and the model registry are next");
