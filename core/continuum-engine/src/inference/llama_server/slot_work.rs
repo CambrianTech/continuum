@@ -99,46 +99,72 @@ pub fn slot_advanced(previous: Option<SlotWork>, now: Option<SlotWork>) -> bool 
 /// In-process generations' work, the other adapter of "is her generation advancing" beside the
 /// HTTP slot above (the M5, 2026-11-27: only the HTTP adapter registered an [`InFlightSlot`], so
 /// for every resident served by the in-process engine the act deadline read `None` and ended
-/// turns still prefilling at 1,500 s: Aiko at 07:32:56Z with 89k tokens done). The persona
-/// scheduler counts each engine step it runs for a mind (a prefill chunk or a decoded token) and
-/// clears the count when her turn ends; the deadline extends while the count moves.
-static ENGINE_WORK: std::sync::LazyLock<dashmap::DashMap<uuid::Uuid, u64>> = std::sync::LazyLock::new(dashmap::DashMap::new);
+/// turns still prefilling at 1,500 s: Aiko at 07:32:56Z with 89k tokens done). Keyed by the
+/// generation's own request, so a turn's end clears only its own count and an act's deadline reads
+/// only its own generation, however many turns one mind has in flight (Codex, Cormac on #6289).
+static ENGINE_WORK: std::sync::LazyLock<dashmap::DashMap<GenerationKey, u64>> = std::sync::LazyLock::new(dashmap::DashMap::new);
 
-/// One engine step ran for `persona`'s generation.
-pub(crate) fn engine_step(persona: uuid::Uuid) {
-    *ENGINE_WORK.entry(persona).or_insert(0) += 1;
+/// One generation's identity, from the request id the engine's transitions carry: the act that
+/// dispatched it and the engine that runs it derive the same key from the same id.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct GenerationKey(u64);
+
+impl GenerationKey {
+    pub fn of(request: &str) -> Self {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        request.hash(&mut hasher);
+        Self(hasher.finish())
+    }
 }
 
-/// `persona`'s generation ended: nothing of hers is in flight in the engine.
-pub(crate) fn engine_ended(persona: uuid::Uuid) {
-    ENGINE_WORK.remove(&persona);
+/// The engine admitted `generation`.
+pub(crate) fn engine_begin(generation: GenerationKey) {
+    ENGINE_WORK.insert(generation, 0);
 }
 
-/// `persona`'s in-process generation as the act deadline reads it: its steps so far, `None`
-/// when the engine runs nothing of hers.
-pub fn engine_work(persona: uuid::Uuid) -> Option<SlotWork> {
-    ENGINE_WORK.get(&persona).map(|steps| SlotWork { task: 0, processing: true, work: *steps })
+/// One engine step of `generation` completed.
+pub(crate) fn engine_step(generation: GenerationKey) {
+    if let Some(mut steps) = ENGINE_WORK.get_mut(&generation) {
+        *steps += 1;
+    }
+}
+
+/// `generation` left the engine.
+pub(crate) fn engine_ended(generation: GenerationKey) {
+    ENGINE_WORK.remove(&generation);
+}
+
+/// `generation` as the act deadline reads it: its completed steps, `None` once it left the engine.
+pub fn engine_work(generation: GenerationKey) -> Option<SlotWork> {
+    ENGINE_WORK.get(&generation).map(|steps| SlotWork { task: 0, processing: true, work: *steps })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // what this catches (the M5, 2026-11-27): a resident's in-process turn read as not advancing,
-    // so the act deadline ended it mid-prefill at 1,500 s; her engine steps must read as moving
-    // work, and nothing of hers may read as in flight once her turn ends.
+    // what this catches (the M5, 2026-11-27; Codex, Cormac on #6289): a resident's in-process turn
+    // read as not advancing, so the act deadline ended it mid-prefill at 1,500 s; and two turns of
+    // one mind crossing, one's end or steps read as the other's.
     #[test]
-    fn an_in_process_generation_reads_as_advancing_while_it_steps() {
-        let her = uuid::Uuid::new_v4();
-        assert_eq!(engine_work(her), None, "nothing of hers runs before her turn");
-        engine_step(her);
-        let before = engine_work(her);
-        engine_step(her);
-        engine_step(her);
-        let after = engine_work(her);
+    fn a_generation_reads_as_advancing_while_it_steps_and_only_its_own_end_clears_it() {
+        let act = GenerationKey::of(&uuid::Uuid::new_v4().to_string());
+        let sibling = GenerationKey::of(&uuid::Uuid::new_v4().to_string());
+        assert_eq!(engine_work(act), None, "nothing runs before it is admitted");
+        engine_begin(act);
+        engine_begin(sibling);
+        engine_step(act);
+        let before = engine_work(act);
+        engine_step(act);
+        let after = engine_work(act);
         assert!(slot_advanced(before, after), "steps between two deadline reads are progress");
-        assert!(!slot_advanced(after, after), "no step between two reads is a stall");
-        engine_ended(her);
-        assert_eq!(engine_work(her), None, "her ended turn leaves nothing in flight");
+        // the sibling steps and ends: the act's own reading neither moves nor disappears
+        engine_step(sibling);
+        engine_ended(sibling);
+        assert!(!slot_advanced(after, engine_work(act)), "another generation's steps are not this act's progress");
+        assert!(engine_work(act).is_some(), "another generation's end does not end this one");
+        engine_ended(act);
+        assert_eq!(engine_work(act), None, "its own end leaves nothing in flight");
     }
 }

@@ -108,7 +108,7 @@ pub(super) async fn until_act_stalls_or<F: std::future::Future, C: std::future::
                 // HTTP adapter registered, every resident read `None` and was ended mid-prefill)
                 let now = match &pinned {
                     Some(p) => crate::inference::llama_server::slot_work(&p.root, p.slot, act_probe_client()).await,
-                    None => persona.and_then(crate::inference::llama_server::engine_work),
+                    None => state.generation.and_then(crate::inference::llama_server::engine_work),
                 };
                 // A condemned engine is never extended on: its relaunch cuts this act anyway,
                 // and holding on keeps that relaunch's drain (and the whole node) waiting.

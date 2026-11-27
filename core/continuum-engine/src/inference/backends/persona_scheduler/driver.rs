@@ -373,7 +373,7 @@ pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
         }
         let Some(index) = driver.pick(&turns) else { continue };
         match driver.step(&mut turns[index]) {
-            Ok(Advanced::Continues) => {}
+            Ok(Advanced::Continues) => { if let Some(r) = &turns[index].req.request { crate::inference::llama_server::engine_step(crate::inference::llama_server::GenerationKey::of(r.as_str())); } } // completed progress the act deadline reads
             Ok(Advanced::Done { tokens_generated, end }) => driver.end(turns.remove(index), Ending::Answered { tokens_generated, end }),
             Err(refused) => {
                 log.warn(&format!("turn refused: {refused}"));
@@ -632,6 +632,7 @@ impl Driver<'_, '_> {
             one_off,
             at: transition::At::Admitted { queue_depth: turns.len() + 1, urgency: req.urgency, prompt_tokens: prompt.len(), since_submit_ms: record::whole_ms(req.submitted.elapsed()) },
         };
+        if let Some(r) = &req.request { crate::inference::llama_server::engine_begin(crate::inference::llama_server::GenerationKey::of(r.as_str())); }
         turns.push(Turn { req, id, one_off, prompt: prompt.into(), basis, genes, phase: Phase::Waiting, submitted, ready_since: submitted, spent: Spent::default(), boundaries: Boundaries { view: boundary, learned: None }, answer, cancel });
         self.record.send(record::Fact::Transition(admitted));
     }
@@ -642,7 +643,6 @@ impl Driver<'_, '_> {
         if turn.req.response_tx.is_closed() {
             return Err(TurnError::CallerReleased);
         }
-        crate::inference::llama_server::engine_step(turn.id.0); // the act deadline reads her progress (slot_work.rs)
         let gap = turn.ready_since.elapsed();
         turn.spent.longest_gap = turn.spent.longest_gap.max(gap);
         if turn.spent.first_step.is_none() {
