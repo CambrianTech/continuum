@@ -54,7 +54,7 @@ impl ResourceLeaseLedger {
         }
         let ask = self.ask_id(&req.consumer_id);
         let needs = vec![Need { place: req.kind, amount: Bytes(req.bytes) }];
-        self.core.apply(Act::Prepare { ask, generation: self.generation(), needs });
+        self.core.apply(&Act::Prepare { ask, generation: self.generation(), needs });
         self.core.settle();
         let asked = match self.core.status(ask).cloned() {
             Some(Status::Granted(claim)) => Asked::Granted(self.hold((ask, claim), req, lease_id, now_ms)?),
@@ -64,7 +64,7 @@ impl ResourceLeaseLedger {
                 Asked::Waiting { ask, short }
             }
             Some(Status::Never { capacity, .. }) => {
-                self.core.apply(Act::Forget(ask));
+                self.core.apply(&Act::Forget(ask));
                 return Err(LeaseError::InsufficientCapacity { kind: req.kind, requested: req.bytes, available: capacity.0 });
             }
             _ => {
@@ -100,7 +100,7 @@ impl ResourceLeaseLedger {
             return false;
         }
         let present = self.core.status(ask).is_some();
-        self.core.apply(Act::Unwind(ask));
+        self.core.apply(&Act::Unwind(ask));
         self.tell();
         present
     }

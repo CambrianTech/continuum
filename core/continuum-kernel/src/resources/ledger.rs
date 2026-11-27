@@ -600,7 +600,7 @@ impl ResourceLeaseLedger {
             self.core.drop_ask(ask);
             return Err(LeaseError::MissingLease { lease_id }); // a fresh claim spent whole: only a ledger defect lands here
         }
-        self.core.apply(Act::Commit(ask));
+        self.core.apply(&Act::Commit(ask));
         if !matches!(self.core.status(ask), Some(continuum_sage::place::Status::Committed)) {
             self.core.drop_ask(ask);
             return Err(LeaseError::MissingLease { lease_id }); // as above: the core refused to commit what it just granted
@@ -650,7 +650,7 @@ impl ResourceLeaseLedger {
     pub fn release(&mut self, lease_id: &str) -> Result<ResourceLease, LeaseError> {
         let held = self.leases.remove(lease_id).ok_or_else(|| LeaseError::MissingLease { lease_id: lease_id.to_string() })?;
         if let Some(view) = held.view { view.bytes.store(0, Ordering::Release); }
-        self.core.apply(Act::Release(held.ask));
+        self.core.apply(&Act::Release(held.ask));
         if self.core.status(held.ask).is_some() {
             // still in the table: the core refused the release (its claim already gone); it leaves anyway
             continuum_base::probe!(class = "resources.ledger.release_unknown", lease = %lease_id, "a released lease had no claim left in the core");
@@ -683,7 +683,7 @@ impl ResourceLeaseLedger {
             self.leases.remove(lease_id);
         }
         if freed_bytes > 0 {
-            self.core.apply(Act::Shrunk { ask, place: kind, by: Bytes(freed_bytes) });
+            self.core.apply(&Act::Shrunk { ask, place: kind, by: Bytes(freed_bytes) });
         }
         if remaining == 0 {
             self.core.drop_ask(ask); // shrunk to nothing: its claim is gone, and so is its entry

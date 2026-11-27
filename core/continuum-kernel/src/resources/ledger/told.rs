@@ -28,7 +28,7 @@ impl ResourceLeaseLedger {
         for kind in ResourceKind::ALL {
             let capacity = self.capacity(kind);
             let budget = capacity.saturating_sub(self.external(kind));
-            self.core.apply(Act::Room { place: kind, capacity: Bytes(capacity), budget: Bytes(budget) });
+            self.core.apply(&Act::Room { place: kind, capacity: Bytes(capacity), budget: Bytes(budget) });
         }
         // a floor is met by what its holder is granted or measured to hold, whichever is more: measured
         // residency is already in the reading, so withholding the whole floor on top counted it twice
