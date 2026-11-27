@@ -49,7 +49,9 @@ In Continuum, **experience can change the weights**, and it does so in three way
 | **The Academy** | a college course | teachers and students: a lesson built from a real gap, practice, an exam, and a gene adopted only if it earned it | when a gap is found, or a course is taken |
 | **Synthetic dreaming** | dreams | unbounded recombination of experience while she rests: scenes she never lived, built from ones she did | when she is quiet, and deeply at night |
 
-None of them is a step bolted between conversations. Continual learning rides the serving engine itself; the Academy
+They are three sources of experience for one system, not three trainers. The same automatic genome that decides
+which genes are in use for what she is thinking and doing decides what is learned and into which genes, whether the
+experience came from her work, a course or a dream. None of them is a step bolted between conversations. Continual learning rides the serving engine itself; the Academy
 is an activity she joins like any room; dreaming runs in the gaps the way a game engine bakes in the background.
 
 A candidate adaptation does not become knowledge merely because training completed.
