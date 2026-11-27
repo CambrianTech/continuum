@@ -171,11 +171,15 @@ corpus, a benchmark's runs, a build. The rule is that location is a placement de
 something a component or a caller writes:
 - **Topics are global.** A topic on another node's bus is still a topic: a component subscribes to
   it by name and the frames arrive over airc, with the same frame numbers and provenance.
-- **Commands declare where they may run.** Proposed: `CommandSpec` gains a placement declaration
-  beside `EFFECT`: local only (it touches this machine's files, devices or her private state), any
-  node of mine, or any trusted peer (p2p). A command declared remote-capable is routed by airc
-  headers to the node the placement law chooses, and its outcome comes back as the events and state
-  it causes, exactly as a local one's does; the caller cannot tell and does not need to.
+- **Every command can be remote; how far is an access level.** Proposed: one simple enum, the
+  command's `ACCESS_LEVEL`, ordered by how far a caller may be: this node only, my nodes, trusted
+  peers, anyone. A caller is admitted when its airc trust reaches the command's level, wherever it
+  is, and a command is routed by airc headers to the node that serves it; its outcome comes back as
+  the events and state it causes, exactly as a local one's does. So making a command remote or p2p
+  is changing one value, and nothing else. This replaces today's `AccessLevel` (`AiSafe`,
+  `Privileged`, `Internal`, in `continuum-kernel/src/sdk_codegen/is.rs`), which its own comment
+  says is unenforced and a parallel vocabulary to the spec's access levels and the grid's
+  `TrustLevel`: one enum, enforced at the gate, read by the router.
 - **Stage runs are placed like blocks.** A run declares its cost (STAGE-CONTRACT.md): GPU time,
   memory, the bytes it must read. The placement law weighs running it here against a node with room,
   priced with the transfer of its inputs, the return of its output, queueing and price, and its
