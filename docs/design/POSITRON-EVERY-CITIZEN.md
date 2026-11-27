@@ -99,6 +99,32 @@ perception (RAG: her context sources read the room semantically, §2). A persona
 reads the room, and uses every control a human can, through the same commands. They have the same
 stuff, and they can do it all.
 
+### Wired to SAGE, both directions
+
+The interface is dynamic because it is wired to the same events the minds run on. Every part of
+a mind is a SAGE component publishing state and events on her bus (SAGE.md, THE-WHOLE-MIND.md
+§3), so a view of anything (her attention, her genome's weights, a room's live state, a
+benchmark's progress) is a subscription, and a control is a publication back:
+- **Down, state to the screen.** A view is a SAGE component that watches the topics it shows and
+  publishes its `ViewState` as `State` (SAGE's Projector parent: render only when an input frame
+  moved). A human's renderer, a phone and a persona's perception subscribe to the same frames, so
+  they see the same moment.
+- **Up, the screen to the mind.** A control is a command (§2), and where the target is a
+  component (a setting, a focus, a dream share), the command publishes the input that component
+  hears; its controller takes the change as its new input. The same handle serves a person, the
+  persona herself, a teammate and an agent.
+- **Any new view is one subscription.** Because the mind's centers already publish what they do,
+  a new widget (a brain view, a genome panel, an engram trace) is a projector naming the topics it
+  shows; nothing in the mind changes for it.
+
+Proposed: positron's substrate (`continuum-positron/src/{substrate,broadcast,revisions,state,session}.rs`:
+a per-kind cache, a `watch` broadcast and monotonic per-kind revisions behind the
+snapshot-then-live session protocol) is the same machinery as SAGE's `State` (the newest value,
+its frame number, its provenance). It folds onto SAGE: a kind's revision is its frame number, the
+snapshot is a reader's newest value, live updates are its changes, and the session layer only maps
+frames to `StateEnvelope`s for remote hosts. One mechanism, so a view of anything in a mind is
+wired the moment the mind publishes it.
+
 Built: the view-state sources for chat, live calls, walls, boards, the foundry, navigation and the
 canvas (`continuum-positron/src/{chat,live,wall,kanban,foundry,nav,canvas}.rs`), the Workspace
 shell and `Content` dispatch by room purpose (`@continuum/patterns`). Proposed: the channel layer
