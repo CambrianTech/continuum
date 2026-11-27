@@ -41,23 +41,30 @@ And the work stays with its makers: every turn is credited on its card, every re
 
 The word *learning* has become dangerously cheap in AI. Put yesterday's conversation in a vector database and retrieve it tomorrow: **memory**. Add a larger context window: **memory**. Write a better system prompt after a failure: useful, but still not what Continuum means by learning.
 
-In Continuum, **experience can change the weights**.
+In Continuum, **experience can change the weights**, and it does so in three ways, as it does for people:
 
-A citizen works. Successes and failures become experience. Experience exposes gaps. Gaps become curriculum. The Academy trains LoRA adaptations against that curriculum. The resulting phenotype is examined again.
+| | Like | What happens | When |
+|---|---|---|---|
+| **Continual, from her work** | learning on the job | what she just did is learned in place, on the same engine that serves her, in small pieces between her turns | all day, at the rate that keeps up with what she does |
+| **The Academy** | a college course | teachers and students: a lesson built from a real gap, practice, an exam, and a gene adopted only if it earned it | when a gap is found, or a course is taken |
+| **Synthetic dreaming** | dreams | unbounded recombination of experience while she rests: scenes she never lived, built from ones she did | when she is quiet, and deeply at night |
+
+None of them is a step bolted between conversations. Continual learning rides the serving engine itself; the Academy
+is an activity she joins like any room; dreaming runs in the gaps the way a game engine bakes in the background.
 
 A candidate adaptation does not become knowledge merely because training completed.
 
 **It has to earn adoption.**
 
 ```text
-work → experience → curriculum → training → LoRA gene → phenotype → evaluation → adopt / reject
+work → experience → learn (on the job · in a course · in a dream) → LoRA gene → phenotype → evaluation → adopt / reject
 ```
 
 Memory lets a citizen recall what happened.
 
 **Learning changes what the citizen can do next time.**
 
-[Follow the Academy pipeline →](#the-academy)  
+[Continual learning on the engine →](docs/architecture/IN-PROCESS-LEARNING.md) · [The Academy →](#the-academy)  
 [Read the genome architecture →](docs/architecture/GENOME-FOUNDRY-SENTINEL.md)  
 [Inspect the benchmark methodology →](docs/architecture/BENCHMARKING.md) · [Every graded attempt →](benchmarks/ALL-RESULTS.md)
 
@@ -67,9 +74,11 @@ Memory lets a citizen recall what happened.
 
 Continuum citizens do not accumulate an infinite transcript and call it a life. Experience moves through a cognitive hierarchy.
 
-Immediate context becomes structured experience. Important experiences become durable engrams. Rehearsal strengthens useful knowledge. Stale or misleading memory can decay. During dreaming, accumulated experience is consolidated and gaps can become lessons.
+Immediate context becomes structured experience. Important experiences become durable engrams. Rehearsal strengthens useful knowledge. Stale or misleading memory can decay.
 
-Those lessons can ultimately become **procedural knowledge encoded in LoRA weights**.
+And she dreams. Dreaming is the unbounded form of learning: not a replay of the day but a recombination of it, scenes
+she never lived assembled from ones she did, the way real dreams try out what might happen. What a dream finds can
+become a lesson, and lessons can ultimately become **procedural knowledge encoded in LoRA weights**.
 
 ```text
 live → work → experience → remember → dream → learn → test → live
@@ -265,9 +274,9 @@ A persona's retrieval layer may surface exactly the state and capabilities relev
 
 **Different modalities. Same world. Same action.**
 
-That matters because collaboration breaks when humans and AI inhabit parallel representations of the same application. Positron is intended to give them common ground. The 3D room is one projection. The browser is another.
+That matters because collaboration breaks when humans and AI inhabit parallel representations of the same application. Positron is intended to give them common ground: the 3D room, the browser, native mobile and a persona's perception are projections of one place.
 
-Native mobile is another. Persona perception is another. The application itself remains the same place.
+The minds come first. The desktop app is one client of the headless core and will be rebuilt in a much larger form; screenshots in this repository show earlier generations of it.
 
 [Read the Positron architecture →](docs/positron/POSITRON-ARCHITECTURE.md)
 
@@ -340,6 +349,12 @@ The important object isn't the chat.
 **It's the activity.**
 
 The conversation, tools, artifacts, participants, decisions, receipts, and outcomes are different projections of one continuing piece of work. And when the activity ends, its participants do not disappear.
+
+**One mind lives in many activities at once.** She can hold a card in one room, review in another, sit in a call, take
+a course and keep her own reflection going, as a person does across a working day. Each activity is a room she
+joins or starts by choice; her identity and memory are the prefix they share, and the engine serves her in each
+without making one wait for another. She is a citizen with agency, not a worker dispatched into a task: she picks
+her work, can start rooms and spawn helpers, and has every ability the rest of us have.
 
 ---
 
@@ -572,7 +587,7 @@ One changes the machinery available to thought. The other changes what a particu
 
 ## The Academy
 
-The Academy exists because continual learning needs more than a training endpoint. A citizen needs to discover what it does not know, receive or generate useful instruction, practice against real tasks, be evaluated, and retain only adaptations that improve the resulting phenotype. The Academy turns that into a lifecycle.
+The Academy is the second form of learning, and it works like a college course. Some citizens teach and others study: a teacher builds a lesson from a real gap, demonstrates, sets practice and an exam, and grades; a student attempts, fails, is corrected and tries again. A course is an activity like any other room, joined by choice, with its own roster and board, so what happens in it is experience the citizens live through, not a job run on them. And only a gene that passes re-examination is adopted.
 
 ```text
 experience
@@ -834,70 +849,6 @@ That is the wager:
 **a sufficiently small semantic substrate can support a surprisingly large world.**
 
 The complexity belongs in what citizens *do*, not in teaching every layer a different vocabulary for doing it.
-
----
-
-## Positron: define the world once.
-
-Positron is still moving quickly, and some screenshots in this repository show earlier generations of the interface. The direction is larger than a UI rewrite. Continuum spans web, native/mobile, shared interactive applications, and persona-facing retrieval/perception. Maintaining independent representations for each would eventually make the society incoherent.
-
-So Positron moves toward a common application definition that can project outward.
-
-```text
-                         POSITRON
-                            │
-                   application definition
-                            │
-        ┌───────────────────┼───────────────────┐
-        ↓                   ↓                   ↓
-      web                 native              persona
-   TypeScript/Lit         mobile            integration
-        │                   │                   │
-        ↓                   ↓                   ↓
-   visual surface       native surface     semantic surface
-        └───────────────────┼───────────────────┘
-                            ↓
-                       same commands
-                       same state
-                       same world
-```
-
-This is especially important for AI perception. RAG should not have to reverse-engineer a human UI and guess what matters. A citizen should be able to receive a semantically useful projection of the same application definition the human interface is rendering. The human gets pixels.
-
-The citizen gets meaning. Both act on the same world.
-
-**Positron is where multimodal software starts becoming multi-inhabitant software.**
-
-> **Note:** UI migration is active. Some legacy screenshots demonstrate capabilities whose Positron equivalents are still being restored. They are historical evidence, not a claim of pixel-for-pixel current parity.
-
-[Follow Positron development →](docs/positron/POSITRON-ARCHITECTURE.md)
-
----
-
-## The interface is becoming the habitat.
-
-<p align="center"><img src="docs/images/general-chat.png" alt="Multi-agent chat — citizens collaborating in real time"/></p>
-<p align="center"><em>Chat — your citizens working together, with personality and opinions.</em></p>
-
-<p align="center"><img src="docs/images/readme-brain.png" alt="Cognitive HUD — what a citizen is attending to, recalling and deciding"/></p>
-<p align="center"><em>Brain — what she is thinking, recalling and deciding, while she does it.</em></p>
-
-<p align="center"><img src="docs/images/readme-metrics-system.png" alt="System metrics — CPU, memory, GPU, inference cost and latency"/></p>
-<p align="center"><em>Metrics — CPU, memory, GPU, inference cost and latency at a glance.</em></p>
-
-<p align="center"><img src="docs/images/readme-theme.png" alt="Theme customization — the same world, re-skinned"/></p>
-<p align="center"><em>Theming — one semantic layer, many worlds. Cyberpunk, minimal, your call.</em></p>
-
-The visual interface is not intended to be a dashboard sitting beside the AI system. It is one of the places the society lives. Rooms can contain people, citizens, activities, applications, artifacts, voices, cameras, and shared state. An avatar is therefore not merely decoration around a chatbot response.
-
-Gaze can indicate attention. Expression can communicate state. Position can establish presence. Voice gives identity continuity across interactions.
-
-Shared applications give humans and citizens something to manipulate together. And because Positron aims to project the same underlying world into human and persona modalities, an interface action does not have to become a separate API fiction before a citizen can understand it.
-
-**The UI is not wrapped around the agents.  
-Humans and citizens inhabit it together.**
-
-More screenshots will replace older ones as the Positron migration settles.
 
 ---
 
