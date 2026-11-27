@@ -373,6 +373,13 @@ pub struct DeployTrackerModule {
     serving: tokio::sync::watch::Receiver<crate::inference::llama_server::ServingSnapshot>,
 }
 
+/// Whether origin/canary contains the running build, as one tick could tell.
+enum Containment {
+    Known(bool),
+    /// Not known this tick, and why (no checkout, or git's outcome).
+    Unknown(String),
+}
+
 impl DeployTrackerModule {
     /// The running build's hold, through the one hold owner: a build origin/canary does not contain was
     /// deployed on purpose (the tracker deploys only canary), so it keeps one window from its verified
@@ -382,20 +389,27 @@ impl DeployTrackerModule {
     async fn hold_for_running(&self, tip: Option<&str>, now: u64) {
         use continuum_cli_lifecycle::deploy_hold_file::{change, for_running, Change, Running};
         let Some(tip) = tip.map(str::to_string) else { return }; // no tip this tick: the source outage is said by the tick
-        let contained = tokio::task::spawn_blocking(move || {
-            let dir = checkout_now()?;
-            let dir = dir.to_string_lossy().into_owned();
-            let out = crate::system_resources::bounded_command::probe("git", &["-C", &dir, "merge-base", running_sha(), &tip], GIT_TIMEOUT);
-            let base = out.stdout_if_ok().ok_or_else(|| format!("git merge-base {}", out.outcome()))?;
-            // canary contains the running build exactly when their merge-base is the running build
-            Ok::<bool, String>(base.trim().starts_with(running_sha()))
+        let contained = tokio::task::spawn_blocking(move || match checkout_now() {
+            Err(no_checkout) => Containment::Unknown(no_checkout),
+            Ok(dir) => {
+                let dir = dir.to_string_lossy().into_owned();
+                let out = crate::system_resources::bounded_command::probe("git", &["-C", &dir, "merge-base", running_sha(), &tip], GIT_TIMEOUT);
+                match out.stdout_if_ok() {
+                    // canary contains the running build exactly when their merge-base is the running build
+                    Some(base) => Containment::Known(base.trim().starts_with(running_sha())),
+                    None => Containment::Unknown(out.outcome().to_string()),
+                }
+            }
         })
-        .await
-        .map_err(|e| format!("the hold's canary check did not finish: {e}"));
+        .await;
         let on_canary = match contained {
-            Ok(Ok(on)) => on,
-            Ok(Err(why)) | Err(why) => {
+            Ok(Containment::Known(on)) => on,
+            Ok(Containment::Unknown(why)) => {
                 continuum_base::probe!(class = "deploy.hold.unknown", running = running_sha(), why = %why, "whether canary contains the running build is unknown this tick: the hold is left as it is");
+                return;
+            }
+            Err(stopped) => {
+                continuum_base::probe!(class = "deploy.hold.unknown", running = running_sha(), why = %stopped, "the hold's canary check did not finish: the hold is left as it is");
                 return;
             }
         };

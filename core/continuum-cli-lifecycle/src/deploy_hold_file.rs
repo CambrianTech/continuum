@@ -85,12 +85,16 @@ pub fn migrate(state_dir: &Path) -> io::Result<Migrated> {
     change(state_dir, |current| match current {
         HoldRead::Missing | HoldRead::Held(_) => Change::Keep,
         HoldRead::Unreadable(why) => match older(&path) {
-            Ok(hold) => {
+            Ok(Some(hold)) => {
                 migrated = Migrated::Rewritten(hold.clone());
                 Change::Write(hold)
             }
-            Err(not_older) => {
-                migrated = Migrated::Refused(format!("{why}; {not_older}"));
+            Ok(None) => {
+                migrated = Migrated::Refused(why.clone());
+                Change::Keep
+            }
+            Err(unreadable) => {
+                migrated = Migrated::Refused(format!("{why}; reading it again: {unreadable}"));
                 Change::Keep
             }
         },
@@ -98,17 +102,17 @@ pub fn migrate(state_dir: &Path) -> io::Result<Migrated> {
     Ok(migrated)
 }
 
-fn older(path: &Path) -> Result<Hold, String> {
-    let text = std::fs::read_to_string(path).map_err(|e| format!("unreadable: {e}"))?;
+/// The file as an older hold, rewritten typed; `None` when it is JSON of neither form (a stranger's).
+fn older(path: &Path) -> io::Result<Option<Hold>> {
+    let text = std::fs::read_to_string(path)?;
     if let Ok(old) = serde_json::from_str::<PreOwner>(&text) {
-        return Ok(Hold { reason: old.reason, created_ms: old.created_ms, ttl_ms: old.ttl_ms, owner: HoldOwner::Operator });
+        return Ok(Some(Hold { reason: old.reason, created_ms: old.created_ms, ttl_ms: old.ttl_ms, owner: HoldOwner::Operator }));
     }
     if text.trim_start().starts_with('{') {
-        return Err("JSON that is neither a typed hold nor an older one".into());
+        return Ok(None);
     }
-    let modified = std::fs::metadata(path).and_then(|meta| meta.modified()).map_err(|e| format!("its modified time: {e}"))?;
-    let at = modified.duration_since(std::time::UNIX_EPOCH).map_err(|e| format!("its modified time is before 1970: {e}"))?;
-    Ok(Hold { reason: text.trim().to_string(), created_ms: at.as_millis() as u64, ttl_ms: None, owner: HoldOwner::Operator })
+    let at = std::fs::metadata(path)?.modified()?.duration_since(std::time::UNIX_EPOCH).map_err(io::Error::other)?;
+    Ok(Some(Hold { reason: text.trim().to_string(), created_ms: at.as_millis() as u64, ttl_ms: None, owner: HoldOwner::Operator }))
 }
 
 /// Read, decide with `decide`, and apply, under the hold file's own lock (`state/deploy-hold.lock`, taken
