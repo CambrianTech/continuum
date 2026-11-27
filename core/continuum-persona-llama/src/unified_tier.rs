@@ -158,6 +158,13 @@ pub struct UnifiedTier<'c, 'm> {
 impl<'c, 'm> UnifiedTier<'c, 'm> {
     pub fn new(ctx: &'c mut Context<'m>, home: KvHome) -> Self {
         let batch = Batch::allocated(i32::try_from(ctx.n_batch()).unwrap_or(i32::MAX), 1); // unwrap_or: a batch past i32 is the most llama can address
+        // Her lessons replay the routing she served (IN-PROCESS-LEARNING.md), so the tier records it from
+        // her first step. A context that cannot record has its lessons refused by the engine, by name.
+        match ctx.record_routing() {
+            Ok(capture) => continuum_base::probe!(class = "persona.routing.capture", capture = ?capture, "the tier records the routing its minds serve"),
+            Err(refused) => continuum_base::probe!(class = "persona.routing.capture_refused", refused = %refused,
+                "the tier cannot record its minds' routing; their lessons on this base are refused until it can"),
+        }
         Self { ctx, streams: [None; STREAMS], last_rebind: None, in_flight: None, applied_genes: None, home, batch }
     }
 

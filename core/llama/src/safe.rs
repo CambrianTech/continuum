@@ -28,6 +28,8 @@ pub use persona::{BindRefusal, PersonaBlocks, PersonaCheckpoint, PersonaOwner, P
 mod decode_refusal;
 pub use decode_refusal::DecodeRefusal;
 mod position;
+mod routing;
+pub use routing::{RoutingCapture, RoutingCaptureRefused};
 pub use position::{Pos, PosOutOfRange};
 
 // ─── Tests ───────────────────────────────────────────────────────────────
