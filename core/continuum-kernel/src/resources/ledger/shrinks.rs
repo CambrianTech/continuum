@@ -32,7 +32,7 @@ impl ResourceLeaseLedger {
     pub fn make_elastic(&mut self, lease_id: &str, elastic: Elastic) -> Result<(), LeaseError> {
         let held = self.leases.get(lease_id).ok_or_else(|| LeaseError::MissingLease { lease_id: lease_id.to_owned() })?;
         let (ask, kind) = (held.ask, held.lease.kind);
-        self.core.apply(Act::Elastic { ask, place: kind, floor: Bytes(elastic.floor), priority: elastic.priority });
+        self.core.apply(&Act::Elastic { ask, place: kind, floor: Bytes(elastic.floor), priority: elastic.priority });
         self.tell();
         Ok(())
     }
@@ -59,7 +59,7 @@ impl ResourceLeaseLedger {
     /// Give waiting `ask` a priority (higher outranks): from now on its shortfall may ask elastic leases of a
     /// lower priority to give back.
     pub fn prioritize(&mut self, ask: continuum_sage::place::AskId, priority: u8) {
-        self.core.apply(Act::Prioritize { ask, priority });
+        self.core.apply(&Act::Prioritize { ask, priority });
         self.tell();
     }
 }
