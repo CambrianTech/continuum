@@ -12,7 +12,7 @@
 //! nothing that could act — a human ran `airc status`, which happened to start one. Joel:
 //! "has to be reliable out of the box, recover itself, and not just for our machine."
 //!
-//! RTOS shape per CONCURRENCY-STYLE-GUIDE: own task, `tokio::time::interval`, the probe
+//! RTOS shape per SAGE.md: own task, `tokio::time::interval`, the probe
 //! and the spawn on `spawn_blocking` under a bound, a pure decision function, one probe
 //! class per outcome. No lock, nothing on a hot path.
 //!

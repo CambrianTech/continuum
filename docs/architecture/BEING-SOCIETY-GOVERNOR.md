@@ -5,7 +5,7 @@
 > [AUTONOMOUS-PROJECT-LOOP](../cognition/AUTONOMOUS-PROJECT-LOOP.md)) — fairly,
 > resource- and energy- and preference-aware. Rides on the existing `governor/`
 > (DVFS policy + pressure bridge), persona `energy`/`mood` (`persona/types.rs:192`),
-> the PressureBroker, RTOS time-slicing ([CONCURRENCY-STYLE-GUIDE], [CONTINUUM-ENGINE]),
+> the PressureBroker, RTOS time-slicing ([SAGE.md], [CONTINUUM-ENGINE]),
 > and inference leases ([THE-LANE-ON-SAGE]). DVFS for a *society*.
 
 ## The governing stance: the system serves the beings

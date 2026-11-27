@@ -200,7 +200,7 @@ pub fn upsert_in(path: &Path, key: &str, value: &str) -> Result<(), String> {
 // ─── Typed policy getters ────────────────────────────────────────────────────
 //
 // These are the SINGLE entry point for operator-tunable resource headroom. The
-// forbidden pattern (CONCURRENCY-STYLE-GUIDE forbidden-move #2) is SCATTERED
+// forbidden pattern (SAGE.md#rules-every-part-keeps: policy is code, never an env var) is SCATTERED
 // per-module env/config reads — `config_env::read("KEY").unwrap_or(default)`
 // re-derived at each of 161 call sites. The fix is ONE file everyone goes through:
 // the key name, default, clamp, and cache all live HERE; consumers just call

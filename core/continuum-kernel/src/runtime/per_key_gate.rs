@@ -90,7 +90,7 @@
 //!
 //! Callers hold the lease across `.await`. `std::sync::Mutex` is
 //! NOT await-safe (its guard isn't `Send`); `tokio::sync::Mutex` is.
-//! Per `docs/architecture/CONCURRENCY-STYLE-GUIDE.md`: hold gate
+//! Per `docs/architecture/SAGE.md#rules-every-part-keeps`: hold gate
 //! across `.await`, do not hold `DashMap::RefMut` across `.await`.
 
 use std::hash::Hash;

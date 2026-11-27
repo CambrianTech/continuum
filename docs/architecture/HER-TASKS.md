@@ -6,7 +6,7 @@ Status: design, 2026-10-29. Owner: Fable (kernel task registry, act path, wake),
 acceptance numbers on replay (69 wrong-handle or finished-handle polls; six long runs that never
 reported back). Read with
 [HER-HANDS.md](HER-HANDS.md), [EVENT-MIND.md](EVENT-MIND.md) and
-[CONCURRENCY-STYLE-GUIDE.md](CONCURRENCY-STYLE-GUIDE.md).
+[SAGE.md](SAGE.md).
 
 ## The capability, in one sentence
 

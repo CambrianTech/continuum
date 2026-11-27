@@ -227,7 +227,7 @@ arch must be the same, and that takes rigor:
   sleeps. That is the CBAR / RTOS shape (own task + interval + watch/queue +
   spawn_blocking) — now applied to cognition.
 - **Backpressure keeps it honest.** Bounded queues, drop-oldest, triage,
-  do-less-under-pressure, no-locks-across-await (CONCURRENCY-STYLE-GUIDE). Under
+  do-less-under-pressure, no-locks-across-await (SAGE.md#rules-every-part-keeps). Under
   load the brain sheds and lengthens its cadence gracefully, never locks up. An
   expensive background faculty runs on a slow cadence off the hot path — it cannot
   drag the service tick.

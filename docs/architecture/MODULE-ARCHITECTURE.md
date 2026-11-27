@@ -449,7 +449,7 @@ The same publish/subscribe mechanism connects parts within a mind, participants 
 and runtime services. Each part owns its subscriptions through its lifecycle and wakes when relevant
 input arrives. Small typed values travel in the event. Larger payloads stay with their owners and
 travel by handle. An idle subscriber can sleep without scanning history or polling its peers.
-This applies the existing CBAR pattern and the persona's [ordered event stream](MIND-DATAFLOW-OVERHAUL.md).
+This applies the existing CBAR pattern and the persona's [ordered event stream](SAGE.md).
 For each participating object, document which typed events wake it, which part of its state each
 event changes, what it publishes, and who owns pending deliveries during suspension. The object
 applies a new event once to the state it maintains. Subscribers receive small values or

@@ -216,7 +216,7 @@ impl DreamConsolidationRegion {
         let idle_wait = self.idle_wait.clone();
         tokio::spawn(async move {
             let _permit = permit;
-            // A dream pass runs while she works (row 6 of MIND-DATAFLOW-OVERHAUL, card a31e72a4):
+            // A dream pass runs while she works (card a31e72a4):
             // it waited for HER sustained idle and her next act cancelled it, so a resident
             // who is always engaged never consolidated (the M5, 2026-10-31: dreams 0 in 12 h;
             // 2026-09-14: awaiting_boredom x26, paged_out x6, zero consolidations). Its

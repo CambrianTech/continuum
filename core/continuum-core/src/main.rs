@@ -459,8 +459,8 @@ async fn async_main(home: std::path::PathBuf) -> Result<(), Box<dyn std::error::
 
     // Start disk pressure monitor — same RTOS shape as memory (own task,
     // watch channel, atomic gate, 100 ms reporter timeout + quarantine).
-    // Polls every 30 s. The disk-guard slop that triggered the
-    // CONCURRENCY-STYLE-GUIDE was a synchronous main-thread probe with
+    // Polls every 30 s. The disk-guard slop that prompted the old
+    // concurrency guide was a synchronous main-thread probe with
     // env-tunable thresholds; this is the right shape (task #88).
     // Future PR: register as a ResourcePool with PressureBroker so disk
     // pressure participates in cross-resource tier-relief.
@@ -524,7 +524,7 @@ async fn async_main(home: std::path::PathBuf) -> Result<(), Box<dyn std::error::
     // Start IPC server in background thread FIRST (creates socket immediately).
     // The thread publishes `ipc::subscribe_ready()`'s watch once the Unix
     // socket is bound + chmod'd, so main advances on a real signal instead
-    // of a 100 ms guess. Per docs/architecture/CONCURRENCY-STYLE-GUIDE.md:
+    // of a 100 ms guess. Per docs/architecture/SAGE.md#rules-every-part-keeps:
     // signals replace races. Same primitive Bevy renderer + every future
     // ServiceModule's `ready_edge()` uses — one mechanism across the board.
     let ipc_livekit_manager = livekit_manager.clone();
@@ -645,7 +645,7 @@ async fn async_main(home: std::path::PathBuf) -> Result<(), Box<dyn std::error::
     // Delayed reporter registration: subscribe to the Bevy renderer's
     // ready edge and register the memory reporter on the first false→true
     // transition. Replaces the prior 15-attempt 30s sleep-poll loop with
-    // a real signal — per docs/architecture/CONCURRENCY-STYLE-GUIDE.md.
+    // a real signal — per docs/architecture/SAGE.md#rules-every-part-keeps.
     //
     // If Bevy never starts (headless boot with no avatar consumers), the
     // task simply parks on `rx.changed()` for the process lifetime — zero

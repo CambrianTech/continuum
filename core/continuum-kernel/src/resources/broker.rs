@@ -13,8 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 /// AdaptiveThroughputPlanner shape actual concurrency under pressure.
 ///
 /// Substrate operational policy is code, never a runtime tunable. See
-/// `docs/architecture/CONCURRENCY-STYLE-GUIDE.md` § "What lives in code,
-/// not env vars". A follow-up slice derives these from
+/// `docs/architecture/SAGE.md`. A follow-up slice derives these from
 /// `GpuMemoryManager::detect()` so a 5090 gets more slots than an Intel
 /// iGPU — but that is hardware-tier policy in code, not env.
 const GPU_SLOTS_FLOOR: usize = 4;

@@ -29,7 +29,7 @@
 //! This holds no call state and tracks no rosters — the live-call lifecycle already
 //! owns "who is in the call" ([[all-rooms-are-airc-rooms-no-mirrors]]). The caller
 //! passes the viewer roster in; this is a stateless projection, not a parallel
-//! coordinator (CONCURRENCY-STYLE-GUIDE forbidden move #6). It must be invoked from
+//! coordinator (SAGE.md#rules-every-part-keeps: no parallel managers). It must be invoked from
 //! within a tokio runtime — `observe` spawns the warm — which the live drain task is.
 
 use std::sync::{Arc, OnceLock};
@@ -109,7 +109,7 @@ pub struct IngestFrame {
 /// The process-global send endpoint of the ingest channel — installed ONCE by the
 /// live module when it spawns the drain. Same `OnceLock` shape as
 /// [`perception_registry`](super::perception_registry) / `shared_compute::global`:
-/// it is a channel handle, not a manager (CONCURRENCY-STYLE-GUIDE: the mpsc "here is
+/// it is a channel handle, not a manager (SAGE.md#rules-every-part-keeps: the mpsc "here is
 /// work" primitive). `None` until the drain is up — a frame before then is simply not
 /// perceived, and the human display plane (the LiveKit track) is unaffected regardless.
 static INGEST_SINK: OnceLock<UnboundedSender<IngestFrame>> = OnceLock::new();

@@ -7,7 +7,7 @@
 > ChannelDigest machinery (`cognition/channel_digest.rs` + `channel_digest_region.rs`,
 > a servicer that is BUILT AND RUNNING). Precedence on the Rust mechanics:
 > [CONTINUUM-ENGINE](../architecture/CONTINUUM-ENGINE.md),
-> [CONCURRENCY-STYLE-GUIDE](../architecture/CONCURRENCY-STYLE-GUIDE.md), and
+> [SAGE.md](../architecture/SAGE.md), and
 > **[BRAIN-REGIONS-SUBSTRATE](../architecture/BRAIN-REGIONS-SUBSTRATE.md)** — the last
 > defines the exact primitives this pattern is built from. This doc defines *what the
 > cache is and who writes it*; those define *how a concurrent concern is built*.

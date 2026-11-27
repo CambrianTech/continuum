@@ -71,5 +71,5 @@ suspend-with-restore, never a kill.
 
 - Not a global singleton — the flag is an explicit `Arc` threaded from the registry.
 - Not `despawn` — the instance stays alive; only the self-tick suspends.
-- No locks across await in the tick (CONCURRENCY-STYLE-GUIDE) — a single `AtomicBool::load`.
+- No locks across await in the tick (SAGE.md#rules-every-part-keeps) — a single `AtomicBool::load`.
 - The lease MUST restore on drop/panic — a frozen fleet is worse than a contended eval.

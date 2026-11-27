@@ -202,7 +202,7 @@ impl EphemeralServingLane {
     ) -> Result<Self, LlamaServerError> {
         // Held across the spawn await, so a second ephemeral spawn cannot interleave and
         // land on `first_free_port + 1`. A tokio mutex because it spans `.await` — never
-        // a std lock across await (docs/architecture/CONCURRENCY-STYLE-GUIDE.md).
+        // a std lock across await (docs/architecture/SAGE.md#rules-every-part-keeps).
         let permit = EPHEMERAL_SPAWN_GATE.lock().await;
         let resident = reconcile_ephemeral_census();
         if let Some(reason) = ephemeral_admission_refusal(target, &resident) {

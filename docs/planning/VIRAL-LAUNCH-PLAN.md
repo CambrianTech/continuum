@@ -16,7 +16,7 @@ section below is one factor, with its gate to green.
 
 ## Creative direction — show the magic, then let people verify it
 
-**2026-09-07, Joel:** the reference is the Video Painter approach—an immediately compelling visual experience made possible by engineering that works around the industry's assumed limits. The [Video Painter concurrency lineage](../architecture/CONCURRENCY-STYLE-GUIDE.md#the-video-painter-lineage--proven-prior-art-for-every-rule-here) connects that experience to this runtime's performance discipline.
+**2026-09-07, Joel:** the reference is the Video Painter approach—an immediately compelling visual experience made possible by engineering that works around the industry's assumed limits. The [Video Painter concurrency lineage](../architecture/SAGE.md) connects that experience to this runtime's performance discipline.
 
 The README's opening sequence is **promise → visual → evidence → run it**. Development status belongs in an accessible implementation section, alongside detailed methodology, rather than between the reader and the experience. Keep current learning explicit: activity-room work feeds experience and dreams today. Distinguish that from HF genomic-sharing automation still being connected.
 

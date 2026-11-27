@@ -18,7 +18,7 @@
 //! 5. registers per-kind [`LeasePoolView`]s with the
 //!    [`PressureBroker`](crate::paging::PressureBroker) so cross-resource relief
 //!    reaches the lease pool through the ONE existing orchestrator (never a
-//!    parallel manager — CONCURRENCY-STYLE-GUIDE forbidden move #6).
+//!    parallel manager — SAGE.md#rules-every-part-keeps: no parallel managers).
 //!
 //! # Obsessively non-blocking (the design center)
 //!

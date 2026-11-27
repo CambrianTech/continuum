@@ -198,7 +198,7 @@ impl Faculty for RagSourceFaculty {
         };
         let ctx = RagContext::for_persona_in_room(self.persona_id, now, room);
         // Every item the source holds, at its levels: her view's one allocation decides
-        // what of it she sees (FLOW-IMPLEMENTATION-PLAN §2d). Each faculty was handed a
+        // what of it she sees (THE-LANE-ON-SAGE.md). Each faculty was handed a
         // quarter of the window to cut to, seven of them about 7/4 of it.
         let delivery = self.source.deliver(&ctx).await;
 

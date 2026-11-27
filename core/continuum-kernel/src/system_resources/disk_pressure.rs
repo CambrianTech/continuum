@@ -9,7 +9,7 @@
 //!
 //! Same shape because the substrate's RTOS doctrine is one shape per
 //! concurrent concern — see
-//! [`docs/architecture/CONCURRENCY-STYLE-GUIDE.md`](../../../../../docs/architecture/CONCURRENCY-STYLE-GUIDE.md).
+//! [`docs/architecture/SAGE.md`](../../../../../docs/architecture/SAGE.md).
 //!
 //! ## Why disk pressure as a substrate concern
 //!
@@ -17,7 +17,7 @@
 //! caches, fixture archives, probe JSONL spool, persona home stores,
 //! airc worktrees. None of these are individually unbounded; together,
 //! on an Intel MacBook Pro with no swap room, they crash the machine.
-//! The disk-guard slop that triggered the CONCURRENCY-STYLE-GUIDE was
+//! The disk-guard slop that prompted the old concurrency guide was
 //! a synchronous, env-tuned, main-thread `runtime/disk_guard.rs`. This
 //! is the right shape: own task, watch channel, broker-arbitrated.
 //!
@@ -52,7 +52,7 @@
 //!
 //! ## Cadence
 //!
-//! 30 s — disk fills slowly. The CONCURRENCY-STYLE-GUIDE's cadence
+//! 30 s — disk fills slowly. the old concurrency guide's cadence
 //! ladder says "lean slower when in doubt; the cost of a missed-by-a-
 //! second spike is one eviction cycle." Memory polls every 2 s
 //! because RSS can spike in milliseconds; disk doesn't.
@@ -355,7 +355,7 @@ pub struct DiskPressureMonitor {
 
 /// Poll interval — every 30 s. Disk pressure changes slowly; faster
 /// polls burn CPU on a value that rarely changes. Per the
-/// CONCURRENCY-STYLE-GUIDE cadence ladder: lean slower in doubt.
+/// Cadence, from the old concurrency guide's ladder: lean slower in doubt.
 pub(crate) const POLL_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Quarantine threshold — matches the broker / memory monitor.

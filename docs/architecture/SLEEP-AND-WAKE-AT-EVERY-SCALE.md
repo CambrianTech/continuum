@@ -28,7 +28,7 @@ eviction owner and the last copy is never evicted, a concern the brain never had
 Companions: [ONE-RESIDENT-MODEL-PATIENT-DOCTOR-DREAM](ONE-RESIDENT-MODEL-PATIENT-DOCTOR-DREAM.md)
 (the DREAM stage, §8-9), [CONCURRENT-MIND-AND-GOVERNOR](CONCURRENT-MIND-AND-GOVERNOR.md),
 [BEING-SOCIETY-GOVERNOR](BEING-SOCIETY-GOVERNOR.md), [SHARED-RESOURCES](SHARED-RESOURCES.md),
-[THE-LANE-ON-SAGE](THE-LANE-ON-SAGE.md), [CONCURRENCY-STYLE-GUIDE](CONCURRENCY-STYLE-GUIDE.md).
+[THE-LANE-ON-SAGE](THE-LANE-ON-SAGE.md), [SAGE.md](SAGE.md).
 This document owns one question those leave open: **when does a mind dream, how deeply, and how
 fast does she wake.**
 

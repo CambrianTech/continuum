@@ -9,7 +9,7 @@
 //! `chat:posted` in a room with an active voice session, from a persona this
 //! node hosts, is spoken through ONE path — [`VoiceState::speak_in_room`].
 //!
-//! Shape (CONCURRENCY-STYLE-GUIDE): own task on the bus receiver, sequential
+//! Shape (SAGE.md): own task on the bus receiver, sequential
 //! speech (voices never overlap — one utterance at a time across the node),
 //! lag on the broadcast channel is skipped and counted, never a crash.
 

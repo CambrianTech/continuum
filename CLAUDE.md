@@ -342,7 +342,7 @@ A mind's context has ONE codec, `continuum-context`, built like a video codec ov
 - keyed items that only append within an epoch;
 - levels of detail generated from each item's shape (`levels::summarize`: Code, Output, List);
 - admission instead of turnovers;
-- collapse only at a start, oldest first, never her newest (unless her newest alone exceeds what her window leaves it: then it arrives at its summary with a handle she can expand, never dropped; CONTINUUM-ENGINE section 5, codec invariant 2);
+- collapse only at a start, oldest first, never her newest (unless her newest alone exceeds what her window leaves it: then it arrives at its summary with a handle she can expand, never dropped; CONTINUUM-ENGINE §6, codec invariant 2);
 - a restart order measured per mind (`motion`).
 
 **A context is a FIFO** (Joel, 10-27): the engine recomputes everything after the first changed token, so the head never changes, the middle only appends, only the tail may change, and nothing already sent is ever moved. The health number is re-processed tokens per act against appended tokens (healthy ~1:1; Aris was 12:1 on 10-27). The doc's "governing law" section has the rules and every regression that broke them.
@@ -353,12 +353,12 @@ A new layer implements `Source`, builds its items with `levels`, and gets cachin
 
 ## 🛑 STOP — If You Are About To Touch Storage, Retrieval, Vectors, Serving, Or Any Data Path
 
-**Required first read:** [docs/architecture/CONTINUUM-ENGINE.md](docs/architecture/CONTINUUM-ENGINE.md), section "Non-negotiable: every optimization, exhausted". Joel, 2026-11-13: the
+**Required first read:** [docs/architecture/CONTINUUM-ENGINE.md](docs/architecture/CONTINUUM-ENGINE.md), §1 "The picture" and §2 "The efficiency law". Joel, 2026-11-13: the
 substrate is a game engine's renderer (study Unreal: RDG, streaming pools, Nanite LOD, GPU-driven culling, instancing,
 temporal reuse). Bytes stay bytes (BLOB + typed descriptor), no per-element CPU loops, translation only on the GPU, never
 parse until the last step, no SQL outside the ORM and no Python anywhere, squared distances and unit vectors (no roots or
 per-pair norms), no CPU/GPU transfers that are not needed, and its exhaustive checklist walked line by line. Every change is
-iterated on its simulator first (section 7.0: the dyno, serving-replay, the context replay; scenarios recorded from our own
+iterated on its simulator first (§11: the dyno, serving-replay, the context replay; scenarios recorded from our own
 faults), then posts act time, stage time, memory and quality before and after on a live node.
 
 ## 🛑 STOP — If You Are About To Add a Worker, Task, Region, Tick Or Timer
@@ -394,13 +394,12 @@ Memory moving between tiers (VRAM, pinned, unified, flash, cold) goes through th
 
 ## 🛑 STOP — If You Are About To Add a Monitor, Broker, Pool, Region, Or Any Concurrent Concern
 
-**Required first read** before adding ANY new tokio task, watch channel, pressure source, resource pool, brain region, or background tick — or before touching any file under `core/continuum-core/src/{runtime,paging,system_resources}/`:
+**Required first read** before adding ANY new task, channel, pressure source, resource pool, lease, region or background tick, or touching `continuum-kernel/src/{runtime,paging,resources,system_resources}/`:
 
-→ **[docs/architecture/CONCURRENCY-STYLE-GUIDE.md](docs/architecture/CONCURRENCY-STYLE-GUIDE.md)**
+→ **[docs/architecture/SAGE.md](docs/architecture/SAGE.md)**, "The rule" and "Rules every part keeps": a concern is a `Component` (never a hand-spawned task, an interval loop, a `BrainRegion` or a `tick_interval`); probes, not log lines; policy is code or measurement, never an env var; no lock across an await; every mover has its mirror; no parallel managers.
+→ **[docs/architecture/SHARED-RESOURCES.md](docs/architecture/SHARED-RESOURCES.md)** for anything that holds or shares memory, slots, ports or devices: a claim on the one authority, a holder that is a `Resident`, never a new lease type, pool or pressure broker. It lists the ~25 lease types that already exist and where each folds.
 
-It documents the canonical RTOS shape (own task + `tokio::time::interval` + `watch::Sender<Snapshot>` + atomic gate + `spawn_blocking` + 100ms timeout + quarantine), the existing primitives you MUST reuse (`ServiceModule`, `BrainRegion`, `PagedResourcePool`, `PressureBroker`, `MemoryPressureMonitor`), the cadence ladder, and the forbidden-moves list the model keeps reflex-coding under amnesia (synchronous main-thread probes, env-var-tuned substrate thresholds, sleep-loops instead of `interval`, `tracing::info!(target=...)` masquerading as a probe, hot-path pressure interpretation, parallel managers/coordinators, locks across await, `unwrap()` on substrate startup).
-
-**The cost of skipping this doc is reinventing `MemoryPressureMonitor` as a `runtime/disk_guard.rs` with env-tunable thresholds running synchronously on main — which is exactly what happened the day this guide got written.** Don't.
+**The cost of skipping this:** a `runtime/disk_guard.rs` with env-tunable thresholds running synchronously on main, reinventing `MemoryPressureMonitor`; and on 2026-11-26 six counters each holding a private picture of one memory, so every learning refusal needed a trace to explain.
 
 ## 🛑 STOP — If You Are About To Add a Test, Fixture, Recorder, Replay, Or Test-Adapter
 
@@ -466,7 +465,7 @@ hole.** Don't.
 
 If you're new to the substrate, or you're picking up runtime/cognition work, read these in order before anything else in this file. They are the precedence-winning truth on substrate-shaped questions:
 
-1. **[docs/architecture/CONTINUUM-ENGINE.md](docs/architecture/CONTINUUM-ENGINE.md)** — the one engine design and its plan: the non-negotiable efficiency principles (section 2), the serving engine (KV paging, admission, live reconfigure; section 4), a mind's context codec and `EngineConfig` (section 5), and the plan of every optimization workstream (section 8). Its section 3 is the RTOS-style runtime contract every Rust module inherits. Concurrency, scheduling, memory + device pressure, telemetry, artifact handles, lifecycle. The "for free triplet" (base trait + derive macro + scaffold generator) is here, with the engram-analyzer worked example.
+1. **[docs/architecture/CONTINUUM-ENGINE.md](docs/architecture/CONTINUUM-ENGINE.md)** — the engine: the picture the runtime is built to (each RAGE and CBAR system mapped to the chapter that owns it here, §1), the efficiency law and its checklist (§2), the engine's objects and step loop (§4-5), a mind's context codec (§6), admission and residency (§7), `EngineConfig` (§8), the performance model (§10) and simulation (§11). The substrate every module inherits is [SAGE.md](docs/architecture/SAGE.md) and [STAGE-CONTRACT.md](docs/architecture/STAGE-CONTRACT.md); placement is [SHARED-RESOURCES.md](docs/architecture/SHARED-RESOURCES.md); memory tiers are [UNIFIED-PAGING.md](docs/architecture/UNIFIED-PAGING.md).
 2. **[docs/architecture/GENOME-FOUNDRY-SENTINEL.md](docs/architecture/GENOME-FOUNDRY-SENTINEL.md)** — the artifact-sharing economy on top of the substrate. Tiered genome cache (L1–L5), foundry-as-JIT, sentinel-AI-as-PGO, demand-aligned recall, composer + speculator, `SubstrateGovernor` (DVFS — same Rust code on MacBook Air and RTX 5090, different governor policy).
    - **[docs/architecture/ONE-RESIDENT-MODEL-PATIENT-DOCTOR-DREAM.md](docs/architecture/ONE-RESIDENT-MODEL-PATIENT-DOCTOR-DREAM.md)** — the learning loop on ONE resident base: patient (persona), doctor (teacher) and dream (training) on the same loaded weights, drifting between serving, coursework and dreaming between two decode steps. Measured "today" table (every second base copy and engine relaunch), the fork's engine stages (AdapterRegistry, role slot affinity, LoRA-only ggml-opt, DREAM stage, shadow/stable swap), the core's state machine, build order with gates on the M5 and the 5090, and the two-way upstream watch. Read before touching genome training, teach, eval lanes, or the serving daemon's adapter set.
 3. **[docs/architecture/AI-COMMAND-NAMESPACE.md](docs/architecture/AI-COMMAND-NAMESPACE.md)** — every AI/ML thing (LLMs, vision, audio, classifiers, planning algs, game AI, low-level kernels) under one `ai/*` tree, one adapter pattern, one handle abstraction. Commands stay dumb; daemons get clever.

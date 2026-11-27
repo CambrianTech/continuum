@@ -8,7 +8,7 @@
 //!
 //! This module is the additive answer. [`ModelCatalog`] owns a
 //! `watch::Sender<Arc<CatalogSnapshot>>` — the canonical concurrent shape from
-//! `docs/architecture/CONCURRENCY-STYLE-GUIDE.md`. It is SEEDED from the
+//! `docs/architecture/SAGE.md`. It is SEEDED from the
 //! immutable registry at boot, then MUTATED at runtime by the rich `models/*`
 //! command surface (discover / pull / try / register). Readers hold a
 //! `watch::Receiver` and `borrow()` an `Arc<CatalogSnapshot>` — zero-copy,

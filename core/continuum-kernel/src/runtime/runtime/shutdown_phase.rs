@@ -151,7 +151,7 @@ impl Runtime {
     /// This is the substrate's canonical "wait for X to come up" primitive.
     /// Replaces ad-hoc `oneshot::Sender` threaded through start_server-style
     /// APIs, polling loops with sleeps, and bespoke atomic flags. Per
-    /// [[docs/architecture/CONCURRENCY-STYLE-GUIDE.md]]: signals replace
+    /// [[docs/architecture/SAGE.md#rules-every-part-keeps]]: signals replace
     /// races.
     pub async fn wait_for_ready(&self, module_name: &str) -> Result<(), String> {
         let module = self
@@ -191,7 +191,7 @@ impl Runtime {
     /// Each module with a tick_interval gets its own tokio task that calls
     /// `tick()` at the specified cadence.
     ///
-    /// RTOS guarantees per [[docs/architecture/CONCURRENCY-STYLE-GUIDE.md]]:
+    /// RTOS guarantees per [[docs/architecture/SAGE.md]]:
     /// - Uses `tokio::time::interval` (not `sleep` in a loop) so cadence
     ///   does not drift under load.
     /// - Each tick body is `catch_unwind`'d so a panic in one tick does

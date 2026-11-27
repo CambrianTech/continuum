@@ -85,4 +85,4 @@ L1→L2→L3 = single-machine automatic loop (core of #35/#36). L4→L5 = shared
 
 ## Discipline
 
-Pure-Rust + `continuum` validation (never npm/jtag); `export CARGO_TARGET_DIR=…` then `df -h /` after each cargo cycle; prefer `cargo check`; fail-loud at every gate (negative lift never silently adopts); one `#[cfg(test)] mod tests` per file with `// what this catches:`; sentinels follow CONCURRENCY-STYLE-GUIDE; feature-branch commit per validated layer; merge to main only on Joel's approval.
+Pure-Rust + `continuum` validation (never npm/jtag); `export CARGO_TARGET_DIR=…` then `df -h /` after each cargo cycle; prefer `cargo check`; fail-loud at every gate (negative lift never silently adopts); one `#[cfg(test)] mod tests` per file with `// what this catches:`; sentinels follow SAGE.md#rules-every-part-keeps; feature-branch commit per validated layer; merge to main only on Joel's approval.

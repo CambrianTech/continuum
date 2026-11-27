@@ -1,6 +1,6 @@
 //! Her read receipt: after a prompt is sent, the newest room event it actually rendered, per
 //! room. Marking read belongs here, not at delivery: delivery is not reading, and only her
-//! one view knows which turns she saw (FLOW-IMPLEMENTATION-PLAN §2d). Before this the airc
+//! one view knows which turns she saw (THE-LANE-ON-SAGE.md). Before this the airc
 //! source advanced her cursor while packing, before any prompt existed, so a turn her view
 //! then collapsed, or an act that was refused, still marked the room read.
 

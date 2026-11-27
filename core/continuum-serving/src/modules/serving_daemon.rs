@@ -16,7 +16,7 @@
 //! the loop, the published decision, and the `serving/plan` query command so
 //! personas + operators can see what the substrate decided and why.
 //!
-//! Shape per docs/architecture/CONCURRENCY-STYLE-GUIDE.md: a ServiceModule with
+//! Shape per docs/architecture/SAGE.md: a ServiceModule with
 //! a `tick_interval` that the runtime drives via `tick()`. No bespoke thread,
 //! no lock held across await — the `watch::Sender` is the only shared state and
 //! its `send` takes `&self`. cbar's pipeline-stage pattern in Rust dress.

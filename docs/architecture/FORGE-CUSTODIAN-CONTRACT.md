@@ -484,7 +484,7 @@ Done is done; everything below the line is the plan.
    - ✅ **5b — announce over the grid bus.** (`1027b7046`) `NodeCapability::Forge
      { endpoint }` rides the EXISTING `GridModule` capability-enrichment +
      `GridTransport::announce` path (no new tokio task / watch channel —
-     CONCURRENCY-STYLE-GUIDE STOP block honored). `ForgeEndpoint::probe_local`
+     CLAUDE.md STOP block honored). `ForgeEndpoint::probe_local`
      (2s-bounded in `initialize()`) observes the local custodian; a node advertises
      forge ONLY when it answered — `advertise_from_probe` makes Unreachable ⇒ no cap
      (honest absence, not a fallback Down-row) and a broken `/health` ⇒ declined +

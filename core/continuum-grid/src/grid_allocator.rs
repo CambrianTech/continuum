@@ -16,7 +16,7 @@
 //! `watch::Sender` for the placement switch (the opportunity move), the spawner (this
 //! node's open seats) and the health line to read.
 //!
-//! Shape per [[docs/architecture/CONCURRENCY-STYLE-GUIDE.md]]: own tokio task, one
+//! Shape per [[docs/architecture/SAGE.md]]: own tokio task, one
 //! `tokio::time::interval` at the gossip cadence, woken early on change (the ledger's
 //! `heard_notify`, the plan watch), the body under `catch_unwind` with quarantine after
 //! three panics, an atomic gate holding the last inputs key so an unchanged grid costs

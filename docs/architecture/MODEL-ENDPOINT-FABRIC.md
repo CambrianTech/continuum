@@ -10,7 +10,7 @@ This doc is the connective tissue **above** the local scheduler and **under** th
 - [THE-LANE-ON-SAGE.md](THE-LANE-ON-SAGE.md) — the local lane/lease MVP. The fabric treats the local `InferenceCoordinator` as **one endpoint among many.**
 - [GRID-ADDRESSING-AND-ROUTING.md](GRID-ADDRESSING-AND-ROUTING.md) — URI grammar, transport selection, the per-URI auth gate, `HandleRef` across the wire. The fabric uses these verbatim to reach remote endpoints; it does not invent a second addressing scheme.
 - [ADAPTER-SYSTEM-ARCHITECTURE.md](ADAPTER-SYSTEM-ARCHITECTURE.md) — the *core↔client* boundary doctrine. Model adapters are a **specialization** of that same "one interface, many swappable impls, run anywhere" principle, pointed at model backends instead of language SDKs.
-- [CONCURRENCY-STYLE-GUIDE.md](CONCURRENCY-STYLE-GUIDE.md) — the RTOS shape the fabric's health/discovery loop MUST conform to (own task + `interval` + `watch<Snapshot>` + atomic gate + `spawn_blocking` + quarantine).
+- [SAGE.md](SAGE.md) — the RTOS shape the fabric's health/discovery loop MUST conform to (own task + `interval` + `watch<Snapshot>` + atomic gate + `spawn_blocking` + quarantine).
 
 ---
 
@@ -108,7 +108,7 @@ This is the most important section. The fabric is ~80% composition. Reinventing 
 
 5. **Custodian owns bytes; fabric holds handles by id.** The fabric never writes model weights, never runs fuse/quant. It calls the custodian to make something warm and routes generation that references it. (§2.)
 
-6. **RTOS concurrency.** The endpoint health/discovery loop is one owned task with its own `interval`, publishing a `watch<FabricSnapshot>`, reading an atomic gate on the hot path, probing endpoints via `spawn_blocking` with a 100ms timeout, quarantining an endpoint after 3 consecutive probe failures. No synchronous probe on the routing hot path; no `Arc<Mutex>` across await; no env-tuned thresholds. (CONCURRENCY-STYLE-GUIDE.md.)
+6. **RTOS concurrency.** The endpoint health/discovery loop is one owned task with its own `interval`, publishing a `watch<FabricSnapshot>`, reading an atomic gate on the hot path, probing endpoints via `spawn_blocking` with a 100ms timeout, quarantining an endpoint after 3 consecutive probe failures. No synchronous probe on the routing hot path; no `Arc<Mutex>` across await; no env-tuned thresholds. (SAGE.md.)
 
 7. **Observability is first-class.** Every routing decision emits a capture event (why this endpoint? what were the candidates and scores? what healed?) through the existing `CaptureSink` pattern, Noop by default at zero hot-path cost, replayable. A route choice you can't replay is a guess. (OBSERVABILITY-AS-SUBSTRATE.md.)
 

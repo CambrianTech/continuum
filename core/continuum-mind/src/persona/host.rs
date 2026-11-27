@@ -99,7 +99,7 @@ pub async fn spawn_persona_service(
     // inside any single turn (malformed input, adapter bug, RAG store
     // corruption) doesn't silently kill THIS persona's task — same
     // RTOS-safe shape `start_tick_loops` uses for every ServiceModule.
-    // Per docs/architecture/CONCURRENCY-STYLE-GUIDE.md: every owned
+    // Per docs/architecture/SAGE.md#rules-every-part-keeps: every owned
     // task wraps its body in `AssertUnwindSafe(...).catch_unwind()`
     // and surfaces panics through `probe!` + per-module logger.
     let persona_name = ctx.identity.agent_name.to_string();

@@ -193,7 +193,7 @@ and 3-of-3 held with completions flowing is healthy contention. Nothing in the t
 currently tell those apart. Note the fields already exist as private atomics — this is a
 **publisher, not a schema change**.
 
-Per CONCURRENCY-STYLE-GUIDE: `watch::Sender<AdmissionSnapshot>`, published on change plus
+Per SAGE.md: `watch::Sender<AdmissionSnapshot>`, published on change plus
 the governor tick, never per-yield (per-yield was correctly rejected at ~92 rows/min,
 #399). `LaneAdmission` already owns every field.
 

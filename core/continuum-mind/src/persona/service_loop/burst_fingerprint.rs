@@ -552,7 +552,7 @@ pub(super) async fn run_self_cycle(
     // whether that is now an outage. The serving daemon already owns that judgement and
     // emits it loudly (`serving.health` action=relaunch); a second severity clock in the
     // persona hot path would be a parallel monitor of a fact its owner already publishes
-    // (CONCURRENCY-STYLE-GUIDE). `has_reconciled()` still earns its keep in the probe: it
+    // (SAGE.md). `has_reconciled()` still earns its keep in the probe: it
     // separates a cold boot from a lane that HAS served and dropped, which the empty
     // snapshot itself cannot say (`ready_verified_at_ms` is erased by `empty()`).
     if !crate::inference::llama_server::current_serving().is_live() {

@@ -516,7 +516,7 @@ impl InferenceHandleModule {
         // The local lookup is resolved into an OWNED Option in its own
         // statement so the DashMap `Ref` is dropped before the async
         // registry read — never a lock held across an `await`
-        // (CONCURRENCY-STYLE-GUIDE forbidden move #7).
+        // (SAGE.md#rules-every-part-keeps: no lock across an await).
         let local_adapter = self
             .providers
             .get(&params.provider)

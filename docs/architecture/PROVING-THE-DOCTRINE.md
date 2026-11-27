@@ -235,7 +235,7 @@ just the matrix and the tests it points at.
 ## Cross-references
 
 - [SUBSTRATE-DOCTRINE-ORGANIC-FLOW.md](SUBSTRATE-DOCTRINE-ORGANIC-FLOW.md) — the WHY
-- [CONCURRENCY-STYLE-GUIDE.md](CONCURRENCY-STYLE-GUIDE.md) — the runtime shape
+- [SAGE.md](SAGE.md) — the runtime shape
 - [OBSERVABILITY-AS-SUBSTRATE.md](OBSERVABILITY-AS-SUBSTRATE.md) — the capture trait
 - CLAUDE.md § "test infrastructure" — TDD/VDD conventions, one
   `mod tests` per file, `#[cfg(feature = "stress-tests")]` for

@@ -122,7 +122,7 @@ cache-update logic). So the mechanism is a field we are not sending.
 
 - The lane registry gains a `slot_id` per hosted persona — the same registry that already
   owns lane identity, so this is a field on an existing owner, not a new manager
-  (CONCURRENCY-STYLE-GUIDE.md forbids the parallel one).
+  (SAGE.md#rules-every-part-keeps forbids the parallel one).
 - Requests carry `id_slot`. A citizen returns to *her own* KV, whatever anyone else's
   prefix looks like.
 - Eviction becomes a **decision with a cost**, not an accident of similarity: evicting a
