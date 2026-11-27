@@ -70,7 +70,7 @@ pub fn decision_from_response(text: &str, own_name: Option<&str>, present: &[Str
         continuum_base::probe!(
             class = "cognition.identity_claim",
             claimed = %peer,
-            own = own_name.unwrap_or("?"),
+            own = ?own_name,
             chars = trimmed.chars().count() as u64,
             "response spoke in the first person under a present peer's name — a pass, never posted"
         );
@@ -170,8 +170,8 @@ fn probe_label_stripped_into_silence(raw: &str, cleaned: &str) {
     }
     continuum_base::probe!(
         class = "persona.parse.label_stripped_into_silence",
-        raw_head = %raw.trim().chars().take(120).collect::<String>(),
-        cleaned_head = %cleaned.chars().take(120).collect::<String>(),
+        raw = %raw.trim(),
+        cleaned = %cleaned,
         "a prefix strip is what turned this turn into silence — #349: if the stripped prefix \
          was a CONTENT LABEL (Verdict:/Answer:/Result:) rather than a speaker name, a real \
          answer was just swallowed"
