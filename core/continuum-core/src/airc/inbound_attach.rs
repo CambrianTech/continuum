@@ -25,6 +25,12 @@ use continuum_mind::chat::import_watermark::ImportWatermark;
 use continuum_mind::chat::line_store::{LineImporter, PostedLine};
 use crate::ipc::positron_wall_source::WALL_CHANGED;
 use crate::runtime::MessageBus;
+use std::collections::HashSet;
+
+/// A set of peer ids whose HEADER_CONTINUUM_EVENT_ID the inbound gate trusts.
+/// Built once at boot from operator and agent runtimes so attribution_gate
+/// has no global state — tests pass a mock set directly.
+pub type KnownSenders = HashSet<airc_core::PeerId>;
 
 /// One attach stream per ROOM, spawned at most once — the registry the room
 /// ADOPTION path (positron_presence's refresher, #2606) calls so every room
@@ -745,3 +751,8 @@ fn is_known_sender(peer_id: &airc_core::PeerId) -> bool {
     }
     false
 }
+
+/// A set of peer ids whose HEADER_CONTINUUM_EVENT_ID the inbound gate trusts.
+/// Built once at boot from operator and agent runtimes so attribution_gate
+/// has no global state — tests pass a mock set directly.
+pub type KnownSenders = HashSet<airc_core::PeerId>;
