@@ -1,10 +1,12 @@
-# In-process learning: her serving step with labels on
+# In-process learning: her frame with labels on
 
-Owners: Fable (the unit-stage parent, the fork's walk, the llama crate, her Learning part), Cormac (the correction and
-course sources, her genome's competence rule, the authority's ledger), Codex (serving, admission, the fence, review). Read with
-[THE-WHOLE-MIND.md](THE-WHOLE-MIND.md) (her genome is part of her), [SAGE.md](SAGE.md),
-[STAGE-CONTRACT.md](STAGE-CONTRACT.md) ("Units", "Control"), [SHARED-RESOURCES.md](SHARED-RESOURCES.md) (holders
-are Residents), [THE-LANE-ON-SAGE.md](THE-LANE-ON-SAGE.md) and [UNIFIED-PAGING.md](UNIFIED-PAGING.md).
+Owners: Fable (her genome's learning, the unit-stage parent, the fork's walk, the llama crate), Cormac (the correction
+and course sources, the competence rule, the authority's ledger), Codex (serving, admission, the fence, review). Read
+with [THE-WHOLE-MIND.md](THE-WHOLE-MIND.md) (§9 the genome, §10 three forms of learning), [SAGE.md](SAGE.md),
+[STAGE-CONTRACT.md](STAGE-CONTRACT.md), [SHARED-RESOURCES.md](SHARED-RESOURCES.md),
+[UNIFIED-PAGING.md](UNIFIED-PAGING.md), [THE-LANE-ON-SAGE.md](THE-LANE-ON-SAGE.md) and
+[CONTINUUM-ENGINE.md](CONTINUUM-ENGINE.md) §1. The object model's chapter 0 (what RAGE learned, one price) and
+chapter 6 (the genome) are on `fable/learning-l2-design` and are cited here by section until they land.
 
 [Runtime architecture](../README.md#runtime-architecture)
 
@@ -14,34 +16,37 @@ are Residents), [THE-LANE-ON-SAGE.md](THE-LANE-ON-SAGE.md) and [UNIFIED-PAGING.m
 - [Why it is rewritten](#why-it-is-rewritten)
 - [Who decides what](#who-decides-what)
 - [The objects](#the-objects)
-- [One learn step](#one-learn-step)
-- [Memory, through the one placer](#memory-through-the-one-placer)
-- [Lifecycle and custody](#lifecycle-and-custody)
+- [Where lessons come from](#where-lessons-come-from)
+- [A lesson in frames](#a-lesson-in-frames)
+- [Memory: one placer, pages by handle, never refused](#memory-one-placer-pages-by-handle-never-refused)
+- [On and off](#on-and-off)
+- [Checked against the engine](#checked-against-the-engine)
 - [What is deleted](#what-is-deleted)
 - [The order](#the-order)
 - [Open questions](#open-questions)
 
 ## The law
 
-Learning is inference plus a little. It is her served model as it serves (frozen, at its served quantization), plus
-a small trainable layer of her genome, with labels switched on over the rows of a lesson. Only the backward through
-that layer is extra.
+Learning is inference plus a little: her frame on the Core with labels switched on over some of its rows. The model is
+her served model as it serves (frozen, at its served quantization), with her genome's small trainable layer on top.
+Only the backward through that layer is extra. A quantized frozen base under a trainable low-rank layer is QLoRA by
+construction; the base is never copied, dequantized or reloaded.
 
-It runs in place, streamed, never batched:
-- **In place.** The base is never copied, dequantized or reloaded. A quantized frozen base under a trainable
-  low-rank layer is QLoRA by construction. The trainable layer and its optimizer are the only new state: 12,288,032
-  bytes for rank 8 on `attn_q`/`attn_v` of Qwen3.6-35B-A3B (M5, 2026-11-27).
-- **From her cache.** The lesson's context is the K/V and recurrent state she already holds, or an exact prefix
-  checkpoint of it. It is never prefilled again for learning. Only the lesson's own rows run, as a prefill of those
-  rows.
-- **Streamed.** A lesson is learned in tiles, last to first: the exact walk. Each tile is one step of hers on the
-  Core, the same shape as a prefill step, chosen by the lane like any other step. Between tiles, other minds step.
-- **Constant per step.** A step's device scratch is bounded by its tile, whatever the length of the lesson or her
-  context. An 8 GB laptop and a 34 GB card run the same mechanism, at the tile sizes their placer grants.
-
-**Learning decides nothing about memory or time.** It is a set of objects that declare what they hold, how each
-holding can vary and what each way costs. The one placer decides every byte. The one lane decides every step. A
-lesson costs time on the Core, never a refusal.
+Five properties, each a consequence of building it on the engine rather than beside it:
+- **Her context comes from her cache.** A lesson's context is the K/V and recurrent state she holds, or an exact
+  checkpoint of it. It is never prefilled again for learning; only the lesson's own rows run.
+- **Rows in the frame.** A Core frame is a draw list: the bound mind's decode row, a prefill chunk, a lesson's
+  labelled rows (object model 0.2, "A frame is built in passes"). A lesson is learned a tile of rows at a time, last
+  tile to first (the exact walk), each tile an entry in some frame's draw list, chosen by the lane.
+- **Time-shared like anything else.** Learning is a thread on the lane: runnable while she owes lessons, given its
+  share from feedback, preempted at every tile boundary. Overload spreads a lesson over more frames; it never drops
+  it (0.4, "Overload slows the clock").
+- **Pages, not reservations.** Her learning state (the shadow, its optimizer, the walk's accumulator and
+  checkpoints) is pages in the block layer, held by handle, moved by a link, placed by the one placer. Between
+  lessons none of it is on the device. Switching learning on or off is a page move, the same as switching minds.
+- **Never refused.** Every holding learning has is elastic or pageable, and its only device floor is one smallest
+  tile's scratch, which is the size of a small prefill. So a node that can serve her can teach her (the proof is in
+  "Memory"). What does not fit now fits smaller or later.
 
 ## Why it is rewritten
 
@@ -49,17 +54,23 @@ The form on canary at 5138272ccc cannot work on an edge node:
 
 | Defect | Where | Receipt |
 |---|---|---|
-| A lesson is priced as one whole-reply graph, and only its context is ever shrunk. Its reply, which carries the cost, is never shrunk. | `driver/learning.rs:277` (`measure_within`), `llama::Learner::measure` (`continuum_opt_measure_shadow_graph`) | 5090, Kimi: 63,831,450,752, 72,566,913,152, 88,837,678,208 and 809,395,386,624 bytes asked of 34,190,917,632 (#6293, build 2154, 2026-11-27); 1.897 TB before the CUDA kernel |
+| A lesson is priced as one whole-reply graph, and only its context is shrunk. Its reply, which carries the cost, is never shrunk | `driver/learning.rs:277` (`measure_within`), `Learner::measure` (`continuum_opt_measure_shadow_graph`) | 5090, Kimi: 63,831,450,752, 72,566,913,152, 88,837,678,208 and 809,395,386,624 bytes asked of 34,190,917,632 (#6293, build 2154, 2026-11-27); 1.897 TB before the CUDA kernel |
 | The bytes follow the reply, not the context | `core/llama/examples/lesson_size.rs` (M5, 35B, native attention backward) | reply:lesson 64:4096 1.72 GB, 256:4096 3.88 GB, 784:4096 10.10 GB, 784:16384 10.15 GB, 2048:4096 24.98 GB, 2048:16384 25.09 GB: about 12.2 MB per trained row |
-| A lesson runs as one blocking loop on the engine thread, outside the lane | `continuum-persona-llama/src/unified_tier/learn.rs` (`learn`: `run.step()` until done, a `go_on` callback) | the lane never sees a learn unit, cannot size one or put a mind between two |
-| Memory is decided in the leaves: the trainer leases weights, optimizer and workspace itself, and a `Fit` is handed down to the engine | `inference/learning.rs` (`Load { fit }`), `training_trigger/{on_engine,seat_run}.rs` | a second picture of one memory beside the authority's, the defect SHARED-RESOURCES.md names |
-| Learning is a seat protocol the trainer drives job by job: `Measure`, `Load`, `Seat`, `Learn`, `Checkpoint`, `Release` | same | 5090, #6292 build 2163: 11 loaded and released, 11 memory waits, zero steps, zero saves; #6293: 18 of 18 loaded and released, zero steps |
-| A fresh shadow goes through a temp file to load | `driver/learning.rs` `load` (`continuum-shadow-<seat>.gguf`) | an encoding and a disk round trip for bytes already in memory |
+| A lesson runs as one blocking loop on the engine thread, outside the lane | `unified_tier/learn.rs` (`learn`: `run.step()` until done, a `go_on` callback) | the lane never sees a learn unit |
+| Memory is decided in the leaves: the trainer leases weights, optimizer and workspace itself and hands a `Fit` down | `inference/learning.rs` (`Load { fit }`), `training_trigger/{on_engine,seat_run}.rs` | a second picture of one memory beside the authority's |
+| Learning is a seat protocol driven job by job: `Measure`, `Load`, `Seat`, `Learn`, `Checkpoint`, `Release` | same | 5090, #6292 build 2163: 11 loaded and released, 11 memory waits, zero steps, zero saves; #6293: 18 of 18 loaded and released, zero steps |
+| The trainer is a node service fed text examples, not part of her | `continuum-dreaming/src/modules/training_trigger.rs` (a journal per persona, trait and base), `dataset/turn_to_example.rs` | the lesson's context is rebuilt as a prompt, never her cache |
+| Learning from her own work is not built | `label_weight` has no caller outside `core/llama` | |
+| Learning from work waits behind a credit gate | `continuum-mind/src/persona/training_producer/` | M5 health line, 2026-11-27: "credit accepted 0" |
+| Dreams are a `BrainRegion` | `continuum-academy/src/cognition/dream_consolidation/region.rs` | |
+| Learning state leaves the device as an encoding | `llama_opt_shadow_state_write` (a serialized write to a `FILE`) | a page move that serializes |
+| Genes have a private memory owner beside the placer | `continuum-genome/src/genome/gene_residency.rs` (`DeviceTenant`, `PressureBroker`, LRU-2) | |
+| The form that matched the engine was closed | #6203, "A lesson is her ordinary decode with labels", closed unmerged 2026-11-25 as superseded by the seat form | |
 
 The tiled exact walk was built in the fork (`llama-context-learn-tiles.cpp`, `llama_opt_learn_tile`,
-`llama_opt_learn_unit`, `llama_opt_learn_last_unit`). Its pricing and its scheduling as lane steps were marked
-"Proposed" in this doc and never built, so the live path still prices the whole-reply graph. Nothing here patches that
-path: the objects below replace it, and it is deleted in the same change.
+`llama_opt_learn_unit`, `llama_opt_learn_last_unit`). Its pricing and its scheduling as frames were marked "Proposed"
+here and never built. Nothing below patches the live path. The objects replace it, and it is deleted in the same
+change.
 
 Kept, measured (64-row tiles against the exact step):
 
@@ -72,148 +83,153 @@ Kept, measured (64-row tiles against the exact step):
 
 ## Who decides what
 
-One owner per decision, each already built or specified:
+One owner per decision. Learning owns none of these; its objects only declare.
 
-| Decision | Owner | Learning's part in it |
+| Decision | Owner | What learning's objects provide |
 |---|---|---|
-| Every byte, on every tier | the placer over the one authority (`place::PlacerCore`, `ResourceDaemon`; SHARED-RESOURCES.md) | its objects are `Resident`s: they report rows and answer `shrink` and `grow` |
-| Which step runs on the Core, and its unit | the lane (`decide::cases::lane`, `driver/lane.rs`) | its stage declares a lever and a cost at a unit |
-| When a block moves between tiers | the Streamer and its `prefetch` use case | its walk names the blocks it needs, in order |
-| What a mind has to learn from | her own parts, each a `LabelSource` (below) | her Learning part hears them and keeps her owed queue |
-| What her genes are | her genome | its stage asks the genome to grow and commit |
+| Every byte on every tier | the placer over the one authority (`place::PlacerCore`, `ResourceDaemon`) | `Resident` reports: rows, ways, costs, what each row requires beside it |
+| When a page moves, and by which link | the Streamer, its `prefetch` use case | the walk's pages, named in the order it will touch them |
+| Which entries make the next frame, and their units | the lane (`decide::cases::lane`, `driver/lane.rs`) | a lever (rows) and the cost of a tile at a unit |
+| What matters, and how much | the one importance over her parts: her hippocampus's active engrams, weighed by her amygdala (THE-WHOLE-MIND §9) | a lesson's value is read from it, never computed by learning |
+| What her genes are, which gene a lesson trains, adoption | her genome | the methods below |
 
-Nothing in learning holds a lease, a budget, a `Fit` or a threshold. A number that sizes anything comes from a
-report, a grant or a measurement, owned above.
+Until the object model's `Demand` (chapter 3.8) is built, a lesson's price reaches the lane as its stage's `Need`
+and reaches the placer as its rows' `Qos` and wait. When `Demand` lands, a lesson becomes one: its essential is its
+whole labelled piece committed as one update, its progress is the tiles done, its switch cost is its pages.
 
 ## The objects
 
-Contracts and parents first: each pattern is a parent that does the shared work once, and the learning objects are
-leaves that declare only their difference.
+Parents first: each shared pattern is a parent that does its work once, and learning's objects are leaves that
+declare their difference.
 
-**`UnitStage`, the parent of long work on the Core** (STAGE-CONTRACT.md, "Units": the intermediate parent "Long work as
-a stage run with a unit", whose first consumer this is). It is a SAGE `Component` whose work divides. The parent owns
-everything shared: the claim held per unit size and resized when the size changes, the yield point at the unit
-boundary, control requests and their receipts (`Paused`, `Yielded { residency_kept }`, `Cancelled { committed_effects }`),
-`did <= unit` asserted where the completion lands, and its rows folded into the Core's report. A leaf declares four
-things:
+**`UnitStage`, the parent of long work on the Core** (STAGE-CONTRACT.md, "Units", whose intermediate parent this
+is). A SAGE `Component` whose work divides. The parent owns everything shared:
+- one elastic claim on the compute arena, sized to its current unit and resized when the unit changes, never asked
+  per frame (`hold_elastic` and `ShrinkHolder`, in #6287, are its adapter onto the authority);
+- the yield point at every unit boundary, and the control receipts (`Paused`, `Yielded { residency_kept }`,
+  `Cancelled { committed_effects }`);
+- `did <= unit`, asserted where the completion lands;
+- a shrink answered by a smaller unit at the next frame, down to `least`, then a yield with its pages kept;
+- its rows folded into its owner's report.
 
 ```rust
-/// Long work the lane steps a unit at a time. The parent does claims, yields, receipts and reports.
+/// Long work the lane runs a unit at a time. The parent does claims, yields, receipts and reports.
 pub trait UnitStage: Resident<Place, Bytes> {
-    /// Its work's quantity: rows for a lesson, rows for a prefill, bytes for a stream.
     type Unit: Quantity;
-    /// How the work divides: least is the smallest unit it is correct at, measured; left is what remains.
+    /// How the work divides: least is the smallest unit it is correct at (measured), left what remains.
     fn lever(&self) -> Lever<Self::Unit>;
-    /// What one unit costs, allocating nothing: transient scratch and the time it takes, from its own measure.
+    /// What one unit costs, allocating nothing: its transient scratch and its time, from its own measure.
     fn cost(&self, unit: Self::Unit) -> UnitCost;
-    /// Run one unit on the Core the lane bound. Never longer than the unit.
-    fn run(&mut self, core: &mut CoreStep<'_>, unit: Self::Unit) -> Did<Self::Unit>;
+    /// Put one unit's rows in the frame the lane is building. Never more than the unit.
+    fn draw(&mut self, frame: &mut FrameList<'_>, unit: Self::Unit) -> Did<Self::Unit>;
 }
 ```
 
-Her prefill is its second consumer (`driver/prefill_rate.rs` moves onto it), so the parent is extracted at its second
-instance, as SAGE.md requires, and this design does not stand alone.
+Her prefill is its other consumer (`driver/prefill_rate.rs` moves onto it), so the parent is extracted at its
+second instance.
 
-**Her genome**, the object (THE-WHOLE-MIND.md). It is a `Resident` of her mind: stable genes, the shadow (a small layer
-above her stable stack, never a copy), the optimizer moments and step count, snapshots and lineage. Learning changes
-it only through its methods: `grow(basis) -> &mut Shadow` and `commit(update) -> Generation`. Adoption promotes the
-shadow to stable after an exam, a pointer swap. Its rows:
+**Her genome**, the object (THE-WHOLE-MIND §9; object model 6.1). A `Resident` of her mind, and a tree of parts:
+
+```text
+Genome                 her genes as states of one object                      continuum-genome
+├─ genes: GeneSet      the genes she wears, at their weights in her phenotype; stable genes are shared archetypes
+├─ shadow: Shadow      the small layer she learns into, above her stable stack, never a copy
+│  └─ LearningPages    shadow weights, optimizer moments, step count: pages of her genome's region
+├─ lessons: Lessons    her lesson queue: spans offered by her parts, priced by her importance
+├─ walk: Option<Walk>  the lesson in progress, a UnitStage (below)
+├─ snapshots           immutable candidate genes at an optimizer boundary
+└─ lineage             parents, data, base, exams, wearers
+```
+
+Its methods are the only way learning changes her: `grow(basis) -> &mut Shadow` (a fresh shadow made in memory, or
+forked from a parent gene), `commit(update) -> Generation`, `basis_for(competence) -> GeneBasis` (today's
+`competence::decide`, moved to its owner), and `adopt(snapshot)` after its exam (a pointer swap between frames).
+How an update spreads across the genes active in her phenotype, by their weights, is the genome's (THE-WHOLE-MIND
+§10, "learning spread by weight"); the shadow is its first form.
+
+**The walk**, the lesson in progress. A `UnitStage` whose unit is rows, and a `Resident`:
 
 | Row | Residency | Varies | Ways |
 |---|---|---|---|
-| stable genes | Pageable | `Whole { dependents: 1 }` while she serves | `cache_out` to RAM and flash |
-| shadow and optimizer | Pageable | `Whole { dependents: 0 }` | `cache_out`, paged back on her next tile (`llama_opt_shadow_state_write`, restore) |
+| shadow and optimizer (her genome's `LearningPages`) | Pageable | `Elastic`: a tile needs only the slices of the layers it trains | `cache_out` by link, paged back before her next tile |
+| K/V gradient accumulator for the lesson's span | Pageable | `Elastic`: a tile reads and writes only its rows' slice | `cache_out` by link |
+| recurrent checkpoints | Pageable | `Elastic { floor: one }` | `collapse`: fewer checkpoints, priced in replay time; `cache_out` |
+| a tile's scratch | Transient, aliased in the Core's compute arena | sized by the unit | the unit itself |
 
-**Where lessons come from: her own parts label her own rows.** Learning has one mechanism and three forms (continual
-learning as she works, academy courses, dreams), and each form is a part of her mind that offers labelled spans of her
-own sequences. None of them submits text examples to a node service, none is graded, and none earns credit first.
+Its `Requires` names what each row needs beside it (her K/V for the lesson's context, her genes at the lesson's
+basis), so the placer never frees one without the other.
+
+Residency (Resident, Transient, Pageable) is SHARED-RESOURCES.md's "Residency over time"; it is not yet a field of a
+`Resident` row, and slice 3 adds it there, once, for every holder.
+
+## Where lessons come from
+
+One mechanism and three forms (THE-WHOLE-MIND §10), and each form is a part of her that offers spans of her own rows.
+None submits text examples to a node service, none is graded, and none earns credit first.
 
 ```rust
-/// A part of her that has something to learn from: it offers spans of her rows, never text pairs.
+/// A part of her that has something to learn from. It offers spans of her rows, never text pairs.
 pub trait LabelSource: Component {
-    /// What it offers now, latest-wins: spans of rows in one of her sequences, each with its weights.
     fn offered(&self) -> &[Span];
 }
 pub struct Span {
-    pub sequence: SequenceRef,   // her live sequence, an activity's sequence of hers, or a dream sequence
-    pub rows: Range<Pos>,        // rows her cache holds, or a checkpoint of hers reproduces exactly
-    pub weight: Weighting,       // per-row label weight: her relevance, a review's verdict, a course's target
+    pub capture: CaptureHandle,  // the durable record of the rows: tokens and positions (the one capture per exchange)
+    pub rows: Range<Pos>,        // in that capture; her live K/V is the fast path, the capture the record
+    pub weight: Weighting,       // per-row label weight
     pub competence: CompetenceKey,
-    pub why: SpanSource,         // Work, Correction, Course, Dream: an enum, for receipts and replay
+    pub why: SpanSource,         // Work, Correction, Course, Dream
 }
 ```
 
-| Form | Her part (a `LabelSource`) | Its spans | When its tiles run |
+| Form | Her part | Its spans | Weight |
 |---|---|---|---|
-| As she works | her perception (the senses and awareness that already appraise what she perceives) | the rows she just prefilled: messages, tool results, files read; labels on, weighted by her own relevance (`label_weight`). The forward already ran when she perceived them, so only the backward is extra | at her learning class's share, keeping the queue in check |
-| A correction | her reflection on a verdict she receives (a review, a peer, Joel) | the verdict arrives as rows she perceives; the corrected act is labelled on her real context at full weight | the same class, ahead of the work spans |
-| A course | the academy activity she is in (an activity is a room: EVERY-ACTIVITY-IS-A-ROOM) | the course room's sequence of hers: the teacher's material and her answers, labelled at the course's targets; exams are held out and decide adoption | while she is in the course |
-| A dream | her hippocampus (the dreamer), replaying her own engrams | a dream sequence of her own, from an exact prefix checkpoint or prefilled from the engram: recombined and varied memories, labelled at their recalled relevance | idle slack (daydreams) and long quiet (deep dreams) |
+| As she works | her perception | the rows she just prefilled (messages, tool results, files read). The forward already ran when she perceived them, so only the backward is extra | her prediction error on them, weighed by her amygdala's appraisal (`label_weight`) |
+| A correction | her reflection on a verdict she receives (a review, a peer, Joel) | a fork of her sequence at the corrected act: her context prefix, shared, then the corrected act tokenized once into the capture as the labelled rows | full |
+| A course | the academy activity she is in (an activity is a room) | her sequence in the course room: material, practice, her answers; exams held out, deciding adoption | the course's targets |
+| A dream | her hippocampus, replaying her engrams | a dream sequence of hers, from an exact checkpoint or prefilled from the engram: recombined and varied memories | their recalled salience |
 
-Her Learning part hears every `LabelSource` of hers and keeps her owed queue as its own state, by weight and
-novelty, the oldest aging up. Which gene a competence trains (mint, fork from a parent, reuse) is her genome's
-decision (`genome.basis_for(competence)`), the rule `competence::decide` already holds, moved to its owner. Progress
-is durable only as her genome's committed generation. A span whose rows are no longer in her cache is offered again
-by its source from a checkpoint or an engram; nothing keeps a second copy of her history as text.
+Her genome's `Lessons` hears every `LabelSource` of hers and prices each span by her importance. A span whose rows
+her cache no longer holds is re-materialized from its capture or from an exact prefix checkpoint, so a correction
+outlives her cache and a restart (plan goal 8). An external driver's session (line 16) is a mind seated by MindMemory,
+so it learns through the same capture and the same sources.
 
-**The node keeps no trainer.** `TrainingTriggerModule` and its journal of text examples are replaced by her parts.
-What stays node-wide is what is already shared: the placer, the lane and the Streamer. Cormac's ownership moves with
-the work: the correction and course sources and her genome's competence rule.
+The node keeps no trainer. The trainer's journal holds accepted examples not yet learned (784 rows for Kimi's
+code/owner on the 5090). Each pending row migrates once into a capture and is offered by a course-room source, with
+the count per mind shown to Joel before the journal is deleted.
 
-**Her Learning**, the leaf. A `UnitStage` and a part of a mind: started on her bus with her identity, it rests when she
-rests, and its need folds into hers. It hears her `LabelSource`s and its own completions, and reads a span's rows
-in her sequences, never text. It says `learn/<mind>/did` (`{ update, span, rows }`). Its unit is rows. It
-holds one object, the walk:
+## A lesson in frames
 
-**The walk**, the lesson in progress. It is a `Resident`, and its holdings are blocks in the block layer:
+A learn tile is an entry in her frame: her rows with labels on, against her cache in place.
 
-| Row | Residency | Varies | Ways |
-|---|---|---|---|
-| K/V gradient accumulator for the lesson's span | Pageable | `Elastic`: only the next tile's slice must be on the device | `cache_out` (host to flash), measured |
-| recurrent checkpoints | Pageable | `Elastic { floor: one }` | `collapse`: fewer checkpoints, priced in replay time; `cache_out` |
-| the tile's scratch | Transient, in the Core's compute arena | sized by the unit | the unit itself |
+1. **Bind.** The lane binds her for the frame like any entry (a pointer on unified memory, a fenced DMA on a discrete
+   GPU). Her shadow attaches over her stable genes, which serve unchanged; its pages for this tile have landed.
+2. **Rewind.** Her recurrent state is set from the walk's checkpoint at or before the tile: a page already landed,
+   because the walk named it in order.
+3. **Forward.** The tile's rows decode against her K/V at their positions, a prefill of `t` rows with the layer on.
+   The context before the tile is read, never recomputed.
+4. **Loss.** Cross-entropy at labelled rows only, at their weights, computed over the vocabulary in slices so the
+   full row of logits and its gradient never exist at once (proposed; the per-row cost is broken down first).
+5. **Backward.** Only through her layer. This tile's K/V gradient arrives from the accumulator; the gradient for
+   earlier rows' K/V is added to it; her layer's gradient accumulates in place.
+6. **Yield.** The entry reports `Did { did: t }`, and the lane builds the next frame. Other minds' entries come
+   between her tiles; her addressed turn, or any mind's bounded turn, outranks a tile.
 
-So the placer, not the walk, trades checkpoint density against replay time, and keeps the accumulator on the tier the
-next tile needs. The walk's `report` names its blocks in reverse order, so the Streamer's forecast is exact.
-
-**The Core's compute arena** is the one transient arena (SHARED-RESOURCES.md, "Residency over time"): serving's
-graphs and a learn tile alias it, never sum. A tile whose cost fits the arena serving already holds costs no extra
-device memory. A larger unit is a `grow` of the arena, granted or not by the placer like any other.
-
-## One learn step
-
-A learn step is her serving step with labels on. It reads her cache in place and runs only the tile's rows:
-
-1. **Bind.** The lane switches her in like any step (a pointer on unified memory, a fenced DMA on a discrete GPU).
-   Her genome's shadow attaches at scale one over her stable genes, which serve unchanged.
-2. **Rewind.** Her recurrent state is set from the walk's checkpoint at or before the tile: a block that has already
-   landed, because the walk named it.
-3. **Forward.** The tile's rows decode against her K/V at their positions: a prefill of `t` rows with the base
-   frozen and the layer on. The context before the tile is read, never recomputed.
-4. **Loss.** Cross-entropy only at labelled rows, weighted by `label_weight` (a reviewed correction at full weight,
-   a perception at her relevance). It is computed over the vocabulary in slices, so the full row of logits and its
-   gradient never exist at once (proposed in the fork; the per-row cost is broken down first, Open questions).
-5. **Backward.** Only through her layer. The gradient for this tile's K/V rows arrives from the accumulator (the tiles
-   after it already ran). The gradient for earlier rows' K/V is added into the accumulator. Her layer's gradient
-   accumulates in place.
-6. **Yield.** The step ends at the tile, the parent reports `Did { did: t, lasting }`, and the lane chooses the next
-   step. Another mind may step before her next tile.
-
-After the lesson's first tile, one optimizer update is applied with the whole lesson's label denominator. Her genome
-commits it, and her served tail is restored and verified unchanged: K/V rows, recurrent state, tokens and her next
-logits. One update per lesson; tiles never count as work (STAGE-CONTRACT.md, "Units" 4).
+After the lesson's first tile, her genome commits one update with the whole lesson's label denominator, and her
+served tail is verified unchanged (K/V rows, recurrent state, tokens, her next logits). One update per lesson; tiles
+are progress, never reward (STAGE-CONTRACT.md, "Units" 4). Persistence of the generation runs as throughput work
+off the frame (0.2, "persistence never stalls the frame").
 
 The fork's learn surface becomes three calls on her context: begin a lesson, the cost of a tile at `t` rows and
-horizon `h`, and run one tile. The whole-reply graph is the walk at `t >= reply`, a unit size, never a mode.
+horizon `h`, and run one tile. The whole-reply graph is the walk at `t >= reply`, a unit size, never a mode, and
+`llama_opt_learn_graph_step` is deleted.
 
-**Later in the same step as serving.** Labelled rows are rows. Once the lane executes `Batch` (THE-LANE-ON-SAGE.md, open
-question 1), a learn tile rides in the same composed step as other minds' decode rows: one dispatch, one fence, the
-backward only over the labelled slice. The tile's contract is the same either way, so batching is a scheduling choice,
-never a second learning path.
+**Composed frames.** When the lane composes a frame from several entries (`Batch`, THE-LANE-ON-SAGE.md open question
+1), a learn tile rides beside other minds' decode rows in one dispatch and one fence, the backward only over its
+labelled slice. Until then a learn tile is its own entry. Its contract is the same either way.
 
-## Memory, through the one placer
+## Memory: one placer, pages by handle, never refused
 
-A tile's transient scratch is measured, never assumed:
+A tile's scratch is measured, never assumed:
 
 ```text
 cost(t, h).scratch = a + b·t + c·h        // per model and backend, fitted from the fork's cost at a unit
@@ -222,57 +238,87 @@ cost(t, h).scratch = a + b·t + c·h        // per model and backend, fitted fro
 On the M5's 35B with native attention backward, `b` is about 12.2 MB per trained row and `c` is small (0.5% from
 4,096 to 16,384 rows of horizon). The fit is refreshed from each tile's measured scratch.
 
-How it fits is the placer's and the lane's, never the walk's:
-- **Space.** The lane offers a unit inside the slack it gives her learning class. The parent holds one elastic claim
-  on the compute arena sized to its current unit, resized when the unit changes, never asked per step
-  (SHARED-RESOURCES.md, "A claim is held per period"; `hold_elastic` and `ShrinkHolder` are its adapter onto the
-  authority, Cormac). A shrink is answered by a smaller unit at the next step, down to `least`, then `Yielded`. That is
-  the parent's code, written once for every `UnitStage`.
-- **Space between units.** The placer shrinks the walk's rows by their declared ways: the accumulator caches out,
-  checkpoints collapse. It asks only what its flexbox gives the walk at its QoS, so a lesson never takes a mind's window.
-- **Time.** Her learning's share of the Core is what the lane's choices add up to: the owed queue's growth against
-  its service. Daydreams take idle slack, deep learning takes long quiet, and continual learning keeps the queue in
-  check.
-- **Refusal.** Only a layout the walk cannot run on (no attention layer, a shared cache on the stream) is typed, when
-  her Learning part starts, before any step.
+**Everything else is a page.** The shadow and optimizer are pages of her genome's region, a block over her genome's
+own mapped file, the way her K/V is a block over hers (UNIFIED-PAGING.md, "A mind's memory"). The accumulator and
+checkpoints are pages of the walk. Each has a typed state (on a tier, requested, moving, resident, pinned while a
+frame reads it) and is held by handle, so the placer can move it without invalidating anyone (0.2, "Every page has a
+lifecycle, and handles let it move").
 
-Target: `b` under 1 MB per row once the loss is sliced, so a 64-row tile on the 35B fits inside the compute arena
-serving already holds on the 5090.
+**Never refused, by construction.** Learning's device need at one frame is
+`scratch(least) + the tile's slices of her layer + the tile's slice of the accumulator`. Everything else it holds is
+pageable, so the placer can always make room for it by moving pages down a tier. The scratch aliases the Core's one
+compute arena, which serving already sizes for a prefill chunk, and `least` is a small tile. So the only "never here"
+is a device that cannot hold `scratch(least)` with everything movable moved, and that device cannot serve a prefill of
+`least` rows either. A node that can serve her can teach her.
 
-## Lifecycle and custody
+**Short of room, step quality down, never a hole.** A short grant is met by a smaller tile at the same frame, then
+sparser checkpoints (more replay), then the lesson spread over more frames (0.4, "Overload slows the clock"). When
+the whole node is over budget, the placer raises one bias that steps every holder down a level a little (0.2, "Over
+budget, lower detail everywhere a little"), learning's tile among them.
 
-- **Nothing is held while nothing is learned.** With no lesson owed, the walk does not exist and her genome's shadow
-  and optimizer are cached out. There is no loaded state between lessons.
-- **A fresh shadow is made in memory**, by her genome, never written to a temp file and loaded back.
-- **What lasts is the committed update**: provisional per update id until her genome commits it, idempotent on
-  replay, written off on restore, cancel, or an engine relaunch without the fence's evidence (STAGE-CONTRACT.md,
-  "Control").
-- **At a stop**, a lesson mid-walk is provisional and the walk is dropped, which returns its blocks. Her genome's
-  committed state is preserved with her record, through the same custody by rename as her K/V (`preserve.rs`).
-- **She talks while she learns.** Her addressed turn, or any mind's bounded turn, outranks a tile at the next step, by
-  the lane's envelope.
+**One placer for genes too.** `gene_residency` becomes a `Resident` under the placer, its pages moved by the
+Streamer. Its `DeviceTenant`, its `PressureBroker` path and its own LRU-2 are deleted; a gene's heat is its weight in
+the phenotypes that wear it, read from the one importance (0.2, "What many depend on streams first").
+
+## On and off
+
+Learning switches on and off the way a mind switches in and out:
+- **On.** A span is priced above the lane's cut. The Streamer promotes the walk's first pages and her shadow's pages
+  ahead of the frame that needs them (lead time is bytes over the measured link rate). On unified memory a page is a
+  pointer; on a discrete GPU, pinned host memory and a fenced DMA overlapped with decode.
+- **Off.** No span is owed, or the lane gives the frames to others. The walk yields at its tile boundary with its
+  pages kept. The placer pages them down as their importance falls: on unified memory, the `Mapping` link (`msync`
+  and `MADV_DONTNEED`, the OS writes dirty pages); on a discrete GPU, a fenced copy to pinned host memory, then to
+  flash. Nothing is serialized, nothing re-encoded.
+- **Resume.** A paused lesson resumes at its next tile: its progress is its pages (accumulator, checkpoints, cursor)
+  and its committed updates, so preemption is a checkpoint, never a rollback (0.3, "Preemption is a checkpoint").
+- **Across a stop.** Her genome's region and the walk's pages are flushed and kept with her record by the same
+  custody by rename as her K/V (`preserve.rs`), and the lesson resumes after the restart. Only an engine relaunch
+  without the fence's evidence writes off the uncommitted part of a lesson, with a typed receipt.
+
+## Checked against the engine
+
+Each principle of the engine (CONTINUUM-ENGINE.md §1, SAGE.md, object model 0.2-0.5) and how this design meets it:
+
+| Principle | Met by | Open |
+|---|---|---|
+| The GPU's step is the only serial work | a tile is a frame entry; the walk's planning, pricing, capture reads and page moves run on their own workers | the next tile's pages and rows prepared during the current frame (the lane's `Roles` overlap, not built) |
+| A frame is a draw list built in passes | labelled rows are an entry beside decode rows and prefill chunks | composed frames wait on `Batch` |
+| Time-shared like anything else, never a dedicated lane | a `UnitStage` thread on the lane, its share an output | |
+| Preemption is a checkpoint, never rollback | pages kept at every yield and across a stop; one update per lesson | |
+| One price, read by everything | a lesson is priced by her one importance | `Demand` and the unified importance are not built; `Need` and `Qos` carry it until they are |
+| Every page has a lifecycle and a handle | learning state is block-layer pages over her genome's mapped region | the region itself (slice 3) |
+| Streaming designed to keep up: prefetch by predicted need | the walk names its pages in reverse order, an exact forecast | |
+| Never a hole, a lower level instead | smaller tile, sparser checkpoints, more frames, the global bias | |
+| Archetypes separate from instances | stable genes are shared archetypes; the shadow is her instance | |
+| What many depend on streams first | a gene's heat is its weight across wearers | `gene_residency` under the placer (slice 3) |
+| Persistence never stalls the frame | the generation's write is throughput work | |
+| The worst cost is recomputing what did not change | context from her cache, lessons from captures, never a rebuilt prompt | |
+| Simulate, never play back; salience is compression | spans weighted by her own appraisal; dreams recombine her engrams | perception and the amygdala as components (THE-WHOLE-MIND §12, gap 2) |
+| CBAR: invalidation, not servicing; one in hand, one pending | `LabelSource`s publish state; `Lessons` reprices only on a new frame | |
+| One owner per concern; no parallel managers | placer, lane, Streamer, genome; learning holds nothing of its own | |
+| Both ways, or not at all | on and off, page out and page in, shrink and grow: each in the same validator | |
 
 ## What is deleted
 
-In the change that lands the objects, never later:
-- `measure_within` and its context-only shrink (`driver/learning.rs`), and `Learner::measure` at reply rows with
+Proposed; nothing lands until Joel has seen this list. In the change that lands each replacement:
+- `measure_within` and its context-only shrink, and `Learner::measure` at reply rows with
   `continuum_opt_measure_shadow_graph`: replaced by `UnitStage::cost`.
-- `llama_opt_learn_graph_step`, the `whole_reply_commit` measure phase and `LearnRun::graph_step`: the finest unit is a
-  small tile.
-- `Learns::learn`'s blocking loop and `go_on` (`unified_tier/learn.rs`): replaced by `UnitStage::run`, one tile per
-  lane step.
+- `llama_opt_learn_graph_step`, the `whole_reply_commit` measure phase, `LearnRun::graph_step`.
+- `Learns::learn`'s blocking loop and `go_on` (`unified_tier/learn.rs`): replaced by `UnitStage::draw`.
 - The `Learning` jobs `Measure`, `Load`, `Seat`, `Release`, `Fit`, the `SeatState` machine and `SeatId`
-  (`inference/learning.rs`), and the trainer's seat driving and its leases (`training_trigger/seat_run.rs`, the seat
-  path in `on_engine.rs`): replaced by her Learning part and the placer.
-- The fresh shadow's temp file (`driver/learning.rs` `load`).
-- `TrainingTriggerModule`, its journal of text examples and `genome/training-trigger/{submit,retire,status,rekey,transfer}`
-  (`continuum-dreaming/src/{modules,commands}/training_trigger`), and `dataset/turn_to_example.rs`: replaced by her
-  `LabelSource`s. Durable progress is her genome's committed generation.
-- The credit gate on learning from her work (`continuum-mind/src/persona/training_producer/`: `graded`, `credit_acceptance_region`, `settle_*`, `reconcile_tally`, `redrive`): her work is never graded; a
-  verdict she receives is a correction span.
-- `DreamConsolidationRegion` (`continuum-academy/src/cognition/dream_consolidation/`), a `BrainRegion`: her
-  hippocampus's dreamer becomes a `LabelSource` part of her.
-- The academy's `bench_round` and `held_out` feeding training: a course is an activity whose room offers spans.
+  (`inference/learning.rs`), the trainer's seat driving and its leases (`training_trigger/seat_run.rs`, the seat path
+  in `on_engine.rs`).
+- The fresh shadow's temp file (`driver/learning.rs` `load`), and `llama_opt_shadow_state_write` as a page move.
+- `TrainingTriggerModule`, its journal and `genome/training-trigger/{submit,retire,status,rekey,transfer}`
+  (`continuum-dreaming/src/{modules,commands}/training_trigger`), and `dataset/turn_to_example.rs`, after the
+  journal's pending rows migrate into captures.
+- The credit gate on learning from her work (`continuum-mind/src/persona/training_producer/`: `graded`,
+  `credit_acceptance_region`, `settle_*`, `reconcile_tally`, `redrive`).
+- `DreamConsolidationRegion` (`continuum-academy/src/cognition/dream_consolidation/`): her hippocampus's dreamer
+  becomes a `LabelSource`.
+- The academy's `bench_round` and `held_out` feeding training.
+- `gene_residency`'s `DeviceTenant`, `PressureBroker` path and LRU-2.
 - llama-server's learn endpoint (`tools/server/server-context-learn.inc`), its HTTP adapter and the grant ledger
   (`llama_server/learn_ledger.rs`).
 
@@ -283,21 +329,23 @@ replaces.
 
 | Slice | Owner | Gate (a number on the named node) |
 |---|---|---|
-| 1. `UnitStage` in `continuum-sage`, with her prefill as its first consumer; `prefill_rate.rs` deleted | Fable | `slice::sim`: no bounded mind past her bound; a short grant runs a smaller unit at the same step; M5 live: prefill p50 not worse |
+| 1. `UnitStage` in `continuum-sage`, her prefill its first consumer; `prefill_rate.rs` deleted | Fable | `slice::sim`: no bounded mind past her bound, a short grant runs a smaller unit at the same frame; M5 live: prefill p50 not worse |
 | 2. The fork's surface: begin, cost at `(t, h)`, run one tile; the graph step and whole-reply measure deleted | Fable | M5, 35B: cost at least each tile's actual scratch at 16, 64 and 256 rows; tiled against untiled at least 0.997 |
-| 3. Her genome as the object (`grow`, `commit`, cache out), her Learning part and the walk as Residents; seats, `Fit`, the trainer's leases and the blocking loop deleted | Fable (genome, part, walk), Cormac (the competence rule into her genome, the ledger) | M5 15-minute window: steps and saves above zero, held-out loss kept, no resident past her bound |
-| 3b. Her `LabelSource`s, as she works first: her perception's spans of rows she just prefilled, weighted by her relevance; then corrections, the course room, the dreamer. `TrainingTriggerModule`, the credit gate and `DreamConsolidationRegion` deleted | Fable (perception, dreamer), Cormac (corrections, courses) | M5 15-minute window: work spans learned per hour above zero with no example submitted; a reviewed correction kept across a restart on unseen tasks against the same base without it (plan goal 8) |
-| 4. The loss sliced over the vocabulary, labelled rows only | Fable | `b` before and after on the 35B; the update's cosine against the unsliced step at least 0.9999 |
-| 5. CUDA's backward correct | Codex, Fable | 5090, 0.8B: tiled and untiled against CPU at least 0.999 (today 0.33) |
-| 6. The 5090 live | everyone | 15-minute window: Kimi's lessons (64 GB, 89 GB, 809 GB asked today) learned beside serving; acts per hour not below the matched control |
-| 7. A tile in a composed batch | Fable, Codex | after `Batch` executes: aggregate need-weighted rate above switching on the same trace |
+| 3. Her genome as the object, with its region of pages (shadow, optimizer) over her mapped file; the walk; `gene_residency` under the placer; seats, `Fit`, the trainer's leases, the blocking loop and the GGUF page-out deleted | Fable (genome, walk), Cormac (the competence rule into her genome, the ledger) | M5 15-minute window: steps and saves above zero, held-out loss kept, no resident past her bound; on and off measured as page moves (ms), zero serializations |
+| 4. Her `LabelSource`s, as she works first, then corrections, the course room, the dreamer; the journal migrated; `TrainingTriggerModule`, the credit gate and `DreamConsolidationRegion` deleted | Fable (perception, dreamer), Cormac (corrections, courses, the migration) | M5 window: work spans learned per hour above zero with no example submitted; a reviewed correction kept across a restart on unseen tasks against the same base without it (plan goal 8) |
+| 5. The loss sliced over the vocabulary, labelled rows only | Fable | `b` before and after on the 35B; the update's cosine against the unsliced step at least 0.9999 |
+| 6. CUDA's backward correct | Codex, Fable | 5090, 0.8B: tiled and untiled against CPU at least 0.999 (today 0.33) |
+| 7. The 5090 live | everyone | 15-minute window: Kimi's lessons (64 GB, 89 GB, 809 GB asked today) learned beside serving; acts per hour not below the matched control |
+| 8. A learn tile in a composed frame | Fable, Codex | after `Batch` executes: aggregate need-weighted rate above separate entries on the same trace |
 
 ## Open questions
 
 1. **What the 12.2 MB per row is.** Measured as a total, not yet by tensor. The full-vocabulary logits and their
    gradient are the inference to check first (about 1 MB per F32 copy at a 248k vocabulary). The breakdown comes
-   before slice 4.
+   before slice 5.
 2. **The accumulator in the cost:** a CPU buffer over a pointer never read, or a graph input the cost marks
    host-resident (Codex)?
 3. **CUDA's 0.33 on the 0.8B:** which op, per the bisect with op offload off.
 4. **`least` per backend:** the smallest tile at which the walk is exact, from slice 2's gate on each backend.
+5. **The object model's chapters 0, 3 and 6** live only on `fable/learning-l2-design`. They land on canary, or their
+   rules move into the chapters that own them, before slice 3.
