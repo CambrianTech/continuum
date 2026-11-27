@@ -1,5 +1,9 @@
 #![cfg(test)]
 
+mod paging;
+mod part_2;
+mod restart;
+
     use super::*;
     use crate::runtime::ModuleRegistry;
     use uuid::Uuid;
@@ -595,7 +599,6 @@
             text: "hello world".into(),
             reply_to_id: None,
             media: Vec::new(),
-            dedup_id: None, // test sends don't use client-side dedup
         }
     }
 
@@ -864,68 +867,3 @@
         );
     }
 
-    // Client-side dedup: a retried send with the same dedup_id returns the original
-    // message_id without writing another row. This is the fix for #3686 — the TS client
-    // retries on transient errors, and without dedup each retry produces a duplicate row.
-    #[tokio::test]
-    pub(super) async fn client_dedup_returns_original_message_id_on_retry() {
-        let batch_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-
-        let chat = chat_with_stubs(vec![
-            Arc::new(StubDataModule::new({
-                let count = batch_count.clone();
-                move |cmd, _p| {
-                    if cmd == "data/batch" {
-                        count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                    }
-                    Ok(batch_ok())
-                }
-            })),
-            Arc::new(StubAircModule::ok(airc_ok_response("evt-dedup-001"))),
-        ]);
-
-        let mut params = sample_send_params();
-        params.dedup_id = Some(Uuid::from_u128(0xdeadbeef_00000001).to_string());
-
-        // First send: should persist and return a new message_id.
-        let result1 = chat
-            .send(params.clone())
-            .await
-            .expect("first send must succeed");
-
-        assert!(!result1.message_id.is_nil(), "first send must produce a real message_id");
-        assert!(
-            result1.warning.is_none(),
-            "no warning on first send: {:?}",
-            result1.warning
-        );
-        assert_eq!(
-            batch_count.load(std::sync::atomic::Ordering::SeqCst),
-            1,
-            "first send must produce exactly one data/batch call"
-        );
-
-        // Second send with the same dedup_id: should return original message_id without persisting.
-        let result2 = chat
-            .send(params.clone())
-            .await
-            .expect("dedup hit must succeed (idempotent)");
-
-        assert_eq!(
-            result2.message_id, result1.message_id,
-            "dedup hit must return the original message_id"
-        );
-        assert_eq!(
-            result2.warning.as_deref(),
-            Some("retried send — line already stored"),
-            "warning should indicate retried send: {:?}",
-            result2.warning
-        );
-
-        // Verify only one data/batch call was made (the dedup hit skipped persist entirely).
-        assert_eq!(
-            batch_count.load(std::sync::atomic::Ordering::SeqCst),
-            1,
-            "dedup hit must not produce a second data/batch call"
-        );
-    }

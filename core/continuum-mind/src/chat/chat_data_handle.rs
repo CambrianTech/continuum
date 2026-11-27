@@ -183,14 +183,6 @@ impl ChatModule {
     /// this as `Err` would tell the caller "your write didn't happen",
     /// which is wrong — half of the write did. The `warning` field is
     /// the right shape: degraded success.
-    ///
-    /// # Idempotency
-    ///
-    /// When `params.dedup_id` is set, the store checks a TTL'd map (30 s)
-    /// before persisting. A matching entry within the window causes this call
-    /// to return success with the original message id — no duplicate row is
-    /// written. Callers that retry on transient errors should generate a
-    /// monotonic `dedup_id` per user action so retries are silently absorbed.
     pub async fn send(&self, params: ChatSendParams) -> Result<ChatSendResult, String> {
         self.send_with_wire(params, WireLeg::Envelope).await
     }
@@ -208,27 +200,7 @@ impl ChatModule {
         params: ChatSendParams,
         wire: WireLeg,
     ) -> Result<ChatSendResult, String> {
-        // Client-side dedup check (before any DB write).
-        if let Some(ref dedup_id) = params.dedup_id {
-            if let Some(existing_id) = self.executor_slot.check_dedup(dedup_id) {
-                continuum_base::probe!(
-                    class = "chat.send.dedup_hit",
-                    dedup_id = %dedup_id,
-                    original_message_id = %existing_id.to_string(),
-                    "duplicate send absorbed by client-side dedup"
-                );
-                return Ok(ChatSendResult {
-                    message_id: existing_id,
-                    event_id: None,
-                    warning: Some("retried send — line already stored".to_string()),
-                });
-            }
-        }
         let (message_id, now_ms) = self.persist(&params, wire == WireLeg::Envelope).await?;
-        // Record dedup entry after successful persist.
-        if let Some(ref dedup_id) = params.dedup_id {
-            self.executor_slot.record_dedup(dedup_id.clone(), message_id);
-        }
         match wire {
             WireLeg::Envelope => self.broadcast_envelope(message_id, &params, now_ms).await,
             WireLeg::CallerSpeaks => Ok(ChatSendResult {

@@ -273,7 +273,6 @@ impl ChatModule {
                 text: stored.content.text,
                 reply_to_id: stored.reply_to_id,
                 media: stored.content.media,
-                dedup_id: None, // publication recovery has no client-side dedup
             },
             at_ms,
         )))
