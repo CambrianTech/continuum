@@ -16,6 +16,7 @@ edition = "2021"
 # the convention merely discouraged.
 [dependencies]
 continuum-host = { workspace = true } # durable placement of the recovery journal
+continuum-base = { workspace = true } # continuum_home and EpochMs for the deploy-hold lease binary
 async-trait = "0.1" # shared deploy-source contract; no server implementation dependency
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -23,13 +24,13 @@ tokio = { version = "1", features = ["time", "process", "rt", "macros"] }  # lau
 sha2 = { workspace = true }
 sysinfo = { workspace = true } # process::is_alive, the one pid-liveness check (deploy_claim, lane reaping)
 base64 = { workspace = true }
+uuid = { version = "1", features = ["v4", "serde"] }  # a deploy-hold lease token (deploy_hold_file); test temp dirs
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }     # launchd.rs: geteuid() for the root check
 
 [dev-dependencies]
 tempfile = { workspace = true }   # install_cli / supervisor_install tests write into a temp root
-uuid = { version = "1", features = ["v4"] }  # test-only: unique temp dirs
 
 [target.'cfg(windows)'.dependencies]
 chrono = "0.4"

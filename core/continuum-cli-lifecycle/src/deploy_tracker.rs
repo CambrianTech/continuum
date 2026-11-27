@@ -55,8 +55,9 @@ pub struct Hold {
 pub enum HoldOwner {
     /// An operator, by hand (or an older hold, once migrated): never touched by the tracker.
     Operator,
-    /// The tracker itself, for a deliberately deployed build not on canary, through its live window.
-    Candidate { build: String },
+    /// A measurer's lease on the node for one run: renewed or released only with the token `acquire`
+    /// returned for this acquisition, so a delayed cleanup never releases a newer run (Codex on #6288).
+    Measurer { who: String, build: String, token: uuid::Uuid },
 }
 
 /// A hold not cleared or expired within this long is surfaced as a warning: the fleet

@@ -137,51 +137,87 @@ pub fn change(state_dir: &Path, decide: impl FnOnce(&HoldRead) -> Change) -> io:
 }
 
 
-/// The running build as the tracker sees it on a tick.
-#[derive(Clone, Copy)]
-pub struct Running<'a> {
-    /// Its build sha.
-    pub sha: &'a str,
-    /// Whether origin/canary contains it (a build the tracker deploys, or an older one it moves past).
-    pub on_canary: bool,
-    /// When its serving was verified ready, once it has been.
-    pub ready_at: Option<u64>,
-    /// How long a candidate keeps its window.
-    pub window_ms: u64,
+/// A measurer's lease on the node for one run (Codex on #6288): acquired before its handoff, renewed
+/// through resident readiness and the window's real end, released when the run ends. The TTL bounds only
+/// a measurer that is lost. The tracker infers nothing: a build is held because someone said so.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Acquired {
+    /// The lease, and the token its renewals and release must carry.
+    Leased { token: uuid::Uuid },
+    /// An active hold is in the way (an operator's, another lease, or an unreadable file): not taken.
+    Busy(HoldRead),
 }
 
-/// What the running build means for the hold, decided by the tracker on every tick: a build deployed
-/// on purpose that is not on canary (`on_canary` false) holds the tracker for one `window_ms` from the
-/// moment its serving was verified ready (`ready_at`; until then the hold is refreshed from `now`, so it
-/// lasts through readiness), and a build on canary releases a candidate's hold. An operator's hold, or a
-/// file that cannot be read, is never touched (Codex on 17660bf67f).
-pub fn for_running(build: &Running<'_>, current: &HoldRead, now: u64) -> Change {
-    let Running { sha: running, on_canary, ready_at, window_ms } = *build;
-    let ours = match current {
-        HoldRead::Held(hold) => match &hold.owner {
-            HoldOwner::Candidate { build } => Some(build.as_str()),
-            HoldOwner::Operator => None,
-        },
-        HoldRead::Missing | HoldRead::Unreadable(_) => None,
-    };
-    if on_canary {
-        return if ours.is_some() { Change::Remove } else { Change::Keep };
-    }
-    match current {
-        HoldRead::Held(hold) if ours.is_none() && hold.is_active(now) => return Change::Keep,
-        HoldRead::Unreadable(_) => return Change::Keep,
-        HoldRead::Held(_) | HoldRead::Missing => {}
-    }
-    let want = Hold {
-        reason: format!("candidate {running} deployed by hand: the tracker leaves it for its live window"),
-        created_ms: ready_at.unwrap_or(now),
-        ttl_ms: Some(window_ms),
-        owner: HoldOwner::Candidate { build: running.to_string() },
-    };
-    match current {
-        HoldRead::Held(hold) if *hold == want => Change::Keep,
-        _ => Change::Write(want),
-    }
+/// What a renewal or a release did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ByToken {
+    Done,
+    /// The hold is not this acquisition's (released, expired and replaced, or never this token's).
+    NotYours,
+}
+
+/// What a measurer asks for: the node, while `who` measures `build`, for `ttl_ms`.
+#[derive(Debug, Clone, Copy)]
+pub struct LeaseAsk<'a> {
+    pub who: &'a str,
+    pub build: &'a str,
+    pub ttl_ms: u64,
+}
+
+/// The measurer asks for the node at `now`.
+pub fn acquire(state_dir: &Path, ask: &LeaseAsk<'_>, now: u64) -> io::Result<Acquired> {
+    let LeaseAsk { who, build, ttl_ms } = *ask;
+    let mut outcome = None;
+    change(state_dir, |current| {
+        let free = match current {
+            HoldRead::Missing => true,
+            HoldRead::Held(hold) => !hold.is_active(now),
+            HoldRead::Unreadable(_) => false,
+        };
+        if !free {
+            outcome = Some(Acquired::Busy(current.clone()));
+            return Change::Keep;
+        }
+        let token = uuid::Uuid::new_v4();
+        outcome = Some(Acquired::Leased { token });
+        Change::Write(Hold {
+            reason: format!("{who} measures {build}"),
+            created_ms: now,
+            ttl_ms: Some(ttl_ms),
+            owner: HoldOwner::Measurer { who: who.to_string(), build: build.to_string(), token },
+        })
+    })?;
+    outcome.ok_or_else(|| io::Error::other("the hold change ran without deciding"))
+}
+
+/// Renew the lease `token` names for `ttl_ms` from `now`; any other hold is left as it is.
+pub fn renew(state_dir: &Path, token: uuid::Uuid, ttl_ms: u64, now: u64) -> io::Result<ByToken> {
+    let mut outcome = ByToken::NotYours;
+    change(state_dir, |current| match current {
+        HoldRead::Held(hold) if leased_by(hold, token) => {
+            outcome = ByToken::Done;
+            Change::Write(Hold { created_ms: now, ttl_ms: Some(ttl_ms), ..hold.clone() })
+        }
+        _ => Change::Keep,
+    })?;
+    Ok(outcome)
+}
+
+/// Release the lease `token` names; any other hold is left as it is.
+pub fn release(state_dir: &Path, token: uuid::Uuid) -> io::Result<ByToken> {
+    let mut outcome = ByToken::NotYours;
+    change(state_dir, |current| match current {
+        HoldRead::Held(hold) if leased_by(hold, token) => {
+            outcome = ByToken::Done;
+            Change::Remove
+        }
+        _ => Change::Keep,
+    })?;
+    Ok(outcome)
+}
+
+fn leased_by(hold: &Hold, token: uuid::Uuid) -> bool {
+    matches!(&hold.owner, HoldOwner::Measurer { token: held, .. } if *held == token)
 }
 
 #[cfg(test)]
@@ -231,32 +267,36 @@ mod tests {
         assert!(HoldRead::Unreadable("x".into()).honored().is_some_and(|hold| hold.ttl_ms.is_none()), "an unreadable file holds");
     }
 
-    // what this catches (the M5, 2026-11-27: a verified candidate replaced by canary 11 minutes into its
-    // window; Codex on 17660bf67f): the window must run from serving readiness, last through a slow
-    // readiness, release only the candidate's own hold, and never touch an operator's or an unreadable one.
+    // what this catches (Codex on #6288): a measurer releasing a newer run with a stale token, a lease
+    // taken over an operator's hold or a live lease, and a lost measurer holding the node forever.
     #[test]
-    fn a_candidate_holds_from_readiness_and_never_touches_anyone_elses_hold() {
-        let window_ms = 900_000;
-        let candidate = |ready_at| Running { sha: "4da0f81bfa", on_canary: false, ready_at, window_ms };
-        // not ready yet: held from now, refreshed each tick, so it lasts through readiness
-        let starting = match for_running(&candidate(None), &HoldRead::Missing, 1_000) {
-            Change::Write(hold) => hold,
-            other => panic!("a candidate must hold the tracker, got {other:?}"),
+    fn a_lease_is_renewed_and_released_only_by_its_own_token() {
+        let state = tempfile::tempdir().expect("test: a state dir");
+        let ttl = 900_000;
+        let first = match acquire(state.path(), &LeaseAsk { who: "codex", build: "4da0f81bfa", ttl_ms: ttl }, 1_000).expect("test: acquire") {
+            Acquired::Leased { token } => token,
+            busy => panic!("a free node is leased, got {busy:?}"),
         };
-        assert_eq!((starting.created_ms, starting.ttl_ms), (1_000, Some(window_ms)));
-        // ready at 100 s: its window runs from readiness, and a later tick keeps it
-        let ready = match for_running(&candidate(Some(100_000)), &HoldRead::Held(starting), 101_000) {
-            Change::Write(hold) => hold,
-            other => panic!("readiness restarts the window, got {other:?}"),
+        // a second acquisition while it is live is busy, even for the same build
+        assert!(matches!(acquire(state.path(), &LeaseAsk { who: "codex", build: "4da0f81bfa", ttl_ms: ttl }, 2_000).expect("test: again"), Acquired::Busy(_)));
+        // renewed through readiness and the window's end, only with its token
+        assert_eq!(renew(state.path(), first, ttl, 500_000).expect("test: renew"), ByToken::Done);
+        assert_eq!(renew(state.path(), uuid::Uuid::new_v4(), ttl, 500_000).expect("test: a stranger"), ByToken::NotYours);
+        // lost measurer: past its TTL another run (an ancestor candidate) acquires, and the stale token
+        // can neither renew nor release the newer run
+        let second = match acquire(state.path(), &LeaseAsk { who: "codex", build: "f6648967d", ttl_ms: ttl }, 500_000 + ttl).expect("test: after expiry") {
+            Acquired::Leased { token } => token,
+            busy => panic!("an expired lease frees the node, got {busy:?}"),
         };
-        assert_eq!(ready.created_ms, 100_000);
-        assert_eq!(for_running(&candidate(Some(100_000)), &HoldRead::Held(ready.clone()), 400_000), Change::Keep);
-        // canary deployed again: the candidate's hold is released, an operator's never
-        let canary = Running { sha: "f6648967d", on_canary: true, ready_at: Some(500_000), window_ms };
-        assert_eq!(for_running(&canary, &HoldRead::Held(ready), 600_000), Change::Remove);
-        let operator = HoldRead::Held(Hold { reason: "operator: live read".into(), created_ms: 1_000, ttl_ms: None, owner: HoldOwner::Operator });
-        assert_eq!(for_running(&canary, &operator, 600_000), Change::Keep);
-        assert_eq!(for_running(&candidate(None), &operator, 600_000), Change::Keep);
-        assert_eq!(for_running(&candidate(None), &HoldRead::Unreadable("denied".into()), 600_000), Change::Keep);
+        assert_eq!(release(state.path(), first).expect("test: stale release"), ByToken::NotYours);
+        assert!(matches!(read(state.path()), HoldRead::Held(hold) if leased_by(&hold, second)), "the newer run still holds");
+        assert_eq!(release(state.path(), second).expect("test: release"), ByToken::Done);
+        assert_eq!(read(state.path()), HoldRead::Missing);
+        // an operator's hold, active, makes a lease busy and is never released by one
+        let operator = Hold { reason: "operator: live read".into(), created_ms: 1_000, ttl_ms: None, owner: HoldOwner::Operator };
+        change(state.path(), |_| Change::Write(operator.clone())).expect("test: an operator hold");
+        assert!(matches!(acquire(state.path(), &LeaseAsk { who: "codex", build: "x", ttl_ms: ttl }, 2_000).expect("test: busy"), Acquired::Busy(HoldRead::Held(_))));
+        assert_eq!(release(state.path(), second).expect("test: not the operator's"), ByToken::NotYours);
+        assert_eq!(read(state.path()), HoldRead::Held(operator));
     }
 }

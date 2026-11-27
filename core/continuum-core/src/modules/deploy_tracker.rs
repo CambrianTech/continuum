@@ -38,10 +38,6 @@ use crate::runtime::{CommandResult, ModuleConfig, ModulePriority, ServiceModule}
 /// The deploy tracker checks the tip on this cadence.
 pub const DEPLOY_TRACK_INTERVAL: Duration = Duration::from_secs(300);
 const GIT_TIMEOUT: Duration = Duration::from_secs(30);
-/// A deliberately deployed build's live window: one measured window, the project's comparison unit
-/// (CLAUDE.md, plan rule 3: "compare exact 15-minute windows on real residents").
-// event-exempt: the hold ends on its event, a canary deploy releasing it (deploy.hold.released); this only bounds a candidate left running
-const CANDIDATE_WINDOW: Duration = Duration::from_secs(15 * 60);
 const GH_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// The running core's build SHA — the compile-time constant the binary was stamped with,
@@ -373,60 +369,7 @@ pub struct DeployTrackerModule {
     serving: tokio::sync::watch::Receiver<crate::inference::llama_server::ServingSnapshot>,
 }
 
-/// Whether origin/canary contains the running build, as one tick could tell.
-enum Containment {
-    Known(bool),
-    /// Not known this tick, and why (no checkout, or git's outcome).
-    Unknown(String),
-}
-
 impl DeployTrackerModule {
-    /// The running build's hold, through the one hold owner: a build origin/canary does not contain was
-    /// deployed on purpose (the tracker deploys only canary), so it keeps one window from its verified
-    /// serving readiness; a build on canary releases a candidate's hold (the M5, 2026-11-27: candidate
-    /// 4da0f81bfa, verified 04:15Z, replaced by canary at 04:26Z; Codex on 17660bf67f). Whether canary
-    /// contains it unknown this tick: the hold is left as it is, said.
-    async fn hold_for_running(&self, tip: Option<&str>, now: u64) {
-        use continuum_cli_lifecycle::deploy_hold_file::{change, for_running, Change, Running};
-        let Some(tip) = tip.map(str::to_string) else { return }; // no tip this tick: the source outage is said by the tick
-        let contained = tokio::task::spawn_blocking(move || match checkout_now() {
-            Err(no_checkout) => Containment::Unknown(no_checkout),
-            Ok(dir) => {
-                let dir = dir.to_string_lossy().into_owned();
-                let out = crate::system_resources::bounded_command::probe("git", &["-C", &dir, "merge-base", running_sha(), &tip], GIT_TIMEOUT);
-                match out.stdout_if_ok() {
-                    // canary contains the running build exactly when their merge-base is the running build
-                    Some(base) => Containment::Known(base.trim().starts_with(running_sha())),
-                    None => Containment::Unknown(out.outcome().to_string()),
-                }
-            }
-        })
-        .await;
-        let on_canary = match contained {
-            Ok(Containment::Known(on)) => on,
-            Ok(Containment::Unknown(why)) => {
-                continuum_base::probe!(class = "deploy.hold.unknown", running = running_sha(), why = %why, "whether canary contains the running build is unknown this tick: the hold is left as it is");
-                return;
-            }
-            Err(stopped) => {
-                continuum_base::probe!(class = "deploy.hold.unknown", running = running_sha(), why = %stopped, "the hold's canary check did not finish: the hold is left as it is");
-                return;
-            }
-        };
-        let running = Running {
-            sha: running_sha(),
-            on_canary,
-            ready_at: self.serving.borrow().ready_verified_at_ms,
-            window_ms: CANDIDATE_WINDOW.as_millis() as u64,
-        };
-        match change(&self.state_dir, |current| for_running(&running, current, now)) {
-            Ok(Change::Write(hold)) => continuum_base::probe!(class = "deploy.hold.candidate", running = running_sha(), from_ms = hold.created_ms,
-                "a build not on canary keeps its live window: the tracker holds"),
-            Ok(Change::Remove) => continuum_base::probe!(class = "deploy.hold.released", running = running_sha(), "a canary build released the candidate's hold"),
-            Ok(Change::Keep) => {}
-            Err(why) => continuum_base::probe!(class = "deploy.hold.unwritable", running = running_sha(), why = %why, "the candidate hold could not be written"),
-        }
-    }
     pub fn new(serving: tokio::sync::watch::Receiver<crate::inference::llama_server::ServingSnapshot>) -> Self {
         let root = crate::paths::continuum_home().unwrap_or_else(|_| PathBuf::from(".")); // unwrap_or_else: no home = cwd; the deploy source degrades, never deploys on a guess
         let state_dir = root.join("state");
@@ -593,8 +536,6 @@ impl ServiceModule for DeployTrackerModule {
             Some(tip) => self.source.build_key(tip).await,
             None => None,
         };
-        // a build deployed on purpose keeps its live window before this tick decides (the M5, 2026-11-27)
-        self.hold_for_running(tip_sha.as_deref(), now).await;
         let inputs = TickInputs {
             running_sha: Some(running_sha().to_string()),
             tip_sha,
