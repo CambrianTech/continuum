@@ -21,6 +21,8 @@
 
 mod memory;
 pub use memory::LearningMemory;
+mod owed;
+pub use owed::{LearnerOwed, Owed, Rows, LEARNING_OWED};
 
 use std::num::NonZeroU64;
 use std::path::PathBuf;

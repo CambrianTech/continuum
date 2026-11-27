@@ -84,6 +84,12 @@ struct EngineSeat {
     weights: Vec<MemoryRow>,
     /// Whether a higher wait asked it to give back: it then finishes as `finishing` does.
     asked_back: give_back::AskedBack,
+    /// The examples its bucket still owes past her newest generation and its own progress (refreshed
+    /// whenever its rows are read), its next lesson's rows as the engine measured them, and when it
+    /// began owing: what `learning/owed` says of it.
+    examples_owed: usize,
+    next: Option<crate::inference::learning::Rows>,
+    since: std::time::Instant,
 }
 
 /// A generation the engine saved: where, how many optimizer steps it holds, and the positions it
@@ -185,21 +191,14 @@ impl OnEngine {
     fn freed(&self) -> Vec<BucketKey> {
         let seats = self.seats.lock();
         let mut held = self.held_off.lock();
-        let mut ready = Vec::new();
-        for (key, hold) in held.iter_mut() {
+        let granted = held.extract_if(|key, hold| {
             if seats.values().any(|seat| seat.key == *key) {
-                continue;
+                return false;
             }
-            if let HeldOff::Asked { ticket } = hold {
-                if self.reserve_granted(key, ticket) {
-                    ready.push(key.clone());
-                }
-            }
-        }
-        for key in &ready {
-            held.remove(key);
-        }
-        ready
+            let HeldOff::Asked { ticket } = hold else { return false };
+            self.reserve_granted(key, ticket)
+        });
+        granted.map(|(key, _)| key).collect()
     }
 
     /// Whether `key`, its seat just let go, had its ask granted (the grant taken into its reserve and
@@ -485,6 +484,7 @@ impl TrainingTriggerState {
         let run = SeatRun::measure(port.as_ref(), measure)?;
         continuum_base::probe!(class = "training.on_engine.measure_told", persona = %key.persona_id, trait_kind = %key.trait_kind, seat = %id, from_generation, lesson_messages,
             "a seat was measured on the node engine; its Measured (or Refused) is what follows");
+        let examples_owed = owed::examples_owed(rows, &checkpointed, &HashMap::new()); // nothing progressed yet: a new seat
         let seat = EngineSeat {
             key: key.clone(),
             run,
@@ -496,8 +496,12 @@ impl TrainingTriggerState {
             finishing: false,
             weights: Vec::new(),
             asked_back: give_back::AskedBack::default(),
+            examples_owed,
+            next: None,
+            since: std::time::Instant::now(),
         };
         self.on_engine.seats.lock().insert(SeatId(id), seat);
+        self.say_owed();
         Ok(())
     }
 
@@ -520,6 +524,7 @@ impl TrainingTriggerState {
         let saved = matches!(heard, Heard::Saved { .. });
         let ended = matches!(heard, Heard::Released | Heard::NotSeated { .. });
         let acted = self.act(port, seat, &key, heard).await;
+        self.say_owed(); // what it owes changed with its act (a lesson, a commit, a release)
         drop(gate); // the candidate sweep and a seat again take this bucket's gate themselves
         match acted {
             Err(why) => {
@@ -573,7 +578,11 @@ impl TrainingTriggerState {
                 });
                 Ok(())
             }
-            Heard::LeaseSeat { optimizer, workspace, .. } => {
+            Heard::LeaseSeat { optimizer, workspace, rows } => {
+                self.with_seat(seat, |held| {
+                    held.next = rows; // her next lesson as the engine sized it
+                    Ok(())
+                });
                 // The whole seat: what seating it again takes, its weights included.
                 let whole = self.whole_seat(seat, &optimizer, &workspace);
                 let optimizer = self.lease(port, key, Lease { consumer: &consumer, rows: &optimizer, whole: &whole })?;
@@ -628,6 +637,7 @@ impl TrainingTriggerState {
         let rows = self.rows_of(key).await?;
         let mut seats = self.on_engine.seats.lock();
         let Some(held) = seats.get_mut(&seat) else { return Ok(()) };
+        held.examples_owed = owed::examples_owed(&rows, &held.checkpointed, held.run.progress());
         if !held.run.ready() {
             return Ok(());
         }
@@ -802,6 +812,7 @@ impl TrainingTriggerState {
 }
 
 mod give_back;
+mod owed;
 
 #[cfg(test)]
 mod tests;

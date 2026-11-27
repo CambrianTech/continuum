@@ -57,7 +57,7 @@ pub(crate) enum Heard {
     LeaseWeights(Vec<MemoryRow>),
     /// Lease its `optimizer` and its `workspace` (sized for the lesson rows the seat keeps), then
     /// [`SeatRun::seat`] under them.
-    LeaseSeat { optimizer: Vec<MemoryRow>, workspace: Vec<MemoryRow> },
+    LeaseSeat { optimizer: Vec<MemoryRow>, workspace: Vec<MemoryRow>, rows: Option<crate::inference::learning::Rows> },
     /// Seated: lessons may be learned. `optimizer` says whether its moments came back.
     Seated { optimizer: OptimizerStart },
     /// `position`'s lesson committed `steps`: it is learned, volatile until a generation holds it.
@@ -247,10 +247,16 @@ impl<G: Send> SeatRun<G> {
                 self.phase = Phase::Measured;
                 Heard::LeaseWeights(weights.clone())
             }
-            SeatState::Loaded { optimizer, workspace, lesson_rows, .. } => {
+            SeatState::Loaded { optimizer, workspace, reply_rows, lesson_rows } => {
                 self.phase = Phase::Loaded;
                 self.within = Some(*lesson_rows);
-                Heard::LeaseSeat { optimizer: optimizer.clone(), workspace: workspace.clone() }
+                // the lesson the engine sized: its context before her reply, and the reply it trains. A reply
+                // past its lesson breaks the engine's contract: no rows are said for it, and it is probed.
+                let rows = lesson_rows.get().checked_sub(reply_rows.get()).map(|context| crate::inference::learning::Rows { context, reply: *reply_rows });
+                if rows.is_none() {
+                    continuum_base::probe!(class = "training.on_engine.rows_inverted", lesson_rows = lesson_rows.get(), reply_rows = reply_rows.get(), "the engine sized a reply past its lesson");
+                }
+                Heard::LeaseSeat { optimizer: optimizer.clone(), workspace: workspace.clone(), rows }
             }
             SeatState::Seated { optimizer } => {
                 self.phase = Phase::Seated;

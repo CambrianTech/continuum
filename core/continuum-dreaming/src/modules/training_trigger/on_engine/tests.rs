@@ -106,6 +106,12 @@ mod whole_loop {
         assert_eq!(answer["success"], true, "test: accepted: {answer}");
         let key = BucketKey { persona_id: persona, trait_kind: "geography".into(), base_model: "qwen".into() };
 
+        // a trainer on its own bus, so what it owes is said there (`learning/owed`)
+        let bus = continuum_sage::component::Bus::new();
+        let _trainer = crate::modules::training_trigger::trainer::Trainer::on(Arc::clone(&state), &bus).expect("test: the first trainer on this bus");
+        let owed = bus.reader::<crate::inference::learning::Owed>(crate::inference::learning::LEARNING_OWED, continuum_sage::component::Key::ONE);
+        let owes = || owed.latest().expect("test: the trainer said what it owes").value.0.clone();
+        assert!(owes().is_empty(), "nothing is owed before a seat");
         let kept = Arc::new(Kept::default());
         let port: Arc<dyn LearnPort> = kept.clone();
         state.seat_bucket(&port, &key).await.expect("test: the bucket seats");
@@ -125,6 +131,9 @@ mod whole_loop {
         assert_eq!(kept.kinds().last(), Some(&"load"), "its weights leased, it loads");
         state.on_said(&port, say(SeatState::Loaded { optimizer: rows(MemoryRole::OptimizerStatic), workspace: rows(MemoryRole::SharedComputeRequired), reply_rows: NonZeroU32::MIN.saturating_add(511), lesson_rows: NonZeroU32::MIN.saturating_add(511) })).await;
         assert_eq!(kept.kinds().last(), Some(&"seat"), "its optimizer and workspace leased, it seats");
+        let first = owes();
+        assert_eq!(first.get(&seat).map(|o| (o.mind, o.examples)), Some((PersonaId(persona), 2)), "her seat owes both examples");
+        assert_eq!(first.get(&seat).and_then(|o| o.next).map(|r| (r.context, r.reply.get())), Some((0, 512)), "and her next lesson as the engine measured it");
         state.on_said(&port, say(SeatState::Seated { optimizer: OptimizerStart::Cold })).await;
         for lesson in 0..2 {
             assert_eq!(kept.kinds().last(), Some(&"learn"), "lesson {lesson} is told");
@@ -132,9 +141,11 @@ mod whole_loop {
             state.on_said(&port, Said::Step { seat, step, outcome: StepOutcome::Learned { steps: NonZeroU64::MIN, loss: Some(1.0) } }).await;
         }
         assert_eq!(kept.kinds().last(), Some(&"checkpoint"), "nothing waits: what she learned is saved");
+        assert_eq!(owes().get(&seat).map(|o| o.examples), Some(0), "both learned, not yet committed: the seat stays until its generation is");
         let into = kept.last_into();
         state.on_said(&port, Said::Generation { seat, outcome: GenerationOutcome::Saved { into: into.clone(), steps: 2 } }).await;
         assert!(into.join("manifest.json").is_file(), "the generation's manifest is written beside it");
+        assert!(owes().get(&seat).is_none(), "committed with nothing left: the seat leaves the map (its Done)");
         assert_eq!(state.bucket_example_count(persona, "geography", "qwen").await, None, "the journal holds both learned");
         assert_eq!(kept.kinds().last(), Some(&"release"), "committed and nothing waits: the seat is let go");
         assert!(state.seated_on_engine(&key), "its leases stay held until the engine says Released");

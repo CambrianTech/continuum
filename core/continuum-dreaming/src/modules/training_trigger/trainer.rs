@@ -19,7 +19,7 @@ use continuum_sage::Qos;
 
 use super::cleaner::{Seated, SEATED};
 use super::{OwnedKind, TrainingTriggerState};
-use crate::inference::learning::{Said, LEARNING_SAID};
+use crate::inference::learning::{Owed, Said, LEARNING_OWED, LEARNING_SAID};
 use crate::inference::llama_server::{ServingSnapshot, SERVING_TOPIC};
 use crate::resources::{Free, FREE};
 
@@ -77,6 +77,9 @@ impl From<Snapshot<Arrivals>> for Wake {
 /// engine's memory, so every shadow file in the train dir is a leftover the cleaner may release.)
 pub(crate) struct TrainerOut {
     arrivals: Source<Arrivals>,
+    /// What every seat owes (`learning/owed`), and what it last said: said again only when it changes.
+    owed: Source<Owed>,
+    said_owed: Owed,
     /// Held for the trainer's life, so what it said (no shadow file held) stays said.
     _no_shadows: Source<Seated>,
 }
@@ -85,6 +88,14 @@ impl TrainerOut {
     /// Say that the newest accepted example is `sequence`.
     pub(crate) fn arrived(&mut self, sequence: u64) {
         self.arrivals.say(Arrivals(sequence));
+    }
+
+    /// Say what every seat owes, when it differs from what was last said.
+    pub(crate) fn owe(&mut self, owed: Owed) {
+        if owed != self.said_owed {
+            self.owed.say(owed.clone());
+            self.said_owed = owed;
+        }
     }
 }
 
@@ -100,7 +111,9 @@ impl Trainer {
     pub fn on(state: Arc<TrainingTriggerState>, bus: &Bus) -> Result<Self, Taken> {
         let mut no_shadows = Source::on(bus, SEATED, Key::ONE, "training-trigger")?;
         no_shadows.say(Seated(std::collections::BTreeSet::new()));
-        let out = TrainerOut { arrivals: Source::on(bus, ARRIVALS, Key::ONE, "training-trigger")?, _no_shadows: no_shadows };
+        let mut owed = Source::on(bus, LEARNING_OWED, Key::ONE, "training-trigger")?;
+        owed.say(Owed::default()); // nothing owed until a seat says otherwise
+        let out = TrainerOut { arrivals: Source::on(bus, ARRIVALS, Key::ONE, "training-trigger")?, owed, said_owed: Owed::default(), _no_shadows: no_shadows };
         state.install_out(out);
         Ok(Self { state })
     }

@@ -8,7 +8,7 @@
 
 use continuum_sage::place::{Act, AskId, Bytes, Need, SplitAsk, Status};
 
-use super::{told, LeaseError, LeaseRequest, ResourceLease, ResourceLeaseLedger};
+use super::{LeaseError, LeaseRequest, ResourceLease, ResourceLeaseLedger};
 
 /// What an ask became.
 #[derive(Debug, Clone, PartialEq)]
