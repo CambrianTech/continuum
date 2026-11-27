@@ -53,6 +53,13 @@ struct CountColumns {
     example_count: Option<u64>,
 }
 
+/// The count column, written alone to a row counted from its batch.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CountWritten {
+    example_count: u64,
+}
+
 impl CountColumns {
     /// The id is selected for the row it pairs with (`OrmStore::find_projected`), never decoded here.
     fn names() -> Vec<String> {
@@ -210,10 +217,12 @@ impl DurableStore {
     /// Count submission `id`'s examples from its batch and write the count to its row: once per row
     /// written before the count column.
     async fn count_examples_of(&self, id: Uuid) -> Result<u64, JournalRead> {
-        let mut row = self.submissions.find_by_id(id).await?.ok_or(JournalRead::Missing(id))?;
+        let row = self.submissions.find_by_id(id).await?.ok_or(JournalRead::Missing(id))?;
         let examples = row.batch.examples.len() as u64; // as: a usize fits a u64 on every target this builds for
-        row.example_count = Some(examples);
-        self.submissions.update(id, &row).await?;
+        drop(row);
+        // the count column alone: rewriting the row would write her whole batch back to set one number
+        // (Codex's 2163 window: her first counted read took 128.5 s against 34.7 s before)
+        self.submissions.update_fields(id, &CountWritten { example_count: examples }).await?;
         continuum_base::probe!(class = "training.journal.count_backfilled", submission = %id, examples, "a row written before the count column was counted once and its count written");
         Ok(examples)
     }
