@@ -847,3 +847,60 @@
         assert_eq!(window.bytes(), 300, "given back at once: the lease shrank");
         assert!(turn.granted().is_some(), "and the turn is granted from it");
     }
+
+    /// A holder that gives back half of what it is asked the first time, then the rest.
+    struct HalfThenRest {
+        asked: std::sync::Mutex<Vec<crate::resources::ShrinkDue>>,
+    }
+
+    impl crate::resources::ShrinkHolder for HalfThenRest {
+        fn shrink(&self, due: &crate::resources::ShrinkDue) -> ReclaimOutcome {
+            let mut asked = self.asked.lock().expect("test: the holder's log"); // expect: the test's own lock
+            let gap = due.held - due.to;
+            let freed = if asked.is_empty() { gap / 2 } else { gap };
+            let due = due.clone();
+            asked.push(due);
+            ReclaimOutcome { freed_bytes: freed, status: ReclaimStatus::Partial, detail: None }
+        }
+    }
+
+    // what this catches (Fable on #6287 at 8ffcc4d05c): a Partial answer leaving the rest of its ask unasked,
+    // so the outranking wait strands. Bytes given back go through the lease's own shrink, which returns its
+    // entry to Committed, so the next settle asks again for what is still short: one wait, two elastic leases,
+    // the first gives back half, is asked again for the remainder, and the wait is granted.
+    #[tokio::test]
+    async fn a_partial_answer_is_asked_again_for_the_remainder_until_the_wait_fits() {
+        let src = Arc::new(MockCapacitySource::new(ResourceKind::Vram, 1_000));
+        let config = DaemonConfig { tick_interval: Duration::from_secs(3600), min_reclaim_budget: Duration::from_millis(100), governor: GovernorConfig { min_dwell_ms: 0, graceful_grace_ms: 50 } };
+        let daemon = ResourceDaemon::start(vec![src], vec![], config);
+        let first = daemon.acquire_guarded(&req("embed:a", 400, u64::MAX, ReclaimPolicy::Graceful)).expect("test: the first fits");
+        let second = daemon.acquire_guarded(&req("embed:b", 400, u64::MAX, ReclaimPolicy::Graceful)).expect("test: the second fits");
+        let partial = Arc::new(HalfThenRest { asked: std::sync::Mutex::new(Vec::new()) });
+        let whole = Arc::new(GivesItsGap { asked: std::sync::Mutex::new(Vec::new()) });
+        let (partial_holder, whole_holder): (Arc<dyn crate::resources::ShrinkHolder>, Arc<dyn crate::resources::ShrinkHolder>) = (partial.clone(), whole.clone());
+        daemon.hold_elastic(&first, crate::resources::Elastic { floor: 0, priority: 10 }, partial_holder).expect("test: elastic");
+        daemon.hold_elastic(&second, crate::resources::Elastic { floor: 0, priority: 10 }, whole_holder).expect("test: elastic");
+        let Ok(Ask::Waiting { ticket: mut turn, .. }) = daemon.ask(&req("serving", 700, u64::MAX, ReclaimPolicy::Pinned)) else { panic!("test: the turn waits") };
+        turn.prioritize(200); // asks each outranked lease at once: the first gives back half
+        assert!(turn.granted().is_none(), "half given back: still short");
+        daemon.deliver_shrinks();
+        let asked = partial.asked.lock().expect("test: the holder's log").clone(); // expect: the test's own lock
+        assert_eq!(asked.len(), 2, "asked again for the remainder after a Partial");
+        assert_eq!(asked[1].held, asked[0].held - (asked[0].held - asked[0].to) / 2, "the second ask starts from what it holds now");
+        assert_eq!(whole.asked.lock().expect("test: the holder's log").len(), 1, "the lease that gave its whole gap is asked once"); // expect: the test's own lock
+        assert!(turn.granted().is_some(), "the remainder given back: the wait fits");
+    }
+
+    /// A holder that gives back exactly what it is asked.
+    struct GivesItsGap {
+        asked: std::sync::Mutex<Vec<crate::resources::ShrinkDue>>,
+    }
+
+    impl crate::resources::ShrinkHolder for GivesItsGap {
+        fn shrink(&self, due: &crate::resources::ShrinkDue) -> ReclaimOutcome {
+            let freed = due.held - due.to;
+            let due = due.clone();
+            self.asked.lock().expect("test: the holder's log").push(due); // expect: the test's own lock
+            ReclaimOutcome { freed_bytes: freed, status: ReclaimStatus::Partial, detail: None }
+        }
+    }

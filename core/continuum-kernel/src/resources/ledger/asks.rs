@@ -157,7 +157,7 @@ impl ResourceLeaseLedger {
             expires_at_ms: now_ms.saturating_add(req.ttl_ms),
             reclaim_policy: req.reclaim_policy,
         };
-        self.leases.insert(lease_id.to_owned(), super::Held { lease: lease.clone(), landed_from: None, view: None, ask: into });
+        self.leases.insert(lease_id, super::Held { lease: lease.clone(), landed_from: None, view: None, ask: into });
         self.tell(); // after the transition: what the floors and waits see is its result
         Ok(lease)
     }

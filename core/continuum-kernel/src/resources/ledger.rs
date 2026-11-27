@@ -136,7 +136,7 @@ pub struct ResourceLeaseLedger {
     /// absent here has unknown capacity → treated as zero (fail-loud: we refuse
     /// to grant against a resource we have not scanned).
     capacity: BTreeMap<ResourceKind, u64>,
-    leases: BTreeMap<String, Held>,
+    leases: held::HeldLeases,
     /// Per-consumer guaranteed floor of a kind. The real-time fairness mechanism
     /// the directive demands: a live video call (bevy/livekit/stt/tts) reserves
     /// bytes that inference can neither grant-into nor reclaim-below. The daemon
@@ -614,7 +614,7 @@ impl ResourceLeaseLedger {
             expires_at_ms: now_ms.saturating_add(req.ttl_ms),
             reclaim_policy: req.reclaim_policy,
         };
-        self.leases.insert(lease_id, Held { lease: lease.clone(), landed_from: None, view: None, ask });
+        self.leases.insert(&lease_id, Held { lease: lease.clone(), landed_from: None, view: None, ask });
         Ok(lease)
     }
 
@@ -877,6 +877,7 @@ fn bytes_of(answer: Option<Bytes>) -> u64 {
 }
 
 mod asks;
+mod held;
 mod shrinks;
 mod told;
 

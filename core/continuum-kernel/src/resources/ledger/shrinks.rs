@@ -46,8 +46,7 @@ impl ResourceLeaseLedger {
         for (owner, Asks(entries)) in changed {
             for (seq, status) in entries {
                 let Status::Shrink { place, to } = status else { continue };
-                let held = self.leases.iter().find(|(_, held)| held.ask.owner == owner && held.ask.seq == seq);
-                if let Some((lease_id, held)) = held {
+                if let Some((lease_id, held)) = self.leases.by_ask(continuum_sage::place::AskId { owner, seq }) {
                     out.push(ShrinkDue { ask: held.ask, lease_id: lease_id.clone(), kind: place, held: held.lease.bytes, to: to.0 });
                 }
             }
@@ -72,6 +71,6 @@ impl ResourceLeaseLedger {
 
     /// Whether `ask` is still a held lease.
     pub fn holds_ask(&self, ask: continuum_sage::place::AskId) -> bool {
-        self.leases.values().any(|held| held.ask == ask)
+        self.leases.by_ask(ask).is_some()
     }
 }
