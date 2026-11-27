@@ -46,6 +46,19 @@ pub struct Hold {
     /// Optional lifetime; `None` = until cleared by hand (and flagged stale meanwhile).
     #[serde(default)]
     pub ttl_ms: Option<u64>,
+    /// Who wrote it: only its owner renews or releases it (`deploy_hold_file`).
+    #[serde(default)]
+    pub owner: HoldOwner,
+}
+
+/// Who holds the tracker.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum HoldOwner {
+    /// An operator, by hand or by an older writer: never touched by the tracker.
+    #[default]
+    Operator,
+    /// The tracker itself, for a deliberately deployed build not on canary, through its live window.
+    Candidate { build: String },
 }
 
 /// A hold not cleared or expired within this long is surfaced as a warning: the fleet
@@ -455,6 +468,7 @@ mod tests {
             reason: "sqlite-14".into(),
             created_ms: NOW,
             ttl_ms: None,
+            owner: HoldOwner::Operator,
         });
         assert_eq!(
             decide(&i),
@@ -478,6 +492,7 @@ mod tests {
             reason: "quiet round".into(),
             created_ms: NOW,
             ttl_ms: Some(3_600_000),
+            owner: HoldOwner::Operator,
         });
         assert!(
             matches!(decide(&i), DeployVerdict::Held { .. }),

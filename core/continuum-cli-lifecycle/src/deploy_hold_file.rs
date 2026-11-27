@@ -6,7 +6,7 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
-use crate::deploy_tracker::Hold;
+use crate::deploy_tracker::{Hold, HoldOwner};
 
 /// What the hold file says.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,7 +25,7 @@ impl HoldRead {
         match self {
             HoldRead::Missing => None,
             HoldRead::Held(hold) => Some(hold),
-            HoldRead::Unreadable(why) => Some(Hold { reason: format!("the deploy hold file is unreadable: {why}"), created_ms: 0, ttl_ms: None }),
+            HoldRead::Unreadable(why) => Some(Hold { reason: format!("the deploy hold file is unreadable: {why}"), created_ms: 0, ttl_ms: None, owner: HoldOwner::Operator }),
         }
     }
 }
@@ -56,7 +56,7 @@ pub fn read(state_dir: &Path) -> HoldRead {
     // a legacy text hold: created when its file was last written, so it is flagged stale in time
     match std::fs::metadata(&path).and_then(|meta| meta.modified()) {
         Ok(modified) => match modified.duration_since(std::time::UNIX_EPOCH) {
-            Ok(at) => HoldRead::Held(Hold { reason: text.trim().to_string(), created_ms: at.as_millis() as u64, ttl_ms: None }),
+            Ok(at) => HoldRead::Held(Hold { reason: text.trim().to_string(), created_ms: at.as_millis() as u64, ttl_ms: None, owner: HoldOwner::Operator }),
             Err(why) => HoldRead::Unreadable(format!("{}: its modified time is not a time: {why}", path.display())),
         },
         Err(why) => HoldRead::Unreadable(format!("{}: {why}", path.display())),
@@ -84,6 +84,54 @@ pub fn change(state_dir: &Path, decide: impl FnOnce(&HoldRead) -> Change) -> io:
     Ok(decided)
 }
 
+
+/// The running build as the tracker sees it on a tick.
+#[derive(Clone, Copy)]
+pub struct Running<'a> {
+    /// Its build sha.
+    pub sha: &'a str,
+    /// Whether origin/canary contains it (a build the tracker deploys, or an older one it moves past).
+    pub on_canary: bool,
+    /// When its serving was verified ready, once it has been.
+    pub ready_at: Option<u64>,
+    /// How long a candidate keeps its window.
+    pub window_ms: u64,
+}
+
+/// What the running build means for the hold, decided by the tracker on every tick: a build deployed
+/// on purpose that is not on canary (`on_canary` false) holds the tracker for one `window_ms` from the
+/// moment its serving was verified ready (`ready_at`; until then the hold is refreshed from `now`, so it
+/// lasts through readiness), and a build on canary releases a candidate's hold. An operator's hold, or a
+/// file that cannot be read, is never touched (Codex on 17660bf67f).
+pub fn for_running(build: &Running<'_>, current: &HoldRead, now: u64) -> Change {
+    let Running { sha: running, on_canary, ready_at, window_ms } = *build;
+    let ours = match current {
+        HoldRead::Held(hold) => match &hold.owner {
+            HoldOwner::Candidate { build } => Some(build.as_str()),
+            HoldOwner::Operator => None,
+        },
+        HoldRead::Missing | HoldRead::Unreadable(_) => None,
+    };
+    if on_canary {
+        return if ours.is_some() { Change::Remove } else { Change::Keep };
+    }
+    match current {
+        HoldRead::Held(hold) if ours.is_none() && hold.is_active(now) => return Change::Keep,
+        HoldRead::Unreadable(_) => return Change::Keep,
+        HoldRead::Held(_) | HoldRead::Missing => {}
+    }
+    let want = Hold {
+        reason: format!("candidate {running} deployed by hand: the tracker leaves it for its live window"),
+        created_ms: ready_at.unwrap_or(now),
+        ttl_ms: Some(window_ms),
+        owner: HoldOwner::Candidate { build: running.to_string() },
+    };
+    match current {
+        HoldRead::Held(hold) if *hold == want => Change::Keep,
+        _ => Change::Write(want),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -106,11 +154,40 @@ mod tests {
         })
         .expect("test: a kept hold");
         assert_eq!(seen, Change::Keep);
-        let ours = Hold { reason: "ours".into(), created_ms: 5, ttl_ms: Some(10) };
+        let ours = Hold { reason: "ours".into(), created_ms: 5, ttl_ms: Some(10), owner: HoldOwner::Operator };
         change(state.path(), |_| Change::Write(ours.clone())).expect("test: a write");
         assert_eq!(read(state.path()), HoldRead::Held(ours));
         change(state.path(), |_| Change::Remove).expect("test: a release");
         assert_eq!(read(state.path()), HoldRead::Missing);
         assert!(HoldRead::Unreadable("x".into()).honored().is_some_and(|hold| hold.ttl_ms.is_none()), "an unreadable file holds");
+    }
+
+    // what this catches (the M5, 2026-11-27: a verified candidate replaced by canary 11 minutes into its
+    // window; Codex on 17660bf67f): the window must run from serving readiness, last through a slow
+    // readiness, release only the candidate's own hold, and never touch an operator's or an unreadable one.
+    #[test]
+    fn a_candidate_holds_from_readiness_and_never_touches_anyone_elses_hold() {
+        let window_ms = 900_000;
+        let candidate = |ready_at| Running { sha: "4da0f81bfa", on_canary: false, ready_at, window_ms };
+        // not ready yet: held from now, refreshed each tick, so it lasts through readiness
+        let starting = match for_running(&candidate(None), &HoldRead::Missing, 1_000) {
+            Change::Write(hold) => hold,
+            other => panic!("a candidate must hold the tracker, got {other:?}"),
+        };
+        assert_eq!((starting.created_ms, starting.ttl_ms), (1_000, Some(window_ms)));
+        // ready at 100 s: its window runs from readiness, and a later tick keeps it
+        let ready = match for_running(&candidate(Some(100_000)), &HoldRead::Held(starting), 101_000) {
+            Change::Write(hold) => hold,
+            other => panic!("readiness restarts the window, got {other:?}"),
+        };
+        assert_eq!(ready.created_ms, 100_000);
+        assert_eq!(for_running(&candidate(Some(100_000)), &HoldRead::Held(ready.clone()), 400_000), Change::Keep);
+        // canary deployed again: the candidate's hold is released, an operator's never
+        let canary = Running { sha: "f6648967d", on_canary: true, ready_at: Some(500_000), window_ms };
+        assert_eq!(for_running(&canary, &HoldRead::Held(ready), 600_000), Change::Remove);
+        let operator = HoldRead::Held(Hold { reason: "operator: live read".into(), created_ms: 1_000, ttl_ms: None, owner: HoldOwner::Operator });
+        assert_eq!(for_running(&canary, &operator, 600_000), Change::Keep);
+        assert_eq!(for_running(&candidate(None), &operator, 600_000), Change::Keep);
+        assert_eq!(for_running(&candidate(None), &HoldRead::Unreadable("denied".into()), 600_000), Change::Keep);
     }
 }
