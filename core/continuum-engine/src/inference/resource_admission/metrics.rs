@@ -391,6 +391,17 @@ pub fn lane_wait_bound(
             .clamp(LANE_WAIT_FLOOR, LANE_WAIT_CEILING),
     )
 }
+/// The bound an ungranted mind waits under ACROSS grants evaluations while she is queued here,
+/// derived from the queue she is joining exactly like [`lane_wait_bound`]: her place in line over
+/// the lanes' measured turn time. Unmeasured lanes take the ceiling, because a node that has never
+/// timed a lane may not guess a short one ([[unknown-is-not-a-quantity]]). A wait that outlives it
+/// is starvation, not queuing: she defers at her own named bound with her act budget intact instead
+/// of parking to the act's tick floor (card 250d7603).
+pub fn grants_wait_bound() -> std::time::Duration {
+    let (hold_p50_ms, hold_samples) = lane_hold_p50_ms();
+    lane_wait_bound(work_waiting_now(), served_lane_count(), hold_p50_ms, hold_samples)
+        .unwrap_or(LANE_WAIT_CEILING) // unwrap_or: unmeasured lanes use the existing diagnostic ceiling
+}
 /// PURE: may a WORK call be lent the lane reserved for directed calls? Whenever no directed
 /// line is pending here. A directed arrival then takes the next lane any call releases.
 ///
