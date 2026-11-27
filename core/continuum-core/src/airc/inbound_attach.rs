@@ -30,32 +30,6 @@ use std::collections::HashSet;
 /// A set of peer ids whose HEADER_CONTINUUM_EVENT_ID the inbound gate trusts.
 pub type KnownSenders = HashSet<airc_core::PeerId>;
 
-/// Injectable known senders handle — tests insert peers here before calling
-/// publish_transcript_event. Production populates lazily at boot after both
-/// operator and agent runtimes are registered, avoiding the snapshot trap
-/// where an early install captures unregistered runtime state.
-/// Injectable known senders handle — tests insert peers here before calling
-/// publish_transcript_event. Production populates lazily at boot after both
-/// operator and agent runtimes are registered.
-static KNOWN_SENDERS_HANDLE: std::sync::LazyLock<parking_lot::RwLock<KnownSenders>> =
-    std::sync::LazyLock::new(|| parking_lot::RwLock::new(KnownSenders::default()));
-
-/// Populate from operator and agent runtimes once at boot (after registration).
-pub fn populate_known_senders() {
-    let mut handles = KNOWN_SENDERS_HANDLE.write();
-    if let Some(rt) = crate::persona::operator_peer::operator_runtime() {
-        handles.insert(rt.airc().peer_id());
-    }
-    if let Some(rt) = crate::persona::operator_peer::agent_runtime() {
-        handles.insert(rt.airc().peer_id());
-    }
-}
-
-/// Test-only: register a specific peer as known.
-#[cfg(test)]
-pub fn inject_known_sender(peer_id: airc_core::PeerId) {
-    KNOWN_SENDERS_HANDLE.write().insert(peer_id);
-}
 
 /// One attach stream per ROOM, spawned at most once — the registry the room
 /// ADOPTION path (positron_presence's refresher, #2606) calls so every room
@@ -70,6 +44,7 @@ pub struct AttachRegistry {
     bus: Arc<MessageBus>,
     rt: tokio::runtime::Handle,
     attached: parking_lot::Mutex<std::collections::HashSet<RoomId>>,
+    known_senders: KnownSenders,
 }
 
 static ATTACHES: std::sync::OnceLock<Arc<AttachRegistry>> = std::sync::OnceLock::new();
@@ -84,6 +59,14 @@ impl AttachRegistry {
                 registry.ensure_attached(room);
             }
         });
+        // Build known senders from operator and agent runtimes.
+        let mut known_senders = KnownSenders::new();
+        if let Some(rt) = crate::persona::operator_peer::operator_runtime() {
+            known_senders.insert(rt.airc().peer_id());
+        }
+        if let Some(rt) = crate::persona::operator_peer::agent_runtime() {
+            known_senders.insert(rt.airc().peer_id());
+        }
         ATTACHES
             .get_or_init(|| {
                 Arc::new(Self {
@@ -91,6 +74,7 @@ impl AttachRegistry {
                     bus,
                     rt,
                     attached: parking_lot::Mutex::new(std::collections::HashSet::new()),
+                    known_senders,
                 })
             })
             .clone()
@@ -110,7 +94,7 @@ impl AttachRegistry {
                 room = %room.as_uuid(),
                 "daemon attach spawned for an adopted room — its transcript now reaches the projection bus"
             );
-            spawn_daemon_attach(self.socket.clone(), room, self.bus.clone(), &self.rt);
+            spawn_daemon_attach(self.socket.clone(), room, self.bus.clone(), &self.rt, Arc::clone(&self.known_senders));
         }
     }
 }
@@ -120,6 +104,7 @@ pub fn spawn_daemon_attach(
     channel: RoomId,
     bus: Arc<MessageBus>,
     runtime: &tokio::runtime::Handle,
+    known_senders: KnownSenders,
 ) {
     // RE-ATTACH loop. This is a RAW `DaemonClient::attach` realtime-transcript
     // stream (positron chat/wall/kanban + the persona-turn projection), NOT
@@ -141,7 +126,7 @@ pub fn spawn_daemon_attach(
         let mut backoff = MIN_BACKOFF;
         loop {
             let started = Instant::now();
-            match run_daemon_attach(socket_path.clone(), channel, bus.clone()).await {
+            match run_daemon_attach(socket_path.clone(), channel, bus.clone(), Arc::clone(&known_senders)).await {
                 Ok(()) => warn!(
                     "AIRC daemon attach ended (daemon EOF) after {:?} — re-attaching in {:?}",
                     started.elapsed(),
@@ -256,6 +241,7 @@ pub async fn run_daemon_attach(
     socket_path: PathBuf,
     channel: RoomId,
     bus: Arc<MessageBus>,
+    known_senders: KnownSenders,
 ) -> Result<(), String> {
     let client = DaemonClient::new(socket_path.clone());
     // Owner-core model (airc-daemon/src/server.rs:274): the router
@@ -342,7 +328,7 @@ pub async fn run_daemon_attach(
             );
             persist_cursor(&lines, &channel, advanced_to).await;
         }
-        handle_attach_response(response, &bus, &lines).await?;
+        handle_attach_response(response, &bus, &lines, &known_senders).await?;
     }
 }
 
@@ -350,6 +336,7 @@ pub async fn handle_attach_response(
     response: Response,
     bus: &MessageBus,
     lines: &dyn LineImporter,
+    known_senders: &KnownSenders,
 ) -> Result<(), String> {
     match response {
         Response::Ok => Ok(()),
@@ -359,7 +346,7 @@ pub async fn handle_attach_response(
         // TranscriptEvent. A malformed buffer is logged + skipped (the
         // live stream shouldn't die because one event failed to parse).
         Response::Event { envelope } => match decode_wire_event(envelope) {
-            Ok(event) => publish_transcript_event(&Arc::new(event), bus, lines).await,
+            Ok(event) => publish_transcript_event(&Arc::new(event), bus, lines, known_senders).await,
             Err(error) => {
                 warn!("Skipping malformed airc daemon event: {error}");
                 Ok(())
@@ -380,6 +367,7 @@ pub async fn publish_transcript_event(
     event: &Arc<airc_core::TranscriptEvent>,
     bus: &MessageBus,
     lines: &dyn LineImporter,
+    known_senders: &KnownSenders,
 ) -> Result<(), String> {
     // THE ONE INBOUND DECODE POINT for room events: the transport kind and headers
     // decide protocol frame or conversation, before anything reads the payload. The
@@ -411,7 +399,7 @@ pub async fn publish_transcript_event(
     // someone other than its transport author reaches perception, the store and the projection only
     // when this core's publication obligation proves it; otherwise it is refused here, said, and
     // dropped, never relabeled.
-    let (delegated, validated_message_id) = match attribution_gate(event, lines).await? {
+    let (delegated, validated_message_id) = match attribution_gate(event, lines, known_senders).await? {
         Gate::Pass { delegated, validated_message_id } => (delegated, validated_message_id),
         Gate::Refused => return Ok(()),
     };
@@ -590,7 +578,7 @@ enum Gate {
 /// Attribute a line before it is consumed: no claim (or a claim naming its transport author) passes
 /// as the author's own; a claim to speak for someone else passes only on an exact publication
 /// obligation (`chat::publication::attribute`), read through the injected store.
-async fn attribution_gate(event: &airc_core::TranscriptEvent, lines: &dyn LineImporter) -> Result<Gate, String> {
+async fn attribution_gate(event: &airc_core::TranscriptEvent, lines: &dyn LineImporter, known_senders: &KnownSenders) -> Result<Gate, String> {
     use crate::routing::airc_realtime_wire::{claimed_message, claimed_sender, envelope_from_event};
     use continuum_mind::chat::publication::{attribute, publication_digest, Attribution};
     use crate::routing::airc_realtime_wire::SenderClaim;
@@ -600,13 +588,16 @@ async fn attribution_gate(event: &airc_core::TranscriptEvent, lines: &dyn LineIm
         // (operator/agent runtime), whose publish_as_sender sets it; reject unvalidated
         // headers from foreign peers to keep row identity anchored to verified ownership.
         let validated_message_id =
-            if is_known_sender(&event.peer_id) { claimed_message(event) } else { None };
+            if known_senders.contains(&event.peer_id) { claimed_message(event) } else { None };
         return Ok(Gate::Pass { delegated: false, validated_message_id });
     }
     // Validate HEADER_CONTINUUM_EVENT_ID against publication record; the validated
     // id is passed downstream to posted_from_message so it can safely override message_id.
     let (obligation, validated_message_id) = match claimed_message(event) {
-        Some(id) => (lines.publication(id).await?, Some(id)),
+        Some(id) => {
+            let pub_record = lines.publication(id).await?;
+            if pub_record.is_some() { (pub_record, Some(id)) } else { (None, None) }
+        }
         None => (None, None),
     };
     // The line as received, from the one chat_transcript decoder (its claimed sender, its text and
@@ -764,19 +755,3 @@ fn kanban_changed_from_event(
 #[cfg(test)]
 mod tests;
 
-/// Check whether `peer_id` matches one of our known runtimes (operator or agent).
-/// Used to validate that HEADER_CONTINUUM_EVENT_ID came from our own publish_as_sender
-/// path rather than an unvalidated foreign event.
-fn is_known_sender(peer_id: &airc_core::PeerId) -> bool {
-    // Check injectable handle first — populated by tests or production boot.
-    if KNOWN_SENDERS_HANDLE.read().contains(peer_id) { return true; }
-    // Production fallback: direct runtime check (for cases where populate_known_senders
-    // hasn't been called yet). The handle takes precedence when available.
-    if let Some(rt) = crate::persona::operator_peer::operator_runtime() {
-        if rt.airc().peer_id() == *peer_id { return true; }
-    }
-    if let Some(rt) = crate::persona::operator_peer::agent_runtime() {
-        if rt.airc().peer_id() == *peer_id { return true; }
-    }
-    false
-}
