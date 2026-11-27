@@ -156,7 +156,7 @@ object, its first consumer on the live path, and the deletion of the owners it r
 | 3 | The frame as a draw list: `UnitStage`, prefill and decode as its first entries | `prefill_rate.rs`, the admission owners | in `slice::sim` first: no ready mind past her bound, and the capacity-change trace (external memory above a floor, released by one unit) served within its bound in eligible frames; live: prefill per act equals appended tokens |
 | 4 | Learning on the frame and pages (IN-PROCESS-LEARNING.md slices 2 to 4) | the seat protocol, the trainer module, the credit gate, learning's counters | steps and saves above zero on both nodes; a correction kept across a restart |
 | 5 | Genes and experts as pages under the Streamer | `gene_residency`'s owner, the expert pager's private budget | gene and expert faults counted, none a miss the forecast could have prevented |
-| 6 | Disk tiers: build caches, worktrees, logs and captures as `Resident`s; `Topology` reads capacity live | the disk monitors and pools, the disk-admission refusal; their guards move first: `every_cache_class_has_a_decided_eviction_story` and `broker_relieve_actually_deletes_from_an_over_budget_pool` become placer tests (every disk-tier `Resident` declares an eviction way; a shortfall ends in real bytes deleted) | a deploy never waits on a cache it could have evicted; a full disk with nothing below the write's price waits on a named event ("disk full; nothing evictable below this write's price") shown on the node's health line |
+| 6 | Disk and memory kept continuously ("Staying up for months", below): `Topology` live, every holder a reporting `Resident`, the placer acting ahead of full; airc's checkout holder in airc. Pulled forward: it runs beside steps 2 to 5, since the M5 filled on 2026-11-27 | the disk monitors and pools, the disk-admission refusal; their guards move first: `every_cache_class_has_a_decided_eviction_story` and `broker_relieve_actually_deletes_from_an_over_budget_pool` become placer tests (every disk-tier `Resident` declares an eviction way; a shortfall ends in real bytes deleted) | a deploy never waits on a cache it could have evicted; a full disk with nothing below the write's price waits on a named event ("disk full; nothing evictable below this write's price") shown on the node's health line |
 | 7 | The remaining consumers (embedding, media, comms) as entries and pages | their budgets | each consumer's floor measured and gated |
 | 8 | llama-server's lanes, the pressure broker and the substrate governors | everything in the table above not already gone | the owner count by name: zero types that decide room or time outside the frame, the placer and the Streamer |
 
@@ -172,6 +172,58 @@ erase, `capacity/window_grant/lease.rs` holds through a caller's cancellation to
 Acceptance case: delay mind A's GPU write, cancel A, then have mind B request the same range; B's bytes equal an
 uninterrupted run's. Deliver a duplicate completion and a late completion after an engine restart; neither releases
 B's range. Switch time and refusal counts cannot detect corruption, so this case gates step 2 before any timing does.
+
+## Staying up for months: measurement and management are continuous
+
+A node runs for months with no person or agent tending it, and so does the grid. Nothing here is a cleanup command,
+a scheduled sweep or an operator's relief: every byte of disk and memory is held by a `Resident` that reports
+continuously, and the placer keeps every tier healthy on the events those reports raise. On 2026-11-27 the M5 had
+filled to 95% (deploys refused for over three hours) from three writers no owner was asked about: 185 GB of airc
+card checkouts no path could retire, a 15 GB engine stderr no one rotated, and 27 GB of build cache left behind its
+merged work.
+
+**The parts, all SAGE components, none new in kind:**
+
+| Part | Hears | Says | Decides |
+|---|---|---|---|
+| `Topology` | the OS's volume and memory-pressure notifications (`DiskArbitration`/FSEvents, `inotify`, `WM_DEVICECHANGE`, the kernel's memory-pressure source), every move's measured bytes and rate | each tier's capacity, what the host's other processes use, and its own rate of change, as frame-numbered state | nothing: it measures |
+| Every holder, as a `Resident` | its own writes (a log line, a checkout, a cache artifact, a capture) | its rows on change: held, want, growth rate, ways and their measured costs | how to give back when asked, the cheapest of its ways |
+| The placer | every report and every `Topology` change | grants, shrinks and cache-outs | which holder gives back what, by price |
+
+**Ahead of the wall, never at it.** The placer acts on each tier's predicted time to full (capacity over the measured
+growth of its holders), not on a percentage. A tier that would fill before its cheapest way could free it is relieved
+now, oldest and lowest-priced first, so no writer ever meets a refusal. The 95% admission refusal is deleted with the
+monitors.
+
+**Every disk holder declares its ways, priced in time:**
+
+| Holder | Residency | Ways (cost) |
+|---|---|---|
+| A card checkout (airc) | `Fixed` while its card is claimed or in review; then pageable | retire when the card is terminal on any node, proven clean and pushed, recovery ref in the mirror (cost: a re-clone if reopened) |
+| Build caches (per worktree, per crate) | pageable | evict (cost: its measured rebuild time); a worktree's cache goes with its worktree |
+| Service logs and stderr | elastic | copy-truncate past what the probes already hold (cost: none) |
+| Probe and capture streams | durable | compact to their summaries and cache out to a colder volume (cost: a fetch) |
+| K/V pages, genes, experts, weights | pageable | the Streamer's demotion one tier down (cost: the measured fetch) |
+| Engrams and the store | durable | never evicted; cache out to a colder volume |
+
+A holder that writes without reporting is the defect SHARED-RESOURCES.md names: unknown is never room. The guard
+tests move first (`every_cache_class_has_a_decided_eviction_story`, `broker_relieve_actually_deletes_from_an_over_budget_pool`
+become placer tests), and a new one is added: every writer under the node's state directories is a reporting holder.
+
+**Memory the same way.** RAM is a tier like any disk: the same placer, the same `Topology`, the same holders (K/V
+pages, the compute arena, caches, the embedder's window), the host's other processes priced above ours.
+
+**The grid keeps itself healthy too.** A node publishes its tiers' state; a node that cannot fit its own work in time
+offers it to a peer (the placement use case), and an idle node takes it. A mind's home stays where it is.
+
+**airc does its half in airc.** airc runs on other people's machines with no continuum beside it, so its daemon owns
+its own disk as a component: it hears every card's state from every peer, retires its terminal checkouts on that
+event (not only on the node that closed the card), and reports its checkouts and mirrors as one holder. Continuum's
+placer asks that holder to give back like any other.
+
+**Gate:** a 30-day run on the M5 and the 5090 with no person or agent touching disk or memory: free space never
+crosses its predicted-full threshold, no write is refused, no deploy waits, and the bytes held by each holder track
+its measured need.
 
 ## Gates for the whole
 
