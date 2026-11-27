@@ -97,7 +97,7 @@ pub fn tracked_checkout() -> Result<Option<PathBuf>, CheckoutError> {
 /// `continuum install`'s core arm with the checkout it just deployed from, so a core built
 /// in a lease tracks the clone the lease came from, not the lease.
 pub fn record(durable: &Path) -> Result<(), String> {
-    continuum_base::config_env::upsert(TRACK_REPO_DIR_KEY, &durable.to_string_lossy())
+    continuum_base::config_env::upsert(TRACK_REPO_DIR_KEY, &durable.to_string_lossy()).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

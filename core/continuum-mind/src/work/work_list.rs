@@ -89,6 +89,12 @@ pub struct WorkListParams {
     #[serde(default)]
     #[ts(optional)]
     pub group: Option<BoardGroup>,
+    /// Optional parent room whose board to query alongside this room's board.
+    /// When set, cards from both rooms are merged (deduplicated by id), counts
+    /// summed across rooms. Designed for citizens seated in per-run benchmark
+    /// rooms that need to discover work on their parent project room.
+    #[serde(default)]
+    pub parent: Option<String>,
     // No count: with no filter the board comes back as her view shows it (`board_nav`, collapsed
     // navigation: her cards whole, each group's most recent cards and a node for the rest), and a
     // filter is a node opened, whole. A per-tool `limit` was a second truncation beside the act's
@@ -240,24 +246,55 @@ impl ActionCommand for WorkList {
     async fn run(&self, ctx: &Ctx, p: WorkListParams) -> Result<WorkListResult, CommandError> {
         let airc = persona_airc(&self.registry, ctx, "work commands")?;
         let filter = p.state.as_deref().map(parse_state).transpose()?;
-        let board = board_to_read(&airc, p.room.as_deref()).await?;
         let now_ms = EpochMs::now().millis();
-        // Resolve every distinct owner to a published name in ONE pass, then render
-        // through the SHARED holder projection (`cognition::card_holder`) — the same
-        // answer the [room-kanban] grounding block and the service-loop anchor give.
-        // Before this, three surfaces computed "who holds it / is the lease live"
-        // separately and a teammate always came back as 8-hex, which Joel called out
-        // directly: tell them WHO, or they cannot reach out.
+
+        // Fetch boards to read: when a specific room is named, read only that board
+        // (and optionally its parent); otherwise span ALL subscribed rooms via the
+        // full horizon — this fixes #81adc95b so citizens seated in finished benchmark
+        // rounds can discover work on their project room without an explicit `parent`
+        // parameter. The existing merge logic handles multiple boards by UUID dedup.
+        let (boards, unreadable): (Vec<_>, Vec<_>) = if p.room.as_ref().map(|r| r.trim()).is_some_and(|r| !r.is_empty()) {
+            // Explicit room requested: read that board + optional parent
+            let main_board = board_to_read(&airc, p.room.as_deref()).await?;
+            let parent_board = if let Some(ref parent) = p.parent {
+                Some(board_to_read(&airc, Some(parent)).await?)
+            } else {
+                None
+            };
+            let mut result: Vec<_> = vec![main_board];
+            if let Some(pb) = parent_board {
+                result.push(pb);
+            }
+            (result, Vec::new())
+        } else {
+            // No room specified: read ALL subscribed rooms via the full board horizon
+            // so a citizen seated in any room can see work across every board she
+            // belongs to — not just the one she's currently "standing" in.
+            let horizon = board_horizon(&airc).await?;
+            (horizon.boards.into_iter().map(|(_, b)| b.snapshot()).collect(), horizon.unreadable)
+        };
+
+        // Collect all unique cards (by UUID), keeping the most recently updated version.
+        let mut seen: std::collections::HashMap<uuid::Uuid, &airc_work::WorkCard> = std::collections::HashMap::new();
+        for board in &boards {
+            for c in &board.cards {
+                seen.insert(c.card_id.as_uuid(), c);
+            }
+        }
+
+        // Resolve every distinct owner to a published name in ONE pass.
         let me = ctx
             .caller
             .as_ref()
             .map(|c| c.peer_id.as_uuid())
-            .unwrap_or_default(); // no subscriptions = empty board; the abort branch below speaks
+            .unwrap_or_default();
         let mut owner_peers: Vec<airc_core::PeerId> = Vec::new();
-        for c in &board.cards {
-            if let Some(o) = c.owner {
-                if o.as_uuid() != me && !owner_peers.contains(&o) {
-                    owner_peers.push(o);
+        for board in &boards {
+            for c in &board.cards {
+                if let Some(o) = c.owner {
+                    if o.as_uuid() != me && !owner_peers.contains(&o) {
+                        owner_peers.push(o);
+                    }
                 }
             }
         }
@@ -267,45 +304,55 @@ impl ActionCommand for WorkList {
         )
         .await;
         let reader = airc_core::PeerId::from_uuid(me);
+
+        // Collect all cards from every board for review verdict checking.
+        let mut all_cards_owned: Vec<airc_work::WorkCard> = Vec::new();
+        for b in &boards {
+            all_cards_owned.extend(b.cards.iter().cloned());
+        }
+
         let judges_her_own = |card: &airc_work::WorkCard| {
-            crate::cognition::review_verdict::judged_submission(card, &board.cards)
+            crate::cognition::review_verdict::judged_submission(card, &all_cards_owned)
                 .is_some_and(|judged| crate::cognition::review_verdict::same_mind(&self.registry, judged.publisher, reader))
         };
-        // Render EVERY card once (holder resolution is the shared projection), then
-        // filter on the rendered facts. Filtering before rendering would put the
-        // availability question on the raw column again — the exact split this fixes.
-        let rendered: Vec<(WorkListCard, CardState, Option<BoardGroup>, u64)> = board
-            .cards
-            .iter()
-            .map(|c| {
-                let holder = crate::cognition::card_holder::holder(c, me, now_ms, &names);
+
+        // Render EVERY card once (holder resolution is the shared projection).
+        let rendered: Vec<(WorkListCard, CardState, Option<BoardGroup>, u64)> = seen
+            .values()
+            .copied()
+            .map(|card| {
+                let holder = crate::cognition::card_holder::holder(card, me, now_ms, &names);
                 (
                     WorkListCard {
-                        id: short8(c.card_id.as_uuid()),
-                        title: c.title.clone(),
-                        state: state_str(&c.state).to_string(),
-                        // The person, not the hex: a published name when known, "an
-                        // unnamed peer" otherwise (its handle in owner_id), `YOU` when hers.
+                        id: short8(card.card_id.as_uuid()),
+                        title: card.title.clone(),
+                        state: state_str(&card.state).to_string(),
                         owner: holder.owner.map(|_| holder.display.clone()),
                         owner_id: holder.owner.filter(|_| !holder.is_self).map(|o| o.as_uuid()),
-                        // Never offered to the mind whose work it judges (card 0174211f).
-                        claimable: holder.claimable() && !judges_her_own(c),
+                        claimable: holder.claimable() && !judges_her_own(card),
                         lease: holder.lease_word().map(str::to_string),
-                        priority: priority_str(c.priority).to_string(),
-                        age_hours: now_ms.saturating_sub(c.created_at_ms) / 3_600_000,
+                        priority: priority_str(card.priority).to_string(),
+                        age_hours: now_ms.saturating_sub(card.created_at_ms) / 3_600_000,
                     },
-                    c.state,
-                    crate::persona::board_nav::group_of(c, me, now_ms),
-                    c.updated_at_ms,
+                    card.state,
+                    crate::persona::board_nav::group_of(card, me, now_ms),
+                    card.updated_at_ms,
                 )
             })
             .collect();
 
         let total_on_board = rendered.len();
-        let awaiting_reviewer = crate::cognition::review_queue::awaiting_reviewer(&board).count();
-        let unsubmitted_pull_requests = crate::cognition::review_queue::unsubmitted_pull_requests(&board).count();
-        let claimable_now = rendered.iter().filter(|(r, ..)| r.claimable).count();
 
+        // Count review metrics across ALL boards in the horizon.
+        let awaiting_reviewer: usize = boards.iter()
+            .map(|b| crate::cognition::review_queue::awaiting_reviewer(b).count())
+            .sum();
+        let unsubmitted_pull_requests: usize = boards.iter()
+            .map(|b| crate::cognition::review_queue::unsubmitted_pull_requests(b).count())
+            .sum();
+
+        // Count claimable cards across the merged board for the zero-result note.
+        let claimable_now = rendered.iter().filter(|(card, ..)| card.claimable).count();
         let selector = Selector { state: filter, claimable: p.claimable, group: p.group };
         let (cards, folded) = listed(selector.select(rendered), selector.filters());
 

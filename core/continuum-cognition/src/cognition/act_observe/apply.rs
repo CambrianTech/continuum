@@ -236,6 +236,7 @@ pub async fn apply_act(
                                 None => identity,
                             }
                         }),
+                    None,
                     );
                     dispatched_calls.push(call.clone());
                     body.working_memory.record_dispatch_event(

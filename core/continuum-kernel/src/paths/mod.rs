@@ -66,7 +66,7 @@ pub fn continuum_home() -> Result<std::path::PathBuf, String> {
     if let Some(native) = NativeHomeOverride::current() {
         return Ok(native.join(".continuum"));
     }
-    continuum_base::home::continuum_home_with(test_home)
+    continuum_base::home::continuum_home_with(test_home).map_err(|e| e.to_string())
 }
 
 /// The substrate root, infallibly: the ONE continuum home, [`continuum_home`] (`$CONTINUUM_HOME`,
