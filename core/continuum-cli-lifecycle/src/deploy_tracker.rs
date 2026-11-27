@@ -46,6 +46,18 @@ pub struct Hold {
     /// Optional lifetime; `None` = until cleared by hand (and flagged stale meanwhile).
     #[serde(default)]
     pub ttl_ms: Option<u64>,
+    /// Who wrote it: only its owner renews or releases it (`deploy_hold_file`).
+    pub owner: HoldOwner,
+}
+
+/// Who holds the tracker.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum HoldOwner {
+    /// An operator, by hand (or an older hold, once migrated): never touched by the tracker.
+    Operator,
+    /// A measurer's lease on the node for one run: renewed or released only with the token `acquire`
+    /// returned for this acquisition, so a delayed cleanup never releases a newer run (Codex on #6288).
+    Measurer { who: String, build: String, token: uuid::Uuid },
 }
 
 /// A hold not cleared or expired within this long is surfaced as a warning: the fleet
@@ -455,6 +467,7 @@ mod tests {
             reason: "sqlite-14".into(),
             created_ms: NOW,
             ttl_ms: None,
+            owner: HoldOwner::Operator,
         });
         assert_eq!(
             decide(&i),
@@ -478,6 +491,7 @@ mod tests {
             reason: "quiet round".into(),
             created_ms: NOW,
             ttl_ms: Some(3_600_000),
+            owner: HoldOwner::Operator,
         });
         assert!(
             matches!(decide(&i), DeployVerdict::Held { .. }),

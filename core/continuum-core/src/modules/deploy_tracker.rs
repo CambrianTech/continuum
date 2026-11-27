@@ -316,17 +316,7 @@ impl DeploySource for GitGhDeploySource {
 /// reason is the file's text (so an old hold is still honored AND flagged stale by the
 /// pure core, the ee76c0df fix). `None` = no hold.
 fn read_hold(state_dir: &std::path::Path) -> Option<Hold> {
-    let text = std::fs::read_to_string(state_dir.join("deploy-hold")).ok()?;
-    if let Ok(hold) = serde_json::from_str::<Hold>(&text) {
-        return Some(hold);
-    }
-    let created_ms = std::fs::metadata(state_dir.join("deploy-hold"))
-        .and_then(|m| m.modified())
-        .ok()
-        .and_then(|t| continuum_base::time::EpochMs::of(t).ok())
-        .map(continuum_base::time::EpochMs::millis)
-        .unwrap_or(0); // unwrap_or: an unreadable mtime = epoch 0 = immediately stale, which is loud not silent
-    Some(Hold { reason: text.trim().to_string(), created_ms, ttl_ms: None })
+    continuum_cli_lifecycle::deploy_hold_file::read(state_dir).honored()
 }
 
 /// Atomically record the deploy request the supervisor consumes.
@@ -511,6 +501,21 @@ impl ServiceModule for DeployTrackerModule {
         // unknown, once per boot, on the receipt (`deploy.actuate.outcome`).
         // A pre-1970 clock reads 0 here: the decision degrades safely.
         self.actuator.report_boot_outcome(running_sha(), EpochMs::now().millis());
+        // an older hold file becomes the typed form once, explicitly, said on its probe
+        use continuum_cli_lifecycle::deploy_hold_file::{migrate, Migrated};
+        match migrate(&self.state_dir) {
+            Ok(Migrated::Nothing) => {}
+            Ok(Migrated::Rewritten(hold)) => continuum_base::probe!(class = "deploy.hold.migrated", reason = %hold.reason, created_ms = hold.created_ms,
+                "an older deploy hold was rewritten in the typed form as an operator's"),
+            Ok(Migrated::Refused(why)) => continuum_base::probe!(class = "deploy.hold.migration_refused", why = %why,
+                "the deploy hold file is neither typed nor an older form: left as it is, it holds"),
+            Ok(Migrated::RefusedRereading { first, again }) => continuum_base::probe!(class = "deploy.hold.migration_refused",
+                why = %first, again = ?again, "the deploy hold file could not be read again to migrate: left as it is, it holds"),
+            // The tracker still starts: a hold file it cannot migrate reads as unreadable, and an
+            // unreadable hold holds (deploy_hold_file::HoldRead::honored).
+            Err(why) => continuum_base::probe!(class = "deploy.hold.migration_failed", state_dir = %self.state_dir.display(),
+                error = %why, "the deploy hold could not be migrated: an unreadable hold holds, so the tracker waits on it"),
+        }
         Ok(())
     }
 

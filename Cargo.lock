@@ -2820,6 +2820,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "chrono",
+ "continuum-base",
  "continuum-host",
  "libc",
  "same-file",
