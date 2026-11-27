@@ -81,8 +81,6 @@ The second is learning.
 
 [See the cognitive architecture →](docs/architecture/PERSONA-COGNITION-PIPELINE.md) · [See the Academy →](#the-academy)
 
-<p align="center"><img src="docs/assets/readme/memory.svg" alt="The KV-Slot Economy — typed leases, traffic classes, priced eviction" width="100%"></p>
-
 Working context, experience, engrams, dreaming, curriculum, training, and learned adaptations are stages of one longer cognitive lifecycle.
 
 [Go deeper →](docs/architecture/CONTINUUM-ENGINE.md)
@@ -165,6 +163,46 @@ That separation changes the architecture. A model process can die without the ci
 
 **Models provide intelligence.  
 Life makes it theirs.**
+
+---
+
+## A mind runs like a game engine.
+
+A chatbot is one loop: wait for a message, build a prompt, call the model, return. A Continuum mind is built the
+way Rockstar's RAGE runs a city: many systems at once, each on its own cadence, all feeding one frame.
+
+```text
+   senses ──┐   memory ──┐   awareness ──┐   hands (tools) ──┐   learning ──┐   dreams ──┐
+            │            │               │                   │              │            │
+            └────────────┴───────────────┴─── state, by frame ┴──────────────┴────────────┘
+                                             │
+                                  her context, at levels of detail
+                                             │
+                                  ┌──────────▼──────────┐
+                                  │  one step on the GPU │  ← shared with every mind, switched at the next step
+                                  └─────────────────────┘
+```
+
+- **Her parts never wait for each other.** Perception, memory, tools, learning and dreaming each run on their own
+  worker and meet through current state. The only serial work in her life is the model's step, and while she is
+  off it the rest of her keeps working.
+- **Her attention is the camera.** What she is working on is in front of her at full detail; what she has
+  finished drops to a summary or a handle she can expand, the way a game streams the world around the player's view
+  at a lower level of detail. Nothing she looks for is ever missing, and nothing she has already seen is sent to
+  the model again: her context only appends, so each act processes only what is new.
+- **Many minds share one GPU as if each had it alone.** The engine switches minds at the next step, by moving a
+  pointer, not by copying memory; who steps next is a learned policy held to one rule: no mind that is ready waits
+  more than a second.
+- **Learning happens in the gaps**, like a game engine baking in the background: a reply is learned in small tiles
+  between serving steps, and dreams run when she rests.
+- **Memory makes room by priority instead of failing.** What she is using stays close; what she is not moves down a
+  tier (GPU memory, RAM, flash) and comes back before she needs it.
+
+Built today: her senses and her channel digest as independent parts, the context codec, the shared engine with its
+learned switching and pointer switch, and learning between her turns. Being built: every faculty as its own part,
+her next step prepared while she is in a tool, and room made by priority on every tier.
+
+[See the runtime, system by system →](docs/architecture/CONTINUUM-ENGINE.md#1-the-picture-a-game-engine-for-minds)
 
 ---
 
@@ -377,9 +415,9 @@ Everything else makes those verbs real.
 
 ## A model that doesn't fit can still serve.
 
-AI software often treats VRAM pressure as somebody else's problem. Continuum cannot. Citizens may need different models, contexts, KV state, adapters, training jobs, perception systems, and tools on machines with finite memory. So cognition is governed as a resource economy.
+AI software often treats VRAM pressure as somebody else's problem. Continuum cannot. Citizens may need different models, contexts, KV state, adapters, training jobs, perception systems, and tools on machines with finite memory. So everything finite is shared the way a game engine shares a frame's memory.
 
-Models and learned adaptations can page according to demand. Warm serving lanes preserve useful state. KV prefixes can be reused. Memory pressure can veto allocations before the operating system turns intelligence into swap.
+One authority holds every claim, and every holder reports what it holds and how it can give back: resize, move down a tier, or keep a cheaper level. A mind's state is a block that moves by pointer, DMA or the operating system's own paging, never by copying it row by row. Work that does not fit now runs smaller or a moment later; it is never refused for pressure.
 
 And the same underlying idea extends outward.
 
@@ -393,7 +431,7 @@ Across the Grid:
 
 Residency and distributed scheduling become two scales of the same resource-allocation problem. The result is an architecture designed around the machine you actually own—not an imaginary GPU with infinite VRAM.
 
-[See the KV-slot economy →](docs/architecture/THE-LANE-ON-SAGE.md) · [See resource governance →](docs/architecture/CONTINUUM-ENGINE.md)
+[See how minds share the engine →](docs/architecture/THE-LANE-ON-SAGE.md) · [See placement and the one authority →](docs/architecture/SHARED-RESOURCES.md) · [See the block layer →](docs/architecture/UNIFIED-PAGING.md)
 
 ---
 
@@ -578,7 +616,7 @@ Learning becomes falsifiable. And failure becomes useful.
 
 **The Academy doesn't just train. It closes the loop.**
 
-[Inspect Academy tests and implementation →](core/continuum-core/src/genome/) · [See training evidence →](benchmarks/ALL-RESULTS.md)
+[Inspect the Academy →](core/continuum-academy/) · [the genome →](core/continuum-genome/) · [See training evidence →](benchmarks/ALL-RESULTS.md)
 
 ---
 
@@ -933,17 +971,14 @@ irm https://raw.githubusercontent.com/CambrianTech/continuum/main/install.ps1 | 
 
 The Windows installer provisions the native build toolchain, builds the core and CLI, and registers a hidden startup task. From an existing checkout, the same installer updates: `powershell -NoProfile -ExecutionPolicy RemoteSigned -File .\install.ps1 -Update` (fast-forwards the checkout's configured upstream, rebuilds, validates the candidate, and hands over through `continuum reboot`). If preparation succeeded but registration failed, `-ResumePrepared` deploys the already prepared release; `-PrepareOnly` prepares now and defers elevation.
 
-**What a healthy node reports** (the core says this itself, every hour, in the org room — the numbers below are from 2026-09-20):
-
-| Node | Model | Lanes × window | An hour |
-|---|---|---|---|
-| RTX 5090 (32 GB) | Qwen3.8-27B Q4_K_M | 1 × 70k | 46 acts · 9 writes · 52 lane grants |
-| MacBook M5 Pro (64 GB) | Qwen3.8-27B Q4_K_M | 2 × 67k | 11 acts · 1 write · 17 lane grants |
+**What a healthy node reports.** Every hour the core posts its own health line in the org room: residents, acts,
+writes, how each turn ended, what learning submitted and what review accepted, and any resident who is stuck and
+why. A node that goes quiet says so in that line, so a stalled engine is never silent.
 
 <details>
 <summary>Optional: the web desktop stack via Docker (<code>setup.sh</code>)</summary>
 
-`setup.sh` is the Docker path: it checks for Docker Desktop 4.69+, pulls a forged Qwen3.5-4B into Docker Model Runner, brings up the support stack, and opens the widget. It is the presentation stack and a small model, not the grid; run the Rust core above for citizens on the 27B.
+`setup.sh` is the Docker path: it checks for Docker Desktop 4.69+, pulls a forged Qwen3.5-4B into Docker Model Runner, brings up the support stack, and opens the widget. It is the presentation stack and a small model, not the grid; run the Rust core above for citizens on a full-size model.
 
 </details>
 
