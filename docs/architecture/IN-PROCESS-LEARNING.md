@@ -159,6 +159,31 @@ How an update spreads across the genes active in her phenotype, by their weights
 Its `Requires` names what each row needs beside it (her K/V for the lesson's context, her genes at the lesson's
 basis), so the placer never frees one without the other.
 
+**The walk cannot touch her live tail, by type** (Codex). Her identity and continuity survive every change in what is
+resident, so the walk's API holds no write to her sequence at all:
+
+```rust
+/// The rows a lesson learns from: read-only views by handle (her K/V pages, the capture), never her sequence.
+pub struct LivedSpan<'a> { /* page handles, positions, the adapter generation it was lived under */ }
+/// What the walk may write: its own pages (accumulator, checkpoints) and its tile's scratch.
+pub struct WalkScratch<'a> { /* transient and walk-owned pages only */ }
+
+impl Walk {
+    fn draw(&mut self, lived: LivedSpan<'_>, scratch: WalkScratch<'_>, unit: Rows) -> Did<Rows>;
+}
+```
+
+Rewinding recurrent state happens in the walk's scratch, reconstructed from a checkpoint; her own state is never
+restored over. While she speaks during a lesson, serving owns her advancing tail, the walk reads only the span it
+named, and a turn appended after that span is untouched by construction. The commit introduces a version boundary,
+and the context owner validates cache reuse across it.
+
+**A debugger is a separate authority over the same machinery** (Codex). Deliberately restoring a checkpoint, rewinding
+a mind, or replaying a captured failure is what a debugger does, and it uses the same state, frames and pages as
+runtime, so a captured failure replays faithfully and one thing can be varied at a time. It holds an explicit
+`DebugAuthority`, granted by an operator, that runtime code never holds; without it the rewind methods do not exist
+on the types runtime sees.
+
 Residency (Resident, Transient, Pageable) is SHARED-RESOURCES.md's "Residency over time"; it is not yet a field of a
 `Resident` row, and slice 3 adds it there, once, for every holder.
 
@@ -342,6 +367,10 @@ replaces.
 
 ## Open questions
 
+0. **The 35B's tiled update disagrees with the untiled one** (CPU: cosine 0.9790 at 64-row tiles, a difference 20.46% of
+   the reference update's L2 norm, while 512 rows match byte for byte; CUDA 0.9924). Method (Codex): find the first
+   tile boundary where values diverge, then raise the precision of only the state or accumulator crossing that
+   boundary. If agreement returns, those bytes need the fidelity and everything else stays compact. Gates slice 2.
 1. **What the 12.2 MB per row is.** Measured as a total, not yet by tensor. The full-vocabulary logits and their
    gradient are the inference to check first (about 1 MB per F32 copy at a 248k vocabulary). The breakdown comes
    before slice 5.
