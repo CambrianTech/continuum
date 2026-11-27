@@ -316,17 +316,7 @@ impl DeploySource for GitGhDeploySource {
 /// reason is the file's text (so an old hold is still honored AND flagged stale by the
 /// pure core, the ee76c0df fix). `None` = no hold.
 fn read_hold(state_dir: &std::path::Path) -> Option<Hold> {
-    let text = std::fs::read_to_string(state_dir.join("deploy-hold")).ok()?;
-    if let Ok(hold) = serde_json::from_str::<Hold>(&text) {
-        return Some(hold);
-    }
-    let created_ms = std::fs::metadata(state_dir.join("deploy-hold"))
-        .and_then(|m| m.modified())
-        .ok()
-        .and_then(|t| continuum_base::time::EpochMs::of(t).ok())
-        .map(continuum_base::time::EpochMs::millis)
-        .unwrap_or(0); // unwrap_or: an unreadable mtime = epoch 0 = immediately stale, which is loud not silent
-    Some(Hold { reason: text.trim().to_string(), created_ms, ttl_ms: None })
+    continuum_cli_lifecycle::deploy_hold_file::read(state_dir).honored()
 }
 
 /// Atomically record the deploy request the supervisor consumes.

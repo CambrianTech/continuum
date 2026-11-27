@@ -305,6 +305,12 @@ async fn reboot_admitted(options: RebootOptions, admission: &HandoffAdmission) -
         println!("continuum-install-lease-protocol:1");
         return Ok(());
     }
+    // a candidate holds the tracker from before its handoff (Codex on 17660bf67f), so canary is never
+    // deployed under it while it builds, starts or becomes ready
+    let checkout = super::candidate_hold::Checkout::find()?;
+    if let Some(checkout) = &checkout {
+        super::candidate_hold::before_handoff(checkout)?;
+    }
     #[cfg(windows)]
     let _install_lease = take_install_lease(&PathBuf::from(home_dir()?).join(".continuum"))?;
     #[cfg(windows)]
@@ -707,11 +713,9 @@ async fn reboot_admitted(options: RebootOptions, admission: &HandoffAdmission) -
         matches!(cli_self_build(std::env::consts::OS), CliSelfBuild::Rebuild),
     );
     verify_deployed_build_against(rebuilt_cli, prebuilt.as_ref()).await?;
-    // a candidate keeps its live window: the tracker does not put canary back under it
-    if let Ok(script) = locate_start_script() {
-        let repo = script.ancestors().nth(3).ok_or("the start script is not inside a checkout")?;
-        let deployed = running_core_build_sha("the candidate hold").await?.ok_or("the running core reports no build sha")?;
-        super::candidate_hold::after_verified_deploy(repo, &deployed)?;
+    // a candidate keeps its live window: renewed from its verified deploy
+    if let Some(checkout) = &checkout {
+        super::candidate_hold::after_verified_deploy(checkout)?;
     }
     if let Some((held, said)) = &carried {
         report_carried(held, said).await;

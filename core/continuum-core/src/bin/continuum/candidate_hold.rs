@@ -1,109 +1,158 @@
 //! A node's owner deploys a candidate with `continuum reboot` and reads its live window; the deploy
 //! tracker must not put canary back under that window (the M5, 2026-11-27: candidate 4da0f81bfa,
 //! deployed and verified 04:15Z, replaced by canary 584a0bf4c at 04:26Z, 11 minutes into its window).
-//! The one owner of that rule: a reboot onto a build that is not the canary tip holds the tracker for
-//! one window, and a reboot onto the canary tip releases the hold a candidate took. A hold written by
-//! anyone else is never touched.
+//! The rule: a reboot of a checkout that is not the canary tip holds the tracker from before its handoff
+//! (Codex on 17660bf67f), renews at its verified deploy, and whoever measures the window renews it
+//! through its end (`continuum deploy-hold renew`) and releases it when done (`... release`); its TTL is
+//! the bounded expiry if they never do. A reboot of the canary tip releases only a candidate's hold, and a
+//! hold anyone else wrote is never touched. Every change goes through the one hold owner,
+//! `deploy_hold_file::change`.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use continuum_cli_lifecycle::deploy_hold_file::{change, Change, HoldRead};
 use continuum_cli_lifecycle::deploy_tracker::Hold;
 
 /// One measured window, the project's comparison unit (CLAUDE.md, plan rule 3: "compare exact
-/// 15-minute windows on real residents"). A longer read is another reboot, or a hold by hand.
+/// 15-minute windows on real residents"); the measurer renews it for longer reads.
 const WINDOW: Duration = Duration::from_secs(15 * 60);
 
-/// What marks a hold as this module's, so only its own is released.
+/// What marks a hold as a candidate's, so only a candidate's is renewed or released.
 const OWNER: &str = "candidate deployed by `continuum reboot`";
 
-/// After a verified deploy of `deployed` built from the checkout at `repo`: hold the tracker when it is
-/// a candidate, release a candidate's hold when it is the canary tip. The outcome is printed; a hold
-/// that cannot be written is an error, since without it the window is silently cut short.
-pub(super) fn after_verified_deploy(repo: &Path, deployed: &str) -> Result<(), String> {
-    let state = continuum_core::paths::continuum_home()?.join("state");
-    let path = state.join("deploy-hold");
-    let tip = canary_tip(repo)?;
-    match decide(deployed, &tip, read(&path).as_ref(), now_ms()?) {
-        Act::Nothing => Ok(()),
-        Act::Release => {
-            std::fs::remove_file(&path).map_err(|e| format!("releasing the candidate's deploy hold at {}: {e}", path.display()))?;
-            println!("▶ deploy hold released: this build is the canary tip, the tracker follows canary again");
-            Ok(())
-        }
-        Act::KeepOthers(reason) => {
-            println!("▶ deploy hold kept as it is (not a candidate's): {reason}");
-            Ok(())
-        }
-        Act::Hold(hold) => {
-            let text = serde_json::to_string(&hold).map_err(|e| format!("encoding the deploy hold: {e}"))?;
-            std::fs::create_dir_all(&state).map_err(|e| format!("creating {}: {e}", state.display()))?;
-            std::fs::write(&path, text).map_err(|e| format!("writing the deploy hold at {}: {e}", path.display()))?;
-            println!("▶ deploy hold: candidate {deployed} is not the canary tip ({}); the tracker leaves it for {} min", &tip[..tip.len().min(10)], WINDOW.as_secs() / 60);
-            Ok(())
-        }
+/// Where this reboot builds from, when it is a checkout: its root, its HEAD and origin/canary's tip.
+pub(super) struct Checkout {
+    head: String,
+    tip: String,
+}
+
+impl Checkout {
+    /// The checkout this reboot runs in. An installed node has none and follows canary: said, not skipped.
+    pub(super) fn find() -> Result<Option<Self>, String> {
+        let Ok(script) = super::locate_start_script() else {
+            println!("▶ deploy hold: no checkout (an installed node follows canary), none taken");
+            return Ok(None);
+        };
+        let root: PathBuf = script.ancestors().nth(3).ok_or("the start script is not inside a checkout")?.to_path_buf();
+        Ok(Some(Self { head: rev(&root, "HEAD")?, tip: rev(&root, "origin/canary")? }))
+    }
+
+    fn is_tip(&self) -> bool {
+        self.head == self.tip
     }
 }
 
-/// What a verified deploy does to the hold.
-#[derive(Debug, PartialEq)]
-enum Act {
-    Nothing,
-    Release,
-    KeepOthers(String),
-    Hold(Hold),
+/// Before the handoff: a candidate holds the tracker so canary cannot be deployed under it.
+pub(super) fn before_handoff(checkout: &Checkout) -> Result<(), String> {
+    apply(&checkout.head, checkout.is_tip(), "before its handoff")
 }
 
-fn decide(deployed: &str, tip: &str, current: Option<&Hold>, now: u64) -> Act {
-    let ours = current.is_some_and(|hold| hold.reason.starts_with(OWNER));
-    if tip.starts_with(deployed) || deployed.starts_with(tip) {
-        return if ours { Act::Release } else { Act::Nothing };
+/// After the verified deploy: the window starts now, so a candidate's hold is renewed from now; the
+/// canary tip releases a candidate's hold.
+pub(super) fn after_verified_deploy(checkout: &Checkout) -> Result<(), String> {
+    apply(&checkout.head, checkout.is_tip(), "at its verified deploy")
+}
+
+/// `continuum deploy-hold renew|release`: the measurer extends a candidate's hold by one window from now,
+/// or releases it; anyone else's hold is left as it is.
+pub(super) fn verb(args: &[String]) -> Result<(), String> {
+    let state = state_dir()?;
+    let now = now_ms()?;
+    let applied = match args.first().map(String::as_str) {
+        Some("renew") => change(&state, |current| match current {
+            HoldRead::Held(hold) if hold.reason.starts_with(OWNER) => Change::Write(Hold { created_ms: now, ..hold.clone() }),
+            _ => Change::Keep,
+        }),
+        Some("release") => change(&state, |current| match current {
+            HoldRead::Held(hold) if hold.reason.starts_with(OWNER) => Change::Remove,
+            _ => Change::Keep,
+        }),
+        _ => return Err("usage: continuum deploy-hold renew|release (a candidate's hold only)".into()),
     }
-    if let Some(other) = current.filter(|hold| !hold.reason.starts_with(OWNER) && hold.is_active(now)) {
-        return Act::KeepOthers(other.reason.clone());
+    .map_err(|e| format!("the deploy hold at {}: {e}", state.display()))?;
+    say(&applied, "by its measurer");
+    Ok(())
+}
+
+fn apply(head: &str, is_tip: bool, when: &str) -> Result<(), String> {
+    let state = state_dir()?;
+    let now = now_ms()?;
+    let applied = change(&state, |current| decide(head, is_tip, current, now)).map_err(|e| format!("the deploy hold at {}: {e}", state.display()))?;
+    say(&applied, when);
+    Ok(())
+}
+
+fn say(applied: &Change, when: &str) {
+    match applied {
+        Change::Keep => {}
+        Change::Remove => println!("▶ deploy hold released {when}: the tracker follows canary again"),
+        Change::Write(hold) => println!("▶ deploy hold {when}: {} (for {} min)", hold.reason, WINDOW.as_secs() / 60),
     }
-    Act::Hold(Hold { reason: format!("{OWNER}: {deployed}, for its live window"), created_ms: now, ttl_ms: Some(WINDOW.as_millis() as u64) })
+}
+
+/// What a reboot of `head` does to the hold as it is now.
+fn decide(head: &str, is_tip: bool, current: &HoldRead, now: u64) -> Change {
+    let ours = matches!(current, HoldRead::Held(hold) if hold.reason.starts_with(OWNER));
+    if is_tip {
+        return if ours { Change::Remove } else { Change::Keep };
+    }
+    match current {
+        HoldRead::Held(hold) if !ours && hold.is_active(now) => {
+            println!("▶ deploy hold kept as it is (not a candidate's): {}", hold.reason);
+            Change::Keep
+        }
+        HoldRead::Unreadable(why) => {
+            println!("▶ deploy hold left as it is: the file is unreadable ({why})");
+            Change::Keep
+        }
+        _ => Change::Write(Hold { reason: format!("{OWNER}: {head}, for its live window"), created_ms: now, ttl_ms: Some(WINDOW.as_millis() as u64) }),
+    }
+}
+
+fn rev(root: &Path, what: &str) -> Result<String, String> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["rev-parse", what])
+        .output()
+        .map_err(|e| format!("reading {what} in {}: {e}", root.display()))?;
+    if !out.status.success() {
+        return Err(format!("{what} is not known in {}: {}", root.display(), String::from_utf8_lossy(&out.stderr).trim()));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+fn state_dir() -> Result<PathBuf, String> {
+    Ok(continuum_core::paths::continuum_home()?.join("state"))
+}
+
+fn now_ms() -> Result<u64, String> {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).map_err(|e| format!("the clock is before 1970: {e}"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // what this catches (the M5, 2026-11-27): a verified candidate replaced by canary 11 minutes into
-    // its window, and a hold someone else wrote being overwritten or released by a reboot.
+    // what this catches (the M5, 2026-11-27; Codex on 17660bf67f): a verified candidate replaced by canary
+    // under its window, a candidate overwriting an operator's hold (a legacy text one included), and a
+    // canary reboot releasing a hold that is not a candidate's.
     #[test]
-    fn a_candidate_holds_its_window_and_canary_releases_only_its_own_hold() {
-        let tip = "f6648967d7657ba8ed34e32a4a7584fcf3cdccdd";
-        let held = match decide("4da0f81bfa", tip, None, 1_000) {
-            Act::Hold(hold) => hold,
+    fn a_candidate_holds_its_window_and_never_touches_anyone_elses_hold() {
+        let held = match decide("4da0f81bfa", false, &HoldRead::Missing, 1_000) {
+            Change::Write(hold) => hold,
             other => panic!("a candidate must hold the tracker, got {other:?}"),
         };
         assert_eq!(held.ttl_ms, Some(WINDOW.as_millis() as u64));
-        assert_eq!(decide("f6648967d", tip, Some(&held), 2_000), Act::Release);
-        assert_eq!(decide("f6648967d", tip, None, 2_000), Act::Nothing);
-        let operator = Hold { reason: "operator: live read".into(), created_ms: 1_000, ttl_ms: Some(60_000) };
-        assert_eq!(decide("f6648967d", tip, Some(&operator), 2_000), Act::Nothing);
-        assert_eq!(decide("4da0f81bfa", tip, Some(&operator), 2_000), Act::KeepOthers("operator: live read".into()));
+        assert_eq!(decide("f6648967d", true, &HoldRead::Held(held.clone()), 2_000), Change::Remove);
+        assert_eq!(decide("f6648967d", true, &HoldRead::Missing, 2_000), Change::Keep);
+        let legacy = HoldRead::Held(Hold { reason: "operator: live read".into(), created_ms: 1_000, ttl_ms: None });
+        assert_eq!(decide("f6648967d", true, &legacy, 2_000), Change::Keep);
+        assert_eq!(decide("4da0f81bfa", false, &legacy, 2_000), Change::Keep);
+        assert_eq!(decide("4da0f81bfa", false, &HoldRead::Unreadable("denied".into()), 2_000), Change::Keep);
+        // a candidate's own expired hold is renewed by the next candidate reboot
+        let expired = HoldRead::Held(Hold { created_ms: 0, ..held });
+        assert!(matches!(decide("5628ba5068", false, &expired, 10 * WINDOW.as_millis() as u64), Change::Write(_)));
     }
-}
-
-fn read(path: &Path) -> Option<Hold> {
-    serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
-}
-
-fn canary_tip(repo: &Path) -> Result<String, String> {
-    let out = std::process::Command::new("git")
-        .arg("-C")
-        .arg(repo)
-        .args(["rev-parse", "origin/canary"])
-        .output()
-        .map_err(|e| format!("reading origin/canary in {}: {e}", repo.display()))?;
-    if !out.status.success() {
-        return Err(format!("origin/canary is not known in {}: {}", repo.display(), String::from_utf8_lossy(&out.stderr).trim()));
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
-}
-
-fn now_ms() -> Result<u64, String> {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).map_err(|e| format!("the clock is before 1970: {e}"))
 }

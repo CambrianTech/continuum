@@ -201,6 +201,7 @@ fn local_help_requested(command: &str, args: &[String]) -> bool {
                 | "orphans"
                 | "deploy-verify"
                 | "deploy-consume"
+                | "deploy-hold"
                 | "install"
                 | "verify"
                 | "checkpoint"
@@ -439,6 +440,7 @@ async fn run() -> Result<(), CliError> {
         // without a full reboot. Prints "✅ deploy verified" or fails loud on mismatch.
         "deploy-verify" | "verify" => verify_deployed_build(false).await,
         "deploy-consume" => deploy_consume(DeployConsumeOptions::parse(args)?).await,
+        "deploy-hold" => candidate_hold::verb(&args.collect::<Vec<_>>()).map_err(Into::into),
         "supervisor-status" => supervisor_status(args.into_iter().any(|a| a == "--crash-test")).await,
         // ONE idempotent verb converges the machine (Joel, 2026-09-19): each arm reads,
         // changes only what drifted, says so. Windows arms in `supervisor_install` /
