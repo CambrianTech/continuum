@@ -74,7 +74,23 @@ static NODE_ENGINE: OnceLock<Arc<InProcessEngine>> = OnceLock::new();
 /// Publish the node's engine once, at boot, from serving. A second install is refused: one node,
 /// one engine.
 pub fn install(engine: Arc<InProcessEngine>) -> Result<(), Arc<InProcessEngine>> {
+    llama::set_native_log_sink(native_probe);
     NODE_ENGINE.set(engine)
+}
+
+/// The engine's own warnings and errors, as probes: what a consumer reads is a probe, never a log
+/// line (SAGE.md, "Rules every part keeps"). Debug and info never leave the native callback. An
+/// error also reaches stderr, so a crash's last words survive with the process.
+fn native_probe(level: llama::NativeLog, text: &str) {
+    match level {
+        llama::NativeLog::Warn => {
+            continuum_base::probe!(class = "engine.native.warn", text = %text, "the native engine warned");
+        }
+        llama::NativeLog::Error => {
+            continuum_base::probe!(class = "engine.native.error", text = %text, "the native engine reported an error");
+            eprintln!("{text}");
+        }
+    }
 }
 
 /// The node's engine, if serving installed one.
