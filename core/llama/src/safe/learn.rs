@@ -51,12 +51,13 @@ pub enum Optimizer {
     Sgd { learning_rate: f32, weight_decay: f32 },
 }
 
-/// How the backward pass walks the reply's chunks.
+/// How the backward pass walks the reply's chunks. The walk is always exact: each chunk's loss is
+/// carried back through the cached K/V and state of the chunks before it. A plain walk, stopping at
+/// each boundary, lost cosine 0.949 / norm 0.889 against the exact step (Qwen3.5-0.8B, a reply split
+/// at ubatch 64, fork test-walk-exact, M5 Metal, 2026-11-27), and the fork refuses a reply past one
+/// ubatch without it.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Walk {
-    /// Carry each chunk's loss backward through the cached K/V of the chunks before it (one exact
-    /// step per window). false stops the gradient at each chunk boundary.
-    pub exact: bool,
     /// How many cached positions before a chunk receive its gradient; `None` is the whole window.
     pub horizon: Option<NonZeroU32>,
 }
@@ -681,7 +682,7 @@ fn shadow_params(shadow: &Shadow, data: *mut c_void) -> sys::llama_opt_params {
         },
         adapter: shadow.adapter.ptr.as_ptr(),
         recompute: shadow.recompute,
-        walk_exact: shadow.walk.exact,
+        walk_exact: true,
         walk_horizon: native_horizon(shadow.walk.horizon),
         static_admission: Some(optimizer_buffer_admitted),
         static_admission_data: data,
