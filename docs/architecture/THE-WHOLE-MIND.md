@@ -249,6 +249,16 @@ nobody starts from zero and every gene gets measurably better forward:
   broad one in its niche; and reuse, because a pool where everyone mints and nobody continues never compounds. The
   fitness formula keeps both honest: redundancy taxes genes that do the same thing, exploration auditions new ones,
   and only reuse with federated self-improvement makes any of them strong.
+- **Three substrates make it possible, each owning one thing the hive cannot run without:**
+  - **SAGE** runs the loop by itself: every center of every mind is a component, so grabbing, metering, improving
+    and sharing are parts reacting to events, never a step anyone schedules, and they run the same on one laptop or
+    across the grid ([SAGE.md](SAGE.md), "Across the grid").
+  - **airc** connects it: one identity per citizen and node, routing in process, on the LAN or across the web, trust
+    levels that say how far a command or a gene may travel, so any node can work for any other peer to peer.
+  - **forge-alloy** makes it trustworthy: every gene and every piece of work carries its recipe, what actually ran,
+    its artifacts and hashes, its evaluation and attestation, so a mind can accept a stranger's gene or a peer's
+    result on evidence, and a market can pay for work it can verify
+    ([FORGE-ALLOY-SPEC](FORGE-ALLOY-SPEC.md)).
 - **It is all driven by thoughts, work and metrics.** Which genes she pages, which she trains, which she shares and
   which she pulls all follow from her engrams as she works, studies and dreams, and from the measured outcomes of
   what she did, never from a person choosing.
