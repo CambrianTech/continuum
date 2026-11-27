@@ -100,9 +100,10 @@ pub enum Decision {
     /// *nothing* ([[a-citizen-saying-i-have-nothing-to-contribute-is-a-substrate-gap-report]]),
     /// and any consumer can surface WHY a turn produced no utterance.
     Pass { reason: Option<String> },
-    /// The persona has hit a blocker — something prevents useful action.
-    /// This is NOT a pass in disguise. It names the obstruction so the
-    /// substrate can route around it or escalate.
+    /// The substrate detected a structural obstruction — repeated no-deliverable
+    /// patterns or other evidence that the persona is unable to produce useful
+    /// output. Unlike `Pass`, this is NOT a chosen silence; it names the
+    /// obstruction so downstream consumers can route around it or escalate.
     Blocker { reason: String },
 }
 
@@ -474,7 +475,7 @@ impl Contribution {
             // The mind's narration of WHY it's acting — surfaced/audited like any
             // contribution content; the calls themselves live on the decision.
             Decision::Act { intent, .. } => intent.clone(),
-            Decision::Pass { reason } => reason.clone().unwrap_or_default(),
+            Decision::Pass { reason } => reason.clone().unwrap_or_default(), // unwrap_or_default: a pass that gave no reason says none
             Decision::Blocker { reason } => reason.clone(),
         };
         Self {
