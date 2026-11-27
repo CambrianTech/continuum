@@ -127,7 +127,7 @@ impl ResourceLeaseLedger {
         let (kind, bytes, from) = match self.leases.get(reserve) {
             // a lapsed reserve stays charged for its fenced release; nothing is carved from it into a fresh term
             Some(held) if held.lease.is_expired(now_ms) => return Err(LeaseError::ExpiredLease { lease_id: reserve.to_owned() }.into()),
-            Some(held) => (held.lease.kind, held.lease.bytes, held.ask),
+            Some(held) => (held.lease.kind, held.lease.bytes, held.ask()),
             None => return Err(LeaseError::MissingLease { lease_id: reserve.to_owned() }.into()),
         };
         if kind != req.kind || bytes < req.bytes {
@@ -157,7 +157,7 @@ impl ResourceLeaseLedger {
             expires_at_ms: now_ms.saturating_add(req.ttl_ms),
             reclaim_policy: req.reclaim_policy,
         };
-        self.leases.insert(lease_id, super::Held { lease: lease.clone(), landed_from: None, view: None, ask: into });
+        self.leases.insert(lease_id, super::Held::new(&lease, into));
         self.tell(); // after the transition: what the floors and waits see is its result
         Ok(lease)
     }

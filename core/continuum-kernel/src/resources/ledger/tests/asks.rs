@@ -94,7 +94,7 @@ fn every_kernel_lease_is_an_entry_in_the_core_and_leaves_with_it() {
     l.set_capacity(ResourceKind::Vram, 10_000);
     l.acquire(&req("serving", ResourceKind::Vram, 4_000, ReclaimPolicy::Graceful), "a".into(), 0).expect("test: fits");
     l.acquire(&req("embed", ResourceKind::Vram, 1_000, ReclaimPolicy::Graceful), "b".into(), 0).expect("test: fits");
-    let ask_of = |l: &ResourceLeaseLedger, id: &str| l.leases.get(id).map(|held| held.ask).expect("test: held");
+    let ask_of = |l: &ResourceLeaseLedger, id: &str| l.leases.get(id).map(|held| held.ask()).expect("test: held");
     let (a, b) = (ask_of(&l, "a"), ask_of(&l, "b"));
     assert!(matches!(l.core.status(a), Some(continuum_sage::place::Status::Committed)), "a lease is a committed entry the shrink pass reaches");
     l.release("a").expect("test: release");

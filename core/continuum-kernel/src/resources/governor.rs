@@ -367,6 +367,11 @@ impl ResourceGovernor {
         self.ledger.make_elastic(lease_id, elastic)
     }
 
+    /// A holder refused to give back (the ledger's `refused`).
+    pub fn refused(&mut self, lease_id: &str) -> Result<(), LeaseError> {
+        self.ledger.refused(lease_id)
+    }
+
     /// The core entry of a held lease, and whether an entry is still a held lease (the ledger's).
     pub fn ask_of(&self, lease_id: &str) -> Option<continuum_sage::place::AskId> {
         self.ledger.ask_of(lease_id)

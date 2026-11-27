@@ -106,7 +106,17 @@ impl<D: Domain> PlacerCore<D> {
                 }
             }
             &Act::Room { place, capacity, budget } => self.ledger.place(place, capacity, budget, &mut self.never),
-            &Act::Elastic { ask, place, floor, priority } => self.told(ask, |ledger, id| ledger.elastic(id, place, floor, priority)),
+            &Act::Elastic { ask, place, floor, priority } => {
+                self.told(ask, |ledger, id| ledger.elastic(id, place, floor, priority));
+                // a holding declared anew answers to the law afresh: a shrink asked before no longer stands,
+                // so the next one is said even at the same target
+                if let Some(table) = self.owners.get_mut(&ask.owner) {
+                    if let Some(entry) = table.entries.iter_mut().find(|entry| entry.seq == ask.seq && matches!(entry.status, Status::Shrink { .. })) {
+                        entry.status = Status::Committed;
+                        table.changed = true;
+                    }
+                }
+            }
             &Act::Prioritize { ask, priority } => self.told(ask, |ledger, id| ledger.prioritize(id, priority)),
             &Act::Shrunk { ask, place, by } => {
                 let freed = by.units();

@@ -6,7 +6,37 @@ use std::collections::{BTreeMap, HashMap};
 
 use continuum_sage::place::AskId;
 
-use super::Held;
+use super::super::lease::ResourceLease;
+use super::super::observed::Observed;
+use super::LeaseCoverage;
+
+/// A live lease and when its holder declared it landed (Codex on #6124). Landing is never inferred from
+/// the holder's growth: growth beside a lease (the same owner's KV, another process) cannot tell which bytes
+/// are the lease's. A lease is owed in full on top of physical use until its holder declares it resident
+/// AND a physical sample taken after that declaration has been accepted (before it, the reading cannot
+/// include the bytes). A holder that never declares is over-counted (refuses), never under-counted.
+#[derive(Debug, Clone)]
+pub(super) struct Held {
+    pub(super) lease: ResourceLease,
+    pub(super) view: Option<std::sync::Arc<LeaseCoverage>>,
+    /// When its holder declared it landed: only a reading observed at or after this can show it. None while
+    /// undeclared.
+    pub(super) landed_from: Option<Observed>,
+    /// Its entry in the core, by which it is committed, shrunk, split and released. Private to this file and
+    /// fixed for the lease's life: `HeldLeases` indexes leases by it (Fable on #6287 at d8fbe6bc5c).
+    ask: AskId,
+}
+
+impl Held {
+    /// A lease just granted under core entry `ask`: no view yet, not landed.
+    pub(super) fn new(lease: &ResourceLease, ask: AskId) -> Self {
+        Self { lease: lease.clone(), view: None, landed_from: None, ask }
+    }
+
+    pub(super) fn ask(&self) -> AskId {
+        self.ask
+    }
+}
 
 #[derive(Debug, Default)]
 pub(super) struct HeldLeases {

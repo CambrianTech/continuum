@@ -4,11 +4,12 @@
 //! A holder answers at once and never waits, with the reclaim outcome every consumer answers (one shrink
 //! path, Codex): Released or Partial with the bytes freed now (applied as the lease's shrink), Deferred while
 //! its fence runs (it completes through that same lease's own shrink or release, so a late or repeated answer
-//! has nothing left to settle), or Refused.
+//! has nothing left to settle), or Refused: the lease keeps all it holds, declared fixed until its holder marks it
+//! elastic again, and the next settle asks the elastic leases left for the whole gap.
 
 use std::sync::Arc;
 
-use super::super::consumer::ReclaimOutcome;
+use super::super::consumer::{ReclaimOutcome, ReclaimStatus};
 use super::super::ledger::{Elastic, ShrinkDue};
 use super::super::lease::LeaseError;
 use super::{LeaseGuard, ResourceDaemon};
@@ -57,11 +58,17 @@ impl ResourceDaemon {
             let answer = holder.shrink(&ask);
             continuum_base::probe!(class = "resources.shrink.asked", lease = %ask.lease_id, kind = ?ask.kind, held = ask.held, to = ask.to, status = ?answer.status, freed = answer.freed_bytes,
                 "the law asked an elastic lease to give back, and its holder answered");
-            if answer.freed_bytes == 0 {
-                continue; // deferred or refused: nothing given back now
+            let refused = matches!(answer.status, ReclaimStatus::Refused);
+            if !refused && answer.freed_bytes == 0 {
+                continue; // deferred: its fence completes through the lease's own shrink or release
             }
             let mut governor = self.governor.lock();
-            if let Err(gone) = governor.apply_reclaim_outcome(&ask.lease_id, &answer) {
+            let applied = if refused {
+                governor.refused(&ask.lease_id) // it keeps all it holds; the gap goes to the elastic leases left
+            } else {
+                governor.apply_reclaim_outcome(&ask.lease_id, &answer).map(|_remaining| ())
+            };
+            if let Err(gone) = applied {
                 continuum_base::probe!(class = "resources.shrink.stale", lease = %ask.lease_id, error = ?gone, "a given-back lease was already gone");
             }
             self.publish_locked(&governor);

@@ -187,22 +187,6 @@ pub struct ResourceLeaseLedger {
     asking: std::collections::HashMap<AskId, asks::Asking>,
 }
 
-/// A live lease and when its holder declared it landed (Codex on #6124). Landing is never inferred from
-/// the holder's growth: growth beside a lease (the same owner's KV, another process) cannot tell which bytes
-/// are the lease's. A lease is owed in full on top of physical use until its holder declares it resident
-/// AND a physical sample taken after that declaration has been accepted (before it, the reading cannot
-/// include the bytes). A holder that never declares is over-counted (refuses), never under-counted.
-#[derive(Debug, Clone)]
-struct Held {
-    lease: ResourceLease,
-    view: Option<Arc<LeaseCoverage>>,
-    /// When its holder declared it landed: only a reading observed at or after this can show it. None while
-    /// undeclared.
-    landed_from: Option<super::observed::Observed>,
-    /// Its entry in the core, by which it is committed, shrunk, split and released.
-    ask: AskId,
-}
-
 #[derive(Debug)]
 struct LeaseCoverage {
     bytes: AtomicU64,
@@ -614,7 +598,7 @@ impl ResourceLeaseLedger {
             expires_at_ms: now_ms.saturating_add(req.ttl_ms),
             reclaim_policy: req.reclaim_policy,
         };
-        self.leases.insert(&lease_id, Held { lease: lease.clone(), landed_from: None, view: None, ask });
+        self.leases.insert(&lease_id, Held::new(&lease, ask));
         Ok(lease)
     }
 
@@ -649,12 +633,13 @@ impl ResourceLeaseLedger {
     /// silent no-op (a double-release or stale id is a real bug to surface).
     pub fn release(&mut self, lease_id: &str) -> Result<ResourceLease, LeaseError> {
         let held = self.leases.remove(lease_id).ok_or_else(|| LeaseError::MissingLease { lease_id: lease_id.to_string() })?;
+        let ask = held.ask();
         if let Some(view) = held.view { view.bytes.store(0, Ordering::Release); }
-        self.core.apply(&Act::Release(held.ask));
-        if self.core.status(held.ask).is_some() {
+        self.core.apply(&Act::Release(ask));
+        if self.core.status(ask).is_some() {
             // still in the table: the core refused the release (its claim already gone); it leaves anyway
             continuum_base::probe!(class = "resources.ledger.release_unknown", lease = %lease_id, "a released lease had no claim left in the core");
-            self.core.drop_ask(held.ask);
+            self.core.drop_ask(ask);
         }
         self.tell();
         Ok(held.lease)
@@ -681,7 +666,7 @@ impl ResourceLeaseLedger {
         let freed_bytes = freed_bytes.min(lease.bytes);
         lease.bytes -= freed_bytes;
         if let Some(view) = &held.view { view.bytes.store(lease.bytes, Ordering::Release); }
-        let (remaining, kind, ask) = (lease.bytes, lease.kind, held.ask);
+        let (remaining, kind, ask) = (lease.bytes, lease.kind, held.ask());
         if remaining == 0 {
             self.leases.remove(lease_id);
         }
@@ -878,6 +863,7 @@ fn bytes_of(answer: Option<Bytes>) -> u64 {
 
 mod asks;
 mod held;
+use held::Held;
 mod shrinks;
 mod told;
 

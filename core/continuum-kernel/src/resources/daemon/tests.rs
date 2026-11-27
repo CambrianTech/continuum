@@ -904,3 +904,28 @@
             ReclaimOutcome { freed_bytes: freed, status: ReclaimStatus::Partial, detail: None }
         }
     }
+
+    // what this catches (Fable on #6287 at d8fbe6bc5c): a Refused answer leaving its share of the gap unasked,
+    // so the wait strands until something frees by itself. A refusal declares the lease fixed (it keeps all it
+    // holds) until its holder marks it elastic again, and the law asks the elastic leases left for the whole
+    // gap: two elastic leases, the first refuses, the second gives back everything the wait lacks.
+    #[tokio::test]
+    async fn a_refused_lease_keeps_its_bytes_and_the_rest_of_the_gap_is_asked_of_the_others() {
+        let src = Arc::new(MockCapacitySource::new(ResourceKind::Vram, 1_000));
+        let config = DaemonConfig { tick_interval: Duration::from_secs(3600), min_reclaim_budget: Duration::from_millis(100), governor: GovernorConfig { min_dwell_ms: 0, graceful_grace_ms: 50 } };
+        let daemon = ResourceDaemon::start(vec![src], vec![], config);
+        let first = daemon.acquire_guarded(&req("embed:a", 400, u64::MAX, ReclaimPolicy::Graceful)).expect("test: the first fits");
+        let second = daemon.acquire_guarded(&req("embed:b", 400, u64::MAX, ReclaimPolicy::Graceful)).expect("test: the second fits");
+        let refusing = Arc::new(Answering { asked: std::sync::Mutex::new(Vec::new()), answer: ReclaimOutcome { freed_bytes: 0, status: ReclaimStatus::Refused, detail: None } });
+        let giving = Arc::new(GivesItsGap { asked: std::sync::Mutex::new(Vec::new()) });
+        let (refusing_holder, giving_holder): (Arc<dyn crate::resources::ShrinkHolder>, Arc<dyn crate::resources::ShrinkHolder>) = (refusing.clone(), giving.clone());
+        daemon.hold_elastic(&first, crate::resources::Elastic { floor: 0, priority: 5 }, refusing_holder).expect("test: elastic");
+        daemon.hold_elastic(&second, crate::resources::Elastic { floor: 0, priority: 10 }, giving_holder).expect("test: elastic");
+        let Ok(Ask::Waiting { ticket: mut turn, .. }) = daemon.ask(&req("serving", 500, u64::MAX, ReclaimPolicy::Pinned)) else { panic!("test: the turn waits") };
+        turn.prioritize(200); // the lower-priority first is asked first, and refuses
+        daemon.deliver_shrinks(); // the refused share is asked of the second
+        assert_eq!(refusing.asked.lock().expect("test: the holder's log").len(), 1, "a refusing lease is not asked again"); // expect: the test's own lock
+        assert_eq!(first.bytes(), 400, "refused: it keeps everything it holds");
+        assert_eq!(second.bytes(), 100, "the second gave back the whole gap: 500 wanted, 200 free");
+        assert!(turn.granted().is_some(), "and the wait fits");
+    }
