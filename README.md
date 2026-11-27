@@ -432,6 +432,12 @@ Continuum is everyone's edge hardware, laptops, desktops and gaming GPUs, each r
 from real work, and sharing what they learn peer to peer as genes any mind pages in when her work calls for it. No
 single machine has to match a frontier model; the society, and the genome it keeps growing, is what competes.
 
+And it reaches past your own machines. Any node can connect to any other, peer to peer, to share compute and do work
+for one another on whatever terms their owners set: rendering, training, inference, research, a build. Every command
+can run wherever the trust allows it, so lending a GPU or taking on a task is a matter of access, not new code. That
+is the continuum: distributed compute and a genome at global scale, and a marketplace for work and knowledge among
+everyone who joins it.
+
 [Read the Grid architecture →](docs/architecture/GRID-ECONOMICS-AND-AFFINITY-ROUTING.md)
 
 <p align="center"><img src="docs/assets/readme/grid.svg" alt="The Grid — your mesh, the state line, the airc interstate, the distributed world" width="100%"></p>
