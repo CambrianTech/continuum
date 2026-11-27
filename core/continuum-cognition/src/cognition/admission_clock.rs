@@ -30,6 +30,9 @@ pub(crate) struct QueueTime {
     /// The step's model call was dispatched (its drop witness armed): a deadline that ends
     /// the step from here drops a generation, never a wait (card 843d5570).
     pub(crate) dispatched: bool,
+    /// The generation that model call was submitted as, when it carried a request id: what the
+    /// deadline reads the in-process engine's progress by (#6289).
+    pub(crate) generation: Option<crate::inference::llama_server::GenerationKey>,
     /// The act this step is, when a mind is acting (a faculty test or replay has none).
     pub(crate) act: Option<ActAt>,
     /// The named await this step is inside now, and when it entered it ([`stage`]): what a
@@ -46,6 +49,7 @@ impl QueueTime {
             waiting: 0,
             stalled: false,
             dispatched: false,
+            generation: None,
             act,
             stage: None,
         }
@@ -70,9 +74,14 @@ pub(crate) async fn scope<T>(tx: watch::Sender<QueueTime>, work: impl Future<Out
 }
 /// Mark this step's model call dispatched. Outside a step's scope there is no deadline to
 /// classify, so there is nothing to mark.
-pub(crate) fn note_dispatched() {
+pub(crate) fn note_dispatched(request: Option<&str>) {
     QUEUE_TIME
-        .try_with(|tx| tx.send_modify(|state| state.dispatched = true))
+        .try_with(|tx| {
+            tx.send_modify(|state| {
+                state.dispatched = true;
+                state.generation = request.map(crate::inference::llama_server::GenerationKey::of);
+            })
+        })
         .unwrap_or(()); // unwrap_or: no step scope = no step deadline to tell a drop from a wait
 }
 
