@@ -235,6 +235,20 @@ nobody starts from zero and every gene gets measurably better forward:
 - **Everyone contributes, and it is counted.** A mind that continues a shared gene on her own work and passes its exam
   publishes the improvement with its lineage, so the next organism that needs it gets the better version by closest
   match. Training is federated: experience never has to leave its owner for the gene to improve.
+- **It only becomes powerful if it runs itself, continuously.** Close to frontier comes from everyone contributing to
+  an unbounded pool of genes and the pool improving every day; that happens only if nobody has to do anything for it.
+  The loop, all of it automatic:
+  1. **Grab the best match** for what she is doing, from her store, her grid or any repository.
+  2. **Meter every use.** Each gene's effect is measured where it is used, against the same phenotype without it
+     (the composer's examiner, `Phenotype::without`): better, worse, or a mix (it helps one niche and hurts
+     another, which is a fork waiting to happen).
+  3. **Improve what she used,** federated: her work continues the genes that took part, and an improvement that
+     passes the gene's exam is published with its lineage.
+  4. **Share it back,** so the next organism that needs it pulls the better version by closest match.
+- **Diversity and reuse, both.** Many, many genes, because a monoculture stops improving and a narrow gene beats a
+  broad one in its niche; and reuse, because a pool where everyone mints and nobody continues never compounds. The
+  fitness formula keeps both honest: redundancy taxes genes that do the same thing, exploration auditions new ones,
+  and only reuse with federated self-improvement makes any of them strong.
 - **It is all driven by thoughts, work and metrics.** Which genes she pages, which she trains, which she shares and
   which she pulls all follow from her engrams as she works, studies and dreams, and from the measured outcomes of
   what she did, never from a person choosing.
