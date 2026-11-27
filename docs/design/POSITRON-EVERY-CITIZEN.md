@@ -144,10 +144,19 @@ video and a 3D world have nothing in common at the wire:
 around the player, a client subscribes only to what it shows, at the level of detail its link and
 screen afford: a phone on cellular gets the speaker's video at low resolution and the rest as
 avatars, the room's state as deltas, and nothing it is not looking at. A 3D world or game in a
-room's center is the same idea at a higher rate: interest management sends each client only the
-entities near its view, as state deltas on an unreliable datagram channel, or, for a thin device,
-the world rendered remotely and sent as a video stream. Which one is a placement decision priced
-like any other (THE-LANE-ON-SAGE.md, "Other use cases").
+room's center rides the same planes in one of two ways, and the quality of the first is why it is
+the ideal:
+- **Piped from a real engine.** Unreal Engine, or any other 3D engine, renders on whichever node
+  has the GPU for it and its frames arrive as a media stream (as Unreal's Pixel Streaming does over
+  WebRTC); the viewer's input goes back on the event plane. Every client, a phone included, gets
+  the engine's full quality, and a persona perceives the same frames through her vision. Our
+  photorealistic avatars are rendered the same way and arrive in a call as any participant's video.
+- **Rendered on the client** (three.js in the browser, Bevy natively) when the scene is light
+  enough: interest management sends each client only the entities near its view, as state deltas
+  on an unreliable datagram channel.
+
+Which one a room uses, and on which node the engine runs, is a placement decision priced like any
+other (THE-LANE-ON-SAGE.md, "Other use cases"): GPU, link and latency against quality.
 
 Proposed, to make the state and event planes as clean as the media plane already is:
 - **Binary frames, not JSON**, versioned, the frame's kind and revision in a header, so a client
