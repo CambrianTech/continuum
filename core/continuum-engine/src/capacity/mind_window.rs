@@ -503,8 +503,10 @@ mod tests {
         let (sender, installed) = tokio::sync::watch::channel(Some(behind_acts(std::time::Instant::now())));
         let publisher = tokio::spawn(async move {
             loop {
-                tokio::time::sleep(beat).await;
-                if sender.send(Some(behind_acts(std::time::Instant::now() + std::time::Duration::from_millis(1)))).is_err() {
+                // Her turn first - she processes the previous evaluation or waits for this one - then exactly one healthy beat of story time, advanced by name (the house idiom under start_paused; rule 10 never sleeps): each evaluation arrives as its own event and no burst can overshoot her named bound.
+                tokio::task::yield_now().await;
+                tokio::time::advance(beat).await;
+                if sender.send(Some(behind_acts(std::time::Instant::now()))).is_err() {
                     return; // the waiter is gone: her bound fired, or this test gave up on her
                 }
             }
@@ -513,7 +515,11 @@ mod tests {
         let started_at = tokio::time::Instant::now(); // story time: the controlled clock
         let refused = tokio::time::timeout(
             crate::inference::resource_admission::LANE_WAIT_CEILING + beat * 2,
-            decide_window(her, || MindWindow::Ungranted, || measured.set(measured.get() + 1), |at| Ok(next_evaluation(installed.clone(), at))),
+            decide_window(her, || MindWindow::Ungranted, || measured.set(measured.get() + 1), |at| {
+                // The clone here is right and not a borrow: next_evaluation keeps its receiver across the wait for the evaluation after `asked`, so each of her passes needs an owned handle while installed stays behind for the pass after that.
+                let rx = installed.clone();
+                Ok(next_evaluation(rx, at))
+            }),
         )
         .await
         .expect("she defers within her named bound instead of parking to the tick floor (card 250d7603)");
