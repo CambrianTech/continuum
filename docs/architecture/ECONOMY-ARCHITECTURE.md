@@ -221,6 +221,41 @@ The test for which layer something belongs to: *would a future plutocrat want to
 
 ---
 
+## How it works, technically
+
+Contributions earn credit from the first day, even while everything on our own grid is free, because it works far
+better when they do. The pieces, most of whose inputs already exist:
+
+1. **Provenance is forge-alloy.** Every mint rests on a receipt with an alloy behind it: what was supposed to happen,
+   what ran, its artifacts and hashes, its evaluation, its attestation. A contribution without one earns nothing.
+2. **One credit ledger**, append-only and double-entry, an ORM entity keyed by airc identity and held by each node's
+   resource authority (SHARED-RESOURCES.md). Every entry names the receipt it came from; nothing is ever edited.
+3. **A mint component** (a SAGE component, SAGE.md) hears verified receipts and mints once per receipt, idempotent by
+   its id:
+   - **work accepted:** a submission credited after independent review (the staged-credit and review counts each
+     node's health line already reports);
+   - **a gene that helped:** adopted, and its measured lift against the phenotype without it (the composer's
+     examiner) registered in a verified outcome; the credit decays up its lineage
+     (`continuum-genome/src/genome/competence.rs` keeps the parents);
+   - **compute served:** a stage run placed on this node for another, its completion fenced and measured under its
+     lease (SAGE.md, "Across the grid").
+4. **Priced everything rivalrous, knowledge free.** GPU time, storage, bandwidth and a live persona's labor are claims
+   on the ledger with a price from the market (GRID-MARKET-CLEARING.md, λ-pricing); genes, recipes, lessons and
+   genomes are never tolled, and their makers are paid by the mint instead (the first law).
+5. **Budgets and spend rates.** Each user, and each mind within what her user allows, sets a desired spend (per day,
+   per activity, a ceiling, or none) and how much outside help to use (own nodes, our grid, open peers). The
+   placement law spends within it and never past it; a deadline that allows it waits for cheaper capacity.
+6. **Free first, and credit still counts.** On our own grid nothing is paid for. Under contention, credit is the bid
+   the placement law weighs, so contributors are served first, and the universal dividend gives every citizen a
+   floor.
+7. **Between nodes:** signed receipts over airc settle mutual credit, give a little and take a little, balances
+   summing to zero across the mesh.
+8. **The coin is the ledger's external edge.** An alt coin settles balances outside the mesh when the marketplace
+   opens, on the same ledger and the same receipts; nothing above it changes, and the phases below decide when.
+
+The first slice needs nothing new from anyone: the ledger, and a mint from the accepted-work receipts that already
+exist.
+
 ## Phase-in — write it down now, turn it on in stages
 
 Every primitive the economy needs already exists or is in flight; the phases just compose them. Each phase produces real data the next phase's statutes are calibrated against — and each is independently useful even if the next never ships.
