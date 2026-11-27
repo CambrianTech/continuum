@@ -1,7 +1,7 @@
 # In-process learning: her serving step with labels on
 
-Owners: Fable (the unit-stage parent, the fork's walk, the llama crate, her Learning part), Cormac (lessons and what
-is owed, the authority's ledger), Codex (serving, admission, the fence, review). Read with
+Owners: Fable (the unit-stage parent, the fork's walk, the llama crate, her Learning part), Cormac (the correction and
+course sources, her genome's competence rule, the authority's ledger), Codex (serving, admission, the fence, review). Read with
 [THE-WHOLE-MIND.md](THE-WHOLE-MIND.md) (her genome is part of her), [SAGE.md](SAGE.md),
 [STAGE-CONTRACT.md](STAGE-CONTRACT.md) ("Units", "Control"), [SHARED-RESOURCES.md](SHARED-RESOURCES.md) (holders
 are Residents), [THE-LANE-ON-SAGE.md](THE-LANE-ON-SAGE.md) and [UNIFIED-PAGING.md](UNIFIED-PAGING.md).
@@ -79,7 +79,7 @@ One owner per decision, each already built or specified:
 | Every byte, on every tier | the placer over the one authority (`place::PlacerCore`, `ResourceDaemon`; SHARED-RESOURCES.md) | its objects are `Resident`s: they report rows and answer `shrink` and `grow` |
 | Which step runs on the Core, and its unit | the lane (`decide::cases::lane`, `driver/lane.rs`) | its stage declares a lever and a cost at a unit |
 | When a block moves between tiers | the Streamer and its `prefetch` use case | its walk names the blocks it needs, in order |
-| What a mind still owes to learn | the trainer (Cormac), as `learning/owed` | its stage hears it |
+| What a mind has to learn from | her own parts, each a `LabelSource` (below) | her Learning part hears them and keeps her owed queue |
 | What her genes are | her genome | its stage asks the genome to grow and commit |
 
 Nothing in learning holds a lease, a budget, a `Fit` or a threshold. A number that sizes anything comes from a
@@ -124,28 +124,45 @@ shadow to stable after an exam, a pointer swap. Its rows:
 | stable genes | Pageable | `Whole { dependents: 1 }` while she serves | `cache_out` to RAM and flash |
 | shadow and optimizer | Pageable | `Whole { dependents: 0 }` | `cache_out`, paged back on her next tile (`llama_opt_shadow_state_write`, restore) |
 
-**What is owed** (Cormac's, the trainer's one output). Latest-wins State, keyed by mind and competence, so her Learning
-part never reaches back into the trainer:
+**Where lessons come from: her own parts label her own rows.** Learning has one mechanism and three forms (continual
+learning as she works, academy courses, dreams), and each form is a part of her mind that offers labelled spans of her
+own sequences. None of them submits text examples to a node service, none is graded, and none earns credit first.
 
 ```rust
-pub struct Owed(BTreeMap<MindId, Vec<OwedLesson>>);
-pub struct OwedLesson {
-    pub competence: CompetenceKey,   // persona x trait x base: a mind learns several at once
-    pub basis: GeneBasis,            // Mint, or Fork { parent }: the trainer's competence decision, never re-decided
-    pub next: LessonHandle,          // { submission, position }: rows read through the journal's row boundary
-    pub examples_owed: u32,
-    pub since: Frame,
+/// A part of her that has something to learn from: it offers spans of her rows, never text pairs.
+pub trait LabelSource: Component {
+    /// What it offers now, latest-wins: spans of rows in one of her sequences, each with its weights.
+    fn offered(&self) -> &[Span];
+}
+pub struct Span {
+    pub sequence: SequenceRef,   // her live sequence, an activity's sequence of hers, or a dream sequence
+    pub rows: Range<Pos>,        // rows her cache holds, or a checkpoint of hers reproduces exactly
+    pub weight: Weighting,       // per-row label weight: her relevance, a review's verdict, a course's target
+    pub competence: CompetenceKey,
+    pub why: SpanSource,         // Work, Correction, Course, Dream: an enum, for receipts and replay
 }
 ```
 
-A lesson the trainer decided to reuse or defer is not owed at all. The trainer stays the journal's one owner and her
-genome the weights' one owner: `learn/<mind>/did` carries `{ update, lesson, rows }` for each update her genome
-committed, and the trainer advances its learned cursor by that update id, idempotent on replay and never ahead of the
-genome.
+| Form | Her part (a `LabelSource`) | Its spans | When its tiles run |
+|---|---|---|---|
+| As she works | her perception (the senses and awareness that already appraise what she perceives) | the rows she just prefilled: messages, tool results, files read; labels on, weighted by her own relevance (`label_weight`). The forward already ran when she perceived them, so only the backward is extra | at her learning class's share, keeping the queue in check |
+| A correction | her reflection on a verdict she receives (a review, a peer, Joel) | the verdict arrives as rows she perceives; the corrected act is labelled on her real context at full weight | the same class, ahead of the work spans |
+| A course | the academy activity she is in (an activity is a room: EVERY-ACTIVITY-IS-A-ROOM) | the course room's sequence of hers: the teacher's material and her answers, labelled at the course's targets; exams are held out and decide adoption | while she is in the course |
+| A dream | her hippocampus (the dreamer), replaying her own engrams | a dream sequence of her own, from an exact prefix checkpoint or prefilled from the engram: recombined and varied memories, labelled at their recalled relevance | idle slack (daydreams) and long quiet (deep dreams) |
+
+Her Learning part hears every `LabelSource` of hers and keeps her owed queue as its own state, by weight and
+novelty, the oldest aging up. Which gene a competence trains (mint, fork from a parent, reuse) is her genome's
+decision (`genome.basis_for(competence)`), the rule `competence::decide` already holds, moved to its owner. Progress
+is durable only as her genome's committed generation. A span whose rows are no longer in her cache is offered again
+by its source from a checkpoint or an engram; nothing keeps a second copy of her history as text.
+
+**The node keeps no trainer.** `TrainingTriggerModule` and its journal of text examples are replaced by her parts.
+What stays node-wide is what is already shared: the placer, the lane and the Streamer. Cormac's ownership moves with
+the work: the correction and course sources and her genome's competence rule.
 
 **Her Learning**, the leaf. A `UnitStage` and a part of a mind: started on her bus with her identity, it rests when she
-rests, and its need folds into hers. It hears `learning/owed` for her and its own completions, and reads a lesson's
-rows by its handle (`pending_counts`, `lesson_at`), never her history. It says `learn/<mind>/did`. Its unit is rows. It
+rests, and its need folds into hers. It hears her `LabelSource`s and its own completions, and reads a span's rows
+in her sequences, never text. It says `learn/<mind>/did` (`{ update, span, rows }`). Its unit is rows. It
 holds one object, the walk:
 
 **The walk**, the lesson in progress. It is a `Resident`, and its holdings are blocks in the block layer:
@@ -246,8 +263,16 @@ In the change that lands the objects, never later:
   lane step.
 - The `Learning` jobs `Measure`, `Load`, `Seat`, `Release`, `Fit`, the `SeatState` machine and `SeatId`
   (`inference/learning.rs`), and the trainer's seat driving and its leases (`training_trigger/seat_run.rs`, the seat
-  path in `on_engine.rs`): replaced by `learning/owed`, her Learning part and the placer.
+  path in `on_engine.rs`): replaced by her Learning part and the placer.
 - The fresh shadow's temp file (`driver/learning.rs` `load`).
+- `TrainingTriggerModule`, its journal of text examples and `genome/training-trigger/{submit,retire,status,rekey,transfer}`
+  (`continuum-dreaming/src/{modules,commands}/training_trigger`), and `dataset/turn_to_example.rs`: replaced by her
+  `LabelSource`s. Durable progress is her genome's committed generation.
+- The credit gate on learning from her work (`continuum-mind/src/persona/training_producer/`: `graded`, `credit_acceptance_region`, `settle_*`, `reconcile_tally`, `redrive`): her work is never graded; a
+  verdict she receives is a correction span.
+- `DreamConsolidationRegion` (`continuum-academy/src/cognition/dream_consolidation/`), a `BrainRegion`: her
+  hippocampus's dreamer becomes a `LabelSource` part of her.
+- The academy's `bench_round` and `held_out` feeding training: a course is an activity whose room offers spans.
 - llama-server's learn endpoint (`tools/server/server-context-learn.inc`), its HTTP adapter and the grant ledger
   (`llama_server/learn_ledger.rs`).
 
@@ -260,7 +285,8 @@ replaces.
 |---|---|---|
 | 1. `UnitStage` in `continuum-sage`, with her prefill as its first consumer; `prefill_rate.rs` deleted | Fable | `slice::sim`: no bounded mind past her bound; a short grant runs a smaller unit at the same step; M5 live: prefill p50 not worse |
 | 2. The fork's surface: begin, cost at `(t, h)`, run one tile; the graph step and whole-reply measure deleted | Fable | M5, 35B: cost at least each tile's actual scratch at 16, 64 and 256 rows; tiled against untiled at least 0.997 |
-| 3. Her genome as the object (`grow`, `commit`, cache out), her Learning part and the walk as Residents; seats, `Fit`, the trainer's leases and the blocking loop deleted | Fable (genome, part, walk), Cormac (`learning/owed`, the ledger) | M5 15-minute window: steps and saves above zero, held-out loss kept, no resident past her bound |
+| 3. Her genome as the object (`grow`, `commit`, cache out), her Learning part and the walk as Residents; seats, `Fit`, the trainer's leases and the blocking loop deleted | Fable (genome, part, walk), Cormac (the competence rule into her genome, the ledger) | M5 15-minute window: steps and saves above zero, held-out loss kept, no resident past her bound |
+| 3b. Her `LabelSource`s, as she works first: her perception's spans of rows she just prefilled, weighted by her relevance; then corrections, the course room, the dreamer. `TrainingTriggerModule`, the credit gate and `DreamConsolidationRegion` deleted | Fable (perception, dreamer), Cormac (corrections, courses) | M5 15-minute window: work spans learned per hour above zero with no example submitted; a reviewed correction kept across a restart on unseen tasks against the same base without it (plan goal 8) |
 | 4. The loss sliced over the vocabulary, labelled rows only | Fable | `b` before and after on the 35B; the update's cosine against the unsliced step at least 0.9999 |
 | 5. CUDA's backward correct | Codex, Fable | 5090, 0.8B: tiled and untiled against CPU at least 0.999 (today 0.33) |
 | 6. The 5090 live | everyone | 15-minute window: Kimi's lessons (64 GB, 89 GB, 809 GB asked today) learned beside serving; acts per hour not below the matched control |
