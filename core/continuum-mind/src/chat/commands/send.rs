@@ -45,7 +45,6 @@ pub struct ChatSendWireParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "string")]
     pub reply_to_id: Option<Uuid>,
-
 }
 
 crate::action_command! {
@@ -248,7 +247,7 @@ mod tests {
             ..Default::default()
         };
         let joel = Uuid::new_v4();
-        let params = ChatSendWireParams { room_id: Uuid::new_v4(), sender_id: Some(joel), text: "hi".into(), reply_to_id: None, dedup_id: None };
+        let params = ChatSendWireParams { room_id: Uuid::new_v4(), sender_id: Some(joel), text: "hi".into(), reply_to_id: None };
         let refused = command.run(&ctx, params).await;
         assert!(matches!(refused, Err(CommandError::Denied(_))), "speaking as someone else is refused: {refused:?}");
     }
