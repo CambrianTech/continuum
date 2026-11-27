@@ -316,6 +316,26 @@ mod tests {
         assert!(planned[0].items.contains(&PlanItem::UndeclaredColumn { column: "example_count".into() }), "the column the older build does not declare");
     }
 
+    // what this catches (the 5090's control build 2135, 2026-11-27, Codex): one collection's mismatch
+    // failing another collection's open: the inbound chat store failed to attach because
+    // training_trigger_submissions held columns its build did not declare, even when only chat_messages
+    // was being ensured. Each collection is planned and opened alone; a newer store for one never
+    // touches another's open or its plan.
+    #[tokio::test]
+    async fn one_collections_newer_table_never_fails_another_collections_open() {
+        let (adapter, _dir) = crate::orm::store::fresh_adapter().await;
+        let newer = CollectionSchema { fields: vec![field("sequence", FieldType::Number, false), field("isPending", FieldType::Boolean, false), field("carriedFrom", FieldType::Uuid, true), field("exampleCount", FieldType::Number, true)], ..submissions() };
+        assert!(adapter.ensure_schema(newer).await.success, "test: a newer build wrote the submissions table");
+        assert!(adapter.ensure_schema(submissions()).await.success, "the older build still opens submissions");
+
+        let chat = CollectionSchema { collection: "chat_messages".into(), fields: vec![field("roomId", FieldType::Uuid, false), field("text", FieldType::String, false)], indexes: Vec::new() };
+        assert!(adapter.ensure_schema(chat).await.success, "chat opens beside a newer submissions table");
+        let report = adapter.schema_report();
+        let standing = |collection: &str| report.iter().find(|p| p.collection == collection).map(|p| p.standing());
+        assert_eq!(standing("training_trigger_submissions"), Some(Standing::Newer));
+        assert_eq!(standing("chat_messages"), Some(Standing::Additive), "chat's own plan, its create: nothing of submissions in it");
+    }
+
     // what this catches (found by the open-records test above): a declared index over a column nobody
     // declares or holds, planned as an addition, so a store that can never build it reads Additive forever
     // and the migrator would try to create an index over a missing column.
