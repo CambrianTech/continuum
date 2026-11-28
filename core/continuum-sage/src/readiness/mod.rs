@@ -11,7 +11,7 @@
 //! reads. A leaf implements [`Readies`]: what a mind needs from it, how one unit of that advances, how to let her go.
 
 mod part;
-pub use part::Readiness;
+pub use part::{Readiness, ReadinessIn};
 
 #[cfg(test)]
 mod tests;
@@ -57,6 +57,9 @@ pub enum Advanced<W, Why> {
     Done,
     /// What is left of it.
     More(W),
+    /// The unit is in flight (a DMA on its fence): its end arrives as one of the leaf's acts ([`Readies::act`]). One
+    /// unit of a part is in flight at a time, so nothing is started behind a move its device has not finished.
+    Started,
     /// It cannot make her ready; asked again when the horizon next changes.
     Refused(Why),
 }
@@ -96,6 +99,8 @@ pub trait Readies: Send + 'static {
     type Work: Send;
     /// Why it cannot make a mind ready.
     type Refusal: Clone + std::fmt::Debug + PartialEq + Send + Sync + 'static;
+    /// What only this leaf is handed (a block to hold, a fence that fired), routed to [`Readies::act`].
+    type Act: Send + 'static;
 
     /// What `mind` needs from it now. A cheap check: asked of every mind whenever the horizon changes, so a mind it
     /// had made ready is prepared again once what it prepared changed.
@@ -107,6 +112,11 @@ pub trait Readies: Send + 'static {
     /// Advance her work by one unit: a bounded piece, so a newer horizon is heard between units.
     fn advance(&mut self, mind: Self::Mind, work: Self::Work) -> impl Future<Output = Advanced<Self::Work, Self::Refusal>> + Send;
 
-    /// Give back what it holds for her: she left the horizon, or its owner rests.
+    /// One of its own inputs. When it ends a mind's unit in flight, it says whose and how; after every act the parent
+    /// asks again what each mind not being prepared needs, so whatever the act changed is prepared next.
+    fn act(&mut self, act: Self::Act) -> Option<(Self::Mind, Advanced<Self::Work, Self::Refusal>)>;
+
+    /// Give back what it holds for her: she left the horizon, or its owner rests. A leaf that keeps custody of what
+    /// it prepared (the pager keeps her block) only stops putting her first.
     fn release(&mut self, mind: Self::Mind);
 }

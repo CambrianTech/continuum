@@ -31,6 +31,7 @@ impl Readies for Stager {
     type Mind = u8;
     type Work = u64;
     type Refusal = &'static str;
+    type Act = ();
 
     fn needs(&mut self, mind: u8) -> Needs<u64> {
         match self.owed.lock()[mind as usize] {
@@ -51,6 +52,10 @@ impl Readies for Stager {
         let left = work - 1;
         self.owed.lock()[mind as usize] = left;
         if left == 0 { Advanced::Done } else { Advanced::More(left) }
+    }
+
+    fn act(&mut self, (): ()) -> Option<(u8, Advanced<u64, &'static str>)> {
+        None // its units land when they advance: none is ever in flight
     }
 
     fn release(&mut self, mind: u8) {

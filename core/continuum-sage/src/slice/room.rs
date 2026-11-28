@@ -1,5 +1,5 @@
 //! The device's room for minds' KV, in simulation: the Streamer's law priced against a lane (UNIFIED-PAGING.md,
-//! "Streamer"; continuum-blocks/src/streamer.rs is the live one). A copy happens only because the room cannot hold
+//! "The pager"; continuum-blocks/src/pager.rs is the live one). A copy happens only because the room cannot hold
 //! every mind: while it can, a switch is a pointer on any device, discrete or unified.
 //!
 //! - The mind the lane runs is resident. Room for another is made by parking a resident mind not running, the one
