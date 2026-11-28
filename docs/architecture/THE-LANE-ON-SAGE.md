@@ -139,6 +139,37 @@ The engine thread only submits steps, reads results and switches.
 
 Gate: `busy_permille >= 950` while any turn waits (`persona.engine.occupancy`; it read 558 on the M5, 2026-11-25).
 
+## Readiness: the parts that get the next mind ready
+
+A swap is a pointer now: 310 swaps at 0.113 ms each in four live turns on the M5 (2026-11-28 03:27Z), against ~20 ms
+a token, with 900 of 908 tokens reusing their kept graph (fork #170). Choosing when to switch and for how long is then
+no longer about the swap. It is about whether the next mind is ready: her KV hot, her genes attached, her new tail
+rendered and tokenized, her graph built. Each of those is its own preparation, and each runs in parallel with the
+step on the Core, the way her parts run in parallel in her mind ([THE-WHOLE-MIND.md](THE-WHOLE-MIND.md) §3): a part
+declares what it hears and says, and coordinates only by published state.
+
+**One parent, `Readiness`, and leaves that declare only their difference** (`continuum-sage/src/component/readiness`).
+The parent is a SAGE `Component`, and it does the work every preparation shares, once:
+
+- it hears the lane's **horizon**: the minds that may step soon, each with her slack against her bound;
+- it keeps each mind's state, `Cold → Preparing → Ready`, and `Stale` when what it prepared changed;
+- it works the most pressed mind first (earliest slack), one unit at a time, so no long preparation holds its worker;
+- it measures each unit's cost, so it can publish, per mind, *ready now* or *ready in about this long*;
+- it gives back what it holds for a mind who left the horizon, or when its owner rests or its memory is wanted;
+- it publishes one readiness table on its topic, which the lane reads like any other state.
+
+A leaf says what it readies and nothing else: what a mind needs from it now (`Nothing`, or work with a size), how to
+advance that work one unit, and how to release what it holds for her. The pager (her KV up a tier: bytes and
+bandwidth), the genes stager (her adapters attached), the renderer (her new tail through the context codec) and the
+graph warmer (her slot's graph built) are four leaves. The warmer must run on the Core's own thread (ggml), which is
+idle 95% of the time waiting on the GPU (a 10 s sample, 2026-11-28 03:30Z); its units run in that wait, so its leaf
+declares where it runs and the parent hands its units to the Core's wait instead of its own worker.
+
+**The lane reads readiness, never guesses it.** A mind's switch-in cost is what her preparation still needs (the
+slowest part's *ready in*), not a mean measured after earlier swaps. The envelope never switches to a mind that is not
+ready while a ready one waits. Preparation is started early enough to land within her slack. With swaps near free,
+the lane's choice per step is continue, switch to a ready mind, or batch the ready ones (`Batch`).
+
 ## How a change is judged
 
 By how long each resident waits between her own acts at the live roster, prefill included, and her turn time: never
@@ -152,6 +183,7 @@ p50 (the rotating learner above) is worse. Each change carries the 15-minute liv
 | `persona-lane-bench`: the real Core with N minds at 2k, 30k and 130k, mixed turns | reproduces the live shape; switch time by depth |
 | Delete `slice::{Slicer, Lane, Control, Tuner}`; the lane's envelope is the only one | the lane's tests and the simulator unchanged |
 | Steps and units sized to the slack; `Roles` overlap in the driver | worst wait within the bound at four minds; turns at least the baseline's |
+| `Readiness`, the parent, with two leaves of opposite shape (the genes stager on its own worker, the graph warmer in the Core's wait); the lane's switch-in from readiness | no switch to an unready mind while a ready one waits; switch time unchanged or lower at four minds |
 | `Batch` executed where the cost model chooses it | aggregate need-weighted tok/s above switching on the same trace |
 | The discrete GPU: pinned memory and DMA overlapped with decode | the 5090: step time unchanged with a switch in flight |
 | Her new tail prefilled while she is in a tool | submit to first token under 1 s after a tool result |

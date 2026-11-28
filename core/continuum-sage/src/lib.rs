@@ -28,6 +28,7 @@ mod stage;
 pub mod clock;
 pub mod dataflow;
 pub mod component;
+pub mod readiness;
 
 pub use outbox::Outbox;
 pub use qos::Qos;
