@@ -30,6 +30,7 @@ pub use decode_refusal::DecodeRefusal;
 mod position;
 mod routing;
 pub use routing::{RoutingCapture, RoutingCaptureRefused};
+mod graph_slots;
 pub use position::{Pos, PosOutOfRange};
 
 // ─── Tests ───────────────────────────────────────────────────────────────

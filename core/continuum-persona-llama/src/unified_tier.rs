@@ -21,8 +21,10 @@ use continuum_persona_engine::residency::{Completion, Direction, Execute, Fence,
 use llama::{Batch, BindRefusal, ChatRefusal, Context, LoraAdapter, PersonaBlocks, PersonaCheckpoint, PersonaOwner, PersonaRefusal, Pos, TurnSampler};
 
 mod kv_home;
+mod graphs;
 mod learn;
 pub use kv_home::KvHome;
+use graphs::{KeptGraphs, Resident};
 use kv_home::KvMemory;
 pub use learn::LearnReply;
 
@@ -85,6 +87,8 @@ pub struct Blocks {
     /// Her KV storage's memory (her mapped file, or none: the fork's own). Declared after `native`, so it
     /// drops after the fork blocks that view it.
     memory: KvMemory,
+    /// She is one of the minds the tier serves for as long as her blocks live (unified_tier/graphs.rs).
+    _resident: Resident,
 }
 
 /// Why a stop could not hand a mind's blocks over (UNIFIED-PAGING slice 2). The manifest's last
@@ -153,6 +157,8 @@ pub struct UnifiedTier<'c, 'm> {
     home: KvHome,
     /// The one decode batch, sized to the engine's batch at construction and cleared each step.
     batch: Batch,
+    /// A decode graph kept for each mind it serves, and whom its stream serves now (fork #170).
+    graphs: KeptGraphs,
 }
 
 impl<'c, 'm> UnifiedTier<'c, 'm> {
@@ -165,7 +171,7 @@ impl<'c, 'm> UnifiedTier<'c, 'm> {
             Err(refused) => continuum_base::probe!(class = "persona.routing.capture_refused", refused = %refused,
                 "the tier cannot record its minds' routing; their lessons on this base are refused until it can"),
         }
-        Self { ctx, streams: [None; STREAMS], last_rebind: None, in_flight: None, applied_genes: None, home, batch }
+        Self { ctx, streams: [None; STREAMS], last_rebind: None, in_flight: None, applied_genes: None, home, batch, graphs: KeptGraphs::new() }
     }
 
     /// What the context holds now, per allocator (UNIFIED-PAGING.md, slice 3b).
@@ -278,7 +284,7 @@ impl<'c, 'm> UnifiedTier<'c, 'm> {
         unsafe { native.attach_storage(self.ctx, at, len) }.map_err(|refusal| self::native(mind, "the fork refused her KV file as her storage", refusal))?;
         native.read_file(record, generation).map_err(|e| self::native(mind, "the fork refused her record", e))?;
         memory.adopt(&live).map_err(|_| refused(mind, "her KV file could not be moved into this core's directory"))?;
-        Ok(Blocks { native, saved: Saved::Restored, memory })
+        Ok(Blocks { native, saved: Saved::Restored, memory, _resident: self.graphs.resident() })
     }
 
     fn move_in(&mut self, mind: MindId, blocks: &mut Blocks) -> Result<(), TierRefusal> {
@@ -307,6 +313,7 @@ impl<'c, 'm> UnifiedTier<'c, 'm> {
                 _ => Rebind::OtherSequence,
             });
         }
+        self.graphs.bind(self.ctx, stream.seq(), owner_of(mind).persona);
         self.streams[slot] = Some(mind);
         Ok(())
     }
@@ -335,7 +342,7 @@ impl Tier for UnifiedTier<'_, '_> {
     fn blocks_for(&mut self, mind: MindId) -> Result<Blocks, TierRefusal> {
         let mut native = PersonaBlocks::new(self.ctx, owner_of(mind)).ok_or_else(|| refused(mind, "this context's memory has no persona move"))?;
         let memory = self.kv_memory(mind, &mut native)?;
-        Ok(Blocks { native, saved: Saved::Never, memory })
+        Ok(Blocks { native, saved: Saved::Never, memory, _resident: self.graphs.resident() })
     }
 
     fn begin(&mut self, mind: MindId, blocks: &mut Blocks, direction: Direction) -> Result<Landed, TierRefusal> {
