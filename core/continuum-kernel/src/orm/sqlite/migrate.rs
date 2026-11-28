@@ -2,13 +2,19 @@
 //! collection's declaration has a generation, the store records the generation it holds, and an open applies
 //! only what the plan (`schema_plan`, step 0a) proves additive, in one transaction with that record.
 //!
-//! - Current: the record is written if absent; nothing else changes.
 //! - Additive: the table, nullable columns and indexes, then the record, commit together (rule 6), and the
 //!   plan read back must be Current or Newer.
-//! - Newer: the store holds columns a newer or other build wrote. It is served as is and its record is left
-//!   as that writer recorded it (rule 4), so a rollback works across added columns.
-//! - Breaking or Unreadable: reported by the plan and left untouched. Refusing that collection at open waits
-//!   for the three nodes' inventory (step 0a's `data/schema-plan`), so no live store is refused unseen.
+//! - Current: the record is written if absent.
+//! - Newer: the store holds columns a newer or other build wrote. Its record is left as that writer recorded
+//!   it (rule 4), so a rollback works across added columns.
+//! - Breaking or Unreadable: reported by the plan; no record and no column changes here. Refusing that
+//!   collection at open waits for the three nodes' inventory (step 0a's `data/schema-plan`), so no live store
+//!   is refused unseen.
+//!
+//! Every standing but Additive then opens as it did before this step (`do_ensure_schema` in the adapter's
+//! `ensure_schema`): its table exists (a missing one plans Additive), and its declared indexes are attempted.
+//! So a non-additive store gains no column here, but an index over columns it holds can still be built
+//! (Fable on #6301).
 
 use rusqlite::Connection;
 use continuum_base::time::EpochMs;
@@ -30,7 +36,15 @@ impl Generation {
             .iter()
             .map(|field| (naming::to_snake_case(&field.name), field))
             .filter(|(column, _)| !super::super::entity::is_base_entity_column(column))
-            .map(|(column, field)| format!("{column}:{}:{}", super::sql_column_type(&field.field_type), !field.nullable))
+            // every property the create writes into the column's definition: its type, NOT NULL, UNIQUE and its
+            // foreign key (Fable on #6301: a unique or foreign-key change is a new declaration)
+            .map(|(column, field)| {
+                let foreign = match &field.foreign_key {
+                    Some(fk) => format!("{}.{}/{:?}/{:?}", fk.collection, fk.field, fk.on_delete, fk.on_update),
+                    None => "-".to_owned(),
+                };
+                format!("{column}:{}:{}:{}:{foreign}", super::sql_column_type(&field.field_type), !field.nullable, field.unique)
+            })
             .collect();
         columns.sort();
         let mut indexes: Vec<String> = schema
@@ -270,5 +284,16 @@ mod tests {
         let mut changed = submissions();
         changed.fields[2].nullable = false;
         assert_ne!(Generation::of(&changed), Generation::of(&submissions()), "a column made required is a new generation");
+        let mut unique = submissions();
+        unique.fields[2].unique = true;
+        assert_ne!(Generation::of(&unique), Generation::of(&submissions()), "a column made unique is a new generation (Fable on #6301)");
+        let mut referenced = submissions();
+        referenced.fields[2].foreign_key = Some(crate::orm::types::ForeignKeyRef {
+            collection: "genome_layers".into(),
+            field: "id".into(),
+            on_delete: crate::orm::types::CascadeRule::default(),
+            on_update: crate::orm::types::CascadeRule::default(),
+        });
+        assert_ne!(Generation::of(&referenced), Generation::of(&submissions()), "a column given a foreign key is a new generation");
     }
 }
