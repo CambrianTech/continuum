@@ -479,6 +479,7 @@ impl LlamaCppBackend {
                     SchedulerConfig {
                         model: self.config.model_path.display().to_string(),
                         n_ctx: total_n_ctx,
+                        streams: super::super::persona_scheduler::STREAMS,
                         n_batch: self.config.n_batch,
                         n_ubatch: self.config.n_ubatch,
                         type_k: self.config.type_k,

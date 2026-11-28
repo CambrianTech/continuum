@@ -11,7 +11,7 @@ use std::time::Instant;
 use continuum_persona_engine::engine::{DecodeError, HandoffError, PersonaEngine, RetireError, StageError};
 use continuum_persona_engine::persona::{Epoch, Footprint, Held, MindId, PersonaId, PersonaParts, PersonaUnit};
 use continuum_persona_engine::residency::TierRefusal;
-use continuum_persona_llama::{Blocks, Genes, KvHome, Step, Tokens, UnifiedTier, STREAMS};
+use continuum_persona_llama::{Blocks, Genes, KvHome, Step, Tokens, UnifiedTier};
 use llama::{ContextParams, FlashAttn, Model, Pos};
 use uuid::Uuid;
 
@@ -389,12 +389,14 @@ pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
     }
 }
 
-/// The Core's one context: `STREAMS` sequences, the occupant's, whole to whoever is in it.
+/// The Core's one context: a stream per mind it binds at once (`config.streams`), each the whole window.
 fn context<'m>(model: &'m Model, config: &SchedulerConfig) -> Result<llama::Context<'m>, StartError> {
-    let streams = u32::try_from(STREAMS).map_err(|_| StartError::Context("stream count exceeds a sequence count".into()))?;
+    let streams = config.streams.get();
+    // each stream holds a whole window (a window never shrinks to seat more): the context holds them all
+    let n_ctx = config.n_ctx.checked_mul(streams).ok_or_else(|| StartError::Context("the streams' windows exceed what a context addresses".into()))?;
     model
         .new_context(ContextParams {
-            n_ctx: config.n_ctx,
+            n_ctx,
             n_batch: config.n_batch,
             n_ubatch: config.n_ubatch,
             n_seq_max: streams,

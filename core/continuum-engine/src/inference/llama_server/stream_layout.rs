@@ -2,7 +2,7 @@
 #[derive(Debug, Copy, Clone)]
 pub enum StreamLayout {
     Roster,
-    /// The in-process Core: one stream, the occupant's, holding the whole pool (object model 4.11).
+    /// The in-process Core: its streams (`persona_scheduler::STREAMS`), each a whole window (object model 4.11).
     PersonaScheduler,
 }
 
@@ -10,7 +10,7 @@ impl StreamLayout {
     pub fn sequences(self, roster: u32) -> u32 {
         match self {
             Self::Roster => roster.max(1),
-            Self::PersonaScheduler => continuum_persona_llama::STREAMS as u32,
+            Self::PersonaScheduler => crate::inference::backends::persona_scheduler::STREAMS.get(),
         }
     }
 

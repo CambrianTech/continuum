@@ -233,6 +233,11 @@ pub struct GenerationRequest {
     pub submitted: std::time::Instant,
 }
 
+/// How many minds the Core binds at once, a stream each, every one a whole window: one until the driver executes
+/// the lane's Batch (THE-LANE-ON-SAGE.md, the order), then admission's measured answer. The one owner of the fact:
+/// the context the driver makes and the pool the node fits both read it.
+pub const STREAMS: std::num::NonZeroU32 = std::num::NonZeroU32::MIN;
+
 /// The context the scheduler creates: the Core's whole context, one stream ([`continuum_persona_llama::STREAMS`]),
 /// whole to the mind swapped in; no sequence count is configurable, and no
 /// attention kernel either: the scheduler moves minds through per-sequence copy-out, which needs an
@@ -242,7 +247,10 @@ pub struct SchedulerConfig {
     /// The model this engine serves, as its owner names it: preserved minds resume only on the
     /// model they ran on (CONTINUUM-ENGINE 4.16).
     pub model: String,
+    /// One mind's window, in tokens: every stream holds a whole one.
     pub n_ctx: u32,
+    /// How many minds the context binds at once, a stream each (THE-LANE-ON-SAGE.md, open question 1).
+    pub streams: std::num::NonZeroU32,
     pub n_batch: u32,
     pub n_ubatch: u32,
     pub type_k: KvCacheType,

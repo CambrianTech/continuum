@@ -190,7 +190,12 @@ p50 (the rotating learner above) is worse. Each change carries the 15-minute liv
 
 ## Open questions
 
-1. **Batching on one stream.** A batch needs several minds' state bound at once; the Core is one stream with one
-   bound occupant. Bind several minds' storage into a multi-sequence graph, or keep one stream and batch only minds
-   whose state fits beside the occupant's?
+1. **Batching on one stream: answered, a stream per bound mind.** Measured on the M5 (Qwen3.6-35B-A3B Q4_K_M, Q4_0
+   K/V, FA, each mind at 8k, core stopped, 2026-11-28 04:37Z, `llama-batched-bench`): one mind decodes 66.6 tok/s,
+   two in one step 97.0 (1.46x), four 139.0 (2.09x), so four residents each step at 34.7 tok/s batched against 16.6
+   time-sharing one stream, MoE routing included. The Core holds a stream per bound mind (her storage attached, so a
+   bind is a pointer), each at her full window (a window never shrinks to seat more): four streams' own K/V at 262k
+   is ~6 GiB beside 21 GiB of weights on 64. How many are bound is admission's measured answer, never a constant.
+   A batch holds minds that wear the same genes (adapters are per context) until the fork applies a LoRA per row.
+   The same streams let the next mind be bound while the current one decodes (Readiness, the output ring).
 2. **Chunked prefill under the bound** (Codex): does any caller rely on a turn's prefill landing in one piece?

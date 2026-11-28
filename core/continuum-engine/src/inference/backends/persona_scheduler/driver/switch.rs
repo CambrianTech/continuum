@@ -6,7 +6,7 @@ impl Driver<'_, '_> {
     /// Make `id` the active mind: the occupant moves out to the RAM tier first and is parked (or
     /// forgotten if she was a one-off), then her parked state comes back (or a new mind starts) into
     /// the stream the occupant emptied. The Core's context is one stream, whole to whoever is in it
-    /// (`continuum_persona_llama::STREAMS`), so nobody moves in until the occupant is out.
+    /// (`SchedulerConfig::streams`), so nobody moves in until the occupant is out.
     ///
     /// A retirement a refused copy-out left behind is finished first, so it is retried rather than
     /// skipped and the retiring mind is never staged while still in custody (Codex on #6140). A

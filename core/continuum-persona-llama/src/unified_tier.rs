@@ -21,6 +21,7 @@ use continuum_persona_engine::residency::{Completion, Direction, Execute, Fence,
 use llama::{Batch, BindRefusal, ChatRefusal, Context, LoraAdapter, PersonaBlocks, PersonaCheckpoint, PersonaOwner, PersonaRefusal, Pos, TurnSampler};
 
 mod kv_home;
+mod batch;
 mod graphs;
 mod learn;
 pub use kv_home::KvHome;
@@ -28,9 +29,6 @@ use graphs::{KeptGraphs, Resident};
 use kv_home::KvMemory;
 pub use learn::LearnReply;
 
-/// Execution streams the Core's context holds: the occupant's, which is the whole context. Not a
-/// tuning number: the fork's move needs a stream per bound mind, and the Core binds only its occupant.
-pub const STREAMS: usize = 1;
 
 /// The context's execution stream, by the sequence id the context knows it as.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -145,8 +143,9 @@ fn owner_of(mind: MindId) -> PersonaOwner {
 /// holds which mind; her blocks are her unit's.
 pub struct UnifiedTier<'c, 'm> {
     ctx: &'c mut Context<'m>,
-    /// Who occupies each execution stream, by her whole id: a stream holds one generation of her.
-    streams: [Option<MindId>; STREAMS],
+    /// Who occupies each execution stream, by her whole id: a stream holds one generation of her. One stream per
+    /// mind the context can bind at once (its sequences: the fork's move needs a stream per bound mind).
+    streams: Vec<Option<MindId>>,
     last_rebind: Option<Rebind>,
     /// The last submitted decode's landed flag, until the device is known to have finished it.
     in_flight: Option<Rc<Cell<bool>>>,
@@ -171,7 +170,8 @@ impl<'c, 'm> UnifiedTier<'c, 'm> {
             Err(refused) => continuum_base::probe!(class = "persona.routing.capture_refused", refused = %refused,
                 "the tier cannot record its minds' routing; their lessons on this base are refused until it can"),
         }
-        Self { ctx, streams: [None; STREAMS], last_rebind: None, in_flight: None, applied_genes: None, home, batch, graphs: KeptGraphs::new() }
+        let streams = vec![None; ctx.n_seq_max() as usize]; // u32 to usize: lossless on every target this runs on
+        Self { ctx, streams, last_rebind: None, in_flight: None, applied_genes: None, home, batch, graphs: KeptGraphs::new() }
     }
 
     /// What the context holds now, per allocator (UNIFIED-PAGING.md, slice 3b).
@@ -417,59 +417,9 @@ impl Execute for UnifiedTier<'_, '_> {
     type Work = Step;
     type Done = Decoded;
 
+    /// Her step is a batch of one (unified_tier/batch.rs): one decode path for one mind or several.
     fn submit(&mut self, mind: MindId, step: Step) -> Result<Decoded, TierRefusal> {
-        let stream = self.stream_of(mind).ok_or_else(|| refused(mind, "not bound"))?;
-        // A step at `from` replaces whatever she held from there (a re-decoded last token, a restart
-        // at 0, a failed turn's partial tail), so her stream never holds two tokens at one position.
-        if self.ctx.memory_seq_pos_max(stream.seq()).is_some_and(|held| held >= step.from) {
-            self.settle()?;
-            if !self.ctx.memory_seq_truncate(stream.seq(), step.from) {
-                return Err(refused(mind, "the engine could not drop her positions"));
-            }
-        }
-        if !self.applied_genes.as_ref().is_some_and(|applied| Arc::ptr_eq(applied, &step.genes)) {
-            let genes: Vec<(&LoraAdapter, f32)> = step.genes.iter().map(|(adapter, scale)| (adapter.as_ref(), *scale)).collect();
-            let applied = if genes.is_empty() { self.ctx.clear_loras() } else { self.ctx.set_loras(&genes) };
-            applied.map_err(|message| TierRefusal { tier: TIER, mind, reason: "the engine refused her genes", native: Native::Reported(message.into()) })?;
-            self.applied_genes = Some(Arc::clone(&step.genes));
-        }
-        let tokens = step.tokens.as_slice();
-        let last = tokens.len().checked_sub(1).ok_or_else(|| refused(mind, "an empty step"))?;
-        let count = i32::try_from(tokens.len()).map_err(|_| refused(mind, "a step longer than a batch can hold"))?;
-        if u32::try_from(count).map_or(true, |count| count > self.ctx.n_batch()) {
-            return Err(refused(mind, "a step longer than the engine's batch"));
-        }
-        // one batch, sized to the engine's and refilled each step: never allocated per step
-        let batch = &mut self.batch;
-        batch.clear();
-        for (i, &token) in tokens.iter().enumerate() {
-            let pos = step.from.advanced(i).map_err(|_| refused(mind, "a step past what a sequence can address"))?;
-            batch.push(token, pos, &[stream.seq()], step.logits_at_end && i == last);
-        }
-        self.ctx.decode(&self.batch).map_err(|message| {
-            // The refusal says what the engine held when it refused (the M5, 2026-11-21: a cold
-            // 26-36k replay prefill refused with no KV slot ~31 s in; the cause is not yet known).
-            let occupied: Vec<(usize, Option<MindId>, Option<Pos>)> =
-                self.streams.iter().enumerate().map(|(at, held)| (at, *held, self.ctx.memory_seq_pos_max(stream_at(at).seq()))).collect();
-            continuum_base::probe!(
-                class = "persona.engine.decode_refused",
-                persona = ?mind,
-                from = step.from.get(),
-                tokens = count,
-                n_ctx = self.ctx.n_ctx(),
-                n_ctx_seq = self.ctx.n_ctx_seq(),
-                n_seq_max = self.ctx.n_seq_max(),
-                n_batch = self.ctx.n_batch(),
-                n_ubatch = self.ctx.n_ubatch(),
-                streams = ?occupied,
-                native = %message,
-                "the engine refused a decode: what it held then"
-            );
-            TierRefusal { tier: TIER, mind, reason: "the engine refused her decode", native: Native::Reported(message.into()) }
-        })?;
-        let landed = Rc::new(Cell::new(false));
-        self.in_flight = Some(Rc::clone(&landed));
-        Ok(Decoded { landed })
+        self.submit_batch(&[(mind, &step)])
     }
 
     fn settle(&mut self) -> Result<(), TierRefusal> {
