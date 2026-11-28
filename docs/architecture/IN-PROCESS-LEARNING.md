@@ -337,6 +337,15 @@ until the difference is visible, refined only where it is.
 Each region of one gene sits at its own level, from feedback; on an edge device most of a lesson's life is in the
 coarse phase, which is where its memory is saved.
 
+**The levers are a learned policy** (Joel: "the algorithm learns to optimize this too"). The labelled rows per frame,
+the layers given detail, each slice's precision level and when it is promoted or demoted, the culling threshold and
+its sample against forgetting, and the update period are the actions of one SAGE `decide` use case, beside the lane's
+(THE-LANE-ON-SAGE.md). It observes each frame's budget and pressure, her importance per row, each slice's gradient
+size against its quantization step, and the measured link rates; its reward is what she retains and how she takes a
+correction, per byte and millisecond spent, under the lane's constraint that no mind passes her wait bound. The rules
+written above are its starting prior and its envelope, never the policy: like the lane, the envelope bounds what it
+may choose and it learns inside it, from receipts.
+
 **On the workers, concurrently, never in the frame:**
 - **Data:** marking labels in her stream, pricing rows by her importance, culling well-predicted rows, reading
   captures for a dream.
