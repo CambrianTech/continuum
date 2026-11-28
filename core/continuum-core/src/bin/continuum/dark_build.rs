@@ -253,19 +253,47 @@ pub(super) async fn build_dark(mut cmd: std::process::Command) -> Result<Prebuil
     if !status.success() {
         // Say WHAT ran. Three consumer attempts on the 5090 (2026-09-19) each died
         // in one second with nothing in the log; the exit code alone named nothing.
-        return Err(format!(
-            "the build exited {status}
-  command: {cmd:?}
-  envs: {:?}
-  cwd: {:?}",
-            cmd.get_envs()
-                .map(|(k, v)| {
-                    let value = v.map(|v| v.to_string_lossy().into_owned()).unwrap_or("<unset>".into()); // unwrap_or: a None env value IS an unset (env_remove), shown as such
-                    format!("{}={value}", k.to_string_lossy())
-                })
-                .collect::<Vec<_>>(),
-            cmd.get_current_dir().map(|p| p.to_path_buf()).or_else(|| std::env::current_dir().ok())
-        ));
+        return Err(format!("the build exited {status}\n{}", describe(&cmd)));
     }
     PrebuiltCore::prepare(&receipt.artifact()?).await
+}
+
+/// What ran, for a failed build's error: the program, its arguments, its directory and the NAMES of the
+/// environment it was given, never their values. A value can be a credential: GH_TOKEN and HF_TOKEN reached
+/// reboot's output this way on the M5 2026-11-28 14:52Z (card 6d377bf1). `Command`'s own Debug prints the
+/// values it was given too, so it is never formatted here.
+fn describe(cmd: &std::process::Command) -> String {
+    let args: Vec<String> = cmd.get_args().map(|arg| arg.to_string_lossy().into_owned()).collect();
+    let env_keys: Vec<String> = cmd
+        .get_envs()
+        .map(|(key, value)| match value {
+            Some(_) => key.to_string_lossy().into_owned(),
+            None => format!("{} (removed)", key.to_string_lossy()),
+        })
+        .collect();
+    let cwd = cmd.get_current_dir().map(|dir| dir.to_path_buf()).or_else(|| std::env::current_dir().ok());
+    format!(
+        "  program: {}\n  args: {args:?}\n  env set (keys only; values are never printed): {env_keys:?}\n  cwd: {cwd:?}",
+        cmd.get_program().to_string_lossy()
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // what this catches (card 6d377bf1; the M5 2026-11-28 14:52Z: a failed canary build printed GH_TOKEN and
+    // HF_TOKEN in plain text): a failed build's description carrying an environment value. It names every
+    // key it was given, and no value.
+    #[test]
+    fn a_failed_build_names_its_env_keys_and_never_their_values() {
+        let mut cmd = std::process::Command::new("cargo");
+        cmd.args(["build", "--release"]).env("GH_TOKEN", "ghp_a-secret-never-printed").env("CARGO_TARGET_DIR", "/tmp/target").env_remove("RUSTFLAGS");
+        let described = describe(&cmd);
+        assert!(described.contains("GH_TOKEN") && described.contains("CARGO_TARGET_DIR"), "{described}");
+        assert!(described.contains("RUSTFLAGS (removed)"), "{described}");
+        assert!(!described.contains("ghp_a-secret-never-printed"), "a value reached the description: {described}");
+        assert!(!described.contains("/tmp/target"), "no env value at all, a path included: {described}");
+        assert!(described.contains("cargo") && described.contains("--release"), "{described}");
+    }
 }
