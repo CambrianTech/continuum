@@ -244,6 +244,47 @@ In the simulator, select the baseline and a learning candidate by name for the s
 
 The work follows the signed cutover. Cormac owns the step 1 holdings and unowned-byte evidence. Fable owns the production frame event contract, simulator comparison and M5 unified-memory trace. Codex owns the 5090 transfer and custody trace and the discrete-memory comparison. Both backend owners replay the same demand-change case using their measured link behavior. Fable and Codex compare the first divergence before proposing a predictor change. Cormac's correction and retention controls join at step 4.
 
+## The frame's contract and the block descriptor (steps 3 and 2)
+
+Built from what exists, parents first (Joel, 2026-11-28: "well formed abstractions and object inheritance... recycle
+reuse"). A result is valid because of the inputs, at their revisions, it was derived from; it is published once and
+read by every consumer that needs it; only a change to one of those inputs makes anything wake, recompute or move
+(Cormac's CBAR reading: selective invalidation). Nothing below is a new event system, handle type or mover.
+
+| Piece | The existing parent it is | The leaves, their difference only |
+|---|---|---|
+| A published result and what made it valid | the dataflow's `Snapshot<T>` (`value`, `revision: InputRevision`, `provenance`), where accepting a revision and replacing the output are one critical section (`continuum-sage/src/dataflow/state.rs`, `runner.rs`) | the frame's entries, the Streamer's `Demand` and `Placements`, a lesson's labelled rows: each a `T` |
+| Long work done a unit at a time | STAGE-CONTRACT.md's "Units": a lever, the cost of a unit, draw one unit, yield with receipts, `did <= unit` | decode (one row per bound mind), prefill (a chunk), and at step 4 labelled rows |
+| Who holds memory | `place::Resident` under the one placer (`continuum-sage/src/place/resident.rs`) | each holder's rows: the frame's arena, a mind's K/V, the shadow's slices |
+| A page, its move and its readiness | `continuum-blocks`: `Block<K>` (a stable key), `Region`, `Placement`, `Link` (pointer, OS paging, one fenced DMA), `Completion`, `Exchange` | one `Link` per pair of tiers per backend: the M5's pointer and `Mapping`, the 5090's pinned fenced DMA |
+| A choice under a budget (prefetch lead, demand forecast, learning detail) | `decide`: `UseCase`, `Policy<U>`, `Algorithms<U>`, the envelope | one `Policy` per candidate, compared behind the same interface |
+| The fork's side | its named-hook pattern: our own files, one-line hooks into upstream (`llama-graph-slots`, `llama-adapter-seq`, `llama-lived-routing`) | one parent per concept in our files, leaves for the backend's difference |
+
+**The frame's contract** (step 3, Fable). A frame is a draw list built from entries, each a `Units` leaf. Two kinds of
+publication, by what a late reader may miss (Codex):
+- **Latest state** (`Snapshot`): demand and placements. A held snapshot stays valid, and a reader that wakes late reads
+  the newest and may skip the frames between, which is right for a forecast or a placement.
+- **Ordered receipts** (the dataflow's stream, `Event<T>` with its revision, and the topic's durable cursor for a reader
+  that falls behind): every frame's **built** (its entries, which unit each, the `Placements` revision its pages were
+  ready at, the lane decision that chose it), **landed** (the fence that made its outputs readable, each entry's
+  `did`) and **gave** (what each entry produced: a mind's tokens, at step 4 a gradient block's readiness), and every
+  correction. None is skipped, and each is read exactly once in order.
+
+Each names the inputs it was derived from; a recomputation or wake with no changed input is the waste the replay
+counts. Tested: a recorder delayed over several frames, and a subscription that wraps, both replay every receipt
+exactly once in order, and two readers of one result share one computation.
+
+**The block descriptor** (step 2, shared by Fable on the M5 and Codex on the 5090). A block keeps its stable key in
+`Block<K>`; the `InputRevision` rides on the publication that carries it (`Snapshot<Placements<K>>`), never on the
+block (Codex). Readiness is the `Completion` its `Link` returns, published by the Streamer when the fence lands. Both
+backends implement only their `Link`: on the M5 a pointer and the `Mapping` link, so a reader reads the block where it
+lies; on the 5090 one pinned, fenced DMA into the destination, overlapped with the frame before. Consumers keep no
+copy. The shared replay case is the Streamer's own `a_block_held_again_mid_move_never_takes_the_old_moves_landing`:
+the old move's fence completes, and the newer publication keeps its own bytes and readiness until its own move lands.
+
+**What it deletes** (in the changes that land each piece, per the cutover's table): `prefill_rate.rs` and the
+admission owners at step 3; the slot path's private moves at step 2; any consumer-side copy or cache of a block.
+
 ## Gates for the whole
 
 On the M5 (35B) and the 5090, each step's 15-minute window on real residents, at its exact head against a matched
@@ -346,6 +387,28 @@ it improves a number.
 | R8 | No constant where a measurement exists; no threshold, quantum, seat count or pool size someone picked | every number cites its measurement or is a policy's output |
 | R9 | Learning is her frame with labels on, and its three forms are parts of her mind | no node trainer, no text-example journal, no grading of her work |
 | R10 | Each step lands whole: the object, its first live consumer, the deletion of what it replaces, and its gate on the M5 (35B) and the 5090 | the PR's Measured section has both nodes' 15-minute windows at its exact head |
+
+### The status-quo checks: every review, every design
+
+This is a new way to do machine learning: a fast, many-threaded dataflow organism that streams and optimizes itself,
+doing more with less, the way an engine draws photoreal frames on a low-end GPU in little memory. The reflexes of
+data-center and Python-era ML each break it, and each looks reasonable locally (Joel, 2026-11-28: "we must keep each
+other in check with this design and not fall back onto established data center or Python era philosophy... Static
+allocation cannot work"). Every reviewer asks each of these of every design and PR, and a yes is a defect:
+
+| The reflex | The question | Caught on 2026-11-28 |
+|---|---|---|
+| Static allocation, reservation | Does anything hold memory ahead of need, or across frames it does not use? | the whole-reply lesson graph asking ~25 GB up front |
+| The batch | Does work wait for a batch to fill, or treat a stream as a finished span? | lessons buffered as finished replies, then walked |
+| The synchronous loop | Does a loop own a thread until done, outside the frame? | `Learns::learn`'s blocking loop |
+| The copy | Does bytes move by a loop, a staging copy or an encoding instead of a `Link`? | |
+| The wake without a change | Does anything wake, recompute or move with no changed input? | startup migration re-run at every restart of a crash loop |
+| The constant | Is a size, rate, threshold or precision set by hand where a measurement or a learned policy belongs? | fp32 fixed for every accumulator |
+| The private owner | Does a component keep its own pool, cache, mover or copy of a block? | |
+| The separate path | Is a second path built beside the live one, or a feature tested and never wired? | the Streamer and the tile walk, built and unused |
+| The refusal | Does work that does not fit fail, wait for a reservation or fall back, instead of a lower level of detail? | |
+
+A design that keeps every row at no is the one this plan builds; one that does not is sent back before code.
 
 ### No patches
 
