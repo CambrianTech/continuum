@@ -198,4 +198,30 @@ p50 (the rotating learner above) is worse. Each change carries the 15-minute liv
    is ~6 GiB beside 21 GiB of weights on 64. How many are bound is admission's measured answer, never a constant.
    A batch holds minds that wear the same genes (adapters are per context) until the fork applies a LoRA per row.
    The same streams let the next mind be bound while the current one decodes (Readiness, the output ring).
+
+   **Across genes (design, for Codex's review; card "Batched decode across minds wearing different genes").** Live
+   on the M5 (2026-11-28 07:23Z, a7d08e30ff) a resident's turn chose a batch 85 times and batched nothing: every
+   resident wears her own genes (three adapters each) and a step applies one set, so the lane now batches only minds
+   under the running mind's genes (4145651088) and the win (2.11x on the M5, 2.72x on the 5090) waits on this:
+   - *Genes belong to a sequence, not the context.* `llama_set_seq_adapters_lora(ctx, seq, adapters, scales, n)`
+     sets the genes of a stream, once, when her mind is bound to it (the tier's bind), never per step. The context's
+     one set (`llama_set_adapters_lora`) stays the set of a stream that names none, so the one-stream Core is
+     unchanged.
+   - *Rows grouped by gene set at graph build.* The ubatch's rows are grouped by their sequence's set; each group's
+     delta is `scale · B·(A·x_g)` on that group's rows only, so the FLOPs are those of one set over all rows (each
+     row wears one set) and a row under the base model costs nothing. `build_lora_mm` and `build_lora_mm_id` (the
+     experts) take the same groups; the training shadow keeps its own add within its group.
+   - *Contiguous by construction.* The driver orders a batch's minds by gene set (`decode_steps` owns the order), so
+     each group is a contiguous row range: a view in, its rows of the result out by one concat over the groups, no
+     gather. Rows that interleave (a caller that does not order them) take a gather/set_rows path, correct and
+     slower, and are counted by a probe so the fast path's misses are loud.
+   - *Graph slots.* A slot's key gains the group table (each group's set and row range); a batch with the same minds
+     in the same order under the same genes reuses its graph, as one mind's does today.
+   - *Validators, seconds on any machine.* (1) Codex's: two residents with distinct nonzero adapter sets decode
+     identical token ids batched and alone; logits agree within the batch kernels' tolerance; then their rows are
+     swapped in the batch (sequence ids kept) and each still matches her own solo logits. (2) `persona_batch` with
+     each mind under her own adapter: aggregate tok/s against time-sharing, argmax agreement as today. (3) A
+     ubatch with interleaved groups takes the gather path and matches the contiguous one.
+   - *Open:* the graph's node count grows by groups × LoRA targets; measured on the 35B against the CPU's graph build
+     budget, and graph slots make it a once-per-shape cost.
 2. **Chunked prefill under the bound** (Codex): does any caller rely on a turn's prefill landing in one piece?
