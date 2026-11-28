@@ -348,8 +348,23 @@ impl StorageAdapter for SqliteAdapter {
                 Ok(conn) => conn,
                 Err(e) => return StorageResult::err(format!("SQLite connection lock poisoned: {e}")),
             };
-            super::schema_plan::record(&planned, &conn, &schema); // the store as it stood, before this opens it
-            do_ensure_schema(&conn, schema)
+            let plan = super::schema_plan::record(&planned, &conn, &schema); // the store as it stood, before this opens it
+            let now = continuum_base::time::EpochMs::now(); // labels when a generation was recorded; it decides nothing
+            if plan.standing() != super::Standing::Additive {
+                // nothing to add: the record is kept (or written for a current store), and the open is as before
+                if let Err(why) = super::migrate::open(&conn, &schema, &plan, now) {
+                    return StorageResult::err(why.to_string());
+                }
+                return do_ensure_schema(&conn, &schema);
+            }
+            match super::migrate::open(&conn, &schema, &plan, now) {
+                Ok(opened) => {
+                    continuum_base::probe!(class = "orm.schema.migrated", collection = schema.collection.as_str(), opened = ?opened,
+                        "a collection's additions and its generation committed together at open");
+                    StorageResult::ok(true)
+                }
+                Err(why) => StorageResult::err(why.to_string()),
+            }
         })
         .await
         .answered()
