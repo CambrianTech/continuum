@@ -491,6 +491,32 @@ replaces.
 | 7. The 5090 live | everyone | 15-minute window: Kimi's lessons learned beside serving; acts per hour not below the matched control |
 | 8. Labelled rows in a composed frame | Fable, Codex | after `Batch` executes: aggregate need-weighted rate above separate entries on the same trace |
 
+### Slice 1, vertical: the live lessons, streamed
+
+Done means used (Joel, 2026-11-28: "you test this stuff and don't use it... Stop half assing it"): the live path calls
+it, the old path is deleted in the same change, it is deployed on the M5, and a live window's receipt shows it used. A
+validator is a gate on the way, never the finish line. The Streamer and the fork's tile walk were each built, tested
+and never used; this slice is what makes the first of them used.
+
+Its live source is the one that runs today: the trainer's lessons, which reach the driver through `learn_port.rs`
+rendered on the trainer's thread, and which crash-looped the M5 through the whole-reply graph. They are rows she did
+not decode (corrections, examples), so they are the "labelled after" kind: a learning forward against her cached
+prefix, then the backward, a few rows a frame.
+
+| Step | Where | What lands | Deleted in the same change |
+|---|---|---|---|
+| A. The fork's streamed surface | `llama-context-learn*.cpp`, `llama.h` | a serving ubatch's labelled rows run the backward into an exposed gradient buffer per shadow slice, with no device optimizer step; the decode's fence is its completion; the shadow's weights swap to a new region by pointer | `llama_opt_learn_graph_step`, the whole-reply graph, `opt_tiles_past_ubatch` |
+| B. Learning state as blocks | `continuum-blocks`, her genome's region | gradient, front and back shadow, and moment blocks over her mapped region; the Streamer's first live use, demanded by the frame | the fresh shadow's temp file; `llama_opt_shadow_state_write` as a page move |
+| C. Lessons as owed rows in her frames | `learn_port.rs`, `driver/learning.rs`, `driver.rs`, `unified_tier/learn.rs` | a lesson becomes owed labelled rows of her sequence; each frame carries the ready rows its measured budget holds (the policy's envelope as its first prior) | the `Measure`, `Load`, `Seat`, `Learn` jobs, `SeatState`, `learn_next`'s idle-only path, `Learns::learn`'s blocking loop and `go_on` |
+| D. The resolver and the swap | a SAGE component in her genome | Adam over landed gradient blocks into the back buffer; an `Exchange` at a frame boundary; the persister's `Mapping` write | the device's optimizer for streamed learning |
+| E. The trainer offers, never seats | `continuum-dreaming` `training_trigger/` | the trainer hands a lesson and nothing else | `seat_run`, the seat path in `on_engine`, the trainer's leases and `Fit` |
+
+Gates, in order: the 0.8B and the random MoE (CPU, Metal) for A; the 35B on the M5 with serving stopped for A to D
+(incremental high-water by owner, no whole-reply allocation anywhere, Codex's precision and retention set); then the
+M5 deployed under a hold for a matched 15-minute window: lessons learned per hour above zero, no OOM and no abort, no
+resident past her bound, next-logit KL across each update. Codex verifies the 5090. The slice is not done before that
+window's receipt.
+
 ## Open questions
 
 0. **The 35B's tiled update disagrees with the untiled one** (CPU: cosine 0.9790 at 64-row tiles, a difference 20.46% of
