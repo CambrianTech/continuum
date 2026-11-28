@@ -225,6 +225,43 @@ placer asks that holder to give back like any other.
 crosses its predicted-full threshold, no write is refused, no deploy waits, and the bytes held by each holder track
 its measured need.
 
+## The frame's contract and the block descriptor (steps 3 and 2)
+
+Built from what exists, parents first (Joel, 2026-11-28: "well formed abstractions and object inheritance... recycle
+reuse"). A result is valid because of the inputs, at their revisions, it was derived from; it is published once and
+read by every consumer that needs it; only a change to one of those inputs makes anything wake, recompute or move
+(Cormac's CBAR reading: selective invalidation). Nothing below is a new event system, handle type or mover.
+
+| Piece | The existing parent it is | The leaves, their difference only |
+|---|---|---|
+| A published result and what made it valid | the dataflow's `Snapshot<T>` (`value`, `revision: InputRevision`, `provenance`), where accepting a revision and replacing the output are one critical section (`continuum-sage/src/dataflow/state.rs`, `runner.rs`) | the frame's entries, the Streamer's `Demand` and `Placements`, a lesson's labelled rows: each a `T` |
+| Long work done a unit at a time | STAGE-CONTRACT.md's "Units": a lever, the cost of a unit, draw one unit, yield with receipts, `did <= unit` | decode (one row per bound mind), prefill (a chunk), and at step 4 labelled rows |
+| Who holds memory | `place::Resident` under the one placer (`continuum-sage/src/place/resident.rs`) | each holder's rows: the frame's arena, a mind's K/V, the shadow's slices |
+| A page, its move and its readiness | `continuum-blocks`: `Block<K>` (a stable key), `Region`, `Placement`, `Link` (pointer, OS paging, one fenced DMA), `Completion`, `Exchange` | one `Link` per pair of tiers per backend: the M5's pointer and `Mapping`, the 5090's pinned fenced DMA |
+| A choice under a budget (prefetch lead, demand forecast, learning detail) | `decide`: `UseCase`, `Policy<U>`, `Algorithms<U>`, the envelope | one `Policy` per candidate, compared behind the same interface |
+| The fork's side | its named-hook pattern: our own files, one-line hooks into upstream (`llama-graph-slots`, `llama-adapter-seq`, `llama-lived-routing`) | one parent per concept in our files, leaves for the backend's difference |
+
+**The frame's contract** (step 3, Fable). A frame is a draw list built from entries, each a `Units` leaf. The frame
+publishes three `Snapshot`s, each naming the inputs it was derived from:
+- **built**: its entries (whose rows, which unit each), the `Placements` revision its pages were ready at, and the lane
+  decision that chose it;
+- **landed**: the fence that made its outputs readable, and each entry's `did`;
+- **gave**: what each entry produced for its readers (a mind's next token, a gradient block's readiness at step 4).
+
+A reader that wakes frames later reads the same publication; a recomputation or wake with no changed input is the
+waste the replay counts.
+
+**The block descriptor** (step 2, shared by Fable on the M5 and Codex on the 5090). A block keeps its stable key in
+`Block<K>`; the `InputRevision` rides on the publication that carries it (`Snapshot<Placements<K>>`), never on the
+block (Codex). Readiness is the `Completion` its `Link` returns, published by the Streamer when the fence lands. Both
+backends implement only their `Link`: on the M5 a pointer and the `Mapping` link, so a reader reads the block where it
+lies; on the 5090 one pinned, fenced DMA into the destination, overlapped with the frame before. Consumers keep no
+copy. The shared replay case is the Streamer's own `a_block_held_again_mid_move_never_takes_the_old_moves_landing`:
+the old move's fence completes, and the newer publication keeps its own bytes and readiness until its own move lands.
+
+**What it deletes** (in the changes that land each piece, per the cutover's table): `prefill_rate.rs` and the
+admission owners at step 3; the slot path's private moves at step 2; any consumer-side copy or cache of a block.
+
 ## Gates for the whole
 
 On the M5 (35B) and the 5090, each step's 15-minute window on real residents, at its exact head against a matched
