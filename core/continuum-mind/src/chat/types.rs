@@ -148,8 +148,8 @@ pub struct ChatSendParams {
     #[serde(default)]
     #[ts(optional, type = "string")]
     pub reply_to_id: Option<Uuid>,
-
 }
+
 impl ChatSendParams {
     /// This send as the chat-transcript line its envelope carries.
     pub fn transcript_line(&self) -> crate::cognition::conversation::room_event::ChatTranscriptLine<'_> {
@@ -300,4 +300,3 @@ mod tests {
         assert_eq!(val["afterMessageId"], json!(id.to_string()));
     }
 }
-

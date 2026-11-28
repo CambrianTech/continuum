@@ -754,4 +754,3 @@ fn kanban_changed_from_event(
 
 #[cfg(test)]
 mod tests;
-

@@ -36,7 +36,6 @@ impl ChatSlot {
         slot
     }
 
-
     /// Install the executor. The same executor again is a no-op; a DIFFERENT one is refused (Codex
     /// on #5698): the slot and the store it ensured stay the first install's.
     pub fn install(&self, executor: Arc<CommandExecutor>) -> Result<(), String> {

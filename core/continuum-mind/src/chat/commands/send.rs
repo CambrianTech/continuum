@@ -71,7 +71,7 @@ crate::action_command! {
         if let (Some(caller), Some(named)) = (ctx.caller.as_ref(), p.sender_id) {
             if caller.peer_id.as_uuid() != named {
                 return Err(CommandError::Denied(format!(
-                    "chat/send: caller {} may not speak as {named}; omit senderId to speak as yourself",
+                    "caller {} may not speak as {named}; omit senderId to speak as yourself",
                     caller.peer_id.as_uuid()
                 )));
             }
@@ -211,13 +211,27 @@ async fn publish_as_sender(
             airc, params.room_id, &params.text, message_id,
         ).await.map(|_| ()).map_err(|e| e.to_string());
     }
-    let envelope: crate::routing::airc_realtime::AircRealtimeEnvelope = serde_json::from_value(
-        crate::cognition::conversation::room_event::chat_transcript_envelope(
-            message_id,
-            &params.transcript_line(),
-            EpochMs::now().millis(),
+    let sender_peer_id = airc_core::PeerId::from_uuid(params.sender_id);
+    let inline_json = serde_json::json!({
+        "messageId": message_id.to_string(),
+        "text": params.text.clone(),
+        "media": params.media.iter().map(|m| m.as_ref()).collect::<Vec<_>>(),
+        "senderId": params.sender_id.to_string(),
+        "replyToId": params.reply_to_id.map(|u| u.to_string()),
+    });
+    let payload = airc_core::AircRealtimePayload::ExistingSchema {
+        payload: airc_core::routing::airc_realtime::AircRealtimePayloadRef::inline(
+            airc_core::routing::airc_realtime::AircRealtimeSchema::ChatTranscript,
+            inline_json,
         ),
-    ).map_err(|e| format!("chat transcript envelope invalid: {e}"))?;
+    };
+    let envelope = crate::routing::airc_realtime::AircRealtimeEnvelope::new(
+        message_id,
+        params.room_id,
+        sender_peer_id,
+        EpochMs::now().millis(),
+        payload,
+    );
     airc.publish(
         crate::persona::airc_citizen::publish_target_for(params.room_id),
         airc_protocol::FrameKind::Message,
