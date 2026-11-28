@@ -60,9 +60,6 @@ pub struct Mind<K> {
     /// What each position of depth adds to a prefill token's time, in seconds (`ChunkCost::depth`): her chunk's
     /// tokens cost more the deeper they land. `step` is already her part a token at the chunk's start.
     pub depth: Measured<f64>,
-    /// Which genes she wears, as an identity: minds decode in one batch only under the same genes (adapters
-    /// apply to a whole step), so a mind beside the running one with others is never a batch member.
-    pub genes: u64,
     /// Her prefix cache's hit rate: how much of her work reuses what is warm.
     pub prefix_hit: Measured<f64>,
 }
@@ -146,7 +143,6 @@ fn batch_with<K>(situation: &Situation<K>, slot: usize) -> Option<Mask> {
     let width = (situation.batch_width as usize).saturating_sub(1);
     let ready = &situation.ready[..situation.ready.len().min(SLOTS)];
     let running = situation.running.as_ref()?;
-    let decoding = |mind: &Mind<K>| decoding(mind) && mind.genes == running.genes; // a batch is one step under one gene set
     if width == 0 || !decoding(running) || !ready.get(slot).is_some_and(decoding) {
         return None;
     }
@@ -281,7 +277,7 @@ impl<K: Copy + Debug + PartialEq + Send + 'static> UseCase for Lane<K> {
         let decoding = |mind: &Mind<K>| matches!(mind.phase, Phase::Decode);
         let width = (situation.batch_width as usize).saturating_sub(1);
         if width > 0 && !outranked && decoding(running) {
-            let mask = ready.iter().enumerate().filter(|(_, mind)| in_class(mind) && decoding(mind) && mind.genes == running.genes).take(width).fold(0 as Mask, |mask, (slot, _)| mask | (1 << slot));
+            let mask = ready.iter().enumerate().filter(|(_, mind)| in_class(mind) && decoding(mind)).take(width).fold(0 as Mask, |mask, (slot, _)| mask | (1 << slot));
             if mask != 0 {
                 // One batch step serves the running mind and every member at about one step's cost (the M5, 2026-11-28:
                 // four minds 67.1 -> 141.6 tok/s aggregate; the 5090: 160.0 -> 435.8), so continuing her alone, or

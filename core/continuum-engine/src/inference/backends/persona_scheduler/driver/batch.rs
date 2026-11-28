@@ -1,16 +1,16 @@
 //! A batch step: several bound minds' next tokens decoded in one engine step, the lane's `Batch` executed (S6, slice
-//! 2b; THE-LANE-ON-SAGE.md, open question 1). The active mind leads; each mate is a mind decoding under the same
-//! genes (adapters are per context), bound beside her in a stream of her own, or bound there now from the parked
-//! minds. Every mind's step is booked as a single step's is (`Driver::account`): her end checks before the decode and
-//! her sample after it are the single step's own (`before_decode`, `after_decode`), from her own output of the one
-//! decode.
+//! 2b; THE-LANE-ON-SAGE.md, open question 1). The active mind leads; each mate is a mind decoding, whatever genes she
+//! wears (each stream wears its own, fork #172), bound beside her in a stream of her own, or bound there now from the
+//! parked minds. Every mind's step is booked as a single step's is (`Driver::account`): her end checks before the
+//! decode and her sample after it are the single step's own (`before_decode`, `after_decode`), from her own output of
+//! the one decode.
 
 use super::*;
 
 impl Driver<'_, '_> {
     /// Step `picked` (the active mind first, then her mates) as one decode. Each turn's result is returned with its
-    /// index, the active mind's first; a mate that cannot join this step (another phase, other genes, no stream for
-    /// her) is left for a later one, unstepped.
+    /// index, the active mind's first; a mate that cannot join this step (another phase, no stream for her) is left
+    /// for a later one, unstepped.
     pub(super) fn step_batch(&mut self, turns: &mut [Turn]) -> Vec<(usize, Result<Advanced, TurnError>)> {
         // the lane's buffer, borrowed for this step and handed back: never a copy
         let picked = std::mem::take(&mut self.lane.batch);
@@ -26,11 +26,10 @@ impl Driver<'_, '_> {
             // her switch or her prefill is a single step's: the batch forms once she decodes on the Core
             return vec![(lead, self.step(&mut turns[lead]))];
         }
-        let genes = Arc::clone(&turns[lead].genes);
         let mut minds = vec![lead];
         for &mate in mates {
             let turn = &turns[mate];
-            if matches!(turn.phase, Phase::Decoding { .. }) && continuum_persona_llama::same_genes(&turn.genes, &genes) && self.bound_beside(turn.id) {
+            if matches!(turn.phase, Phase::Decoding { .. }) && self.bound_beside(turn.id) {
                 minds.push(mate);
             }
         }

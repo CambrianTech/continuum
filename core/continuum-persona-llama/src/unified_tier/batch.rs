@@ -2,47 +2,50 @@
 //! tokens at her own positions on the stream she is bound to, decoded together, so the model's weights are read
 //! once for all of them. Measured on the M5 (Qwen3.6-35B-A3B, 8k each, 2026-11-28 04:37Z, llama-batched-bench): one
 //! mind 66.6 tok/s, four in one step 139.0. A single mind's step is a batch of one: there is one decode path.
+//!
+//! Each mind wears her own genes on her own rows (fork #172, `genes.rs`), so the minds of one step need not share
+//! them. Her rows go to the engine in stream order: with a stream per mind (kv_unified off) the engine takes a
+//! ubatch's sequences only in consecutive increasing ids and splits a step out of that order into several, each
+//! building its own graph (fork #172, measured). The caller's token indices are kept: `logits_ith` maps them.
 
 use std::cell::Cell;
 use std::rc::Rc;
-use std::sync::Arc;
 
 use continuum_persona_engine::persona::MindId;
 use continuum_persona_engine::residency::{Execute, Native, TierRefusal};
-use llama::{LoraAdapter, Pos};
+use llama::Pos;
 
-use super::{refused, stream_at, Decoded, Genes, Step, UnifiedTier, TIER};
+use super::{refused, stream_at, Decoded, Step, UnifiedTier, TIER};
 
-/// Whether two gene sets are the same adapters at the same scales: what one decode of several minds needs, since
-/// the engine applies one set to the whole context.
-pub fn same_genes(a: &Genes, b: &Genes) -> bool {
-    Arc::ptr_eq(a, b) || (a.len() == b.len() && a.iter().zip(b.iter()).all(|((x, sx), (y, sy))| Arc::ptr_eq(x, y) && sx == sy))
+/// A step's rows in the engine's order, kept across steps so a step allocates nothing.
+#[derive(Default)]
+pub(super) struct RowOrder {
+    /// The steps, by their streams' order.
+    by_stream: Vec<usize>,
+    /// Where each step's tokens start in the caller's order.
+    caller_from: Vec<usize>,
+    /// The engine's batch index of each of the caller's tokens.
+    engine_row: Vec<i32>,
 }
 
-/// The identity of a gene set, as [`same_genes`] compares them (each adapter by its pointer, with its scale): equal
-/// keys for gene sets that decode in one step. The base model's set is 0. A collision is caught by `same_genes`,
-/// which the batch and the tier still check, so it can only cost a batch, never decode one under other genes.
-pub fn genes_key(genes: &Genes) -> u64 {
-    genes.iter().fold(0, |key, (adapter, scale)| {
-        let pointer = Arc::as_ptr(adapter) as usize as u64;
-        (key ^ pointer ^ u64::from(scale.to_bits()).rotate_left(32)).wrapping_mul(0x0000_0100_0000_01b3) // FNV-1a step
-    })
+impl RowOrder {
+    /// The engine's batch index of the caller's token `i` (negative counts from the end, as the engine's does).
+    pub(super) fn engine_index(&self, i: i32) -> i32 {
+        usize::try_from(i).ok().and_then(|at| self.engine_row.get(at).copied()).unwrap_or(i) // unwrap_or: a negative index is the engine's own
+    }
 }
 
 impl UnifiedTier<'_, '_> {
-    /// Decode `steps` in one engine step: each her tokens from her `from` on the stream she is bound to. The
-    /// decode's outputs are the steps that asked for logits at their end, in order: output `i` is the `i`-th of
-    /// them. Refused, decoding nothing, when a mind is not bound, the steps wear different genes, a step is empty,
-    /// or together they are longer than the engine's batch.
+    /// Decode `steps` in one engine step: each her tokens from her `from` on the stream she is bound to, under her
+    /// own genes. The caller's token `i` (its steps' tokens in the order given) is read back with `logits_ith(i)`.
+    /// Refused, decoding nothing, when a mind is not bound, a step is empty, or together they are longer than the
+    /// engine's batch.
     pub(super) fn decode_steps(&mut self, steps: &[(MindId, &Step)]) -> Result<Decoded, TierRefusal> {
         let Some(&(first, lead)) = steps.first() else { return Ok(self.landed_now()) };
         // A step at `from` replaces whatever she held from there (a re-decoded last token, a restart at 0, a
         // failed turn's partial tail), so her stream never holds two tokens at one position.
         let mut total = 0usize;
         for &(mind, step) in steps {
-            if !same_genes(&step.genes, &lead.genes) {
-                return Err(refused(mind, "the minds of one step wear different genes"));
-            }
             let stream = self.stream_of(mind).ok_or_else(|| refused(mind, "not bound"))?;
             if step.tokens.as_slice().is_empty() {
                 return Err(refused(mind, "an empty step"));
@@ -54,25 +57,25 @@ impl UnifiedTier<'_, '_> {
                     return Err(refused(mind, "the engine could not drop her positions"));
                 }
             }
+            self.wear(mind, stream, &step.genes)?;
         }
         if u32::try_from(total).map_or(true, |total| total > self.ctx.n_batch()) {
             return Err(refused(first, "a step longer than the engine's batch"));
         }
-        if !self.applied_genes.as_ref().is_some_and(|applied| same_genes(applied, &lead.genes)) {
-            let genes: Vec<(&LoraAdapter, f32)> = lead.genes.iter().map(|(adapter, scale)| (adapter.as_ref(), *scale)).collect();
-            let applied = if genes.is_empty() { self.ctx.clear_loras() } else { self.ctx.set_loras(&genes) };
-            applied.map_err(|message| TierRefusal { tier: TIER, mind: first, reason: "the engine refused her genes", native: Native::Reported(message.into()) })?;
-            self.applied_genes = Some(Arc::clone(&lead.genes));
-        }
+        self.order_rows(steps);
         // one batch, sized to the engine's and refilled each step: never allocated per step
         self.batch.clear();
-        for &(mind, step) in steps {
+        let mut row = 0i32; // the engine's batch index of the next token pushed; the total fits the batch (checked above)
+        for &at in &self.order.by_stream {
+            let (mind, step) = steps[at];
             let seq = self.stream_of(mind).ok_or_else(|| refused(mind, "not bound"))?.seq();
             let tokens = step.tokens.as_slice();
             let last = tokens.len() - 1; // checked non-empty above
             for (i, &token) in tokens.iter().enumerate() {
                 let pos = step.from.advanced(i).map_err(|_| refused(mind, "a step past what a sequence can address"))?;
+                self.order.engine_row[self.order.caller_from[at] + i] = row;
                 self.batch.push(token, pos, &[seq], step.logits_at_end && i == last);
+                row += 1;
             }
         }
         self.ctx.decode(&self.batch).map_err(|message| {
@@ -100,6 +103,23 @@ impl UnifiedTier<'_, '_> {
         let landed = Rc::new(Cell::new(false));
         self.in_flight = Some(Rc::clone(&landed));
         Ok(Decoded { landed })
+    }
+
+    /// `steps` in their streams' order, and where each step's tokens sit in the caller's order. Every mind of
+    /// `steps` is bound (checked by the caller).
+    fn order_rows(&mut self, steps: &[(MindId, &Step)]) {
+        let (streams, order) = (&self.streams, &mut self.order);
+        order.caller_from.clear();
+        let mut from = 0usize;
+        for &(_, step) in steps {
+            order.caller_from.push(from);
+            from += step.tokens.as_slice().len();
+        }
+        order.engine_row.clear();
+        order.engine_row.resize(from, 0);
+        order.by_stream.clear();
+        order.by_stream.extend(0..steps.len());
+        order.by_stream.sort_unstable_by_key(|&at| streams.iter().position(|held| *held == Some(steps[at].0)));
     }
 
     /// A completion that has landed: nothing was submitted.

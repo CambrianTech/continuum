@@ -142,7 +142,6 @@ fn mind(id: u8, waited_ms: u64) -> Mind<u8> {
         switch_in: Measured::Value(Duration::from_micros(10)),
         overhead: Measured::Unmeasured,
         depth: Measured::Unmeasured,
-        genes: 0,
         prefix_hit: Measured::Unmeasured,
     }
 }
@@ -450,7 +449,6 @@ fn simulate(policy: Box<dyn Policy<Lane<u8>>>, seconds: u64) -> (f64, f64, Optio
             switch_in: Measured::Value(switch),
             overhead: if prompt > 0 { Measured::Value(chunk_fixed) } else { Measured::Unmeasured },
             depth: Measured::Unmeasured,
-            genes: 0,
             prefix_hit: Measured::Unmeasured,
         }),
         State::Thinking(_) => None,
@@ -710,24 +708,4 @@ fn a_batch_replaces_the_continue_and_switches_it_dominates() {
     assert_eq!(admissible, vec![lane::Action::Switch(2), lane::Action::Batch(0b011)], "the batch, and a switch to the mind it cannot hold");
     let one_stream = lane::Situation { batch_width: 1, ..calm };
     assert!(envelope::<Lane<u8>>(&one_stream).1.contains(&lane::Action::Continue), "with one stream nothing changes");
-}
-
-// what this catches (the M5, 2026-11-28 07:23Z on a7d08e30ff: a resident's turn chose a batch 85 times and batched
-// no token, because every resident wears her own genes and a step applies one gene set): a batch formed around minds
-// wearing other genes, which the Core then steps alone, and a waiter at her bound "served" by a batch that cannot
-// hold her, so she waits on. Only minds under the running mind's genes join a batch; a pressed mind under others is
-// switched to.
-#[test]
-fn a_batch_holds_only_minds_wearing_the_running_minds_genes() {
-    let running = mind(1, 0);
-    let other = |m: Mind<u8>| Mind { genes: 7, ..m };
-    let pressed = lane::Situation { running: Some(running), ready: vec![other(mind(2, 950)), mind(3, 945), mind(4, 940)], batch_width: 4, background_owed: false };
-    assert_eq!(envelope::<Lane<u8>>(&pressed).0, Gate::Forced(lane::Action::Switch(0)), "the pressed mind wears other genes: her switch, never a batch she is not in");
-    let calm = lane::Situation { running: Some(running), ready: vec![other(mind(2, 300)), mind(3, 200)], batch_width: 4, background_owed: false };
-    let (gate, admissible) = envelope::<Lane<u8>>(&calm);
-    assert_eq!(gate, Gate::Choose);
-    assert_eq!(admissible, vec![lane::Action::Switch(0), lane::Action::Batch(0b10)], "the batch holds the mind under her genes; the other stays a switch");
-    let strangers = lane::Situation { running: Some(running), ready: vec![other(mind(2, 300)), other(mind(3, 200))], batch_width: 4, background_owed: false };
-    let (_, admissible) = envelope::<Lane<u8>>(&strangers);
-    assert!(admissible.contains(&lane::Action::Continue) && !admissible.iter().any(|action| matches!(action, lane::Action::Batch(_))), "no mind shares her genes: no batch, and continuing is offered again: {admissible:?}");
 }

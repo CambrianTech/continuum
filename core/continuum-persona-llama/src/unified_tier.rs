@@ -22,7 +22,8 @@ use llama::{Batch, BindRefusal, ChatRefusal, Context, LoraAdapter, PersonaBlocks
 
 mod kv_home;
 mod batch;
-pub use batch::{genes_key, same_genes};
+mod genes;
+
 mod graphs;
 mod learn;
 pub use kv_home::KvHome;
@@ -150,13 +151,16 @@ pub struct UnifiedTier<'c, 'm> {
     last_rebind: Option<Rebind>,
     /// The last submitted decode's landed flag, until the device is known to have finished it.
     in_flight: Option<Rc<Cell<bool>>>,
-    /// The gene set on the context now (`None` before any step).
-    applied_genes: Option<Genes>,
+    /// The genes each stream's sequence wears, as the tier named them (fork #172): named when the mind bound there
+    /// first steps under a set the stream does not wear, cleared when she moves out. `None`: the context's set.
+    stream_genes: Vec<Option<Genes>>,
     /// Where each mind's KV storage lives; `Native` from the first mind on whose device cannot view
     /// host memory.
     home: KvHome,
     /// The one decode batch, sized to the engine's batch at construction and cleared each step.
     batch: Batch,
+    /// The last step's rows in the engine's order (stream order), and the caller's token indices into them.
+    order: batch::RowOrder,
     /// A decode graph kept for each mind it serves, and whom its stream serves now (fork #170).
     graphs: KeptGraphs,
 }
@@ -172,7 +176,8 @@ impl<'c, 'm> UnifiedTier<'c, 'm> {
                 "the tier cannot record its minds' routing; their lessons on this base are refused until it can"),
         }
         let streams = vec![None; ctx.n_seq_max() as usize]; // u32 to usize: lossless on every target this runs on
-        Self { ctx, streams, last_rebind: None, in_flight: None, applied_genes: None, home, batch, graphs: KeptGraphs::new() }
+        let stream_genes = vec![None; streams.len()];
+        Self { ctx, streams, last_rebind: None, in_flight: None, stream_genes, home, batch, order: batch::RowOrder::default(), graphs: KeptGraphs::new() }
     }
 
     /// What the context holds now, per allocator (UNIFIED-PAGING.md, slice 3b).
@@ -209,10 +214,11 @@ impl<'c, 'm> UnifiedTier<'c, 'm> {
         self.streams.iter().position(|held| *held == Some(mind)).map(stream_at)
     }
 
-    /// The logits of output `i` of the last decode (the batch index whose logits were asked for).
+    /// The logits of the last decode's token `i`, in the order its steps were given (the tier submits them in its
+    /// streams' order), for a token whose logits were asked for; negative counts from the engine's end.
     /// libllama synchronizes on result retrieval, so reading them also attests the last decode landed.
     pub fn logits_ith(&self, i: i32) -> &[f32] {
-        let logits = self.ctx.logits_ith(i);
+        let logits = self.ctx.logits_ith(self.order.engine_index(i));
         if let Some(landed) = &self.in_flight {
             landed.set(true);
         }
@@ -234,7 +240,7 @@ impl<'c, 'm> UnifiedTier<'c, 'm> {
     /// landed. A step her sampler refuses (a token its grammar cannot accept) is named, never a
     /// token.
     pub fn sample(&self, sampler: &mut TurnSampler, i: i32) -> Result<i32, ChatRefusal> {
-        let token = sampler.sample(self.ctx, i)?;
+        let token = sampler.sample(self.ctx, self.order.engine_index(i))?;
         if let Some(landed) = &self.in_flight {
             landed.set(true);
         }
@@ -327,6 +333,7 @@ impl<'c, 'm> UnifiedTier<'c, 'm> {
         blocks.native.save(self.ctx, stream.seq()).map_err(|e| native(mind, "the fork refused her save", e))?;
         blocks.saved = Saved::From(stream);
         self.streams[slot] = None;
+        self.forget_stream_genes(stream); // the next mind here names her own genes
         Ok(())
     }
 }

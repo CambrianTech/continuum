@@ -31,6 +31,8 @@ mod position;
 mod routing;
 pub use routing::{RoutingCapture, RoutingCaptureRefused};
 mod graph_slots;
+mod seq_genes;
+pub use seq_genes::SeqGenesRefusal;
 pub use position::{Pos, PosOutOfRange};
 
 // ─── Tests ───────────────────────────────────────────────────────────────

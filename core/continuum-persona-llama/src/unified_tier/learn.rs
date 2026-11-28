@@ -42,14 +42,18 @@ impl Learns for UnifiedTier<'_, '_> {
 
     fn attach(&mut self, mind: MindId, shadow: &Shadow) -> Result<(), TierRefusal> {
         self.settle()?;
-        // Whatever the context held is replaced: her next decode applies her genes again.
-        self.applied_genes = None;
+        // The shadow is the context's set, added to the labelled rows. Her lesson runs on her own stream under that
+        // set alone, as it did when one set served every row: her stream gives up the genes it named, and her next
+        // serving step names them again. Every other stream keeps its own (fork #172), so a mind served beside a
+        // lesson keeps her genes and the shadow stays on.
+        if let Some(stream) = self.stream_of(mind) {
+            self.forget_stream_genes(stream);
+        }
         self.ctx.set_loras(&[(shadow.adapter.as_ref(), 1.0)]).map_err(|message| reported(mind, "the engine refused the shadow", message))
     }
 
     fn detach(&mut self, mind: MindId) -> Result<(), TierRefusal> {
         self.settle()?;
-        self.applied_genes = None;
         self.ctx.clear_loras().map_err(|message| reported(mind, "the engine could not take the shadow off", message))
     }
 

@@ -199,29 +199,33 @@ p50 (the rotating learner above) is worse. Each change carries the 15-minute liv
    A batch holds minds that wear the same genes (adapters are per context) until the fork applies a LoRA per row.
    The same streams let the next mind be bound while the current one decodes (Readiness, the output ring).
 
-   **Across genes (design, for Codex's review; card "Batched decode across minds wearing different genes").** Live
-   on the M5 (2026-11-28 07:23Z, a7d08e30ff) a resident's turn chose a batch 85 times and batched nothing: every
-   resident wears her own genes (three adapters each) and a step applies one set, so the lane now batches only minds
-   under the running mind's genes (4145651088) and the win (2.11x on the M5, 2.72x on the 5090) waits on this:
+   **Across genes (built: fork #172 `0d2e3d981`, Codex approved the design 07:53Z; card "Batched decode across minds
+   wearing different genes").** Live on the M5 (2026-11-28 07:23Z, a7d08e30ff) a resident's turn chose a batch 85
+   times and batched nothing: every resident wears her own genes and a step applied one set. Now:
    - *Genes belong to a sequence, not the context.* `llama_set_seq_adapters_lora(ctx, seq, adapters, scales, n)`
-     sets the genes of a stream, once, when her mind is bound to it (the tier's bind), never per step. The context's
-     one set (`llama_set_adapters_lora`) stays the set of a stream that names none, so the one-stream Core is
-     unchanged.
-   - *Rows grouped by gene set at graph build.* The ubatch's rows are grouped by their sequence's set; each group's
-     delta is `scale · B·(A·x_g)` on that group's rows only, so the FLOPs are those of one set over all rows (each
-     row wears one set) and a row under the base model costs nothing. `build_lora_mm` and `build_lora_mm_id` (the
-     experts) take the same groups; the training shadow keeps its own add within its group.
-   - *Contiguous by construction.* The driver orders a batch's minds by gene set (`decode_steps` owns the order), so
-     each group is a contiguous row range: a view in, its rows of the result out by one concat over the groups, no
-     gather. Rows that interleave (a caller that does not order them) take a gather/set_rows path, correct and
-     slower, and are counted by a probe so the fast path's misses are loud.
-   - *Graph slots.* A slot's key gains the group table (each group's set and row range); a batch with the same minds
-     in the same order under the same genes reuses its graph, as one mind's does today.
-   - *Validators, seconds on any machine.* (1) Codex's: two residents with distinct nonzero adapter sets decode
-     identical token ids batched and alone; logits agree within the batch kernels' tolerance; then their rows are
-     swapped in the batch (sequence ids kept) and each still matches her own solo logits. (2) `persona_batch` with
-     each mind under her own adapter: aggregate tok/s against time-sharing, argmax agreement as today. (3) A
-     ubatch with interleaved groups takes the gather path and matches the contiguous one.
-   - *Open:* the graph's node count grows by groups × LoRA targets; measured on the 35B against the CPU's graph build
-     budget, and graph slots make it a once-per-shape cost.
+     names the genes a stream wears; none is the base. The tier names them when the mind bound there first steps
+     under a set her stream does not wear (once per bind in practice) and clears them at her `move_out`
+     (`unified_tier/genes.rs`). A stream that names none wears the context's set, which is the training shadow's
+     place: a lesson's `attach` returns her stream to it, so her lesson runs on the base and the shadow as before,
+     while minds served beside it keep their own genes (before, a serving step during a lesson replaced the shadow).
+   - *Rows grouped by gene set at graph build.* Each adapter's delta is added to its own group's rows only: a group
+     of consecutive rows is a view, an interleaved one is gathered and written back by index (counted:
+     `llama_seq_adapters_gathered`). Rows never move; base rows are in no group. The groups (sets with their scales,
+     rows, the model's adapter frees) are part of the graph's identity, so a step with the same minds under the same
+     genes reuses its graph and a rebind at another scale rebuilds it. A token shared by sequences under different
+     genes is refused. `build_lora_mm`, `build_lora_mm_id` (experts) and the token embedding take the same groups.
+   - *Stream order, not gene order.* With a stream per mind (`kv_unified` off) the engine takes a ubatch's sequences
+     only as consecutive increasing ids (`split_equal`, sequential): a step out of that order, or over streams with
+     a gap, is split into several ubatches that each build a graph (measured, fork #172: such phases reused 0
+     graphs, upstream's path too). So the tier pushes a step's rows in stream order and maps the caller's token
+     indices (`RowOrder`, `logits_ith`, `sample`); gene groups are then consecutive when gene-mates are bound into
+     adjacent streams, and otherwise gathered.
+   - *Measured (the M5, 2026-11-28).* `test-seq-adapters` against upstream stepping one mind at a time: bit-exact on
+     the CPU in every phase (rows swapped, rebind at another scale on a warm graph, the base after an adapted owner,
+     interleaved), within 1.0-1.6x the kernels' own difference on Metal, both KV layouts, dense and every expert
+     adapted. `persona_batch` on the 35B, four minds at 2k each under four residents' own genes (Aris, Atlas, Aiko,
+     Benchy), the live core sharing the GPU: time-shared 32.8 tok/s, batched 64.0 (1.95x), 0 argmax disagreements of
+     64; the same with no genes 36.9 -> 69.3 (1.88x).
+   - *Open:* binding gene-mates into adjacent streams (the gather path's count says when it matters), and lifting
+     the consecutive-ids requirement in the fork (per-stream attention views, fork option B), Codex's to weigh.
 2. **Chunked prefill under the bound** (Codex): does any caller rely on a turn's prefill landing in one piece?

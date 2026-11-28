@@ -8,14 +8,17 @@
 //!     time-shared arm's (a batch's kernel shapes may shift a near-tie, so agreement is reported, and a mind whose
 //!     tokens disagree on more than one step in ten fails the run).
 //!
-//! cargo run --release --features metal,test-fixtures --example persona_batch -- <model.gguf> <minds> <prompt_tokens> <decode_tokens>
+//!   - genes: each mind may wear her own (the adapters after the counts, mind i the (i mod n)-th): one step serves
+//!     minds under different genes, each on her own rows (fork #172), and the arms must still agree.
+//!
+//! cargo run --release --features metal,test-fixtures --example persona_batch -- <model.gguf> <minds> <prompt_tokens> <decode_tokens> [adapter.gguf ...]
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use continuum_persona_engine::persona::{Epoch, MindId, PersonaId};
 use continuum_persona_engine::residency::{Direction, Execute, Tier};
-use continuum_persona_llama::{base_genes, Blocks, KvHome, Step, Tokens, UnifiedTier};
+use continuum_persona_llama::{base_genes, Blocks, Genes, KvHome, Step, Tokens, UnifiedTier};
 use llama::{ContextParams, FlashAttn, Model, ModelParams, Pos};
 
 fn argmax(logits: &[f32]) -> i32 {
@@ -38,7 +41,7 @@ struct Arm {
     took: Duration,
 }
 
-fn arm(model: &Model, prompts: &[Vec<i32>], forced: &[i32], batched: bool) -> Result<Arm, String> {
+fn arm(model: &Model, prompts: &[Vec<i32>], forced: &[i32], wears: &[Genes], batched: bool) -> Result<Arm, String> {
     let minds = prompts.len();
     let window = prompts.iter().map(Vec::len).max().unwrap_or(0) + forced.len() + 64; // unwrap_or: no minds, no window
     let streams = u32::try_from(minds).map_err(|e| e.to_string())?;
@@ -48,11 +51,11 @@ fn arm(model: &Model, prompts: &[Vec<i32>], forced: &[i32], batched: bool) -> Re
     let kv_dir = tempfile::tempdir().map_err(|e| e.to_string())?;
     let (kv_home, _) = continuum_blocks::Instance::join(kv_dir.path(), "persona-batch").map_err(|e| e.to_string())?;
     let mut tier = UnifiedTier::new(&mut ctx, KvHome::Mapped { instance: kv_home });
-    let genes = base_genes();
 
     // each mind bound in her own stream, prefilled to her depth
-    let mut held: Vec<(MindId, Blocks, Pos)> = Vec::with_capacity(minds);
-    for prompt in prompts {
+    let mut held: Vec<(MindId, Blocks, Pos, Genes)> = Vec::with_capacity(minds);
+    for (i, prompt) in prompts.iter().enumerate() {
+        let genes = &wears[i];
         let id = MindId { persona: PersonaId(uuid::Uuid::new_v4()), epoch: Epoch(1) };
         let mut blocks = tier.blocks_for(id).map_err(|e| e.to_string())?;
         let _landed = tier.begin(id, &mut blocks, Direction::In).map_err(|e| e.to_string())?;
@@ -62,14 +65,14 @@ fn arm(model: &Model, prompts: &[Vec<i32>], forced: &[i32], batched: bool) -> Re
             pos = pos.advanced(chunk.len()).map_err(|e| e.to_string())?;
         }
         tier.settle().map_err(|e| e.to_string())?;
-        held.push((id, blocks, pos));
+        held.push((id, blocks, pos, Arc::clone(genes)));
     }
 
     let mut picks = Vec::with_capacity(forced.len());
     let started = Instant::now();
     for &token in forced {
         let steps: Vec<(MindId, Step)> =
-            held.iter().map(|(id, _, pos)| (*id, Step { tokens: Tokens::One(token), from: *pos, logits_at_end: true, genes: Arc::clone(&genes) })).collect();
+            held.iter().map(|(id, _, pos, genes)| (*id, Step { tokens: Tokens::One(token), from: *pos, logits_at_end: true, genes: Arc::clone(genes) })).collect();
         let mut row = Vec::with_capacity(minds);
         if batched {
             let refs: Vec<(MindId, &Step)> = steps.iter().map(|(id, step)| (*id, step)).collect();
@@ -84,7 +87,7 @@ fn arm(model: &Model, prompts: &[Vec<i32>], forced: &[i32], batched: bool) -> Re
             }
         }
         picks.push(row);
-        for (_, _, pos) in &mut held {
+        for (_, _, pos, _) in &mut held {
             *pos = pos.advanced(1).map_err(|e| e.to_string())?;
         }
     }
@@ -99,7 +102,7 @@ fn main() -> Result<(), String> {
 
 fn run() -> Result<(), String> {
     let args: Vec<String> = std::env::args().collect();
-    let model_path = args.get(1).ok_or("usage: persona_batch <model.gguf> <minds> <prompt_tokens> <decode_tokens>")?;
+    let model_path = args.get(1).ok_or("usage: persona_batch <model.gguf> <minds> <prompt_tokens> <decode_tokens> [adapter.gguf ...]")?;
     let (minds, prompt_tokens, decode_tokens) = (arg(&args, 2, "minds")?, arg(&args, 3, "prompt_tokens")?, arg(&args, 4, "decode_tokens")?);
     llama::backend_init();
     let model = Model::load(model_path, ModelParams::default())?;
@@ -113,8 +116,14 @@ fn run() -> Result<(), String> {
         .collect::<Result<_, String>>()?;
     let forced: Vec<i32> = model.tokenize(&" the card, the claim, the review and the patch".repeat(decode_tokens / 8 + 1), false, false)?.into_iter().take(decode_tokens).collect();
 
-    let shared = arm(&model, &prompts, &forced, false)?;
-    let batched = arm(&model, &prompts, &forced, true)?;
+    // each mind's genes: the adapters given after the counts, mind i the (i mod n)-th; none given, every mind the base
+    let adapters: Vec<Arc<llama::LoraAdapter>> = args[5..].iter().map(|path| model.load_lora(path).map(Arc::new)).collect::<Result<_, String>>()?;
+    let wears: Vec<Genes> = (0..minds)
+        .map(|i| if adapters.is_empty() { base_genes() } else { Arc::from(vec![(Arc::clone(&adapters[i % adapters.len()]), 1.0f32)]) })
+        .collect();
+
+    let shared = arm(&model, &prompts, &forced, &wears, false)?;
+    let batched = arm(&model, &prompts, &forced, &wears, true)?;
     let tps = |arm: &Arm| (forced.len() * minds) as f64 / arm.took.as_secs_f64();
     let mut worst = 0usize;
     for mind in 0..minds {
