@@ -293,12 +293,12 @@ but still works").
 | Training habit | Engine form | Her learning |
 |---|---|---|
 | A batch | samples in a frame | a frame carries as many labelled rows as its budget holds; few per frame is enough, because the result accumulates |
-| Gradient accumulation | temporal accumulation (TAA) | each frame adds a cheap estimate into a history buffer in place; Adam's moments are exponential temporal filters already |
+| Gradient accumulation | temporal accumulation (TAA) | each frame adds a cheap estimate into a history buffer in place, a plain weighted sum within the period: Adam's moments are already the exponential filter, so decay lives only there, never twice (Cormac) |
 | The optimizer step | a resolve pass on a worker | a low-rank layer's gradient is megabytes: read back, Adam on a CPU worker against host-resident moments, written to a back buffer; the device never runs the optimizer |
 | Weights updated in place | double buffering | the front buffer serves, the back buffer is written, a pointer swap at a frame boundary; no stall, no torn read |
-| Every parameter every step | LOD and update rate per layer | layers whose gradient is small or settled update less often, and their slices stream in less often |
-| fp32 everywhere | precision LOD | low-precision gradients into an error-bounded accumulation, judged by retention |
-| Uniform sampling | variable rate and culling | rows she already predicts well give almost no gradient and are culled before the backward; her surprise, weighed by her amygdala, sets the rate |
+| Every parameter every step | LOD and update rate per layer | layers whose gradient is small or settled update less often, and their slices stream in less often; Adam's bias correction counts each layer's own steps, so a rarely updated layer never takes an oversized first step (Cormac) |
+| fp32 everywhere | precision LOD | low-precision gradients, but the history buffer and the host moments stay fp32, or a few rows' contribution a frame rounds to zero (Cormac); judged by retention |
+| Uniform sampling | variable rate and culling | rows she already predicts well give almost no gradient and are culled before the backward; her surprise, weighed by her amygdala, sets the rate. A culled row leaves the period's denominator (so the step does not shrink as she improves), and a small importance-weighted random sample of low-loss rows is kept as the term against forgetting what she already does well, measured in held-out retention (Cormac) |
 | Activations kept for backprop | frame-graph transients | the forward's intermediates the backward reads alias in the frame's arena and die with it; only the history buffer survives |
 | All weights resident | virtual texturing (RAGE) | a frame records which slices its rows touched; workers stream exactly those in for the next frames and evict cold ones |
 | A fixed batch size | dynamic resolution | the labelled rows per frame scale to hold the lane's bound, up and down, from measured frame time |
