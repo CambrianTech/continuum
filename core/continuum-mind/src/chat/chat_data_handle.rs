@@ -188,7 +188,8 @@ impl ChatModule {
     ///
     /// The store deduplicates on `message_id`: if a row with the same id
     /// already exists (e.g., from an inbound loopback that wrote first),
-    /// persisting again is a no-op — the original row and its id are kept.
+    /// persisting again is a no-op — line_store.rs:288 checks the arrival's
+    /// `fresh` flag and returns `Imported::Duplicate` when it finds an existing row.
     pub async fn send(&self, params: ChatSendParams) -> Result<ChatSendResult, String> {
         self.send_with_wire(params, WireLeg::Envelope).await
     }

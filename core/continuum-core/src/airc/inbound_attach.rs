@@ -410,7 +410,7 @@ pub async fn publish_transcript_event(
     // a line imported but not yet fed when the core died is not re-fed on replay.
     let decoded = envelope_from_event(event);
     let chat_line = match &decoded {
-                Ok(None) => posted_from_message(event, validated_message_id),
+        Ok(None) => posted_from_message(event, validated_message_id),
         Ok(Some(envelope)) => posted_from_envelope(envelope, event).map(|mut line| {
             line.retires_publication = delegated;
             line

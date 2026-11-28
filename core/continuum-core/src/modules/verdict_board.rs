@@ -383,7 +383,7 @@ async fn say_in_card_room(
         .and_then(|r| r.any_live_citizen_other_than(holder))
         .map(|rt| rt.airc().clone())
         .unwrap_or_else(|| operator.clone()); // unwrap_or: no live citizen other than the holder → the operator speaks (never the holder herself)
-    match crate::persona::airc_citizen::publish_text_in_room(&voice, room, &line).await {
+    match crate::persona::airc_citizen::publish_text_in_room(&voice, room, &line, None).await {
         Ok(_) => continuum_base::probe!(
             class = "benchmark.verdict.line_posted",
             instance = verdict.instance_id.as_str(),

@@ -38,7 +38,7 @@ fn room_voice(persona: Uuid, room: Uuid, text: String) -> SlotFuture<Option<Resu
     Box::pin(async move {
         let runtime = PersonaAircRuntimeRegistry::try_global()?.get(persona)?;
         Some(
-            crate::persona::airc_citizen::publish_text_in_room(runtime.airc(), room, &text)
+            crate::persona::airc_citizen::publish_text_in_room(runtime.airc(), room, &text, None)
                 .await
                 .map(|_| ())
                 .map_err(|e| e.to_string()),

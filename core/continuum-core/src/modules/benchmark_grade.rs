@@ -289,7 +289,7 @@ async fn grade_card(
     // thing this path did; an errored verdict is an ABSENCE and posts nothing.
     if let Some(err) = &verdict.error {
         let msg = format!("🧪 [bench {bench}] {instance} — grade could not run (infra, not a score): {err}");
-        crate::persona::airc_citizen::publish_text_in_room(&airc, room_id, &msg)
+        crate::persona::airc_citizen::publish_text_in_room(&airc, room_id, &msg, None)
             .await
             .map_err(|e| format!("post verdict: {e}"))?;
     }
@@ -346,7 +346,7 @@ pub(crate) async fn grade_submission(
                 // card selection and import skip what this box cannot grade.
                 crate::cognition::swe_verdict_sweep::record_refusal(&instance, err, None);
                 let msg = format!("🧪 [bench {bench}] {instance} — grade could not run (infra, not a score): {err}");
-                if let Err(e) = crate::persona::airc_citizen::publish_text_in_room(&airc, room_id, &msg).await {
+                if let Err(e) = crate::persona::airc_citizen::publish_text_in_room(&airc, room_id, &msg, None).await {
                     continuum_base::probe!(
                         class = "benchmark.grade.submission_unposted",
                         instance = %instance,
@@ -548,7 +548,7 @@ async fn grade_gym_card(
         recorded = outcome.is_some(),
         "gym grade complete — verdict recorded, posting into the card's room"
     );
-    crate::persona::airc_citizen::publish_text_in_room(airc, room_id, &msg)
+    crate::persona::airc_citizen::publish_text_in_room(airc, room_id, &msg, None)
         .await
         .map_err(|e| format!("post verdict: {e}"))?;
     Ok(())

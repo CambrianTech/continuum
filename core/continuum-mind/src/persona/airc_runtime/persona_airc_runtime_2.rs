@@ -367,7 +367,7 @@ impl crate::persona::airc_citizen::AircCitizen for PersonaAircRuntime {
     }
 
     async fn say_in(&self, room_id: Uuid, text: &str) -> Result<EventId, AircError> {
-        crate::persona::airc_citizen::publish_text_in_room(&self.airc, room_id, text).await
+        crate::persona::airc_citizen::publish_text_in_room(&self.airc, room_id, text, None).await
     }
 
     /// #170: delegate to airc-lib's ephemeral stream-chunk publish.
