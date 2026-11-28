@@ -1,5 +1,6 @@
 /**
- * Eye-node entry point. Resolves the core socket, starts the {@link EyeNode},
+ * Eye-node entry point. Resolves the core socket, runs a boot-time reaper to
+ * clean up orphaned Chromium processes from previous crashes, starts the {@link EyeNode},
  * and stays alive fulfilling `perception/observe` until interrupted.
  *
  * Config (env):
@@ -9,17 +10,30 @@
  *   EYE_NODE_LABEL         provider label shown in core logs
  */
 
+import { reapOrphanedBrowsers } from './reaper';
 import { coreEndpoint } from './coreEndpoint';
 import { EyeNode } from './eyeNode';
-
 async function main(): Promise<void> {
   const resolved = coreEndpoint(process.env);
   if (!resolved.ok) {
     console.error(`eye-node: ${resolved.reason}`);
-    process.exit(2);
+    process.exit(1);
   }
   const socketPath = resolved.endpoint;
   const label = process.env.EYE_NODE_LABEL;
+
+  // --- Boot-time reaper: clean orphaned Chromium processes + profile dirs ---
+  try {
+    const result = await reapOrphanedBrowsers();
+    if (result.browsersKilled > 0 || result.profilesCleaned > 0) {
+      console.log(
+        `eye-node: reaped ${result.browsersKilled} orphaned browser(s), cleaned ${result.profilesCleaned} profile dir(s)`,
+      );
+    }
+  } catch (err) {
+    // Reaper is best-effort; a failure should not prevent the eye-node from starting
+    console.error('eye-node: reaper failed (non-fatal):', err instanceof Error ? err.message : String(err));
+  }
 
   const eye = new EyeNode({ socketPath, label });
 
