@@ -6,7 +6,7 @@
 use std::num::NonZeroUsize;
 use std::time::Duration;
 
-use super::super::measured::{Ewma, Fraction, LineFit, Measured, Window};
+use super::super::measured::{Chunk, ChunkFit, Ewma, Fraction, Measured, Window};
 use super::lane::{Mind, Phase};
 
 /// What the executor saw happen to one mind.
@@ -16,7 +16,8 @@ pub enum Observation<K> {
     /// prefill chunk (hundreds of tokens per step) or a decode step (one).
     /// `switched`: the step right after she was brought in, which pays what the switch threw away
     /// (the engine's reusable graph, rebuilt for her), beyond the bind `SwitchedIn` measured.
-    Stepped { mind: K, took: Duration, tokens: u64, prefill: bool, switched: bool },
+    /// `at`: the position her step began at (a prefill chunk's first token, or the decoded one), read when it moved tokens.
+    Stepped { mind: K, took: Duration, tokens: u64, at: u64, prefill: bool, switched: bool },
     /// She was brought onto the Core: how long the bind took.
     SwitchedIn { mind: K, took: Duration },
     /// Her turn ended after decoding this many tokens.
@@ -78,7 +79,7 @@ struct Track<K> {
     /// Her prefill steps' seconds against their tokens: a fixed part every chunk pays and a part a
     /// token, so a chunk is sized by what it buys (the M5, 2026-11-26: chunks sized by a per-token rate
     /// shrank under a crowd toward one token, each paying a full step: 3,197 tokens in 57.6 s).
-    chunks: LineFit,
+    chunks: ChunkFit,
     switch_in: Ewma,
     /// What a switched step took beyond her plain steps at the same count of tokens: the rest of a
     /// switch's cost (the M5, 2026-11-25: binds 0.28 ms, the graph rebuild after them 5.6 ms a step).
@@ -110,13 +111,13 @@ pub struct LaneHistory<K> {
     /// own (a one-off: a dream, a warmup) is predicted from it, so her remainder is counted.
     turns: Window,
     /// Every mind's prefill steps on this Core, the same line: a mind not yet measured is sized by it.
-    chunks: LineFit,
+    chunks: ChunkFit,
 }
 
 impl<K: Copy + PartialEq> LaneHistory<K> {
     pub fn new(views: Views) -> Self {
         let rate = || Ewma::new(views.rates);
-        Self { views, tracks: Vec::new(), core: [Ewma::new(views.smoothing); 2], background: Background { backlog: Duration::ZERO, arrived: rate(), served: rate() }, turns: Window::new(views.turns), chunks: LineFit::new(views.smoothing) } // cold: built once, with the lane
+        Self { views, tracks: Vec::new(), core: [Ewma::new(views.smoothing); 2], background: Background { backlog: Duration::ZERO, arrived: rate(), served: rate() }, turns: Window::new(views.turns), chunks: ChunkFit::new(views.smoothing) } // cold: built once, with the lane
     }
 
     fn track(&mut self, mind: K) -> &mut Track<K> {
@@ -125,7 +126,7 @@ impl<K: Copy + PartialEq> LaneHistory<K> {
             Some(at) => at,
             None => {
                 let ewma = || Ewma::new(views.smoothing);
-                self.tracks.push(Track { mind, prefill: ewma(), decode: ewma(), plain: [ewma(), ewma()], chunks: LineFit::new(views.smoothing), switch_in: ewma(), rebuild: ewma(), prefix_hit: ewma(), turn_tokens: Window::new(views.turns), decoded: 0, kv_bytes: Measured::Unmeasured, cold_bytes: Measured::Unmeasured });
+                self.tracks.push(Track { mind, prefill: ewma(), decode: ewma(), plain: [ewma(), ewma()], chunks: ChunkFit::new(views.smoothing), switch_in: ewma(), rebuild: ewma(), prefix_hit: ewma(), turn_tokens: Window::new(views.turns), decoded: 0, kv_bytes: Measured::Unmeasured, cold_bytes: Measured::Unmeasured });
                 self.tracks.len() - 1
             }
         };
@@ -149,12 +150,12 @@ impl<K: Copy + PartialEq> LaneHistory<K> {
 
     pub fn observe(&mut self, observation: Observation<K>) {
         match observation {
-            Observation::Stepped { mind, took, tokens, prefill, switched } => {
+            Observation::Stepped { mind, took, tokens, at, prefill, switched } => {
                 let phase = usize::from(!prefill);
                 if tokens > 0 {
                     self.core[phase].observe(took.as_secs_f64() / tokens as f64);
                     if prefill {
-                        self.chunks.observe(tokens as f64, took.as_secs_f64());
+                        self.chunks.observe(Chunk { tokens, at, took });
                     }
                 }
                 let track = self.track(mind);
@@ -167,7 +168,7 @@ impl<K: Copy + PartialEq> LaneHistory<K> {
                 let per_token = took.as_secs_f64() / tokens as f64;
                 (if prefill { &mut track.prefill } else { &mut track.decode }).observe(per_token);
                 if prefill {
-                    track.chunks.observe(tokens as f64, took.as_secs_f64());
+                    track.chunks.observe(Chunk { tokens, at, took });
                 }
                 // A switched step is not one of her plain steps: what it took beyond them, at her plain
                 // time a token, is the switch's rebuild. Before a plain step is measured there is
@@ -229,18 +230,20 @@ impl<K: Copy + PartialEq> LaneHistory<K> {
             None => turn,
         };
         (mind.step, mind.remaining) = match mind.phase {
-            Phase::Prefill { remaining } => (seconds(rate), Measured::Value(remaining)),
+            Phase::Prefill { remaining, .. } => (seconds(rate), Measured::Value(remaining)),
             Phase::Decode => (seconds(rate), turn.value().map_or(Measured::Unmeasured, |turn| Measured::Value(left(turn as u64)))),
         };
-        // A prefilling mind's chunk: its fixed part and its part a token, from her own chunks once they
-        // vary in size, else this Core's; her step is then the part a token, never the two mixed.
-        if matches!(mind.phase, Phase::Prefill { .. }) {
-            let line = match track.map(|track| track.chunks.fit()) {
-                Some(Measured::Value(fit)) => Measured::Value(fit),
+        // A prefilling mind's chunk: its fixed part, its part a token and what depth adds to that part, from her
+        // own chunks once they vary, else this Core's. Her step is her part a token where her chunk starts (so
+        // every reader of it sees the deep cost), never the fixed part mixed in.
+        if let Phase::Prefill { at, .. } = mind.phase {
+            let cost = match track.map(|track| track.chunks.fit()) {
+                Some(Measured::Value(cost)) => Measured::Value(cost),
                 _ => self.chunks.fit(),
             };
-            if let Measured::Value((fixed, per_token)) = line {
-                (mind.overhead, mind.step) = (seconds(Measured::Value(fixed)), seconds(Measured::Value(per_token)));
+            if let Measured::Value(cost) = cost {
+                (mind.overhead, mind.step) = (seconds(Measured::Value(cost.fixed)), seconds(Measured::Value(cost.per_token_at(at))));
+                mind.depth = Measured::Value(cost.depth);
             }
         }
         let Some(track) = track else { return };

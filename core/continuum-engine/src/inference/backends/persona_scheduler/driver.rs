@@ -671,10 +671,10 @@ impl Driver<'_, '_> {
             }
         }
         let stepping = Instant::now();
-        let (advanced, decoding, prefill_from) = match std::mem::replace(&mut turn.phase, Phase::Waiting) {
-            Phase::Waiting => (Err(TurnError::NothingDecoded), false, None),
-            Phase::Prefilling { pos } => (self.prefill_chunk(turn, pos).map(|()| Advanced::Continues), false, Some(pos)),
-            Phase::Decoding { token, pos, generated } => (self.decode_token(turn, token, pos, generated), true, None),
+        let (advanced, decoding, prefill_from, at) = match std::mem::replace(&mut turn.phase, Phase::Waiting) { // at: where the step begins
+            Phase::Waiting => (Err(TurnError::NothingDecoded), false, None, 0), // moves nothing, so its position is never read
+            Phase::Prefilling { pos } => (self.prefill_chunk(turn, pos).map(|()| Advanced::Continues), false, Some(pos), pos),
+            Phase::Decoding { token, pos, generated } => (self.decode_token(turn, token, pos, generated), true, None, usize::from(pos)),
         };
         let stepped = Instant::now();
         turn.ready_since = stepped;
@@ -685,7 +685,7 @@ impl Driver<'_, '_> {
             (Some(from), Phase::Decoding { .. }) => turn.prompt.len().saturating_sub(from),
             (Some(_), Phase::Waiting) | (None, _) => usize::from(decoding && advanced.is_ok()),
         };
-        self.lane.observe(Observation::Stepped { mind: turn.id, took, tokens: tokens as u64, prefill: !decoding, switched });
+        self.lane.observe(Observation::Stepped { mind: turn.id, took, tokens: tokens as u64, at: at as u64, prefill: !decoding, switched });
         if let Ok(Advanced::Done { tokens_generated, .. }) = &advanced {
             self.lane.observe(Observation::TurnEnded { mind: turn.id, decoded: *tokens_generated as u64 });
         }

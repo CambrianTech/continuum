@@ -122,49 +122,99 @@ impl Window {
     }
 }
 
-/// A line `y = intercept + slope · x` fitted to a series by least squares, each sample's weight decaying
-/// by its smoothing as newer ones arrive (an EWMA of the sufficient statistics): what a step's time is
-/// as a fixed part and a per-token part, when its steps vary in size. It retains five numbers.
+/// A prefill chunk's time as `fixed + n·(per_token + depth·(p + n/2))`, for `n` tokens starting at position `p`:
+/// attention reads every token before it, so a token costs more the deeper it lands (the M5, 2026-11-28: 1.08 ms
+/// a fresh token under 40k, 3.62 at 100k and past; a line through shallow chunks sized a 158k chunk past every
+/// other mind's bound). Fitted by least squares over `(n, n·(p + n/2))`, each sample's weight decaying by its
+/// smoothing as newer ones arrive (an EWMA of the sufficient statistics); it retains ten numbers.
 #[derive(Debug, Clone, Copy)]
-pub struct LineFit {
+pub struct ChunkFit {
     smoothing: Fraction,
     weight: f64,
-    x: f64,
+    u: f64,
+    v: f64,
     y: f64,
-    xx: f64,
-    xy: f64,
+    uu: f64,
+    uv: f64,
+    vv: f64,
+    uy: f64,
+    vy: f64,
 }
 
-impl LineFit {
+/// A prefill chunk as it ran: its tokens, the position its first token landed at, and how long it took.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Chunk {
+    pub tokens: u64,
+    pub at: u64,
+    pub took: std::time::Duration,
+}
+
+/// What a chunk costs, in seconds: its fixed part, a token's part at position 0, and what each position of depth
+/// adds to a token's part.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ChunkCost {
+    pub fixed: f64,
+    pub per_token: f64,
+    pub depth: f64,
+}
+
+impl ChunkCost {
+    /// A token's part at position `at`.
+    pub fn per_token_at(&self, at: u64) -> f64 {
+        self.per_token + self.depth * at as f64
+    }
+}
+
+impl ChunkFit {
     pub fn new(smoothing: Fraction) -> Self {
-        Self { smoothing, weight: 0.0, x: 0.0, y: 0.0, xx: 0.0, xy: 0.0 }
+        Self { smoothing, weight: 0.0, u: 0.0, v: 0.0, y: 0.0, uu: 0.0, uv: 0.0, vv: 0.0, uy: 0.0, vy: 0.0 }
     }
 
-    pub fn observe(&mut self, x: f64, y: f64) {
-        if !(x.is_finite() && y.is_finite()) {
+    /// One chunk as it ran.
+    pub fn observe(&mut self, chunk: Chunk) {
+        let (tokens, at) = (chunk.tokens as f64, chunk.at as f64);
+        let (u, v, y) = (tokens, tokens * (at + tokens / 2.0), chunk.took.as_secs_f64());
+        if !(u.is_finite() && v.is_finite() && y.is_finite()) {
             return;
         }
         let keep = 1.0 - self.smoothing.get();
         self.weight = keep * self.weight + 1.0;
-        self.x = keep * self.x + x;
+        self.u = keep * self.u + u;
+        self.v = keep * self.v + v;
         self.y = keep * self.y + y;
-        self.xx = keep * self.xx + x * x;
-        self.xy = keep * self.xy + x * y;
+        self.uu = keep * self.uu + u * u;
+        self.uv = keep * self.uv + u * v;
+        self.vv = keep * self.vv + v * v;
+        self.uy = keep * self.uy + u * y;
+        self.vy = keep * self.vy + v * y;
     }
 
-    /// `(intercept, slope)` once the samples it holds vary in `x` and give a line with a positive slope
-    /// and a part that is not negative; `Unmeasured` before, never a guess.
-    pub fn fit(&self) -> Measured<(f64, f64)> {
+    /// The cost once its samples vary in size, with every part positive (the fixed part not negative). The depth
+    /// part is fitted once they also vary in depth independently of size; until then it is a cost not yet seen
+    /// (zero) and the rest is the line through size alone. `Unmeasured` before either, never a guess.
+    pub fn fit(&self) -> Measured<ChunkCost> {
         if self.weight <= 1.0 {
             return Measured::Unmeasured;
         }
-        let (mean_x, mean_y) = (self.x / self.weight, self.y / self.weight);
-        let spread = self.xx / self.weight - mean_x * mean_x;
-        if !(spread > f64::EPSILON * mean_x.abs().max(1.0)) {
+        let w = self.weight;
+        let (mu, mv, my) = (self.u / w, self.v / w, self.y / w);
+        let (cuu, cuv, cvv) = (self.uu / w - mu * mu, self.uv / w - mu * mv, self.vv / w - mv * mv);
+        let (cuy, cvy) = (self.uy / w - mu * my, self.vy / w - mv * my);
+        if !(cuu > f64::EPSILON * mu.abs().max(1.0)) {
             return Measured::Unmeasured;
         }
-        let slope = (self.xy / self.weight - mean_x * mean_y) / spread;
-        let intercept = mean_y - slope * mean_x;
-        if slope > 0.0 && intercept >= 0.0 { Measured::Value((intercept, slope)) } else { Measured::Unmeasured }
+        // size and depth vary independently: the plane (its determinant clear of round-off against its terms)
+        let det = cuu * cvv - cuv * cuv;
+        if det > 1e-9 * cuu * cvv {
+            let per_token = (cuy * cvv - cvy * cuv) / det;
+            let depth = (cvy * cuu - cuy * cuv) / det;
+            let fixed = my - per_token * mu - depth * mv;
+            if per_token > 0.0 && depth >= 0.0 && fixed >= 0.0 {
+                return Measured::Value(ChunkCost { fixed, per_token, depth });
+            }
+        }
+        let per_token = cuy / cuu;
+        let fixed = my - per_token * mu;
+        if per_token > 0.0 && fixed >= 0.0 { Measured::Value(ChunkCost { fixed, per_token, depth: 0.0 }) } else { Measured::Unmeasured }
     }
 }
