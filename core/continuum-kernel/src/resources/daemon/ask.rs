@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use continuum_base::time::EpochMs;
-use continuum_sage::place::ClaimId;
+use continuum_sage::place::AskId;
 
 use super::super::ledger::Asked;
 use super::super::governor::ResourceGovernor;
@@ -25,11 +25,21 @@ pub enum Ask {
 /// A waiting ask, owned by the one who asked.
 pub struct AskTicket {
     daemon: Arc<ResourceDaemon>,
-    ask: ClaimId,
+    ask: AskId,
     taken: bool,
 }
 
 impl AskTicket {
+    /// Give this wait a priority (higher outranks): its shortfall may then ask lower elastic leases to give
+    /// back, delivered to their holders at once.
+    pub fn prioritize(&self, priority: u8) {
+        let mut governor = self.daemon.governor.lock();
+        governor.prioritize(self.ask, priority);
+        self.daemon.publish_locked(&governor);
+        drop(governor);
+        self.daemon.deliver_shrinks(); // what the new rank asks of elastic leases is asked now, not a tick later
+    }
+
     /// The lease the ask became, once the authority granted it; taken once.
     pub fn granted(&mut self) -> Option<LeaseGuard> {
         let lease = self.daemon.governor.lock().take_granted(self.ask)?;

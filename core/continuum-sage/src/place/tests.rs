@@ -861,3 +861,46 @@ fn a_field_recording_replays_into_the_same_tables_anywhere() {
     }
     assert_eq!(replay::<Memory>(short.recorded()).err(), Some(Partial { first: 1 }), "a rolled-off ring never passes for the field");
 }
+
+// what this catches (Cormac on #6287 at d8fbe6bc5c): a holding declared elastic anew whose next shrink ask is
+// swallowed as "already said" because it lands at the target asked before. A declaration answers to the law
+// afresh: the earlier ask no longer stands, so the same target is said again.
+#[test]
+fn a_holding_declared_elastic_again_is_asked_again_at_the_same_target() {
+    let mut core = PlacerCore::<Memory>::recording(64);
+    let workspace = AskId { owner: SERVING, seq: 1 };
+    let seat = AskId { owner: TRAINER, seq: 1 };
+    let elastic = Act::Elastic { ask: workspace, place: Tier::Vram, floor: Bytes(GB), priority: 6 };
+    for act in [
+        Act::Room { place: Tier::Vram, capacity: Bytes(32 * GB), budget: Bytes(4 * GB) },
+        Act::Prepare { ask: workspace, generation: FIRST, needs: vec![Need { place: Tier::Vram, amount: Bytes(4 * GB) }] },
+    ] {
+        core.apply(&act);
+        core.settle();
+    }
+    let mut granted = Vec::new();
+    core.changed(&mut granted);
+    let Some((_, Asks(rows))) = granted.iter().find(|(owner, _)| *owner == SERVING) else { panic!("test: the workspace's table") };
+    let [(1, Status::Granted(claim))] = rows.as_slice() else { panic!("test: granted, got {rows:?}") };
+    assert!(claim.consume(Tier::Vram, Bytes(4 * GB)));
+    for act in [
+        Act::Commit(workspace),
+        elastic.clone(),
+        Act::Prepare { ask: seat, generation: FIRST, needs: vec![Need { place: Tier::Vram, amount: Bytes(12 * MB) }] },
+        Act::Prioritize { ask: seat, priority: 7 },
+    ] {
+        core.apply(&act);
+        core.settle();
+    }
+    let shrink_said = |core: &mut PlacerCore<Memory>| {
+        let mut changed = Vec::new();
+        core.changed(&mut changed);
+        changed.iter().any(|(owner, Asks(rows))| *owner == SERVING && matches!(rows.as_slice(), [(1, Status::Shrink { to: Bytes(t), .. })] if *t == 4 * GB - 12 * MB))
+    };
+    assert!(shrink_said(&mut core), "the workspace is asked to make room for the seat");
+    core.settle();
+    assert!(!shrink_said(&mut core), "said once while nothing changes");
+    core.apply(&elastic);
+    core.settle();
+    assert!(shrink_said(&mut core), "declared anew: the same target is said again");
+}

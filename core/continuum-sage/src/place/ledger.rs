@@ -87,6 +87,8 @@ pub enum Refusal {
     Lapsed(ClaimId),
     /// The claim holds nothing on that place.
     NotOnPlace(ClaimId),
+    /// The ask holds no claim (never granted, already gone, or unknown to its owner's table).
+    NoClaim,
 }
 
 /// A wait withdrawn because a place's capacity fell below what it needs: its owner hears it as never
@@ -159,6 +161,11 @@ impl<P: Copy + PartialEq + std::fmt::Debug, Q: Quantity> Ledger<P, Q> {
             }
             None => true,
         });
+    }
+
+    /// Whether claim `id` is live (prepared, committed or retired).
+    pub fn has_claim(&self, id: ClaimId) -> bool {
+        self.claims.contains_key(&id)
     }
 
     pub fn accounts(&self, place: P) -> Option<Accounts<Q>> {
