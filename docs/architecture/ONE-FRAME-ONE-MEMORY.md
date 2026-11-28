@@ -225,6 +225,21 @@ placer asks that holder to give back like any other.
 crosses its predicted-full threshold, no write is refused, no deploy waits, and the bytes held by each holder track
 its measured need.
 
+## Validation-driven design for predictive streaming
+
+Start with an observed wait. The incumbent SAGE `Prefetch` use case chooses **how early** to start a move for a forecast mind. A late move with an accurate forecast calls for testing its lead estimate. A switch the lane never forecast calls for testing **what will be needed next**. Measure those misses separately. Extend the responsible decision only when the recorded failure calls for it.
+
+The component owns subscriptions, wakes and publication. A SAGE algorithm is a `Policy<U>` registered in `Algorithms<U>` for a typed `UseCase` and invoked by its `Decider`. Compare candidate policies behind that interface. A forecast publishes demand against typed block handles and their input revisions. Multiple readers reuse a valid publication. Superseding a forecast wakes its dependents and leaves ordered inputs such as corrections intact. The frame owns time, the placer owns space and the Streamer owns transfers through completion.
+
+| Gate | Evidence required before advancing |
+|---|---|
+| Record the incumbent | Capture an exact 900-second production interval on each node, including its starting checkpoint. Record the model, build branch, SHA, build time, artifact digest, resident state, policy ID and parameter checkpoint, clock offsets and random seeds where used. Extend the production trace at the owner of each missing event: demand revision and arrival order, admissible actions and choice, placement, transfer submission and completion, first use or retirement. Preserve unresolved operations at both ends of the window. |
+| Repeat the failure | Feed the recorded inputs through the production transition functions with a replay clock. The original policy must reproduce the decisions, custody transitions and observed failure in order. Report the first differing event. Include two readers demanding the same revision and a changed forecast during an in-flight move. Check shared publication, source lifetime through the fence, and exactly-once release. |
+| Compare a candidate | Use `decide::replay` for decisions with observed outcomes. After choices diverge, use `slice::sim` and `Workload::fit` for estimated costs. Fit on earlier windows and evaluate on held-out windows with bursts, scarce room and wrong forecasts. Compare against the incumbent on identical arrivals. Report demand-time waits, unused transfer time, duplicate bytes, incremental RAM/VRAM high-water, resident worst wait and output quality. Keep simulated costs identified as estimates. |
+| Prove on hardware | Replay the fault through the development runtime and exercise real residents in matched 15-minute windows on M5 and 5090. Verify core and engine identities for each window. Trace the workers that overlap serving and the fence that makes each page usable. Investigate regressions before promotion. For step 4 also show an intervening reply, uptake of the correction after reload and held-out retention. |
+
+The work follows the signed cutover. Cormac owns the step 1 holdings and unowned-byte evidence. Fable owns the production frame event contract, simulator comparison and M5 unified-memory trace. Codex owns the 5090 transfer and custody trace and the discrete-memory comparison. Both backend owners replay the same demand-change case using their measured link behavior. Fable and Codex compare the first divergence before proposing a predictor change. Cormac's correction and retention controls join at step 4.
+
 ## Gates for the whole
 
 On the M5 (35B) and the 5090, each step's 15-minute window on real residents, at its exact head against a matched
