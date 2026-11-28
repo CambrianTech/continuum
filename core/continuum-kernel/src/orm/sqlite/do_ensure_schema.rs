@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) fn do_ensure_schema(conn: &Connection, schema: CollectionSchema) -> StorageResult<bool> {
+pub(super) fn do_ensure_schema(conn: &Connection, schema: &CollectionSchema) -> StorageResult<bool> {
     let table = naming::to_table_name(&schema.collection);
 
     let mut columns = vec![
@@ -66,7 +66,7 @@ pub(super) fn do_ensure_schema(conn: &Connection, schema: CollectionSchema) -> S
 
     // The declared indexes, from their one owner (`ensure_indexes`). An explicit
     // ensure-schema still reports an index the database refused, as it always did.
-    let pass = super::ensure_indexes::do_ensure_indexes(conn, &schema);
+    let pass = super::ensure_indexes::do_ensure_indexes(conn, schema);
     if let Some(f) = pass.failed.first() {
         return StorageResult::err(format!("Create index {} on {} failed: {}", f.index, f.collection, f.error));
     }
@@ -76,7 +76,9 @@ pub(super) fn do_ensure_schema(conn: &Connection, schema: CollectionSchema) -> S
 
 pub(super) fn do_list_collections(conn: &Connection) -> StorageResult<Vec<String>> {
     let mut stmt = match conn
-        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
+        // the ORM's own bookkeeping (orm_schema_generations, orm_sequence_heads) is not a collection: a data copy
+        // or a clear must never treat it as one
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'orm\\_%' ESCAPE '\\'")
     {
         Ok(s) => s,
         Err(e) => return StorageResult::err(format!("Prepare failed: {}", e)),
@@ -106,9 +108,11 @@ pub(super) fn do_truncate(conn: &Connection, collection: &str) -> StorageResult<
 
 pub(super) fn do_clear_all(conn: &Connection) -> StorageResult<ClearAllResult> {
     let tables_result = do_list_collections(conn);
-    let tables = match tables_result.data {
-        Some(t) => t,
-        None => return StorageResult::err(tables_result.error.unwrap_or_default()),
+    let Some(tables) = tables_result.data else {
+        return StorageResult::err(match tables_result.error {
+            Some(error) => error,
+            None => "listing the collections answered neither collections nor an error".to_owned(),
+        });
     };
 
     let mut cleared = Vec::new();
@@ -154,7 +158,7 @@ pub(super) fn value_to_sql_boxed(value: &Value) -> Box<dyn rusqlite::ToSql> {
 /// (Codex root, review of this fix). Other text is a finite float, else `None`. No precision
 /// is lost and no text is guessed into a number.
 pub(super) fn declared_number(s: &str) -> Option<Value> {
-    let digits = s.strip_prefix('-').unwrap_or(s);
+    let digits = s.strip_prefix('-').unwrap_or(s); // unwrap_or: no leading minus means the whole text is the digits
     if !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) {
         return s
             .parse::<i64>()
@@ -219,7 +223,7 @@ pub(super) fn row_to_record(
             }
             rusqlite::types::ValueRef::Real(n) => json!(n),
             rusqlite::types::ValueRef::Text(s) => {
-                let s = std::str::from_utf8(s).unwrap_or("");
+                let s = std::str::from_utf8(s).map_err(rusqlite::Error::Utf8Error)?; // text that is not UTF-8 is refused, never read as empty
                 // DECODE BY THE DECLARED TYPE, NEVER BY THE BYTES. Nested fields are
                 // stored as JSON text, so a schema-blind reader had to sniff `{…}` /
                 // `[…]` — and a String field whose text happened to be JSON-shaped (a
@@ -279,28 +283,29 @@ pub(super) fn row_to_record(
         }
     }
 
+    // Every select reads the base columns (`build_select_clause`) and the create declares them NOT NULL, so a
+    // row without one is a corrupt row: it is refused by name, never given an empty id, a timestamp of now or
+    // version 1 it never had.
+    let missing = |column: &str| rusqlite::Error::InvalidColumnName(column.to_owned());
+    let id = id.ok_or_else(|| missing("id"))?;
+    let created_at = created_at.ok_or_else(|| missing("created_at"))?;
+    let updated_at = updated_at.ok_or_else(|| missing("updated_at"))?;
+    let version = version.ok_or_else(|| missing("version"))?;
+
     // Include base fields in data for TypeScript compatibility
-    if let Some(ref id_str) = id {
-        data.insert("id".to_string(), json!(id_str));
-    }
-    if let Some(ref ts) = created_at {
-        data.insert("createdAt".to_string(), json!(ts));
-    }
-    if let Some(ref ts) = updated_at {
-        data.insert("updatedAt".to_string(), json!(ts));
-    }
-    if let Some(v) = version {
-        data.insert("version".to_string(), json!(v));
-    }
+    data.insert("id".to_string(), json!(id));
+    data.insert("createdAt".to_string(), json!(created_at));
+    data.insert("updatedAt".to_string(), json!(updated_at));
+    data.insert("version".to_string(), json!(version));
 
     Ok(DataRecord {
-        id: id.unwrap_or_default(),
+        id,
         collection: collection.to_string(),
         data: Value::Object(data),
         metadata: RecordMetadata {
-            created_at: created_at.unwrap_or_else(|| chrono::Utc::now().to_rfc3339()),
-            updated_at: updated_at.unwrap_or_else(|| chrono::Utc::now().to_rfc3339()),
-            version: version.unwrap_or(1),
+            created_at,
+            updated_at,
+            version,
             tags: None,
             schema: None,
             ttl: None,

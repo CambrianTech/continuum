@@ -233,22 +233,29 @@ pub(super) fn read_physical(conn: &Connection, table: &str) -> Result<Option<Phy
 /// `planned`: what the store held when it was opened for this collection. A table that cannot be read is
 /// planned Unreadable, with why, so the inventory never reads a store it could not see as absent or current
 /// (Fable on #6297 at bf8f236138).
-pub(super) fn record(planned: &parking_lot::RwLock<Vec<CollectionPlan>>, conn: &Connection, schema: &CollectionSchema) {
-    let table = naming::to_table_name(&schema.collection);
-    let planned_now = match read_physical(conn, &table) {
-        Ok(physical) => plan(schema, physical.as_ref()),
-        Err(why) => CollectionPlan::new(schema, table, vec![PlanItem::Unreadable { error: why.to_string() }]),
-    };
+pub(super) fn record(planned: &parking_lot::RwLock<Vec<CollectionPlan>>, conn: &Connection, schema: &CollectionSchema) -> CollectionPlan {
+    let planned_now = plan_now(conn, schema);
     let standing = planned_now.standing();
     if standing != Standing::Current {
         continuum_base::probe!(class = "orm.schema.plan", collection = schema.collection.as_str(), standing = ?standing, items = planned_now.items.len() as u64,
             "a declared collection's store differs from its declaration at open");
     }
     // one plan per collection: a store reopened for it keeps the latest
+    let kept = planned_now.clone(); // the report's copy; the open reads the plan it returns
     let mut planned = planned.write();
     match planned.iter_mut().find(|held| held.collection == schema.collection) {
-        Some(held) => *held = planned_now,
-        None => planned.push(planned_now),
+        Some(held) => *held = kept,
+        None => planned.push(kept),
+    }
+    planned_now
+}
+
+/// `schema` planned against the table `conn` holds now; unreadable is a plan too.
+pub(super) fn plan_now(conn: &Connection, schema: &CollectionSchema) -> CollectionPlan {
+    let table = naming::to_table_name(&schema.collection);
+    match read_physical(conn, &table) {
+        Ok(physical) => plan(schema, physical.as_ref()),
+        Err(why) => CollectionPlan::new(schema, table, vec![PlanItem::Unreadable { error: why.to_string() }]),
     }
 }
 
