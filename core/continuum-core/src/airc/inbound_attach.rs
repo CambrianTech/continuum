@@ -94,7 +94,7 @@ impl AttachRegistry {
                 room = %room.as_uuid(),
                 "daemon attach spawned for an adopted room — its transcript now reaches the projection bus"
             );
-            spawn_daemon_attach(self.socket.clone(), room, self.bus.clone(), &self.rt, Arc::clone(&self.known_senders));
+            spawn_daemon_attach(self.socket.clone(), room, self.bus.clone(), &self.rt, self.known_senders.clone());
         }
     }
 }
@@ -126,7 +126,7 @@ pub fn spawn_daemon_attach(
         let mut backoff = MIN_BACKOFF;
         loop {
             let started = Instant::now();
-            match run_daemon_attach(socket_path.clone(), channel, bus.clone(), Arc::clone(&known_senders)).await {
+            match run_daemon_attach(socket_path.clone(), channel, bus.clone(), known_senders).await {
                 Ok(()) => warn!(
                     "AIRC daemon attach ended (daemon EOF) after {:?} — re-attaching in {:?}",
                     started.elapsed(),
