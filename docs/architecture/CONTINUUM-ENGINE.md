@@ -39,7 +39,7 @@ system, and each system has one chapter:
 | The streaming system | the world paged around the player's view by priority, fenced, a coarser mip rather than a hole | the block layer and its `Streamer`: a mind's KV, weights, experts, genes on tiers, moved by pointer, DMA or the OS's paging | [UNIFIED-PAGING.md](UNIFIED-PAGING.md) |
 | Memory budgets and pools, the transient frame allocator | each pool sized by need, transient memory aliased across a frame | claims on one authority, holders that report and give back, a transient arena sized to the largest need | [SHARED-RESOURCES.md](SHARED-RESOURCES.md) |
 | LOD, mip bias, temporal reuse | detail by how much it matters; reuse last frame, render the delta | the context codec: items at levels of detail, a context that only appends, an act that prefills only her new tail | §6 |
-| Background baking and streaming jobs | heavy work in the frame's gaps, never in the frame's way | learning as a content-class stage between serving steps, in tiles | [IN-PROCESS-LEARNING.md](IN-PROCESS-LEARNING.md) |
+| Incremental work across frames | reuse valid results and prepare the next frame asynchronously | in step 4, labels arriving with input share the resident's forward pass. Later corrections replay the required forward work. The same frame grants backward work and workers prepare the update. | [IN-PROCESS-LEARNING.md](IN-PROCESS-LEARNING.md) |
 | The profiler and replay | every frame measured, any frame replayed | probes, records, the lane's history, simulators fitted from live traces | §11 |
 
 Five rules follow from the picture and bind every chapter:
