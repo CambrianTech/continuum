@@ -72,6 +72,22 @@ pub enum RetireRefusal {
     WrongFence { got: FenceTag },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum BesideRefusal {
+    #[error("{persona:?} is already in this Core")]
+    AlreadyPresent { persona: PersonaId },
+    #[error("{persona:?}'s copy-in has not landed")]
+    NotLanded { persona: PersonaId },
+    #[error("the fence moves {got:?}, not this unit's copy-in")]
+    WrongFence { got: FenceTag },
+    #[error("{persona:?} is not bound beside the active mind")]
+    NotBeside { persona: PersonaId },
+    #[error("nobody is active to bind beside")]
+    NoneActive,
+    #[error("{retiring:?} is still retiring; her copy-out must land first")]
+    RetireInFlight { retiring: PersonaId },
+}
+
 struct InFlight<U, F> {
     unit: U,
     fence: F,
@@ -92,16 +108,19 @@ impl<U, F> Retiring<U, F> {
     }
 }
 
-/// One Core's three places.
+/// One Core's places: the active mind, the next staged under her copy-in, the one retiring, and the minds bound beside
+/// the active one in their own streams, who decode only inside a batch step with her (THE-LANE-ON-SAGE.md, open
+/// question 1).
 pub struct Roles<U, F> {
     active: Option<U>,
     next: Option<InFlight<U, F>>,
     retiring: Option<Retiring<U, F>>,
+    beside: Vec<U>,
 }
 
 impl<U, F> Default for Roles<U, F> {
     fn default() -> Self {
-        Self { active: None, next: None, retiring: None }
+        Self { active: None, next: None, retiring: None, beside: Vec::new() }
     }
 }
 
@@ -120,6 +139,7 @@ impl<U: Identified, F: Fence> Roles<U, F> {
         self.active.iter()
             .chain(self.next.iter().map(|next| &next.unit))
             .chain(self.retiring.iter().map(Retiring::unit))
+            .chain(self.beside.iter())
     }
 
     /// Mutable access to the active mind only: decoding touches nobody else.
@@ -158,6 +178,7 @@ impl<U: Identified, F: Fence> Roles<U, F> {
         self.active.as_ref().is_some_and(|a| a.persona() == persona)
             || self.staged() == Some(persona)
             || self.retiring() == Some(persona)
+            || self.beside.iter().any(|unit| unit.persona() == persona)
     }
 
     /// Whether `persona` may be staged now: next is free and she is not already here. The one check,
@@ -267,5 +288,61 @@ impl<U: Identified, F: Fence> Roles<U, F> {
             Some(Retiring::Moving(done)) => Ok(done.unit),
             _ => Err(RetireRefusal::NothingRetiring),
         }
+    }
+
+    /// The minds bound beside the active one, each in her own stream.
+    pub fn beside(&self) -> impl Iterator<Item = &U> {
+        self.beside.iter()
+    }
+
+    /// A bound mind's own state: the active one or one beside her (a batch step records each of theirs).
+    pub fn bound_mut(&mut self, persona: PersonaId) -> Option<&mut U> {
+        match self.active.as_mut() {
+            Some(active) if active.persona() == persona => Some(active),
+            _ => self.beside.iter_mut().find(|unit| unit.persona() == persona),
+        }
+    }
+
+    /// Bind `unit` beside the active mind under `fence`, her copy-in, once it has landed: she decodes only inside a
+    /// batch step with the active mind. A refusal returns both.
+    pub fn bind_beside(&mut self, unit: U, fence: F) -> Result<(), Refused<BesideRefusal, (U, F)>> {
+        let reason = if self.active.is_none() {
+            Some(BesideRefusal::NoneActive)
+        } else if self.present(unit.persona()) {
+            Some(BesideRefusal::AlreadyPresent { persona: unit.persona() })
+        } else if fence.tag() != expects(&unit, Direction::In) {
+            Some(BesideRefusal::WrongFence { got: fence.tag() })
+        } else if !fence.complete() {
+            Some(BesideRefusal::NotLanded { persona: unit.persona() })
+        } else {
+            None
+        };
+        match reason {
+            Some(reason) => Err(Refused { reason, returned: (unit, fence) }),
+            None => {
+                self.beside.push(unit);
+                Ok(())
+            }
+        }
+    }
+
+    /// Make `persona`, bound beside, the active mind; the active one moves beside her. No transfer: both stay bound.
+    pub fn swap_active(&mut self, persona: PersonaId) -> Result<(), BesideRefusal> {
+        let at = self.beside.iter().position(|unit| unit.persona() == persona).ok_or(BesideRefusal::NotBeside { persona })?;
+        let Some(active) = self.active.take() else { return Err(BesideRefusal::NoneActive) };
+        let next = std::mem::replace(&mut self.beside[at], active);
+        self.active = Some(next);
+        Ok(())
+    }
+
+    /// Unbind `persona` from beside the active mind: she awaits her copy-out as a retired mind does, through the one
+    /// copy-out path. Refused while another retirement is in flight.
+    pub fn unbind_beside(&mut self, persona: PersonaId) -> Result<(), BesideRefusal> {
+        if let Some(retiring) = self.retiring() {
+            return Err(BesideRefusal::RetireInFlight { retiring });
+        }
+        let at = self.beside.iter().position(|unit| unit.persona() == persona).ok_or(BesideRefusal::NotBeside { persona })?;
+        self.retiring = Some(Retiring::AwaitingCopyOut(self.beside.swap_remove(at)));
+        Ok(())
     }
 }

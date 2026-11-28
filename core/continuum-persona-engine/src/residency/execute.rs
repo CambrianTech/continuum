@@ -24,6 +24,11 @@ pub trait Execute: Tier {
     /// is not bound here at that epoch.
     fn submit(&mut self, mind: MindId, work: Self::Work) -> Result<Self::Done, TierRefusal>;
 
+    /// Submit several bound minds' work as one decode step, each on the stream she is bound to (THE-LANE-ON-SAGE.md,
+    /// open question 1): output `i` is the `i`-th of them that asked for logits. Refused, submitting nothing, when one
+    /// is not bound here or their work cannot share one step (different genes). A single mind's step is a batch of one.
+    fn submit_batch(&mut self, steps: &[(MindId, &Self::Work)]) -> Result<Self::Done, TierRefusal>;
+
     /// Wait until every step submitted so far has finished on the device, so each completion it
     /// returned reports landed. A backend whose submit returns before the device finishes (libllama
     /// synchronizes only on result retrieval) waits here; the engine settles before a handoff.

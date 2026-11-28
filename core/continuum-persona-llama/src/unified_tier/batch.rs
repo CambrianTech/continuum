@@ -24,7 +24,7 @@ impl UnifiedTier<'_, '_> {
     /// decode's outputs are the steps that asked for logits at their end, in order: output `i` is the `i`-th of
     /// them. Refused, decoding nothing, when a mind is not bound, the steps wear different genes, a step is empty,
     /// or together they are longer than the engine's batch.
-    pub fn submit_batch(&mut self, steps: &[(MindId, &Step)]) -> Result<Decoded, TierRefusal> {
+    pub(super) fn decode_steps(&mut self, steps: &[(MindId, &Step)]) -> Result<Decoded, TierRefusal> {
         let Some(&(first, lead)) = steps.first() else { return Ok(self.landed_now()) };
         // A step at `from` replaces whatever she held from there (a re-decoded last token, a restart at 0, a
         // failed turn's partial tail), so her stream never holds two tokens at one position.

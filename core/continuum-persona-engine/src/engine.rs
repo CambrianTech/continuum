@@ -36,6 +36,8 @@
 
 #[cfg(test)]
 mod tests;
+mod batch;
+pub use batch::BatchError;
 
 use crate::persona::{MindId, PersonaId};
 use crate::pipeline::{HandoffRefusal, Identified, Refused, RetireRefusal, Roles, StageRefusal};
@@ -48,6 +50,8 @@ pub enum StageError {
     #[error(transparent)]
     Pipeline(#[from] StageRefusal),
     #[error(transparent)]
+    Beside(#[from] crate::pipeline::BesideRefusal),
+    #[error(transparent)]
     Tier(#[from] TierRefusal),
 }
 
@@ -59,6 +63,9 @@ pub enum DecodeError {
     /// One decode is in flight at a time: the previous step has not landed.
     #[error("{active:?}'s previous decode has not landed")]
     InFlight { active: PersonaId },
+    /// A batch named a mind not bound here.
+    #[error("{persona:?} is not bound here")]
+    NotBound { persona: PersonaId },
     #[error(transparent)]
     Tier(#[from] TierRefusal),
 }

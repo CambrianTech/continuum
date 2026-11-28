@@ -419,7 +419,11 @@ impl Execute for UnifiedTier<'_, '_> {
 
     /// Her step is a batch of one (unified_tier/batch.rs): one decode path for one mind or several.
     fn submit(&mut self, mind: MindId, step: Step) -> Result<Decoded, TierRefusal> {
-        self.submit_batch(&[(mind, &step)])
+        self.decode_steps(&[(mind, &step)])
+    }
+
+    fn submit_batch(&mut self, steps: &[(MindId, &Step)]) -> Result<Decoded, TierRefusal> {
+        self.decode_steps(steps)
     }
 
     fn settle(&mut self) -> Result<(), TierRefusal> {
