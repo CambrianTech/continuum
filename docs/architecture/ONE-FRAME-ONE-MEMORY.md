@@ -369,6 +369,28 @@ it improves a number.
 | R9 | Learning is her frame with labels on, and its three forms are parts of her mind | no node trainer, no text-example journal, no grading of her work |
 | R10 | Each step lands whole: the object, its first live consumer, the deletion of what it replaces, and its gate on the M5 (35B) and the 5090 | the PR's Measured section has both nodes' 15-minute windows at its exact head |
 
+### The status-quo checks: every review, every design
+
+This is a new way to do machine learning: a fast, many-threaded dataflow organism that streams and optimizes itself,
+doing more with less, the way an engine draws photoreal frames on a low-end GPU in little memory. The reflexes of
+data-center and Python-era ML each break it, and each looks reasonable locally (Joel, 2026-11-28: "we must keep each
+other in check with this design and not fall back onto established data center or Python era philosophy... Static
+allocation cannot work"). Every reviewer asks each of these of every design and PR, and a yes is a defect:
+
+| The reflex | The question | Caught on 2026-11-28 |
+|---|---|---|
+| Static allocation, reservation | Does anything hold memory ahead of need, or across frames it does not use? | the whole-reply lesson graph asking ~25 GB up front |
+| The batch | Does work wait for a batch to fill, or treat a stream as a finished span? | lessons buffered as finished replies, then walked |
+| The synchronous loop | Does a loop own a thread until done, outside the frame? | `Learns::learn`'s blocking loop |
+| The copy | Does bytes move by a loop, a staging copy or an encoding instead of a `Link`? | |
+| The wake without a change | Does anything wake, recompute or move with no changed input? | startup migration re-run at every restart of a crash loop |
+| The constant | Is a size, rate, threshold or precision set by hand where a measurement or a learned policy belongs? | fp32 fixed for every accumulator |
+| The private owner | Does a component keep its own pool, cache, mover or copy of a block? | |
+| The separate path | Is a second path built beside the live one, or a feature tested and never wired? | the Streamer and the tile walk, built and unused |
+| The refusal | Does work that does not fit fail, wait for a reservation or fall back, instead of a lower level of detail? | |
+
+A design that keeps every row at no is the one this plan builds; one that does not is sent back before code.
+
 ### No patches
 
 A patch is any change to an owner this chapter deletes or folds, other than its deletion. From the moment this plan is
