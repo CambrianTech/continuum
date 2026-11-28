@@ -126,7 +126,7 @@ pub fn spawn_daemon_attach(
         let mut backoff = MIN_BACKOFF;
         loop {
             let started = Instant::now();
-            match run_daemon_attach(socket_path.clone(), channel, bus.clone(), known_senders).await {
+            match run_daemon_attach(socket_path.clone(), channel, bus.clone(), known_senders.clone()).await {
                 Ok(()) => warn!(
                     "AIRC daemon attach ended (daemon EOF) after {:?} — re-attaching in {:?}",
                     started.elapsed(),
