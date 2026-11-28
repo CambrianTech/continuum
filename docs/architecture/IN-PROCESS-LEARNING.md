@@ -19,6 +19,7 @@ chapter 6 (the genome) are on `fable/learning-l2-design` and are cited here by s
 - [Where lessons come from](#where-lessons-come-from)
 - [Learning in her stream](#learning-in-her-stream)
 - [The engine form](#the-engine-form)
+- [Producers, consumers and the block layer](#producers-consumers-and-the-block-layer)
 - [Memory: streamed, never reserved](#memory-streamed-never-reserved)
 - [On and off](#on-and-off)
 - [Checked against the engine](#checked-against-the-engine)
@@ -324,7 +325,7 @@ goes along transfer to higher fidelity... early on the error is so high you migh
 only really care about ones that need the fidelity... individually some areas"). Like a texture's mip chain: coarse
 until the difference is visible, refined only where it is.
 - **Start coarse.** A new shadow trains at a low bit width: its weights, gradients and moments. Stochastic rounding
-  keeps the coarse arithmetic unbiased, so the expected update is the full-precision one.
+  keeps each rounded value unbiased, but Adam's normalization is nonlinear, so the update is not unbiased by that alone (Codex): the coarse step is replayed against a high-precision control on identical labels, across seeds, including tiny gradients and rare outliers, and compared step by step.
 - **Promote a slice when it needs fidelity.** Each slice (a layer, or a block of one) keeps its level while its typical
   update spans many quantization steps, and is promoted when its updates approach the step, where real progress would
   round away.
@@ -347,6 +348,36 @@ coarse phase, which is where its memory is saved.
 **What keeps it correct:** one owner each (the frame owns the device, the workers own everything else, the swap is the
 one point they meet); and every rate, threshold and level measured from feedback, never set as a constant: retention
 from accumulated small-sample gradients against the same base, the culling threshold, the per-layer update rates.
+
+## Producers, consumers and the block layer
+
+Everything resource-related is centralized: producers and consumers, the one placer's leases, and the Streamer moving
+blocks between them (Joel, 2026-11-28: "Everything resource related has to be centralized into producers and
+consumers, leases and workers to move it around... keep to block copies and caches, never iterate unless it's
+absolutely necessary. DMA ftw"). Learning owns no mover, no pool and no copy of its own. Its state is blocks
+(`continuum-blocks`: `Block`, `Region`, `Placement`), and every move is one the hardware already does, through the one
+`Link` a pair of tiers has: a pointer on unified memory, the OS paging a mapped file, one DMA of one block with a fence
+on a discrete GPU. Never a copy loop, a staging copy or an encoding.
+
+| SAGE component | Produces | Consumes | Its work |
+|---|---|---|---|
+| Her label marker (a `LabelSource`'s worker) | labelled rows ready to learn (state, `Key::ONE` per mind): positions, weights, the culled set | her stream as it arrives (the capture), her importance | marks, weighs and culls rows off the frame; only ready rows reach a frame |
+| The frame (the driver, the tier, the fork) | a gradient block per slice it trained, its completion event | ready labelled rows; the shadow's front buffer and the slices its rows train, placed resident | the forward as served and the backward on those rows, in one graph and one fence |
+| The Streamer (`continuum-blocks/src/streamer.rs`) | `Placements` | `Demand` (the frame's forecast of the slices its next rows train), `Landed` events | moves each block through its `Link`, soonest first; a source stays charged and valid until its move lands |
+| Her resolver | the back buffer's slices, written | landed gradient blocks, host-resident moment blocks | the optimizer's update over whole blocks at once (SIMD over a contiguous block, the one place element math is the work itself) |
+| The swap | the new front buffer | a resolved back buffer, a frame boundary | an `Exchange`: two blocks trade regions by pointer, no byte moves |
+| Her persister | a durable generation | a swapped generation | the `Mapping` link writes its dirty pages back; nothing serialized |
+
+The placer charges every block where it lies, through the one authority, and a block's charge follows its placement.
+Nothing is leased ahead of need: a frame's slices are demanded for the frames that will use them, and a slice no
+frame demands streams down.
+
+On unified memory (the M5) the gradient readback is a pointer: the resolver reads the frame's gradient block where it
+lies once its completion event fires, and no byte moves. On a discrete GPU it is one fenced DMA of one block into pinned
+host memory, overlapped with the next frame.
+
+**Measured on both node types** (Codex): each block's custody from production through completion, the overlap of
+readback, resolve and swap with serving frames, and their latency in the frame traces.
 
 ## Memory: streamed, never reserved
 
@@ -442,7 +473,7 @@ replaces.
 
 | Slice | Owner | Gate (a number on the named node) |
 |---|---|---|
-| 1. Labels in her stream: the tier marks labelled rows of her stream as they arrive, and her serving decode runs the backward on them in the same graph (the fork's `opt_mark_training` path), accumulating into the history buffer; rows labelled after they were decoded run a learning forward first; the optimizer's resolve runs on a worker into a back buffer, swapped at a frame boundary. Until slice 3, a frame carries only the handful of labelled rows its budget holds (12.2 MB a row on the M5's 35B). Deleted: the whole-reply graph and its past-one-ubatch gate, `llama_opt_learn_graph_step`, `Learns::learn`'s blocking loop and `go_on`, `learn_next`'s idle-only path, the reply buffering | Fable (tier, driver, fork), Codex (review, the frame) | M5, 35B: learning's incremental high-water above the same warm serving resident, by owner, at most the frame's labelled rows' scratch; a partially arrived lesson with chat between, she answers between frames with her state intact; one durable update per period; matched 15-minute windows, no resident past her bound; held-out retention against the same base, both truncations named; next-logit KL on a fixed probe across each update |
+| 1. Labels in her stream: the tier marks labelled rows of her stream as they arrive, and her serving decode runs the backward on them in the same graph (the fork's `opt_mark_training` path), accumulating into the history buffer; rows labelled after they were decoded run a learning forward first; the optimizer's resolve runs on a worker into a back buffer, swapped at a frame boundary. Until slice 3, a frame carries only the handful of labelled rows its budget holds (12.2 MB a row on the M5's 35B). Deleted: the whole-reply graph and its past-one-ubatch gate, `llama_opt_learn_graph_step`, `Learns::learn`'s blocking loop and `go_on`, `learn_next`'s idle-only path, the reply buffering | Fable (tier, driver, fork), Codex (review, the frame) | M5, 35B: learning's incremental high-water above the same warm serving resident, by owner, at most the frame's labelled rows' scratch; a partially arrived lesson with chat between, she answers between frames with her state intact; one durable update per period; matched 15-minute windows, no resident past her bound; held-out retention against the same base, both truncations named; next-logit KL on a fixed probe across each update; the coarse step against a high-precision streamed control on identical labels across seeds, with tiny gradients and rare outliers: per-slice update error, squared-gradient range, steps against the reference, retention after demotion and promotion; correction uptake after reload; readback, resolve and swap latency and block custody in the frame traces, on both node types (Codex) |
 | 2. Streamed slices: the shadow's, moments' and gradients' slices for the layers a frame trains stream in ahead of it by predicted need and out after it (the Streamer) | Fable | between frames, zero device bytes held by learning; a slice's move measured in ms, zero serializations |
 | 3. The loss sliced over the vocabulary, labelled rows only | Fable | the per-row scratch (12.2 MB on the 35B) before and after; the update against the unsliced step at least 0.9999 |
 | 4. Her `LabelSource`s, as she works first, then corrections, the course room, the dreamer; the journal migrated; `TrainingTriggerModule`, the credit gate and `DreamConsolidationRegion` deleted | Fable (perception, dreamer), Cormac (corrections, courses, the migration) | M5 window: work rows learned per hour above zero with no example submitted; a reviewed correction kept across a restart on unseen tasks against the same base without it (plan goal 8) |
