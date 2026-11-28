@@ -159,8 +159,9 @@ impl Lanes {
 /// What the lane sees of one turn's mind now: her turn's own facts, then her history's measurements.
 fn mind(turn: &Turn, history: &LaneHistory<PersonaId>) -> Mind<PersonaId> {
     let phase = match turn.phase {
-        Phase::Prefilling { pos } => lane::Phase::Prefill { remaining: turn.prompt.len().saturating_sub(pos) as u64 },
-        Phase::Waiting => lane::Phase::Prefill { remaining: turn.prompt.len() as u64 },
+        Phase::Prefilling { pos } => lane::Phase::Prefill { remaining: turn.prompt.len().saturating_sub(pos) as u64, at: pos as u64 },
+        // before she resumes, her reuse is unknown: her chunk is sized as if it started at the deepest she can be
+        Phase::Waiting => lane::Phase::Prefill { remaining: turn.prompt.len() as u64, at: turn.prompt.len() as u64 },
         Phase::Decoding { .. } => lane::Phase::Decode,
     };
     let mut mind = Mind {
@@ -175,6 +176,7 @@ fn mind(turn: &Turn, history: &LaneHistory<PersonaId>) -> Mind<PersonaId> {
         step: Measured::Unmeasured,
         switch_in: Measured::Unmeasured,
         overhead: Measured::Unmeasured,
+        depth: Measured::Unmeasured,
         prefix_hit: Measured::Unmeasured,
     };
     history.fill(&mut mind, Fraction::HALF);

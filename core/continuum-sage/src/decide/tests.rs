@@ -141,6 +141,7 @@ fn mind(id: u8, waited_ms: u64) -> Mind<u8> {
         step: Measured::Value(Duration::from_millis(26)),
         switch_in: Measured::Value(Duration::from_micros(10)),
         overhead: Measured::Unmeasured,
+        depth: Measured::Unmeasured,
         prefix_hit: Measured::Unmeasured,
     }
 }
@@ -289,8 +290,8 @@ fn the_lane_history_fills_what_the_executor_observed_and_nothing_else() {
     for decoded in [100, 300, 200] {
         history.observe(Observation::TurnEnded { mind: 1u8, decoded });
     }
-    history.observe(Observation::Stepped { mind: 1, took: Duration::from_millis(260), tokens: 10, prefill: false, switched: false });
-    history.observe(Observation::Stepped { mind: 1, took: Duration::from_micros(31_600), tokens: 1, prefill: false, switched: true });
+    history.observe(Observation::Stepped { mind: 1, took: Duration::from_millis(260), tokens: 10, at: 0, prefill: false, switched: false });
+    history.observe(Observation::Stepped { mind: 1, took: Duration::from_micros(31_600), tokens: 1, at: 10, prefill: false, switched: true });
     history.observe(Observation::SwitchedIn { mind: 1, took: Duration::from_micros(10) });
     history.observe(Observation::Reused { mind: 1, reused: 900, prompt: 1_000 });
     history.observe(Observation::Resident { mind: 1, kv_bytes: 64 << 20, cold_bytes: Measured::Value(0) });
@@ -436,13 +437,14 @@ fn simulate(policy: Box<dyn Policy<Lane<u8>>>, seconds: u64) -> (f64, f64, Optio
             urgency: Urgency::Want,
             waited: now.saturating_sub(since),
             deadline: Some(bound),
-            phase: if prompt > 0 { Phase::Prefill { remaining: prompt } } else { Phase::Decode },
+            phase: if prompt > 0 { Phase::Prefill { remaining: prompt, at: 0 } } else { Phase::Decode },
             kv_bytes: Measured::Unmeasured,
             cold_bytes: Measured::Unmeasured,
             remaining: Measured::Value(if prompt > 0 { prompt } else { left }),
             step: Measured::Value(if prompt > 0 { prefill_token } else { decode }),
             switch_in: Measured::Value(switch),
             overhead: if prompt > 0 { Measured::Value(chunk_fixed) } else { Measured::Unmeasured },
+            depth: Measured::Unmeasured,
             prefix_hit: Measured::Unmeasured,
         }),
         State::Thinking(_) => None,
@@ -555,7 +557,7 @@ fn the_stock_linear_learner_learns_the_lane_and_keeps_the_bound() {
 // mind's slack.
 #[test]
 fn a_step_is_no_longer_than_the_tightest_other_minds_slack() {
-    let prefilling = Mind { phase: Phase::Prefill { remaining: 30_000 }, step: Measured::Value(Duration::from_micros(200)), ..mind(1, 0) };
+    let prefilling = Mind { phase: Phase::Prefill { remaining: 30_000, at: 0 }, step: Measured::Value(Duration::from_micros(200)), ..mind(1, 0) };
     let waiter = mind(2, 900); // 100 ms of bound left, less her 10 us switch
     let contended = lane::Situation { running: Some(prefilling), ready: vec![waiter], batch_width: 1, background_owed: false };
     assert_eq!(lane::step_tokens(&contended, &prefilling, BATCH), 499, "her slack at 0.2 ms a token");
@@ -626,15 +628,47 @@ fn background_work_keeps_its_queue_in_check_instead_of_a_wait_bound() {
 // fixed part.
 #[test]
 fn a_prefill_chunk_pays_its_fixed_part_and_is_never_too_small_to_be_worth_it() {
-    let mut line = LineFit::new(Fraction::QUARTER);
-    for tokens in [256.0, 1_024.0, 64.0, 2_048.0, 512.0] {
-        line.observe(tokens, 0.012 + 0.0002 * tokens);
+    let mut fit = ChunkFit::new(Fraction::QUARTER);
+    for tokens in [256, 1_024, 64, 2_048, 512] {
+        fit.observe(Chunk { tokens, at: 0, took: Duration::from_secs_f64(0.012 + 0.0002 * tokens as f64) });
     }
-    let Measured::Value((fixed, per_token)) = line.fit() else { panic!("test: five chunks of different sizes fit a line") };
-    assert!((fixed - 0.012).abs() < 1e-9 && (per_token - 0.0002).abs() < 1e-12, "{fixed} {per_token}");
-    let prefilling = Mind { phase: Phase::Prefill { remaining: 30_000 }, step: Measured::Value(Duration::from_micros(200)), overhead: Measured::Value(Duration::from_millis(12)), ..mind(1, 0) };
+    let Measured::Value(cost) = fit.fit() else { panic!("test: five chunks of different sizes fit") };
+    assert!((cost.fixed - 0.012).abs() < 1e-9 && (cost.per_token - 0.0002).abs() < 1e-12 && cost.depth.abs() < 1e-12, "{cost:?}");
+    let prefilling = Mind { phase: Phase::Prefill { remaining: 30_000, at: 0 }, step: Measured::Value(Duration::from_micros(200)), overhead: Measured::Value(Duration::from_millis(12)), ..mind(1, 0) };
     let roomy = lane::Situation { running: Some(prefilling), ready: vec![mind(2, 900)], batch_width: 1, background_owed: false };
     assert_eq!(lane::step_tokens(&roomy, &prefilling, BATCH), 439, "(100 ms of room less 12 ms fixed) at 0.2 ms a token");
     let tight = lane::Situation { running: Some(prefilling), ready: vec![mind(2, 980)], batch_width: 1, background_owed: false };
     assert_eq!(envelope::<Lane<u8>>(&tight).0, Gate::Forced(lane::Action::Switch(0)), "20 ms of room cannot buy a chunk worth its 12 ms: the waiter goes first");
+}
+
+// what this catches (the M5, 2026-11-28 02:30 to 02:45Z: 678 waits past the 1 s bound, max 1.645 s, while a
+// 158,871-token prompt prefilled at 3.62 ms a fresh token against 1.08 under 40k): a chunk's cost read as a line
+// through size alone, so a rate learned from her shallow chunks sized a deep one several times too long. The fit
+// recovers the depth part from chunks at varying depths, and a chunk at 158k is sized to the room it is given.
+#[test]
+fn a_deep_prefill_chunk_is_sized_by_what_its_depth_costs() {
+    let (fixed, per_token, depth) = (0.012, 0.0008, 2.0e-8); // ~1 ms a token at 10k, ~4 ms at 158k: the M5's shape
+    let took = |n: f64, p: f64| fixed + n * (per_token + depth * (p + n / 2.0));
+    let mut fit = ChunkFit::new(Fraction::QUARTER);
+    for (n, p) in [(512_u64, 0_u64), (2_048, 4_096), (256, 40_000), (1_024, 90_000), (128, 150_000), (768, 20_000)] {
+        fit.observe(Chunk { tokens: n, at: p, took: Duration::from_secs_f64(took(n as f64, p as f64)) });
+    }
+    let Measured::Value(cost) = fit.fit() else { panic!("test: chunks of varying size and depth fit") };
+    assert!((cost.depth - depth).abs() < depth * 1e-6 && (cost.per_token - per_token).abs() < 1e-9 && (cost.fixed - fixed).abs() < 1e-7, "{cost:?}");
+    let at = 158_000;
+    let deep = Mind {
+        phase: Phase::Prefill { remaining: 6_000, at },
+        step: Measured::Value(Duration::from_secs_f64(cost.per_token_at(at))),
+        overhead: Measured::Value(Duration::from_secs_f64(cost.fixed)),
+        depth: Measured::Value(cost.depth),
+        ..mind(1, 0)
+    };
+    let situation = lane::Situation { running: Some(deep), ready: vec![mind(2, 500)], batch_width: 1, background_owed: false };
+    let Some(room) = lane::room(&situation, Some(&1)).map(|room| room.as_secs_f64()) else { panic!("test: the waiter has a bound") };
+    let chunk = lane::step_tokens(&situation, &deep, BATCH);
+    assert!(took(chunk as f64, at as f64) <= room, "the chunk fits her room at her depth: {chunk} tokens, {:.3} s of {room:.3}", took(chunk as f64, at as f64));
+    assert!(took(chunk as f64 + 1.0, at as f64) > room, "and is the most that does");
+    let shallow = took(chunk as f64, 0.0) / chunk as f64; // the rate a line through her shallow chunks would read
+    let by_line = ((room - fixed) / shallow) as u64;
+    assert!(took(by_line as f64, at as f64) > room * 2.0, "sized by a shallow rate, the same chunk would overrun the room twice over");
 }

@@ -28,8 +28,8 @@ pub const SLOTS: usize = Mask::BITS as usize;
 /// Where her turn stands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
-    /// Tokens of her prompt still to prefill.
-    Prefill { remaining: u64 },
+    /// Tokens of her prompt still to prefill, from position `at` (how deep her next chunk starts).
+    Prefill { remaining: u64, at: u64 },
     Decode,
 }
 
@@ -57,6 +57,9 @@ pub struct Mind<K> {
     /// The fixed time a step of hers costs whatever its tokens (a prefill chunk's submit and its pass
     /// over her context), apart from `step`, her time a token; `Unmeasured` until her steps vary in size.
     pub overhead: Measured<Duration>,
+    /// What each position of depth adds to a prefill token's time, in seconds (`ChunkCost::depth`): her chunk's
+    /// tokens cost more the deeper they land. `step` is already her part a token at the chunk's start.
+    pub depth: Measured<f64>,
     /// Her prefix cache's hit rate: how much of her work reuses what is warm.
     pub prefix_hit: Measured<f64>,
 }
@@ -153,10 +156,16 @@ fn worthwhile_step<K>(mind: &Mind<K>) -> Duration {
 /// without a step under a 1 s bound.
 pub fn step_tokens<K: PartialEq>(situation: &Situation<K>, stepped: &Mind<K>, most: std::num::NonZeroU64) -> u64 {
     let room = room(situation, Some(&stepped.mind));
-    // the chunk's fixed part comes off the room first; what is left buys tokens at her part a token
+    // the chunk's fixed part comes off the room first; what is left buys tokens at her part a token, each
+    // costing `depth` more per position past the chunk's start: n·step + depth·n²/2 within the room
     let fixed = stepped.overhead.value().unwrap_or(Duration::ZERO); // unwrap_or: an unmeasured fixed part is a cost not yet seen
+    let depth = stepped.depth.value().unwrap_or(0.0); // unwrap_or: an unmeasured depth part is a cost not yet seen
     match (room, stepped.step.value()) {
-        (Some(room), Some(per_token)) if per_token > Duration::ZERO => ((room.saturating_sub(fixed).as_secs_f64() / per_token.as_secs_f64()) as u64).clamp(1, most.get()),
+        (Some(room), Some(per_token)) if per_token > Duration::ZERO => {
+            let (budget, step) = (room.saturating_sub(fixed).as_secs_f64(), per_token.as_secs_f64());
+            let tokens = if depth > 0.0 { ((step * step + 2.0 * depth * budget).sqrt() - step) / depth } else { budget / step };
+            (tokens as u64).clamp(1, most.get())
+        }
         _ => most.get(),
     }
 }
