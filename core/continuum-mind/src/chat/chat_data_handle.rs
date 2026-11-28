@@ -184,15 +184,12 @@ impl ChatModule {
     /// which is wrong — half of the write did. The `warning` field is
     /// the right shape: degraded success.
     ///
-    /// # Idempotency (known gap, deferred)
+    /// # Idempotency
     ///
-    /// A retried `chat/send` (network glitch on the caller side)
-    /// currently produces two stored messages. This matches today's
-    /// TS behavior and is out of scope for the first migration.
-    /// Future PR can add a `client_dedup_id` param + a TTL'd map in
-    /// the chat module; the substrate is ready for it (`HandleRef`
-    /// could be the dedup id) but the design conversation is its
-    /// own scope.
+    /// The store deduplicates on `message_id`: if a row with the same id
+    /// already exists (e.g., from an inbound loopback that wrote first),
+    /// persisting again is a no-op — line_store.rs:288 checks the arrival's
+    /// `fresh` flag and returns `Imported::Duplicate` when it finds an existing row.
     pub async fn send(&self, params: ChatSendParams) -> Result<ChatSendResult, String> {
         self.send_with_wire(params, WireLeg::Envelope).await
     }

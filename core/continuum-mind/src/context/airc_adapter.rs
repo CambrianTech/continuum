@@ -197,7 +197,7 @@ impl AircCitizen for AircHandleAdapter {
     }
 
     async fn say_in(&self, room_id: Uuid, text: &str) -> Result<EventId, AircError> {
-        crate::persona::airc_citizen::publish_text_in_room(&self.inner, room_id, text).await
+        crate::persona::airc_citizen::publish_text_in_room(&self.inner, room_id, text, None).await
     }
 
     async fn held_cards(&self) -> Result<Vec<(Uuid, airc_lib::WorkCard)>, AircError> {

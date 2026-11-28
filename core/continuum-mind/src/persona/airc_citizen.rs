@@ -264,25 +264,33 @@ pub fn publish_target_for(room_id: Uuid) -> airc_lib::PublishTarget {
 
 /// THE implementation of [`AircCitizen::say_in`] over a raw airc
 /// handle. Same reason as `routing::airc_subscription::subscribe_every_room`: the nil-room
-/// contract and the no-auto-join publish target are decided once.
+/// Publish plain text into `room_id`. When `event_id` is provided, injects
+/// `HEADER_CONTINUUM_EVENT_ID` so the inbound attach seam reuses that id on
+/// loopback instead of generating a fresh one (the duplicate-chat-row guard).
 pub async fn publish_text_in_room(
     airc: &airc_lib::Airc,
     room_id: Uuid,
     text: &str,
+    event_id: Option<uuid::Uuid>,
 ) -> Result<EventId, AircError> {
+    let headers = match event_id {
+        Some(id) => {
+            use continuum_kernel::routing::airc_realtime_wire::HEADER_CONTINUUM_EVENT_ID;
+            let mut h = airc_core::Headers::new();
+            h.insert(HEADER_CONTINUUM_EVENT_ID.to_string(), id.to_string());
+            h
+        }
+        None => airc_core::Headers::default(),
+    };
     airc.publish(
         publish_target_for(room_id),
         airc_protocol::FrameKind::Message,
         airc_core::Body::text(text),
-        airc_core::Headers::default(),
+        headers,
     )
     .await
     .map(|receipt| receipt.event_id)
 }
-
-/// A node's telemetry line into a room: an Event frame (never the conversational Message plane)
-/// carrying [`continuum_airc_protocol::NODE_TELEMETRY_BODY_HINT`], so inbound classification routes
-/// it away from every mind's perception by its header alone. Operators still read it in the room.
 pub async fn publish_telemetry_in_room(
     airc: &airc_lib::Airc,
     room_id: Uuid,

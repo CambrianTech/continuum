@@ -14,6 +14,8 @@ use airc_ipc::{codec::read_frame, AttachRequest, AttachStart, DaemonClient, IpcC
 use airc_lib::decode_wire_event;
 use tracing::warn;
 
+use uuid::Uuid;
+
 use crate::routing::airc_realtime::AircRealtimeEnvelope;
 use crate::cognition::conversation::room_event::chat_transcript_message;
 use crate::routing::airc_realtime_wire::{bus_event_from_envelope, envelope_from_event};
@@ -23,6 +25,11 @@ use continuum_mind::chat::import_watermark::ImportWatermark;
 use continuum_mind::chat::line_store::{LineImporter, PostedLine};
 use crate::ipc::positron_wall_source::WALL_CHANGED;
 use crate::runtime::MessageBus;
+use std::collections::HashSet;
+
+/// A set of peer ids whose HEADER_CONTINUUM_EVENT_ID the inbound gate trusts.
+pub type KnownSenders = HashSet<airc_core::PeerId>;
+
 
 /// One attach stream per ROOM, spawned at most once — the registry the room
 /// ADOPTION path (positron_presence's refresher, #2606) calls so every room
@@ -37,6 +44,7 @@ pub struct AttachRegistry {
     bus: Arc<MessageBus>,
     rt: tokio::runtime::Handle,
     attached: parking_lot::Mutex<std::collections::HashSet<RoomId>>,
+    known_senders: KnownSenders,
 }
 
 static ATTACHES: std::sync::OnceLock<Arc<AttachRegistry>> = std::sync::OnceLock::new();
@@ -51,6 +59,14 @@ impl AttachRegistry {
                 registry.ensure_attached(room);
             }
         });
+        // Build known senders from operator and agent runtimes.
+        let mut known_senders = KnownSenders::new();
+        if let Some(rt) = crate::persona::operator_peer::operator_runtime() {
+            known_senders.insert(rt.airc().peer_id());
+        }
+        if let Some(rt) = crate::persona::operator_peer::agent_runtime() {
+            known_senders.insert(rt.airc().peer_id());
+        }
         ATTACHES
             .get_or_init(|| {
                 Arc::new(Self {
@@ -58,6 +74,7 @@ impl AttachRegistry {
                     bus,
                     rt,
                     attached: parking_lot::Mutex::new(std::collections::HashSet::new()),
+                    known_senders,
                 })
             })
             .clone()
@@ -77,7 +94,7 @@ impl AttachRegistry {
                 room = %room.as_uuid(),
                 "daemon attach spawned for an adopted room — its transcript now reaches the projection bus"
             );
-            spawn_daemon_attach(self.socket.clone(), room, self.bus.clone(), &self.rt);
+            spawn_daemon_attach(self.socket.clone(), room, self.bus.clone(), &self.rt, self.known_senders.clone());
         }
     }
 }
@@ -87,6 +104,7 @@ pub fn spawn_daemon_attach(
     channel: RoomId,
     bus: Arc<MessageBus>,
     runtime: &tokio::runtime::Handle,
+    known_senders: KnownSenders,
 ) {
     // RE-ATTACH loop. This is a RAW `DaemonClient::attach` realtime-transcript
     // stream (positron chat/wall/kanban + the persona-turn projection), NOT
@@ -108,7 +126,7 @@ pub fn spawn_daemon_attach(
         let mut backoff = MIN_BACKOFF;
         loop {
             let started = Instant::now();
-            match run_daemon_attach(socket_path.clone(), channel, bus.clone()).await {
+            match run_daemon_attach(socket_path.clone(), channel, bus.clone(), known_senders.clone()).await {
                 Ok(()) => warn!(
                     "AIRC daemon attach ended (daemon EOF) after {:?} — re-attaching in {:?}",
                     started.elapsed(),
@@ -223,6 +241,7 @@ pub async fn run_daemon_attach(
     socket_path: PathBuf,
     channel: RoomId,
     bus: Arc<MessageBus>,
+    known_senders: KnownSenders,
 ) -> Result<(), String> {
     let client = DaemonClient::new(socket_path.clone());
     // Owner-core model (airc-daemon/src/server.rs:274): the router
@@ -309,7 +328,7 @@ pub async fn run_daemon_attach(
             );
             persist_cursor(&lines, &channel, advanced_to).await;
         }
-        handle_attach_response(response, &bus, &lines).await?;
+        handle_attach_response(response, &bus, &lines, &known_senders).await?;
     }
 }
 
@@ -317,6 +336,7 @@ pub async fn handle_attach_response(
     response: Response,
     bus: &MessageBus,
     lines: &dyn LineImporter,
+    known_senders: &KnownSenders,
 ) -> Result<(), String> {
     match response {
         Response::Ok => Ok(()),
@@ -326,7 +346,7 @@ pub async fn handle_attach_response(
         // TranscriptEvent. A malformed buffer is logged + skipped (the
         // live stream shouldn't die because one event failed to parse).
         Response::Event { envelope } => match decode_wire_event(envelope) {
-            Ok(event) => publish_transcript_event(&Arc::new(event), bus, lines).await,
+            Ok(event) => publish_transcript_event(&Arc::new(event), bus, lines, known_senders).await,
             Err(error) => {
                 warn!("Skipping malformed airc daemon event: {error}");
                 Ok(())
@@ -347,6 +367,7 @@ pub async fn publish_transcript_event(
     event: &Arc<airc_core::TranscriptEvent>,
     bus: &MessageBus,
     lines: &dyn LineImporter,
+    known_senders: &KnownSenders,
 ) -> Result<(), String> {
     // THE ONE INBOUND DECODE POINT for room events: the transport kind and headers
     // decide protocol frame or conversation, before anything reads the payload. The
@@ -378,8 +399,8 @@ pub async fn publish_transcript_event(
     // someone other than its transport author reaches perception, the store and the projection only
     // when this core's publication obligation proves it; otherwise it is refused here, said, and
     // dropped, never relabeled.
-    let delegated = match attribution_gate(event, lines).await? {
-        Gate::Pass { delegated } => delegated,
+    let (delegated, validated_message_id) = match attribution_gate(event, lines, known_senders).await? {
+        Gate::Pass { delegated, validated_message_id } => (delegated, validated_message_id),
         Gate::Refused => return Ok(()),
     };
     // THE STORE FIRST, ONCE (Slice P; Codex on #5696): a room line is imported, awaited, before
@@ -389,7 +410,7 @@ pub async fn publish_transcript_event(
     // a line imported but not yet fed when the core died is not re-fed on replay.
     let decoded = envelope_from_event(event);
     let chat_line = match &decoded {
-        Ok(None) => posted_from_message(event),
+        Ok(None) => posted_from_message(event, validated_message_id),
         Ok(Some(envelope)) => posted_from_envelope(envelope, event).map(|mut line| {
             line.retires_publication = delegated;
             line
@@ -550,24 +571,34 @@ fn posted_from_envelope(
 
 /// Whether a line may be consumed, decided by attribution.
 enum Gate {
-    Pass { delegated: bool },
+    Pass { delegated: bool, validated_message_id: Option<Uuid> },
     Refused,
 }
 
 /// Attribute a line before it is consumed: no claim (or a claim naming its transport author) passes
 /// as the author's own; a claim to speak for someone else passes only on an exact publication
 /// obligation (`chat::publication::attribute`), read through the injected store.
-async fn attribution_gate(event: &airc_core::TranscriptEvent, lines: &dyn LineImporter) -> Result<Gate, String> {
+async fn attribution_gate(event: &airc_core::TranscriptEvent, lines: &dyn LineImporter, known_senders: &KnownSenders) -> Result<Gate, String> {
     use crate::routing::airc_realtime_wire::{claimed_message, claimed_sender, envelope_from_event};
     use continuum_mind::chat::publication::{attribute, publication_digest, Attribution};
     use crate::routing::airc_realtime_wire::SenderClaim;
     let claim = claimed_sender(event);
     if claim == SenderClaim::Absent || claim == SenderClaim::Named(event.peer_id) {
-        return Ok(Gate::Pass { delegated: false });
+        // No delegation claim. Only trust HEADER_CONTINUUM_EVENT_ID for known senders
+        // (operator/agent runtime), whose publish_as_sender sets it; reject unvalidated
+        // headers from foreign peers to keep row identity anchored to verified ownership.
+        let validated_message_id =
+            if known_senders.contains(&event.peer_id) { claimed_message(event) } else { None };
+        return Ok(Gate::Pass { delegated: false, validated_message_id });
     }
-    let obligation = match claimed_message(event) {
-        Some(id) => lines.publication(id).await?,
-        None => None,
+    // Validate HEADER_CONTINUUM_EVENT_ID against publication record; the validated
+    // id is passed downstream to posted_from_message so it can safely override message_id.
+    let (obligation, validated_message_id) = match claimed_message(event) {
+        Some(id) => {
+            let pub_record = lines.publication(id).await?;
+            if pub_record.is_some() { (pub_record, Some(id)) } else { (None, None) }
+        }
+        None => (None, None),
     };
     // The line as received, from the one chat_transcript decoder (its claimed sender, its text and
     // media); a line that does not decode matches no publication.
@@ -579,8 +610,8 @@ async fn attribution_gate(event: &airc_core::TranscriptEvent, lines: &dyn LineIm
         _ => None,
     };
     match attribute(event.peer_id, claim, event.room_id, obligation.as_ref(), received) {
-        Attribution::Author(_) => Ok(Gate::Pass { delegated: false }),
-        Attribution::Delegated { .. } => Ok(Gate::Pass { delegated: true }),
+        Attribution::Author(_) => Ok(Gate::Pass { delegated: false, validated_message_id }),
+        Attribution::Delegated { .. } => Ok(Gate::Pass { delegated: true, validated_message_id }),
         Attribution::Refused { claimed, reason } => {
             continuum_base::probe!(
                 class = "airc.inbound.delegation_refused",
@@ -650,14 +681,27 @@ fn capacity_offer_from_envelope(
 /// authoritative `peer_id`, and the projection resolves name / kind /
 /// integrations downstream from the roster (presence cards). Identity
 /// is a presence fact, never a message fact — see
-/// `airc-to-positron-chat-projection`. airc's `event_id` IS the stable
-/// `message_id` (same event → same id across replay + peers).
-fn posted_from_message(event: &airc_core::TranscriptEvent) -> Option<PostedLine> {
+/// `airc-to-positron-chat-projection`. When no custom event-id header is
+/// present, airc's own `event_id` IS the stable `message_id` (same event
+/// → same id across replay + peers). When one is present (the operator
+/// self-peer path), it overrides so loopback dedupes against the row
+/// `persist()` already created.
+fn posted_from_message(
+    event: &airc_core::TranscriptEvent,
+    validated_message_id: Option<Uuid>,
+) -> Option<PostedLine> {
     if event.kind != TranscriptKind::Message {
         return None;
     }
     let content = event.body.as_ref()?.as_text()?;
-    posted_line(event, content.to_string())
+    let mut line = posted_line(event, content.to_string())?;
+    // Only override message_id when attribution_gate validated HEADER_CONTINUUM_EVENT_ID —
+    // either via publication lookup (delegation path) or by matching a known runtime
+    // (self-peer publish_as_sender). Keeps row identity anchored to verified ownership.
+    if let Some(id) = validated_message_id {
+        line.message_id = id;
+    }
+    Some(line)
 }
 
 /// Project a `WallPostPublished` transcript event into the `wall:changed`

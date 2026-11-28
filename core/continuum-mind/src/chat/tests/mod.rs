@@ -1,5 +1,9 @@
 #![cfg(test)]
 
+mod paging;
+mod part_2;
+mod restart;
+
     use super::*;
     use crate::runtime::ModuleRegistry;
     use uuid::Uuid;
@@ -683,6 +687,183 @@
         assert!(legacy.media.is_empty());
     }
 
-mod paging;
-mod part_2;
-mod restart;
+    // Operator self-peer: one logical send = one stored message row after full loopback.
+    // Exercise the normal entry (send_with_wire → persist/Create) and the inbound_attach
+    // loopback path (commit_line/Ensure with the same message_id). Assert that final
+    // unique chat_messages keys equal 1 — Ensure deduplicates by id, so a replayed line
+    // does not produce a second row.
+    #[tokio::test]
+    pub(super) async fn one_send_one_loopback_yields_one_message_row() {
+        use std::collections::HashSet;
+
+        /// Minimal in-memory store that simulates the real data module's dedup behavior:
+        /// - Create ops insert a new row (returning created=true)
+        /// - Ensure ops with an existing ID skip insertion (created=false) and return fresh=false
+        /// - chat_arrivals ops return { seq, fresh } — one result entry per operation.
+        struct MemStore {
+            seen_ids: Mutex<HashSet<String>>,
+            batches: Mutex<Vec<Value>>,
+            arrival_seq: std::sync::atomic::AtomicU64,
+        }
+
+        impl MemStore {
+            fn new() -> Self {
+                Self {
+                    seen_ids: Mutex::new(HashSet::new()),
+                    batches: Mutex::new(Vec::new()),
+                    arrival_seq: std::sync::atomic::AtomicU64::new(1),
+                }
+            }
+
+            fn handle_batch(&self, params: &Value) -> Value {
+                // Record the batch for later verification.
+                if let Some(ops) = params.get("operations").and_then(|v| v.as_array()) {
+                    self.batches.lock().unwrap().push(params.clone());
+
+                    // Track whether this batch has a Create on chat_messages (for arrival freshness).
+                    let mut batch_has_create = false;
+                    for op in ops.iter() {
+                        if op.get("collection")
+                                .and_then(Value::as_str)
+                                == Some(crate::chat::types::CHAT_MESSAGES_COLLECTION) {
+                            if op.get("operationType").and_then(Value::as_str) == Some("create") {
+                                batch_has_create = true;
+                            }
+                        }
+                    }
+
+                    // Produce exactly one result per operation.
+                    let mut results: Vec<Value> = ops.iter().map(|op| {
+                        let collection = op.get("collection").and_then(Value::as_str).unwrap_or("");
+                        let id = op.get("id").and_then(Value::as_str);
+                        let op_type = op.get("operationType").and_then(Value::as_str).unwrap_or("");
+
+                        if collection == crate::chat::types::CHAT_MESSAGES_COLLECTION {
+                            // Handle chat_messages operations.
+                            if op_type == "ensure" {
+                                let id = id.unwrap_or("");
+                                let mut seen = self.seen_ids.lock().unwrap();
+                                if seen.contains(id) {
+                                    return json!({ "success": true, "created": false });
+                                }
+                                seen.insert(id.to_string());
+                            } else if op_type == "create" {
+                                // Create always inserts.
+                                if let Some(id) = id {
+                                    self.seen_ids.lock().unwrap().insert(id.to_string());
+                                }
+                            }
+                            return json!({ "success": true, "created": true });
+                        } else if collection == "chat_arrivals" {
+                            // Handle arrival append: one result with seq and freshness.
+                            let _was_ensure_duplicate = op_type != "append"
+                                || ops.iter().any(|op2| {
+                                    op2.get("collection").and_then(Value::as_str)
+                                        == Some(crate::chat::types::CHAT_MESSAGES_COLLECTION)
+                                        && op2.get("operationType").and_then(Value::as_str) == Some("ensure")
+                                });
+                            // Arrival is not fresh if the batch had an Ensure that found existing.
+                            let mut seen = self.seen_ids.lock().unwrap();
+                            let mut has_ensure_dup = false;
+                            for op2 in ops.iter() {
+                                let eid_opt = op2.get("id").and_then(Value::as_str);
+                                if op2.get("collection").and_then(Value::as_str)
+                                        == Some(crate::chat::types::CHAT_MESSAGES_COLLECTION)
+                                    && op2.get("operationType").and_then(Value::as_str) == Some("ensure")
+                                    && eid_opt.is_some() {
+                                    if let Some(eid) = eid_opt {
+                                        if seen.contains(eid) {
+                                            has_ensure_dup = true;
+                                        }
+                                    }
+                                }
+                            }
+                            drop(seen);
+                            let fresh = !has_ensure_dup && batch_has_create;
+                            let seq = self.arrival_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            return json!({ "success": true, "seq": seq, "fresh": fresh });
+                        }
+
+                        // Other collections: default success.
+                        json!({ "success": true })
+                    }).collect();
+
+                    return json!({ "success": true, "data": results });
+                }
+                json!({ "success": true })
+            }
+        }
+
+        let store = Arc::new(MemStore::new());
+        let store_clone = store.clone();
+
+        let data = StubDataModule::new(move |command, params| {
+            if command == "data/batch" {
+                return Ok(store_clone.handle_batch(&params));
+            }
+            // Other commands (like ensure-schema) pass through.
+            Ok(batch_ok())
+        });
+
+        let chat = chat_with_stubs(vec![Arc::new(data)]);
+        let mut params = sample_send_params();
+        params.media.clear(); // skip envelope leg; use CallerSpeaks.
+
+        // Path 1: send (persist/Create)
+        let result = chat
+            .send_with_wire(params.clone(), crate::chat::WireLeg::CallerSpeaks)
+            .await
+            .expect("send must succeed");
+
+        assert!(!result.message_id.is_nil());
+
+        // Path 2: loopback (commit_line/Ensure with same message_id)
+        let line = crate::chat::line_store::PostedLine {
+            message_id: result.message_id,
+            room: airc_core::RoomId::new(),
+            author: airc_core::PeerId::new(),
+            kind: crate::chat::arrival::ArrivalKind::Message,
+            direct_to: Some(airc_core::PeerId::new()),
+            occurred_at_ms: 1_784_227_923_000,
+            text: params.text.clone(),
+            retires_publication: false,
+        };
+
+        let import_result = chat
+            .commit_line(&line, None, json!({ "text": line.text }))
+            .await
+            .expect("loopback import must succeed");
+
+        // Ensure deduplicates by message_id — reports existing arrival, not Fresh.
+        assert!(
+            matches!(import_result, crate::chat::line_store::Imported::Duplicate { .. }),
+            "second commit_line with same id should report Duplicate, got {:?}",
+            import_result
+        );
+
+        // Verify: exactly one unique chat_messages row key
+        let calls = store.batches.lock().unwrap();
+        let mut message_ids = std::collections::HashSet::<String>::new();
+        for batch in calls.iter() {
+            if let Some(ops) = batch.get("operations").and_then(|v| v.as_array()) {
+                for op in ops {
+                    if op.get("collection")
+                        .and_then(Value::as_str)
+                        == Some(crate::chat::types::CHAT_MESSAGES_COLLECTION) {
+                        // Extract the message id from the operation data.
+                        if let Some(id) = op.get("id")
+                            .or_else(|| op.get("data").and_then(|d| d.get("messageId"))) {
+                            message_ids.insert(id.as_str().unwrap_or("").to_string());
+                        }
+                    }
+                }
+            }
+        }
+
+        assert_eq!(
+            message_ids.len(), 1,
+            "send + loopback must yield exactly ONE chat_messages row; found {} unique ids: {:?}",
+            message_ids.len(), message_ids
+        );
+    }
+
