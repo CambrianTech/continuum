@@ -87,16 +87,10 @@ pub(super) async fn restore_or_report(previous: Option<PreviousCore>, failed: Pu
 /// The executable of the serving core, from the process itself (never re-resolved from a
 /// path guess, which could name a different file than the one that is running).
 pub(super) fn running_core_exe(old: &[i32]) -> Result<PathBuf, String> {
-    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
-    let pids: Vec<Pid> = old.iter().map(|pid| Pid::from_u32(*pid as u32)).collect();
-    let mut sys = System::new();
-    sys.refresh_processes_specifics(
-        ProcessesToUpdate::Some(&pids),
-        true,
-        ProcessRefreshKind::nothing().with_exe(UpdateKind::Always),
-    );
-    pids.iter()
-        .find_map(|pid| sys.process(*pid).and_then(|p| p.exe()).map(Path::to_path_buf))
+    let pids: Vec<u32> = old.iter().map(|pid| *pid as u32).collect();
+    continuum_kernel::system_resources::process_tree::ProcessTable::read()
+        .exe_of(&pids)
+        .map(Path::to_path_buf)
         .ok_or_else(|| format!("cannot read the executable of serving core pid(s) {old:?}"))
 }
 
@@ -121,7 +115,7 @@ impl DarkWindow {
     /// The receipt once the new core answers.
     pub(super) fn receipt(&self) -> String {
         let total = self.stopping.elapsed();
-        let stop = self.stopped.unwrap_or(total);
+        let stop = self.stopped.unwrap_or(total); // unwrap_or: a stop never recorded never ended, so the whole window was the stop
         let build = self.built.map_or(Duration::ZERO, |b| b.saturating_sub(stop));
         let start = total.saturating_sub(stop).saturating_sub(build);
         format!(
@@ -141,11 +135,7 @@ impl BuildReceipt {
             "continuum-build-{}.receipt",
             uuid::Uuid::new_v4()
         ));
-        std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-            .map_err(|e| format!("cannot create build receipt: {e}"))?;
+        continuum_host::durable::write_new(&path, b"").map_err(|e| format!("cannot create build receipt: {e}"))?;
         Ok(Self(path))
     }
 

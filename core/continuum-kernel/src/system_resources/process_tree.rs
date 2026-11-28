@@ -112,6 +112,11 @@ impl ProcessTable {
         })
     }
 
+    /// The executable of the first of `pids` the table holds with an image path.
+    pub fn exe_of(&self, pids: &[u32]) -> Option<&Path> {
+        pids.iter().find_map(|pid| self.rows.iter().find(|row| row.identity.pid == *pid)?.exe.as_deref())
+    }
+
     /// The first compiler (`rustc`, `cargo`) running anywhere on the host, if any.
     pub fn compiler_running(&self) -> Option<&ProcessRow> {
         self.rows
