@@ -17,7 +17,9 @@ use super::LeaseCoverage;
 /// include the bytes). A holder that never declares is over-counted (refuses), never under-counted.
 #[derive(Debug, Clone)]
 pub(super) struct Held {
-    pub(super) lease: ResourceLease,
+    /// Everything of the lease but its size: the size is the core's (`PlacerCore::holding`), read on demand,
+    /// never kept here as a second record (step 1, ONE-FRAME-ONE-MEMORY.md).
+    pub(super) meta: LeaseMeta,
     pub(super) view: Option<std::sync::Arc<LeaseCoverage>>,
     /// When its holder declared it landed: only a reading observed at or after this can show it. None while
     /// undeclared.
@@ -27,10 +29,48 @@ pub(super) struct Held {
     ask: AskId,
 }
 
+/// A lease's identity, owner and terms: what the core does not hold. Its bytes are never here.
+#[derive(Debug, Clone)]
+pub(super) struct LeaseMeta {
+    pub(super) lease_id: String,
+    pub(super) consumer_id: String,
+    pub(super) kind: super::super::lease::ResourceKind,
+    pub(super) acquired_at_ms: u64,
+    pub(super) expires_at_ms: u64,
+    pub(super) reclaim_policy: super::super::lease::ReclaimPolicy,
+}
+
+impl LeaseMeta {
+    pub(super) fn is_expired(&self, now_ms: u64) -> bool {
+        super::super::lease::expired(self.expires_at_ms, now_ms)
+    }
+
+    /// The lease as a caller sees it, at the size the core holds for it now.
+    pub(super) fn with_bytes(&self, bytes: u64) -> ResourceLease {
+        ResourceLease {
+            lease_id: self.lease_id.clone(),
+            consumer_id: self.consumer_id.clone(),
+            kind: self.kind,
+            bytes,
+            acquired_at_ms: self.acquired_at_ms,
+            expires_at_ms: self.expires_at_ms,
+            reclaim_policy: self.reclaim_policy,
+        }
+    }
+}
+
 impl Held {
-    /// A lease just granted under core entry `ask`: no view yet, not landed.
+    /// A lease just granted under core entry `ask`: no view yet, not landed. Its bytes are the core's.
     pub(super) fn new(lease: &ResourceLease, ask: AskId) -> Self {
-        Self { lease: lease.clone(), view: None, landed_from: None, ask }
+        let meta = LeaseMeta {
+            lease_id: lease.lease_id.clone(),
+            consumer_id: lease.consumer_id.clone(),
+            kind: lease.kind,
+            acquired_at_ms: lease.acquired_at_ms,
+            expires_at_ms: lease.expires_at_ms,
+            reclaim_policy: lease.reclaim_policy,
+        };
+        Self { meta, view: None, landed_from: None, ask }
     }
 
     pub(super) fn ask(&self) -> AskId {

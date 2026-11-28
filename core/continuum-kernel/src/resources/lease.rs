@@ -95,9 +95,14 @@ pub struct ResourceLease {
     pub reclaim_policy: ReclaimPolicy,
 }
 
+/// The one expiry rule: a lease is past its deadline from `expires_at_ms` on.
+pub(crate) fn expired(expires_at_ms: u64, now_ms: u64) -> bool {
+    now_ms >= expires_at_ms
+}
+
 impl ResourceLease {
     pub fn is_expired(&self, now_ms: u64) -> bool {
-        now_ms >= self.expires_at_ms
+        expired(self.expires_at_ms, now_ms)
     }
 
     /// Can pressure take this back right now? Expired leases always yes (the

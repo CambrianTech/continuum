@@ -209,11 +209,34 @@ impl LeaseView {
 impl Held {
     /// This lease's bytes still owed on top of physical use, given the oldest of the accepted observations that
     /// must show it (its kind's, and its backing pool's on unified memory).
-    fn pending(&self, accepted: Option<super::observed::Observed>) -> u64 {
+    fn pending(&self, accepted: Option<super::observed::Observed>, bytes: u64) -> u64 {
         match (self.landed_from, accepted) {
             (Some(from), Some(sample)) if sample >= from => 0,
-            _ => self.lease.bytes,
+            _ => bytes,
         }
+    }
+}
+
+impl ResourceLeaseLedger {
+    /// What the core holds for `held` now: its one record of the lease's size. A lease the core holds
+    /// nothing for holds nothing (the core is the record, so this is its answer, not a substitute).
+    fn held_bytes(&self, held: &Held) -> u64 {
+        match self.core.holding(held.ask(), held.meta.kind) {
+            Some(Bytes(bytes)) => bytes,
+            None => 0,
+        }
+    }
+
+    /// `held` as a caller sees it: its terms at the size the core holds now. `None` when the core holds
+    /// nothing for it.
+    fn snapshot(&self, held: &Held) -> Option<ResourceLease> {
+        let Bytes(bytes) = self.core.holding(held.ask(), held.meta.kind)?;
+        Some(held.meta.with_bytes(bytes))
+    }
+
+    /// Every lease the core holds, as callers see them, in lease-id order.
+    fn snapshots(&self) -> impl Iterator<Item = ResourceLease> + '_ {
+        self.leases.values().filter_map(|held| self.snapshot(held))
     }
 }
 
@@ -241,9 +264,8 @@ impl ResourceLeaseLedger {
     pub fn granted(&self, kind: ResourceKind) -> u64 {
         self.leases
             .values()
-            .map(|held| &held.lease)
-            .filter(|l| l.kind == kind)
-            .map(|l| l.bytes)
+            .filter(|held| held.meta.kind == kind)
+            .map(|held| self.held_bytes(held))
             .fold(0u64, |acc, b| acc.saturating_add(b))
     }
 
@@ -350,9 +372,8 @@ impl ResourceLeaseLedger {
     pub fn granted_to(&self, consumer_id: &str, kind: ResourceKind) -> u64 {
         self.leases
             .values()
-            .map(|held| &held.lease)
-            .filter(|l| l.kind == kind && l.consumer_id == consumer_id)
-            .map(|l| l.bytes)
+            .filter(|held| held.meta.kind == kind && held.meta.consumer_id == consumer_id)
+            .map(|held| self.held_bytes(held))
             .fold(0u64, |acc, b| acc.saturating_add(b))
     }
 
@@ -525,7 +546,7 @@ impl ResourceLeaseLedger {
             .keys()
             .filter(|(k, _)| *k == kind)
             .map(|(_, c)| c.as_str())
-            .chain(self.leases.values().map(|held| &held.lease).filter(|l| l.kind == kind).map(|l| l.consumer_id.as_str()))
+            .chain(self.leases.values().map(|held| &held.meta).filter(|l| l.kind == kind).map(|l| l.consumer_id.as_str()))
             .chain(self.measured.iter().filter(|(_, fs)| fs.iter().any(|f| f.kind == kind)).map(|(c, _)| c.as_str()))
             .filter(|c| *c != consumer_id)
             .collect();
@@ -617,7 +638,7 @@ impl ResourceLeaseLedger {
             .ok_or_else(|| LeaseError::MissingLease {
                 lease_id: lease_id.to_string(),
             })?;
-        let lease = &mut held.lease;
+        let lease = &mut held.meta;
         if lease.is_expired(now_ms) {
             return Err(LeaseError::ExpiredLease {
                 lease_id: lease_id.to_string(),
@@ -634,7 +655,9 @@ impl ResourceLeaseLedger {
     pub fn release(&mut self, lease_id: &str) -> Result<ResourceLease, LeaseError> {
         let held = self.leases.remove(lease_id).ok_or_else(|| LeaseError::MissingLease { lease_id: lease_id.to_string() })?;
         let ask = held.ask();
-        if let Some(view) = held.view { view.bytes.store(0, Ordering::Release); }
+        // what it held, read from the core before the release frees it
+        let released = held.meta.with_bytes(self.held_bytes(&held));
+        if let Some(view) = &held.view { view.bytes.store(0, Ordering::Release); }
         self.core.apply(&Act::Release(ask));
         if self.core.status(ask).is_some() {
             // still in the table: the core refused the release (its claim already gone); it leaves anyway
@@ -642,7 +665,7 @@ impl ResourceLeaseLedger {
             self.core.drop_ask(ask);
         }
         self.tell();
-        Ok(held.lease)
+        Ok(released)
     }
 
     /// Reduce a lease's footprint by `freed_bytes` without ending it — the
@@ -654,24 +677,24 @@ impl ResourceLeaseLedger {
     /// lease is fail-loud (a stale id is a real bug). Returns the bytes still
     /// held by the lease (0 if it was removed).
     pub fn shrink(&mut self, lease_id: &str, freed_bytes: u64) -> Result<u64, LeaseError> {
-        let held = self
-            .leases
-            .get_mut(lease_id)
-            .ok_or_else(|| LeaseError::MissingLease {
-                lease_id: lease_id.to_string(),
-            })?;
-        let lease = &mut held.lease;
+        let held = self.leases.get(lease_id).ok_or_else(|| LeaseError::MissingLease { lease_id: lease_id.to_string() })?;
+        let (kind, ask, had) = (held.meta.kind, held.ask(), self.held_bytes(held));
         // never more than the lease held: a holder that over-reports must not tell the core it freed more
         // than the lease was (Fable on #6287)
-        let freed_bytes = freed_bytes.min(lease.bytes);
-        lease.bytes -= freed_bytes;
-        if let Some(view) = &held.view { view.bytes.store(lease.bytes, Ordering::Release); }
-        let (remaining, kind, ask) = (lease.bytes, lease.kind, held.ask());
-        if remaining == 0 {
-            self.leases.remove(lease_id);
-        }
+        let freed_bytes = freed_bytes.min(had);
         if freed_bytes > 0 {
             self.core.apply(&Act::Shrunk { ask, place: kind, by: Bytes(freed_bytes) });
+        }
+        // the core moved the bytes; what remains is its record, never a subtraction kept here
+        let remaining = match self.core.holding(ask, kind) {
+            Some(Bytes(left)) => left,
+            None => 0,
+        };
+        if let Some(view) = self.leases.get(lease_id).and_then(|held| held.view.as_ref()) {
+            view.bytes.store(remaining, Ordering::Release);
+        }
+        if remaining == 0 {
+            self.leases.remove(lease_id);
         }
         if remaining == 0 {
             self.core.drop_ask(ask); // shrunk to nothing: its claim is gone, and so is its entry
@@ -684,12 +707,7 @@ impl ResourceLeaseLedger {
     /// uses this list to drive reclaim callbacks; the bytes free only when the
     /// holder confirms via `release`. Returned in stable id order.
     pub fn expire(&self, now_ms: u64) -> Vec<ResourceLease> {
-        self.leases
-            .values()
-            .map(|held| &held.lease)
-            .filter(|l| l.is_expired(now_ms))
-            .cloned()
-            .collect()
+        self.snapshots().filter(|l| l.is_expired(now_ms)).collect()
     }
 
     /// Pick leases to reclaim to free at least `target_bytes` of `kind`,
@@ -727,10 +745,8 @@ impl ResourceLeaseLedger {
             return Some(Vec::new());
         }
         let ctx = ArbiterContext { now_ms, pressure };
-        let mut candidates: Vec<&ResourceLease> = self
-            .leases
-            .values()
-            .map(|held| &held.lease)
+        let mut candidates: Vec<ResourceLease> = self
+            .snapshots()
             .filter(|l| l.kind == kind && l.reclaim_rank(now_ms).is_some())
             .filter(|l| {
                 // Dwell protection — expired bytes are always fair game; a
@@ -750,7 +766,7 @@ impl ResourceLeaseLedger {
         let mut remaining_per_consumer: BTreeMap<&str, u64> = BTreeMap::new();
         let mut freed = 0u64;
         let mut chosen = Vec::new();
-        for lease in candidates {
+        for lease in &candidates {
             if freed >= target_bytes {
                 break;
             }
@@ -774,16 +790,19 @@ impl ResourceLeaseLedger {
     }
 
     pub(super) fn lease_view(&mut self, id: &str) -> Option<LeaseView> {
+        let bytes = self.held_bytes(self.leases.get(id)?);
         let held = self.leases.get_mut(id)?;
         let coverage = held.view.get_or_insert_with(|| Arc::new(LeaseCoverage {
-            bytes: AtomicU64::new(held.lease.bytes),
-            expires_at_ms: AtomicU64::new(held.lease.expires_at_ms),
+            bytes: AtomicU64::new(bytes),
+            expires_at_ms: AtomicU64::new(held.meta.expires_at_ms),
         }));
-        Some(LeaseView { coverage: Arc::downgrade(coverage), kind: held.lease.kind })
+        Some(LeaseView { coverage: Arc::downgrade(coverage), kind: held.meta.kind })
     }
 
-    pub fn lease(&self, lease_id: &str) -> Option<&ResourceLease> {
-        self.leases.get(lease_id).map(|held| &held.lease)
+    /// `lease_id` as it stands: its terms at the size the core holds now. A snapshot, never a reference
+    /// into a second record.
+    pub fn lease(&self, lease_id: &str) -> Option<ResourceLease> {
+        self.snapshot(self.leases.get(lease_id)?)
     }
 
     /// The published board. Omits a kind only when it is uncapacitied AND
@@ -795,7 +814,7 @@ impl ResourceLeaseLedger {
         let mut kinds = Vec::new();
         for kind in ResourceKind::ALL {
             let capacity_bytes = self.capacity(kind);
-            let lease_count = self.leases.values().map(|held| &held.lease).filter(|l| l.kind == kind).count() as u32;
+            let lease_count = self.leases.values().filter(|held| held.meta.kind == kind).count() as u32;
             let measured_bytes = self.measured(kind);
             let physical_used_bytes = self.physical_used(kind);
             if capacity_bytes == 0
@@ -821,7 +840,7 @@ impl ResourceLeaseLedger {
                 lease_count,
             });
         }
-        let mut leases: Vec<ResourceLease> = self.leases.values().map(|held| held.lease.clone()).collect();
+        let mut leases: Vec<ResourceLease> = self.snapshots().collect();
         leases.sort_by(|a, b| a.lease_id.cmp(&b.lease_id));
 
         // Flatten every consumer's latest footprint into stable-ordered

@@ -64,6 +64,12 @@ impl<D: Domain> PlacerCore<D> {
         self.ledger.floors(floors);
     }
 
+    /// What `ask` holds on `place` now (its claim's committed or retired holding): the one record a lease's
+    /// size is read from.
+    pub fn holding(&self, ask: AskId, place: D::Place) -> Option<D::Quantity> {
+        self.ledger.holding(self.claim_of(ask)?, place)
+    }
+
     fn claim_of(&self, ask: AskId) -> Option<super::super::claim::ClaimId> {
         self.owners.get(&ask.owner)?.entries.iter().find(|entry| entry.seq == ask.seq)?.claim
     }
