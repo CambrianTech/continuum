@@ -34,6 +34,7 @@ pub mod ensure_schema;
 pub mod list;
 pub mod list_collections;
 pub mod read;
+pub mod schema_plan;
 pub mod truncate;
 pub mod update;
 
@@ -47,6 +48,7 @@ use ensure_schema::DataEnsureSchema;
 use list::DataList;
 use list_collections::DataListCollections;
 use read::DataRead;
+use schema_plan::DataSchemaPlan;
 use truncate::DataTruncate;
 use update::DataUpdate;
 
@@ -78,6 +80,9 @@ pub fn command_objects(state: Arc<DataState>) -> Vec<Arc<dyn DynCommand>> {
             state: state.clone(),
         }),
         Arc::new(DataCollectionStats {
+            state: state.clone(),
+        }),
+        Arc::new(DataSchemaPlan {
             state: state.clone(),
         }),
         Arc::new(DataBatch {

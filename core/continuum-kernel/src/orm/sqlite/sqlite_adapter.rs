@@ -1,8 +1,29 @@
 use super::*;
 
+/// A blocking task's answer: the store call it ran, or its join failure (a panic or a cancel) said as
+/// that call's error. One owner for the conversion every blocking store call makes.
+trait Answered<T> {
+    fn answered(self) -> StorageResult<T>;
+}
+
+impl<T> Answered<T> for Result<StorageResult<T>, tokio::task::JoinError> {
+    fn answered(self) -> StorageResult<T> {
+        match self {
+            Ok(answer) => answer,
+            Err(joined) => StorageResult::err(format!("spawn_blocking failed: {joined}")),
+        }
+    }
+}
+
 // ─── Async Trait Implementation ──────────────────────────────────────────────
 #[async_trait]
 impl StorageAdapter for SqliteAdapter {
+    /// The plan of every collection this store was opened for, as the store stood before it changed
+    /// anything: the node's inventory (step 0a).
+    fn schema_report(&self) -> Vec<super::schema_plan::CollectionPlan> {
+        self.planned.read().clone()
+    }
+
     fn name(&self) -> &'static str {
         "sqlite"
     }
@@ -72,7 +93,7 @@ impl StorageAdapter for SqliteAdapter {
             do_read(&conn, &collection, &id, types.as_deref())
         })
         .await
-        .unwrap_or_else(|e| StorageResult::err(format!("spawn_blocking failed: {}", e)))
+        .answered()
     }
 
     async fn query(&self, query: StorageQuery) -> StorageResult<Vec<DataRecord>> {
@@ -90,7 +111,7 @@ impl StorageAdapter for SqliteAdapter {
                 Ok::<(), String>(())
             })
             .await
-            .unwrap_or_else(|e| Err(format!("spawn_blocking failed: {}", e)));
+            .unwrap_or_else(|e| Err(format!("spawn_blocking failed: {}", e))); // unwrap_or_else: a panicked or cancelled blocking task is this ensure's error, said as one
             if let Err(e) = ensure_result {
                 return StorageResult::err(e);
             }
@@ -121,7 +142,7 @@ impl StorageAdapter for SqliteAdapter {
             result
         })
         .await
-        .unwrap_or_else(|e| StorageResult::err(format!("spawn_blocking failed: {}", e)))
+        .answered()
     }
 
     async fn query_with_join(&self, query: StorageQuery) -> StorageResult<Vec<DataRecord>> {
@@ -143,7 +164,7 @@ impl StorageAdapter for SqliteAdapter {
             do_count(&conn, query)
         })
         .await
-        .unwrap_or_else(|e| StorageResult::err(format!("spawn_blocking failed: {}", e)))
+        .answered()
     }
 
     async fn list_collections(&self) -> StorageResult<Vec<String>> {
@@ -159,7 +180,7 @@ impl StorageAdapter for SqliteAdapter {
             do_list_collections(&conn)
         })
         .await
-        .unwrap_or_else(|e| StorageResult::err(format!("spawn_blocking failed: {}", e)))
+        .answered()
     }
 
     async fn collection_stats(&self, collection: &str) -> StorageResult<CollectionStats> {
@@ -170,7 +191,13 @@ impl StorageAdapter for SqliteAdapter {
             })
             .await;
 
-        let record_count = count_result.data.unwrap_or(0);
+        // a count that failed is the stats' failure, never zero records
+        let Some(record_count) = count_result.data else {
+            return StorageResult::err(match count_result.error {
+                Some(error) => error,
+                None => "the count answered neither a count nor an error".to_owned(),
+            });
+        };
 
         StorageResult::ok(CollectionStats {
             name: collection.to_string(),
@@ -200,7 +227,7 @@ impl StorageAdapter for SqliteAdapter {
             do_create(&conn, record, types.as_deref())
         })
         .await
-        .unwrap_or_else(|e| StorageResult::err(format!("spawn_blocking failed: {}", e)))
+        .answered()
     }
 
     async fn update(
@@ -227,7 +254,7 @@ impl StorageAdapter for SqliteAdapter {
             do_update(&conn, &collection, &id, data, increment_version, types.as_deref())
         })
         .await
-        .unwrap_or_else(|e| StorageResult::err(format!("spawn_blocking failed: {}", e)))
+        .answered()
     }
 
     async fn delete(&self, collection: &str, id: &UUID) -> StorageResult<bool> {
@@ -245,7 +272,7 @@ impl StorageAdapter for SqliteAdapter {
             do_delete(&conn, &collection, &id)
         })
         .await
-        .unwrap_or_else(|e| StorageResult::err(format!("spawn_blocking failed: {}", e)))
+        .answered()
     }
 
     async fn upsert_monotonic(&self, record: DataRecord, field: &str) -> StorageResult<bool> {
@@ -297,7 +324,7 @@ impl StorageAdapter for SqliteAdapter {
             result
         })
         .await
-        .unwrap_or_else(|e| StorageResult::err(format!("spawn_blocking failed: {}", e)))
+        .answered()
     }
 
     fn sequence_revision(&self, collection: &str) -> tokio::sync::watch::Receiver<u64> {
@@ -315,15 +342,17 @@ impl StorageAdapter for SqliteAdapter {
         if let Ok(mut declared) = self.declared.write() {
             declared.insert(schema.collection.clone(), Arc::new(types));
         }
+        let planned = Arc::clone(&self.planned);
         tokio::task::spawn_blocking(move || {
             let conn = match conn.lock() {
                 Ok(conn) => conn,
                 Err(e) => return StorageResult::err(format!("SQLite connection lock poisoned: {e}")),
             };
+            super::schema_plan::record(&planned, &conn, &schema); // the store as it stood, before this opens it
             do_ensure_schema(&conn, schema)
         })
         .await
-        .unwrap_or_else(|e| StorageResult::err(format!("spawn_blocking failed: {}", e)))
+        .answered()
     }
 
     async fn truncate(&self, collection: &str) -> StorageResult<bool> {
@@ -340,7 +369,7 @@ impl StorageAdapter for SqliteAdapter {
             do_truncate(&conn, &collection)
         })
         .await
-        .unwrap_or_else(|e| StorageResult::err(format!("spawn_blocking failed: {}", e)))
+        .answered()
     }
 
     async fn clear_all(&self) -> StorageResult<ClearAllResult> {
@@ -356,7 +385,7 @@ impl StorageAdapter for SqliteAdapter {
             do_clear_all(&conn)
         })
         .await
-        .unwrap_or_else(|e| StorageResult::err(format!("spawn_blocking failed: {}", e)))
+        .answered()
     }
 
     async fn cleanup(&self) -> Result<(), String> {

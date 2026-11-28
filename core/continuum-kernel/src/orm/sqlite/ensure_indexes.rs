@@ -70,8 +70,8 @@ pub(super) fn do_ensure_indexes(conn: &Connection, schema: &CollectionSchema) ->
     };
 
     let columns = match conn
-        .prepare(&format!("PRAGMA table_info({table})"))
-        .and_then(|mut stmt| stmt.query_map([], |row| row.get::<_, String>(1))?.collect::<Result<Vec<_>, _>>())
+        .prepare("SELECT name FROM pragma_table_info(?1)")
+        .and_then(|mut stmt| stmt.query_map([&table], |row| row.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>())
     {
         Ok(columns) => columns,
         Err(e) => {
@@ -115,9 +115,11 @@ impl SqliteAdapter {
             Ok(conn) => conn,
             Err(e) => return unavailable(e),
         };
+        let planned = std::sync::Arc::clone(&self.planned);
         let pass = tokio::task::spawn_blocking(move || {
             let conn = conn.lock().map_err(|_| "SQLite writer lock poisoned".to_string())?;
             Ok::<_, String>(schemas.iter().fold(IndexPass::default(), |mut total, schema| {
+                super::schema_plan::record(&planned, &conn, schema); // the store as it stood, before its indexes
                 total.absorb(do_ensure_indexes(&conn, schema));
                 total
             }))

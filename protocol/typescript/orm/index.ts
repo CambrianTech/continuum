@@ -2,10 +2,12 @@
 // Source: generator/generate-rust-bindings.ts
 // Re-generate: npx tsx generator/generate-rust-bindings.ts
 
+export type { Affinity } from './Affinity';
 export type { BackfillVectorsProgress } from './BackfillVectorsProgress';
 export type { BackfillVectorsRequest } from './BackfillVectorsRequest';
 export type { BatchOperation } from './BatchOperation';
 export type { BatchOperationType } from './BatchOperationType';
+export type { CollectionPlan } from './CollectionPlan';
 export type { CollectionSchema } from './CollectionSchema';
 export type { CollectionStats } from './CollectionStats';
 export type { Cursor } from './Cursor';
@@ -23,6 +25,7 @@ export type { IndexVectorRequest } from './IndexVectorRequest';
 export type { JoinSpec } from './JoinSpec';
 export type { JoinType } from './JoinType';
 export type { MigrationStatus } from './MigrationStatus';
+export type { PlanItem } from './PlanItem';
 export type { QueryOperator } from './QueryOperator';
 export type { RecordMetadata } from './RecordMetadata';
 export type { ResultMetadata } from './ResultMetadata';
@@ -31,6 +34,7 @@ export type { SchemaIndex } from './SchemaIndex';
 export type { SimilarityMetric } from './SimilarityMetric';
 export type { SortDirection } from './SortDirection';
 export type { SortSpec } from './SortSpec';
+export type { Standing } from './Standing';
 export type { StorageQuery } from './StorageQuery';
 export type { StorageResult } from './StorageResult';
 export type { TimeRange } from './TimeRange';
