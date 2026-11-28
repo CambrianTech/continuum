@@ -126,8 +126,8 @@ impl ResourceLeaseLedger {
     pub fn carve(&mut self, reserve: &str, req: &LeaseRequest, lease_id: &str, now_ms: u64) -> Result<ResourceLease, CarveError> {
         let (kind, bytes, from) = match self.leases.get(reserve) {
             // a lapsed reserve stays charged for its fenced release; nothing is carved from it into a fresh term
-            Some(held) if held.lease.is_expired(now_ms) => return Err(LeaseError::ExpiredLease { lease_id: reserve.to_owned() }.into()),
-            Some(held) => (held.lease.kind, held.lease.bytes, held.ask()),
+            Some(held) if held.meta.is_expired(now_ms) => return Err(LeaseError::ExpiredLease { lease_id: reserve.to_owned() }.into()),
+            Some(held) => (held.meta.kind, self.held_bytes(held), held.ask()),
             None => return Err(LeaseError::MissingLease { lease_id: reserve.to_owned() }.into()),
         };
         if kind != req.kind || bytes < req.bytes {
@@ -139,14 +139,17 @@ impl ResourceLeaseLedger {
         let into = self.ask_id(&req.consumer_id);
         let split = SplitAsk { from, moved: Need { place: kind, amount: Bytes(req.bytes) }, into, generation: self.generation() };
         self.core.split(split).map_err(CarveError::Place)?;
-        let left = bytes - req.bytes;
+        // the core moved the bytes; what the reserve keeps is its record, never a subtraction kept here
+        let left = match self.core.holding(from, kind) {
+            Some(Bytes(left)) => left,
+            None => 0,
+        };
         if left == 0 {
             if let Some(held) = self.leases.remove(reserve) {
                 if let Some(view) = held.view { view.bytes.store(0, std::sync::atomic::Ordering::Release); }
             }
-        } else if let Some(held) = self.leases.get_mut(reserve) {
-            held.lease.bytes = left;
-            if let Some(view) = &held.view { view.bytes.store(left, std::sync::atomic::Ordering::Release); }
+        } else if let Some(view) = self.leases.get(reserve).and_then(|held| held.view.as_ref()) {
+            view.bytes.store(left, std::sync::atomic::Ordering::Release);
         }
         let lease = ResourceLease {
             lease_id: lease_id.to_owned(),

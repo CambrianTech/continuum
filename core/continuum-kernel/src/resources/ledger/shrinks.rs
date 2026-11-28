@@ -31,7 +31,7 @@ impl ResourceLeaseLedger {
     /// Mark `lease_id` elastic: the law may ask it to give back down to `elastic.floor`.
     pub fn make_elastic(&mut self, lease_id: &str, elastic: Elastic) -> Result<(), LeaseError> {
         let held = self.leases.get(lease_id).ok_or_else(|| LeaseError::MissingLease { lease_id: lease_id.to_owned() })?;
-        let (ask, kind) = (held.ask(), held.lease.kind);
+        let (ask, kind) = (held.ask(), held.meta.kind);
         self.core.apply(&Act::Elastic { ask, place: kind, floor: Bytes(elastic.floor), priority: elastic.priority });
         self.tell();
         Ok(())
@@ -42,7 +42,7 @@ impl ResourceLeaseLedger {
     /// next settle shares the gap among the elastic leases left (Fable on #6287 at d8fbe6bc5c).
     pub fn refused(&mut self, lease_id: &str) -> Result<(), LeaseError> {
         let held = self.leases.get(lease_id).ok_or_else(|| LeaseError::MissingLease { lease_id: lease_id.to_owned() })?;
-        let (ask, kind, bytes) = (held.ask(), held.lease.kind, held.lease.bytes);
+        let (ask, kind, bytes) = (held.ask(), held.meta.kind, self.held_bytes(held));
         self.core.apply(&Act::Elastic { ask, place: kind, floor: Bytes(bytes), priority: u8::MAX });
         self.tell();
         Ok(())
@@ -58,7 +58,7 @@ impl ResourceLeaseLedger {
             for (seq, status) in entries {
                 let Status::Shrink { place, to } = status else { continue };
                 if let Some((lease_id, held)) = self.leases.by_ask(continuum_sage::place::AskId { owner, seq }) {
-                    out.push(ShrinkDue { ask: held.ask(), lease_id: lease_id.clone(), kind: place, held: held.lease.bytes, to: to.0 });
+                    out.push(ShrinkDue { ask: held.ask(), lease_id: lease_id.clone(), kind: place, held: self.held_bytes(held), to: to.0 });
                 }
             }
         }

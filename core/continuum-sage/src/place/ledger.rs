@@ -168,6 +168,17 @@ impl<P: Copy + PartialEq + std::fmt::Debug, Q: Quantity> Ledger<P, Q> {
         self.claims.contains_key(&id)
     }
 
+    /// What claim `id` holds on `place` now: a committed holding, or a retired one still charged. `None`
+    /// for a claim not holding there (prepared, gone, or on another place). The one record of a holding's
+    /// size: a view over the claim never keeps its own copy.
+    pub fn holding(&self, id: ClaimId, place: P) -> Option<Q> {
+        let held = match self.claims.get(&id)? {
+            Stage::Committed { held, .. } | Stage::Retired { held } => held,
+            Stage::Prepared(_) => return None,
+        };
+        held.iter().find(|need| need.place == place).map(|need| need.amount)
+    }
+
     pub fn accounts(&self, place: P) -> Option<Accounts<Q>> {
         self.places.iter().find(|(at, _)| *at == place).map(|(_, accounts)| *accounts)
     }

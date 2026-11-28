@@ -71,8 +71,8 @@ impl ResourceLeaseLedger {
         let its_landed = self
             .leases
             .values()
-            .filter(|held| held.lease.kind == kind && held.lease.consumer_id == consumer)
-            .map(|held| held.lease.bytes.saturating_sub(held.pending(self.observed_for(kind))))
+            .filter(|held| held.meta.kind == kind && held.meta.consumer_id == consumer)
+            .map(|held| { let bytes = self.held_bytes(held); bytes.saturating_sub(held.pending(self.observed_for(kind), bytes)) })
             .fold(0u64, u64::saturating_add);
         let axes = std::iter::once(kind).chain(self.backing.get(&kind).copied());
         axes.map(|axis| {
@@ -106,8 +106,8 @@ impl ResourceLeaseLedger {
     fn landed_on(&self, kind: ResourceKind) -> u64 {
         self.leases
             .values()
-            .filter(|held| held.lease.kind == kind)
-            .map(|held| held.lease.bytes.saturating_sub(held.pending(self.observed_for(kind))))
+            .filter(|held| held.meta.kind == kind)
+            .map(|held| { let bytes = self.held_bytes(held); bytes.saturating_sub(held.pending(self.observed_for(kind), bytes)) })
             .fold(0u64, u64::saturating_add)
     }
 }

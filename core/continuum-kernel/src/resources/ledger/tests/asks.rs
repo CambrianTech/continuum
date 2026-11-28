@@ -129,3 +129,40 @@ fn churn_leaves_nothing_behind_in_the_core() {
     assert_eq!(l.available(ResourceKind::Vram), 1_000_000);
     assert!(l.leases.is_empty() && l.asking.is_empty());
 }
+
+// what this catches (step 1, ONE-FRAME-ONE-MEMORY.md; Codex on the design): a lease's size kept as a second
+// record beside the core's claim, drifting after a carve, a shrink, a release or a move still in flight. At
+// every step the lease a caller reads equals what the core holds for its entry.
+#[test]
+fn a_lease_is_what_the_core_holds_for_it_through_carve_shrink_release_and_a_move_in_flight() {
+    let agrees = |l: &ResourceLeaseLedger, id: &str| {
+        let core = l.ask_of(id).and_then(|ask| l.core.holding(ask, ResourceKind::Vram)).map(|Bytes(bytes)| bytes);
+        assert_eq!(l.lease(id).map(|lease| lease.bytes), core, "{id}: the lease is the core's record");
+        core
+    };
+    let mut l = ResourceLeaseLedger::new();
+    l.set_capacity(ResourceKind::Vram, 10_000);
+    l.acquire(&req("learning:her", ResourceKind::Vram, 6_000, ReclaimPolicy::Graceful), "reserve".into(), 0).expect("test: the reserve fits");
+    assert_eq!(agrees(&l, "reserve"), Some(6_000));
+
+    l.carve("reserve", &req("learning:her", ResourceKind::Vram, 2_000, ReclaimPolicy::Graceful), "weights", 1).expect("test: carved");
+    assert_eq!((agrees(&l, "reserve"), agrees(&l, "weights")), (Some(4_000), Some(2_000)), "a carve moves bytes in the core, and both leases read it");
+
+    assert_eq!(l.shrink("reserve", 1_000).expect("test: shrunk"), 3_000);
+    assert_eq!(agrees(&l, "reserve"), Some(3_000), "a shrink is the core's, never a subtraction kept beside it");
+
+    // a move in flight: the law asks the elastic reserve to give back, and nothing has landed yet
+    l.make_elastic("reserve", Elastic { floor: 0, priority: 1 }).expect("test: elastic");
+    let Ok(Asked::Waiting { ask, .. }) = l.ask(&req("serving", ResourceKind::Vram, 7_500, ReclaimPolicy::Pinned), "turn", 2) else {
+        panic!("test: the turn waits")
+    };
+    l.prioritize(ask, 200);
+    let mut due = Vec::new();
+    l.shrinks_due(&mut due);
+    assert!(due.iter().any(|shrink| shrink.lease_id == "reserve" && shrink.held == 3_000), "the reserve is asked from what the core holds: {due:?}");
+    assert_eq!(agrees(&l, "reserve"), Some(3_000), "asked, not yet given: the lease still reads what the core holds");
+
+    l.release("weights").expect("test: released");
+    assert_eq!(agrees(&l, "weights"), None, "released: neither the lease nor the core holds it");
+    assert_eq!(l.granted(ResourceKind::Vram), 3_000, "granted sums the core's holdings");
+}
