@@ -297,7 +297,7 @@ but still works").
 | The optimizer step | a resolve pass on a worker | a low-rank layer's gradient is megabytes: read back, Adam on a CPU worker against host-resident moments, written to a back buffer; the device never runs the optimizer |
 | Weights updated in place | double buffering | the front buffer serves, the back buffer is written, a pointer swap at a frame boundary; no stall, no torn read |
 | Every parameter every step | LOD and update rate per layer | layers whose gradient is small or settled update less often, and their slices stream in less often; Adam's bias correction counts each layer's own steps, so a rarely updated layer never takes an oversized first step (Cormac) |
-| fp32 everywhere | precision LOD | low-precision gradients, but the history buffer and the host moments stay fp32, or a few rows' contribution a frame rounds to zero (Cormac); judged by retention |
+| fp32 everywhere | precision LOD | precision is a level of detail per slice, over training time (below) |
 | Uniform sampling | variable rate and culling | rows she already predicts well give almost no gradient and are culled before the backward; her surprise, weighed by her amygdala, sets the rate. A culled row leaves the period's denominator (so the step does not shrink as she improves), and a small importance-weighted random sample of low-loss rows is kept as the term against forgetting what she already does well, measured in held-out retention (Cormac) |
 | Activations kept for backprop | frame-graph transients | the forward's intermediates the backward reads alias in the frame's arena and die with it; only the history buffer survives |
 | All weights resident | virtual texturing (RAGE) | a frame records which slices its rows touched; workers stream exactly those in for the next frames and evict cold ones |
@@ -318,6 +318,23 @@ priced by its distance from her camera, which is what matters now:
 Learning asks for what it needs each frame (its owed rows, priced by her one importance) and is granted detail by the
 one controller that grants decode, prefill and memory; it expands when granted, contracts when serving needs the room,
 and never decides alone that it cannot run.
+
+**Precision is a level of detail, per slice, over training time** (Joel: "lower precision Lora first and as training
+goes along transfer to higher fidelity... early on the error is so high you might as well operate at a lower bit size...
+only really care about ones that need the fidelity... individually some areas"). Like a texture's mip chain: coarse
+until the difference is visible, refined only where it is.
+- **Start coarse.** A new shadow trains at a low bit width: its weights, gradients and moments. Stochastic rounding
+  keeps the coarse arithmetic unbiased, so the expected update is the full-precision one.
+- **Promote a slice when it needs fidelity.** Each slice (a layer, or a block of one) keeps its level while its typical
+  update spans many quantization steps, and is promoted when its updates approach the step, where real progress would
+  round away.
+- **Demote when it settles or falls far.** A converged slice, or one far from her camera, drops back a level and is
+  served and stored compactly, promoted again if it moves.
+- **The accumulation rule** (refining Cormac's note that a few rows a frame round to zero): a slice's history buffer
+  and moments resolve its per-frame contribution, or round it stochastically. Measured per slice, never a fixed fp32.
+
+Each region of one gene sits at its own level, from feedback; on an edge device most of a lesson's life is in the
+coarse phase, which is where its memory is saved.
 
 **On the workers, concurrently, never in the frame:**
 - **Data:** marking labels in her stream, pricing rows by her importance, culling well-predicted rows, reading
