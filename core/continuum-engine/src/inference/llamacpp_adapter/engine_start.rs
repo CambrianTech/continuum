@@ -54,8 +54,10 @@ pub struct EngineKv {
 pub struct EngineLaunch {
     pub model_id: String,
     pub gguf_path: std::path::PathBuf,
-    /// The Core's whole context: the mind swapped in has all of it (one stream, `STREAMS`).
+    /// One mind's window: every stream of the Core's context holds a whole one.
     pub context: NonZeroU32,
+    /// How many minds the Core binds at once, a stream each (serving's fit: the most whole windows that fit).
+    pub streams: NonZeroU32,
     /// Tokens per decode call. A whole number of ubatches (the learner's chunk walk needs it).
     pub n_batch: NonZeroU32,
     /// The physical micro-batch a prefill runs in.
@@ -91,7 +93,7 @@ impl EngineLaunch {
             n_ubatch: self.n_ubatch.get(),
             n_gpu_layers: self.offload.n_gpu_layers(),
             // The one-off (non-scheduler) context only: one sequence. The scheduler's context holds
-            // `STREAMS` and does not read this.
+            // `streams` and does not read this.
             n_seq_max: 1,
             // The one-off context only; the scheduler's context sets its own (driver.rs).
             flash_attn: FlashAttn::Disabled,
@@ -114,6 +116,7 @@ impl LlamaCppAdapter {
             generation: GenerationSupport::Enabled { context: launch.context.get() },
             kv_quant_policy: crate::inference::kv_quant::KvQuantPolicy::default().with_active(launch.kv.k, launch.kv.v),
             n_seq_max_override: None,
+            streams: launch.streams,
             n_ubatch_override: None,
             n_gpu_layers_override: None,
             plan: LoadPlan::Engine(launch),
@@ -125,7 +128,7 @@ impl LlamaCppAdapter {
     pub(super) fn allocation(&self) -> Result<GenerationAllocation, String> {
         match self.generation {
             GenerationSupport::EmbeddingOnly => Err("embedding-only adapter does not support text generation".into()),
-            GenerationSupport::Enabled { context } => Ok(GenerationAllocation::new(
+            GenerationSupport::Enabled { context } => Ok(GenerationAllocation::new(self.streams,
                 std::num::NonZeroU32::new(context).ok_or("invalid zero generation allocation")?,
             )),
         }

@@ -233,8 +233,8 @@ pub struct GenerationRequest {
     pub submitted: std::time::Instant,
 }
 
-/// The context the scheduler creates: the Core's whole context, one stream ([`continuum_persona_llama::STREAMS`]),
-/// whole to the mind swapped in; no sequence count is configurable, and no
+/// The context the scheduler creates: a stream per mind it binds at once (`streams`, serving's fit), each a whole window,
+/// never a window divided to seat another; no sequence count is set by hand, and no
 /// attention kernel either: the scheduler moves minds through per-sequence copy-out, which needs an
 /// untransposed V, so its context is always flash attention ([`driver`] owns that, not its caller).
 #[derive(Debug, Clone)]
@@ -242,7 +242,11 @@ pub struct SchedulerConfig {
     /// The model this engine serves, as its owner names it: preserved minds resume only on the
     /// model they ran on (CONTINUUM-ENGINE 4.16).
     pub model: String,
+    /// One mind's window, in tokens: every stream holds a whole one.
     pub n_ctx: u32,
+    /// How many minds the context binds at once, a stream each, every one a whole window: serving's fit
+    /// (`whole_window_streams`) through the launch and the allocation (THE-LANE-ON-SAGE.md, open question 1).
+    pub streams: std::num::NonZeroU32,
     pub n_batch: u32,
     pub n_ubatch: u32,
     pub type_k: KvCacheType,

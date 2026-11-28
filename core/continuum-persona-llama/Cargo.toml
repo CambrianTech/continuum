@@ -15,6 +15,10 @@ name = "persona_switch"
 required-features = ["test-fixtures"]
 
 [[example]]
+name = "persona_batch"
+required-features = ["test-fixtures"]
+
+[[example]]
 name = "persona_handoff"
 required-features = ["test-fixtures"]
 

@@ -135,6 +135,29 @@ pub fn room<K: PartialEq>(situation: &Situation<K>, stepping: Option<&K>) -> Opt
         .min()
 }
 
+/// A batch for the running mind and the ready mind in `slot` with the other decoding ready minds, the most pressed
+/// first, as many as the streams beside her hold; `None` when she or the running mind does not decode, or the Core
+/// binds one stream. A batch is one decode step: a mind still prefilling is never in one.
+fn batch_with<K>(situation: &Situation<K>, slot: usize) -> Option<Mask> {
+    let decoding = |mind: &Mind<K>| matches!(mind.phase, Phase::Decode);
+    let width = (situation.batch_width as usize).saturating_sub(1);
+    let ready = &situation.ready[..situation.ready.len().min(SLOTS)];
+    let running = situation.running.as_ref()?;
+    if width == 0 || !decoding(running) || !ready.get(slot).is_some_and(decoding) {
+        return None;
+    }
+    let mut mask: Mask = 1 << slot;
+    for _ in 1..width {
+        let slack = |mind: &Mind<K>| mind.slack().unwrap_or(Duration::MAX); // unwrap_or: background work has no bound, so it is the least pressed
+        let next = ready.iter().enumerate().filter(|&(at, mind)| mask & (1 << at) == 0 && decoding(mind)).min_by_key(|&(_, mind)| slack(mind));
+        match next {
+            Some((at, _)) => mask |= 1 << at,
+            None => break,
+        }
+    }
+    Some(mask)
+}
+
 /// The least a step of hers is worth taking: a decode step, or a prefill chunk long enough that its
 /// tokens take at least as long as its fixed part (twice that part), so the envelope serves the queue
 /// before her room shrinks to chunks that pay a full step for a token. A step or part not yet measured
@@ -207,6 +230,10 @@ impl<K: Copy + Debug + PartialEq + Send + 'static> UseCase for Lane<K> {
         let crowded = room(situation, situation.running.as_ref().map(|running| &running.mind)).is_some_and(|room| room <= next);
         let overdue = ready.iter().enumerate().filter(|_| crowded).filter_map(|(slot, mind)| mind.slack().map(|left| (slot, left))).min_by_key(|&(_, left)| left);
         if let Some((slot, _)) = overdue {
+            // a waiter at her bound who decodes is served by a batch with the running mind: one step, both advance
+            if let Some(mask) = batch_with(situation, slot) {
+                return Gate::Forced(Action::Batch(mask));
+            }
             return Gate::Forced(Action::Switch(slot as Slot));
         }
         // Background work's guarantee: when its class is owed (served behind arrival, its queue would
@@ -245,11 +272,24 @@ impl<K: Copy + Debug + PartialEq + Send + 'static> UseCase for Lane<K> {
             admissible.push(Action::Continue);
         }
         admissible.extend(switches);
-        // the running mind and the first `others` ready minds (the lowest `others` bits, 1..=SLOTS),
-        // when all of them are of the top class
-        let others = (situation.batch_width as usize).saturating_sub(1).min(ready.len());
-        if others > 0 && !outranked && ready[..others].iter().all(in_class) {
-            admissible.push(Action::Batch(!0 >> (SLOTS - others)));
+        // the running mind and the ready minds of the top class that decode, as many as the streams beside her hold:
+        // a batch is one decode step, so a mind still prefilling is never in one
+        let decoding = |mind: &Mind<K>| matches!(mind.phase, Phase::Decode);
+        let width = (situation.batch_width as usize).saturating_sub(1);
+        if width > 0 && !outranked && decoding(running) {
+            let mask = ready.iter().enumerate().filter(|(_, mind)| in_class(mind) && decoding(mind)).take(width).fold(0 as Mask, |mask, (slot, _)| mask | (1 << slot));
+            if mask != 0 {
+                // One batch step serves the running mind and every member at about one step's cost (the M5, 2026-11-28:
+                // four minds 67.1 -> 141.6 tok/s aggregate; the 5090: 160.0 -> 435.8), so continuing her alone, or
+                // switching to a member and leaving her waiting, is dominated by it and not offered. A switch to a
+                // mind outside the batch (one still prefilling) stays the policy's to weigh against it.
+                admissible.retain(|action| match action {
+                    Action::Continue => false,
+                    Action::Switch(slot) => mask & (1 << slot) == 0,
+                    Action::Batch(_) | Action::Idle => true,
+                });
+                admissible.push(Action::Batch(mask));
+            }
         }
         Gate::Choose
     }

@@ -42,14 +42,21 @@ pub(super) fn embed_model(model: &Model, texts: &[String]) -> Result<Vec<Vec<f32
 
 /// A caller-issued nonzero generation window; model metadata cannot create one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct GenerationAllocation(std::num::NonZeroU32);
+pub struct GenerationAllocation {
+    tokens: std::num::NonZeroU32,
+    streams: std::num::NonZeroU32,
+}
 
 impl GenerationAllocation {
-    pub fn new(tokens: std::num::NonZeroU32) -> Self {
-        Self(tokens)
+    /// `streams` minds bound at once, each a whole window of `tokens`.
+    pub fn new(streams: std::num::NonZeroU32, tokens: std::num::NonZeroU32) -> Self {
+        Self { tokens, streams }
     }
     pub fn tokens(self) -> u32 {
-        self.0.get()
+        self.tokens.get()
+    }
+    pub fn streams(self) -> std::num::NonZeroU32 {
+        self.streams
     }
 }
 

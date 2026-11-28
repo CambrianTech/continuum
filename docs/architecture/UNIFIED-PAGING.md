@@ -14,7 +14,7 @@ blocks is [THE-LANE-ON-SAGE.md](THE-LANE-ON-SAGE.md).
 - [Tiers and topology](#tiers-and-topology)
 - [Regions and blocks](#regions-and-blocks)
 - [Links and transfers](#links-and-transfers)
-- [The Streamer](#the-streamer)
+- [The pager](#the-pager)
 - [A mind's memory: the first consumer](#a-minds-memory-the-first-consumer)
 - [Other copies of us](#other-copies-of-us)
 - [The grid](#the-grid)
@@ -46,7 +46,7 @@ Built (`core/continuum-blocks`, the fork's persona storage):
 | `Region` and `Backing` (device, host, mapped file); `Block<K>` and `Pin` | `region.rs`, `block.rs` |
 | `Link<K>::start` returning a `Transfer`; `Completion` (`landed`, `settle`); a `Transfer` dropped unlanded waits for the device | `link.rs` |
 | The `Mapping` link (host tier to flash) and `Exchange` (two blocks trading regions: the pointer switch) | `link.rs` |
-| The `Streamer`, a SAGE component: holds, feeds and lands blocks; a block held again mid-move never takes the old move's landing | `streamer.rs` |
+| The pager, a leaf of `Readiness` (THE-LANE-ON-SAGE.md, "Readiness"): holds, moves and lands blocks, the most pressed mind first; a block held again mid-move never takes the old move's landing | `pager.rs` |
 | When a move starts, learned: the `prefetch` use case | `continuum-sage/src/decide/cases/prefetch.rs`, simulated in `slice/room.rs` |
 | A mind's KV storage over her own mapped file, viewed by the Core's stream; custody by rename at stop and restart | fork `llama-persona-storage.cpp`, `llama_persona_storage_attach` (`llama.h`); `preserve.rs` |
 | Her recurrent state the same way: a switch is a pointer on hybrids too (Qwen3.6-35B-A3B: 3.16 ms to 0.01 ms) | fork `llama-persona-recurrent-storage.cpp`, `llama-persona-view.cpp` |
@@ -110,20 +110,22 @@ before its fence waits for the device (settle), so no freed memory is ever still
 | `DirectIo` | a host tier and cold | one unbuffered sequential stream on an IO worker, aligned to the drive | proposed |
 | `Staged` | VRAM and flash or cold | a mapping or direct read into pinned memory, then DMA: two links as one transfer | proposed |
 
-## The Streamer
+## The pager
 
-The one component that moves blocks (RAGE's streaming system):
+The one part that moves blocks (RAGE's streaming system), a leaf of `continuum_sage::readiness::Readiness`: the parent hears
+the lane's horizon, puts the most pressed mind first, measures each move's rate (bytes a second) and publishes her
+readiness; the pager says only what a mind's block needs, how one move starts, and how a fence lands it.
 
 | Hears | Says | Need |
 |---|---|---|
-| `Demand` (each consumer's forecast: who steps next, an expert router's routing, the hot tier's plan), memory pressure, completions | `Placements` (state: every block's tier and whether it is moving), `Moved` (events) | Urgent when a forecast block will not land in time; Want under pressure; Content otherwise |
+| the lane's `Horizon` (who steps soon, with her slack; an expert router's routing and the hot tier's plan are the next forecasts), memory pressure, completions | a readiness `Table` (state: each mind ready, preparing with an estimate, or refused) | Urgent when a forecast block will not land in time; Want under pressure; Content otherwise |
 
 Its law, once, at every rung:
 - a block is promoted early enough to land before its use: lead time is bytes over the measured link rate;
 - under a tier's budget the fastest tier keeps the soonest-needed blocks, and the coldest is demoted one tier:
   demotion, never deletion; only the bottom tier deletes, and only what its owner allows;
 - a pinned block never moves; a moving block moves again only after its completion;
-- transfers run on the Streamer's workers; the engine thread reads `Placements` and never waits on a move, and a
+- transfers run on the pager's worker; the engine thread reads its table and never waits on a move, and a
   block not resident when needed is a counted miss;
 - when a move starts is a `decide` use case (`prefetch`), never a fixed lead: start now, or a learned margin before
   need, or only at need, scored both ways (late: the lane waited; wasted: moved and parked again unused). In the
@@ -131,7 +133,7 @@ Its law, once, at every rung:
   at park, 68.0 s learned.
 
 The law is a `decide::Policy`, so placement shares the decide module's records, replay and checkpointed learning
-with every other decision, and a new law is tried against recorded history without changing the Streamer.
+with every other decision, and a new law is tried against recorded history without changing the pager.
 
 ## A mind's memory: the first consumer
 
@@ -202,13 +204,13 @@ otherwise her tokens travel and she is prefilled there, named as a cold start.
 - Every link: a block moved there and back is byte-identical, at 80% or more of the tier's measured rate.
 - A mind's memory: parked to flash and back, she continues byte-identically to her isolated control
   (`test-persona-blocks --test-core`); a stop and restore at 30k and 130k restores in under 10 ms.
-- The Streamer: a captured `Demand` trace replayed, misses and moved bytes counted; a law changes only if it beats the
+- The pager: a captured horizon trace replayed, misses and moved bytes counted; a law changes only if it beats the
   current one on the same trace.
 - Live: misses and bytes moved per hour, and `busy_permille` (THE-LANE-ON-SAGE.md).
 
 ## The order
 
-Built: the block layer, the Mapping and Exchange links, the Streamer and its learned start, a mind's KV and
+Built: the block layer, the Mapping and Exchange links, the pager (a `Readiness` leaf) and its learned start, a mind's KV and
 recurrent state over her own file. Next, one PR each, each deleting what it replaces:
 
 | Slice | Owner | Gate |
@@ -220,7 +222,7 @@ recurrent state over her own file. Next, one PR each, each deleting what it repl
 | The hot tier's models as blocks; its private copier deleted | Codex | load from flash at the drive's rate |
 | llama-server's page IO onto `Mapping`, or deleted with the HTTP lanes | Codex | no `fread` of a page body |
 | Genes and experts as blocks | Cormac (genes), the expert pager's owner | page-in at the link's rate |
-| `PressureBroker`'s eviction folded into the Streamer; pools that moved bytes deleted | Fable, Codex | no `evict_at_least` on a tier the Streamer owns |
+| `PressureBroker`'s eviction folded into the pager; pools that moved bytes deleted | Fable, Codex | no `evict_at_least` on a tier the pager owns |
 
 ## Open questions
 

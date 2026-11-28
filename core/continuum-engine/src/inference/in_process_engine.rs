@@ -29,6 +29,8 @@ use crate::inference::weight_residency::ContextGeometry;
 pub enum InProcessRefusal {
     #[error("the in-process engine for {model}: serving planned a zero window")]
     ZeroWindow { model: String },
+    #[error("the in-process engine for {model}: serving planned no stream for any mind")]
+    NoStreams { model: String },
     #[error("the in-process engine for {model}: the model's catalog ceiling allows no micro-batch")]
     NoMicroBatch { model: String },
     #[error("the in-process engine for {model}: serving's KV plan names `{cache_type}`, which this engine cannot hold")]
@@ -136,6 +138,8 @@ impl InProcessEngine {
         // Said to the hot tier, which copies a model on a slower drive up for the next launch; never waits.
         crate::model_registry::artifacts::hot_tier::serve(&gguf_path);
         let context = NonZeroU32::new(target.context_window).ok_or_else(|| InProcessRefusal::ZeroWindow { model: model() })?;
+        // the minds the Core binds at once: serving's fit (the most whole windows that fit), a stream each
+        let streams = NonZeroU32::new(target.lanes).ok_or_else(|| InProcessRefusal::NoStreams { model: model() })?;
         // The micro-batch the launched server's `--ubatch-size` applies, lowered (never raised) by the
         // model's own catalog ceiling; a ceiling of zero allows no batch, and is refused.
         let ceiling = target.model.serving.max_ubatch.map_or(crate::inference::lane_args::UBATCH_TOKENS, |cap| cap.min(crate::inference::lane_args::UBATCH_TOKENS));
@@ -152,6 +156,7 @@ impl InProcessEngine {
             model_id: target.model.id.clone(),
             gguf_path,
             context,
+            streams,
             // One decode call per micro-batch: always a whole number of them, as the learner needs.
             n_batch: n_ubatch,
             n_ubatch,

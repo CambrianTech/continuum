@@ -3,6 +3,7 @@
 use super::*;
 use crate::inference::planning::window_allocator::Measure;
 use crate::inference::planning::MIN_SERVE_CTX;
+use crate::inference::llama_server::StreamLayout;
 
 /// Owned inputs that passed the reconcile decision guards. The operation remains held
 /// through launch and is moved into the same asynchronous lifecycle task.
@@ -50,7 +51,6 @@ impl ServingDaemonModule {
         let leased_in = LAST_LEASED_IN_PEAK.load(Ordering::Relaxed);
         let roster = self.seated().saturating_add(1).saturating_add(leased_in).max(lanes).max(1);
         let layout = self.server.stream_layout();
-        let sequences = layout.sequences(roster);
         // Each lock is taken and released in its own statement: a guard made inside a call's
         // argument list lives to the end of the statement, so reading the budget there while
         // `seated_for` locks it again deadlocked the reconcile and wedged the core's boot (the M5,
@@ -59,22 +59,32 @@ impl ServingDaemonModule {
         let usable = planned.map_or(0, |b| b.usable_bytes); // map_or: no plan computed yet is no sampled budget, which launch_pool reads as 0 exactly as before
         let seated = self.seated_for(model);
         let footprint = footprint_for(model);
-        // The size is the seated minds' need with the grants' growth margin; the plan's pool only
-        // when no mind is remembered (`host_fit::need_with_growth`).
-        let demand = match host_fit::need_with_growth(&self.seated_claims(model), roster, model.context_window) {
-            Some(need) => need,
-            None => launch_pool(footprint.as_ref(), usable, served_ctx, lanes, sequences, model.context_window, seated),
-        };
         let released = planned.map_or(0, |b| b.credit.own_bytes()); // map_or: no plan yet credits no running engine
         let device = match planned.map(|b| b.credit) {
             Some(OwnCredit::Included { .. }) => governed_vram_ceiling(&self.resource_daemon),
             Some(OwnCredit::ToApply) | None => boot_device_room(&self.resource_daemon),
         };
         let rooms = host_fit::Rooms { host: self.host_room(released), device };
-        let fit = host_fit::pool_fit(demand, footprint.as_ref(), rooms, host_cache_bytes, sequences, model.context_window);
+        // The Core decodes the minds it binds at once in one step: as many streams as whole trained windows fit,
+        // each whole (`Rooms::whole_window_streams`); a roster's other layouts hold a sequence per mind.
+        let whole = match layout {
+            StreamLayout::PersonaScheduler => rooms.whole_window_streams(footprint.as_ref(), host_cache_bytes, roster, model.context_window),
+            StreamLayout::Roster => host_fit::WholeWindows { streams: layout.sequences(roster), window: model.context_window },
+        };
+        let sequences = whole.streams;
+        // The size is the seated minds' need with the grants' growth margin; the plan's pool only
+        // when no mind is remembered (`host_fit::need_with_growth`). Several streams are each a whole window.
+        let demand = match (layout, sequences) {
+            (StreamLayout::PersonaScheduler, streams) if streams > 1 => u64::from(streams) * u64::from(whole.window),
+            _ => match host_fit::need_with_growth(&self.seated_claims(model), roster, model.context_window) {
+                Some(need) => need,
+                None => launch_pool(footprint.as_ref(), usable, served_ctx, lanes, sequences, model.context_window, seated),
+            },
+        };
+        let fit = host_fit::pool_fit(demand, footprint.as_ref(), rooms, host_cache_bytes, sequences, whole.window);
         let pool = fit.pool(sequences, layout.minimum_window(MIN_SERVE_CTX));
         // `-c` is the CLI's `slots x per-slot`: the pool carried in that shape, not anyone's window.
-        let per_sequence = layout.window(pool, roster, model.context_window);
+        let per_sequence = layout.window(pool, sequences, whole.window);
         EnginePool { per_sequence, sequences, fit }
     }
 

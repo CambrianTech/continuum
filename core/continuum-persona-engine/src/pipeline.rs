@@ -4,4 +4,4 @@ mod roles;
 #[cfg(test)]
 mod tests;
 
-pub use roles::{HandoffRefusal, Identified, Refused, RetireRefusal, Roles, StageRefusal};
+pub use roles::{BesideRefusal, HandoffRefusal, Identified, Refused, RetireRefusal, Roles, StageRefusal};

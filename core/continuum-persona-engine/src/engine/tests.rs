@@ -4,6 +4,7 @@
 
 use super::*;
 use crate::persona::{Epoch, MindId, PersonaParts, PersonaUnit};
+use crate::pipeline::BesideRefusal;
 use crate::residency::{Fence, FenceTag, Tier};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -44,8 +45,12 @@ type Log = Rc<RefCell<Vec<(FenceTag, Rc<Cell<bool>>)>>>;
 #[derive(Default)]
 struct Recording {
     moves: Log,
+    /// The minds each batch step was asked to run for, in order.
+    batched: Rc<RefCell<Vec<Vec<MindId>>>>,
     decodes: Log,
     refuse: Rc<Cell<Option<Direction>>>,
+    /// Copy-ins land as they begin (the unified tier's pointer bind) while set.
+    land_at_once: Rc<Cell<bool>>,
 }
 impl Tier for Recording {
     type Fence = Pending;
@@ -61,7 +66,7 @@ impl Tier for Recording {
             return Err(TierRefusal { tier: "recording", mind, reason: "refused by the test", native: Native::NotAsked });
         }
         let tag = FenceTag { mind, direction };
-        let landed = Rc::new(Cell::new(false));
+        let landed = Rc::new(Cell::new(direction == Direction::In && self.land_at_once.get()));
         self.moves.borrow_mut().push((tag, Rc::clone(&landed)));
         Ok(Pending { tag, landed })
     }
@@ -74,6 +79,11 @@ impl Execute for Recording {
         let landed = Rc::new(Cell::new(false));
         self.decodes.borrow_mut().push((tag, Rc::clone(&landed)));
         Ok(Pending { tag, landed })
+    }
+    fn submit_batch(&mut self, steps: &[(MindId, &())]) -> Result<Pending, TierRefusal> {
+        let Some(&(first, _)) = steps.first() else { return Ok(Pending { tag: FenceTag { mind: MindId { persona: PersonaId(uuid::Uuid::nil()), epoch: Epoch(0) }, direction: Direction::In }, landed: Rc::new(Cell::new(true)) }) };
+        self.batched.borrow_mut().push(steps.iter().map(|(mind, _)| *mind).collect());
+        self.submit(first, ())
     }
     fn settle(&mut self) -> Result<(), TierRefusal> {
         for (_, landed) in self.decodes.borrow().iter() {
@@ -104,6 +114,9 @@ fn land_last(log: &Log) {
 
 struct Harness {
     engine: PersonaEngine<Unit, Recording>,
+    batched: Rc<RefCell<Vec<Vec<MindId>>>>,
+    /// Copy-ins land as they begin (the unified tier's pointer bind) while set.
+    land_at_once: Rc<Cell<bool>>,
     moves: Log,
     decodes: Log,
     refuse: Rc<Cell<Option<Direction>>>,
@@ -111,8 +124,8 @@ struct Harness {
 
 fn engine() -> Harness {
     let tier = Recording::default();
-    let (moves, decodes, refuse) = (Rc::clone(&tier.moves), Rc::clone(&tier.decodes), Rc::clone(&tier.refuse));
-    Harness { engine: PersonaEngine::new(tier), moves, decodes, refuse }
+    let (moves, decodes, refuse, batched, land_at_once) = (Rc::clone(&tier.moves), Rc::clone(&tier.decodes), Rc::clone(&tier.refuse), Rc::clone(&tier.batched), Rc::clone(&tier.land_at_once));
+    Harness { engine: PersonaEngine::new(tier), batched, land_at_once, moves, decodes, refuse }
 }
 
 /// Mind 1 active (her copy-in landed, handed off), nothing in flight.
@@ -277,4 +290,73 @@ fn the_active_mind_retires_with_nobody_to_follow_through_the_same_copy_out() {
     land_last(&h.moves);
     assert_eq!(h.engine.release_retired().map(|unit| unit.id()), Ok(id(1)));
     assert_eq!(h.engine.retire_active(), Ok(None), "nobody active: nothing retires");
+}
+
+fn whole(n: u128) -> MindId {
+    MindId { persona: id(n), epoch: Epoch(1) }
+}
+
+/// Bind mind `n` beside the active one, her copy-in landing as it begins (as the unified tier's pointer bind does).
+fn bind_beside_now(h: &mut Harness, n: u128) {
+    h.land_at_once.set(true);
+    let bound = h.engine.bind_beside(mind(n));
+    h.land_at_once.set(false);
+    assert!(bound.is_ok(), "test: mind {n} binds beside");
+}
+
+// what this catches (THE-LANE-ON-SAGE open question 1): a batch that decodes a mind not bound here, or a second
+// step behind one still on the device. The active mind and the one beside her decode in one step; another step,
+// batched or not, waits for it to land; a mind that is not bound is refused by name and nothing is submitted.
+#[test]
+fn a_batch_decodes_the_bound_minds_in_one_step_and_one_step_at_a_time() {
+    let mut h = with_one_active();
+    let Err(refused) = h.engine.bind_beside(mind(2)) else { panic!("test: a copy-in not yet landed is refused") };
+    assert!(matches!(refused.reason, StageError::Beside(BesideRefusal::NotLanded { .. })), "she binds only once her copy-in landed");
+    bind_beside_now(&mut h, 2);
+    assert_eq!(h.engine.beside().collect::<Vec<_>>(), [id(2)]);
+
+    assert_eq!(h.engine.submit_batch(&[(id(1), &()), (id(2), &())]), Ok(()));
+    assert_eq!(h.batched.borrow().last().cloned(), Some(vec![whole(1), whole(2)]), "one step for both");
+    assert_eq!(h.engine.submit_batch(&[(id(1), &()), (id(2), &())]), Err(DecodeError::InFlight { active: id(1) }), "one step in flight");
+    assert_eq!(h.engine.submit(()), Err(DecodeError::InFlight { active: id(1) }), "a single step waits behind the batch too");
+    land_last(&h.decodes);
+    assert_eq!(h.engine.submit_batch(&[(id(1), &()), (id(3), &())]), Err(DecodeError::NotBound { persona: id(3) }), "a mind not bound is named");
+    assert_eq!(h.batched.borrow().len(), 1, "and nothing was submitted for it");
+}
+
+// what this catches: a mind beside dropped or copied out by a second path. She leaves through the one copy-out a
+// retired mind takes, waits for the step on the device first, and is given back once her copy-out lands.
+#[test]
+fn a_mind_beside_leaves_through_the_one_copy_out_and_is_given_back() {
+    let mut h = with_one_active();
+    bind_beside_now(&mut h, 2);
+    assert_eq!(h.engine.submit_batch(&[(id(1), &()), (id(2), &())]), Ok(()));
+    assert!(matches!(h.engine.unbind_beside(id(2)), Err(BatchError::DecodeInFlight { .. })), "nothing moves while the step is on the device");
+    land_last(&h.decodes);
+    assert_eq!(h.engine.unbind_beside(id(2)), Ok(()));
+    assert_eq!(h.engine.retiring(), Some(id(2)));
+    assert_eq!(h.engine.beside().count(), 0);
+    let last = h.moves.borrow().last().map(|(tag, _)| *tag);
+    assert_eq!(last, Some(FenceTag { mind: whole(2), direction: Direction::Out }), "her copy-out began");
+    land_last(&h.moves);
+    assert_eq!(h.engine.finish_retirement().map(|unit| unit.map(|unit| unit.id())), Ok(Some(id(2))));
+}
+
+// what this catches: a swap that moves bytes, or one made behind a step on the device. The active mind and the one
+// beside her trade places with no transfer; refused while a step is in flight; a mind bound once is not bound again.
+#[test]
+fn the_active_mind_and_one_beside_her_trade_places_without_a_transfer() {
+    let mut h = with_one_active();
+    bind_beside_now(&mut h, 2);
+    let moves = h.moves.borrow().len();
+    assert_eq!(h.engine.submit(()), Ok(()));
+    assert!(matches!(h.engine.swap_active(id(2)), Err(BatchError::DecodeInFlight { .. })));
+    land_last(&h.decodes);
+    assert_eq!(h.engine.swap_active(id(2)), Ok(()));
+    assert_eq!(h.engine.active(), Some(id(2)));
+    assert_eq!(h.engine.beside().collect::<Vec<_>>(), [id(1)]);
+    assert_eq!(h.moves.borrow().len(), moves, "no transfer");
+    h.land_at_once.set(true);
+    let again = h.engine.bind_beside(mind(1));
+    assert!(matches!(again, Err(Refused { reason: StageError::Beside(BesideRefusal::AlreadyPresent { .. }), .. })), "a mind bound once is not bound again");
 }

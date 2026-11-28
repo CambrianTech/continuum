@@ -78,6 +78,7 @@ impl LlamaCppAdapter {
             generation: GenerationSupport::EmbeddingOnly,
             kv_quant_policy: crate::inference::kv_quant::KvQuantPolicy::default(),
             n_seq_max_override: None,
+            streams: std::num::NonZeroU32::MIN, // a context outside the Core decodes one stream
             n_ubatch_override: None,
             n_gpu_layers_override: None,
             plan: engine_start::LoadPlan::Registry,
@@ -110,6 +111,7 @@ impl LlamaCppAdapter {
             generation: GenerationSupport::EmbeddingOnly,
             kv_quant_policy: crate::inference::kv_quant::KvQuantPolicy::default(),
             n_seq_max_override: None,
+            streams: std::num::NonZeroU32::MIN, // a context outside the Core decodes one stream
             n_ubatch_override: None,
             n_gpu_layers_override: None,
             plan: engine_start::LoadPlan::Registry,
@@ -135,6 +137,7 @@ impl LlamaCppAdapter {
             generation: GenerationSupport::Enabled { context: launch.context_length },
             kv_quant_policy: crate::inference::kv_quant::KvQuantPolicy::default(),
             n_seq_max_override: Some(launch.n_seq_max),
+            streams: std::num::NonZeroU32::MIN, // a context outside the Core decodes one stream
             n_ubatch_override: Some(launch.n_ubatch),
             n_gpu_layers_override: Some(launch.n_gpu_layers),
             plan: engine_start::LoadPlan::Registry,
