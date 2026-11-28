@@ -21,14 +21,7 @@ impl Driver<'_, '_> {
         if self.engine.active() == Some(id) {
             return Ok(());
         }
-        if self.engine.active().is_some() {
-            match self.engine.retire_active() {
-                Ok(_) | Err(HandoffError::CopyOut { .. }) => {}
-                Err(refused) => return Err(refused.into()),
-            }
-            self.retire_previous()?;
-        }
-        let mind = match self.parked.remove(&id) {
+        let mut mind = match self.parked.remove(&id) {
             Some(parked) => parked,
             None => {
                 let first = MindId { persona: id, epoch: Epoch(1) };
@@ -37,6 +30,20 @@ impl Driver<'_, '_> {
                 Mind::new(id, first.epoch, Parts { blocks, tokens: History::default(), genome: Basis::default(), learning: (), decode: tenure })
             }
         };
+        if self.engine.active().is_some() {
+            // a stream free beside the occupant: she is bound there and swapped in, and the occupant stays bound (a
+            // later batch or switch back finds her warm, nothing copied out); with none free the tier refuses her bind
+            // and the occupant moves out, as on a one-stream Core
+            match self.engine.bind_beside(mind) {
+                Ok(()) => return self.engine.swap_active(id).map_err(TurnError::from),
+                Err(refused) => mind = refused.returned,
+            }
+            match self.engine.retire_active() {
+                Ok(_) | Err(HandoffError::CopyOut { .. }) => {}
+                Err(refused) => return Err(refused.into()),
+            }
+            self.retire_previous()?;
+        }
         if let Err(refused) = self.engine.stage(mind) {
             self.parked.insert(refused.returned.id(), refused.returned);
             return Err(refused.reason.into());

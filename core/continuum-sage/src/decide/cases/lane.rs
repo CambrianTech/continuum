@@ -135,6 +135,29 @@ pub fn room<K: PartialEq>(situation: &Situation<K>, stepping: Option<&K>) -> Opt
         .min()
 }
 
+/// A batch for the running mind and the ready mind in `slot` with the other decoding ready minds, the most pressed
+/// first, as many as the streams beside her hold; `None` when she or the running mind does not decode, or the Core
+/// binds one stream. A batch is one decode step: a mind still prefilling is never in one.
+fn batch_with<K>(situation: &Situation<K>, slot: usize) -> Option<Mask> {
+    let decoding = |mind: &Mind<K>| matches!(mind.phase, Phase::Decode);
+    let width = (situation.batch_width as usize).saturating_sub(1);
+    let ready = &situation.ready[..situation.ready.len().min(SLOTS)];
+    let running = situation.running.as_ref()?;
+    if width == 0 || !decoding(running) || !ready.get(slot).is_some_and(decoding) {
+        return None;
+    }
+    let mut mask: Mask = 1 << slot;
+    for _ in 1..width {
+        let slack = |mind: &Mind<K>| mind.slack().unwrap_or(Duration::MAX); // unwrap_or: background work has no bound, so it is the least pressed
+        let next = ready.iter().enumerate().filter(|&(at, mind)| mask & (1 << at) == 0 && decoding(mind)).min_by_key(|&(_, mind)| slack(mind));
+        match next {
+            Some((at, _)) => mask |= 1 << at,
+            None => break,
+        }
+    }
+    Some(mask)
+}
+
 /// The least a step of hers is worth taking: a decode step, or a prefill chunk long enough that its
 /// tokens take at least as long as its fixed part (twice that part), so the envelope serves the queue
 /// before her room shrinks to chunks that pay a full step for a token. A step or part not yet measured
@@ -207,6 +230,10 @@ impl<K: Copy + Debug + PartialEq + Send + 'static> UseCase for Lane<K> {
         let crowded = room(situation, situation.running.as_ref().map(|running| &running.mind)).is_some_and(|room| room <= next);
         let overdue = ready.iter().enumerate().filter(|_| crowded).filter_map(|(slot, mind)| mind.slack().map(|left| (slot, left))).min_by_key(|&(_, left)| left);
         if let Some((slot, _)) = overdue {
+            // a waiter at her bound who decodes is served by a batch with the running mind: one step, both advance
+            if let Some(mask) = batch_with(situation, slot) {
+                return Gate::Forced(Action::Batch(mask));
+            }
             return Gate::Forced(Action::Switch(slot as Slot));
         }
         // Background work's guarantee: when its class is owed (served behind arrival, its queue would

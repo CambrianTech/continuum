@@ -672,3 +672,20 @@ fn a_deep_prefill_chunk_is_sized_by_what_its_depth_costs() {
     let by_line = ((room - fixed) / shallow) as u64;
     assert!(took(by_line as f64, at as f64) > room * 2.0, "sized by a shallow rate, the same chunk would overrun the room twice over");
 }
+
+// what this catches (the M5, 2026-11-28 05:33Z: four streams bound and not one batched token, because a waiter at her
+// bound was served by a switch that left the running mind waiting, and an untried batch looked unsafe to the learned
+// policy): with streams beside the running mind, the crowd's most pressed mind is served by a batch with her and the
+// other decoding waiters, as many as the streams hold. A mind still prefilling is never in one, and with one stream
+// the crowd is served by a switch as before.
+#[test]
+fn a_crowd_at_the_bound_is_served_by_one_batch_when_the_streams_hold_it() {
+    let running = mind(1, 0);
+    let crowd = |batch_width| lane::Situation { running: Some(running), ready: vec![mind(2, 950), mind(3, 945), mind(4, 940)], batch_width, background_owed: false };
+    assert_eq!(envelope::<Lane<u8>>(&crowd(4)).0, Gate::Forced(lane::Action::Batch(0b111)), "the three waiters and the running mind in one step");
+    assert_eq!(envelope::<Lane<u8>>(&crowd(3)).0, Gate::Forced(lane::Action::Batch(0b011)), "as many as the streams hold, the most pressed first");
+    assert_eq!(envelope::<Lane<u8>>(&crowd(1)).0, Gate::Forced(lane::Action::Switch(0)), "one stream: a switch, as before");
+    let prefilling = Mind { phase: Phase::Prefill { remaining: 4_000, at: 0 }, ..mind(2, 950) };
+    let with_prefill = lane::Situation { running: Some(running), ready: vec![prefilling, mind(3, 945), mind(4, 940)], batch_width: 4, background_owed: false };
+    assert_eq!(envelope::<Lane<u8>>(&with_prefill).0, Gate::Forced(lane::Action::Switch(0)), "a waiter still prefilling is switched to, never batched");
+}
