@@ -67,10 +67,15 @@ impl TrainingTriggerState {
                     tracing::error!(%error, "training owner operation failed; durable recovery retains its work");
                 }
             }
-            operations.spawn(self.running.named(kind, persona, async move {
+            let handle = operations.spawn(self.running.named(kind, persona, async move {
                 let result = operation.await;
                 let _ = send.send(result); // a disconnected caller does not cancel ownership
             }));
+            if kind.at_stop() == super::super::owned::AtStop::Cancel {
+                let mut cancel = self.cancel_at_stop.lock();
+                cancel.retain(|held| !held.is_finished());
+                cancel.push(handle);
+            }
         }
         receive.await.map_err(|_| OperationRefused::Lost)
     }
@@ -100,12 +105,17 @@ impl TrainingTriggerState {
         let failure = super::super::shutdown_step("shutdown.join_operations", async {
             // read inside the step: a stall acquiring the set's lock is then named too
             let in_flight = self.operations.lock().len();
-            continuum_base::probe!(class = "training.shutdown.operations", at = "join", in_flight = in_flight as u64,
-                running = ?self.running.now(), "the trainer's shutdown waits for these operations still in flight");
+            // what runs again at its next wake is aborted, never waited for (owned::AtStop)
+            let cancelled: Vec<tokio::task::AbortHandle> = std::mem::take(&mut *self.cancel_at_stop.lock());
+            let cancelled = cancelled.iter().filter(|held| !held.is_finished()).inspect(|held| held.abort()).count();
+            continuum_base::probe!(class = "training.shutdown.operations", at = "join", in_flight = in_flight as u64, cancelled = cancelled as u64,
+                running = ?self.running.now(), "the trainer's shutdown cancels what runs again and waits for the rest");
             let mut failure = None;
             while let Some(joined) = std::future::poll_fn(|cx| self.operations.lock().poll_join_next(cx)).await {
-                if let Err(error) = joined {
-                    failure = Some(error.to_string());
+                match joined {
+                    Err(error) if error.is_cancelled() => {} // cancelled at this stop, by its kind
+                    Err(error) => failure = Some(error.to_string()),
+                    Ok(()) => {}
                 }
             }
             failure

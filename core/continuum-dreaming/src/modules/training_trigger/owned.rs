@@ -12,8 +12,14 @@ use uuid::Uuid;
 /// What an owned operation does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OwnedKind {
-    /// The serving wake's recovery pass (not joined by shutdown: the wake stops it).
+    /// The wake's recovery pass: storage set up, buckets seated, generations offered. It runs again at
+    /// every wake, so a stop cancels it.
     Recover,
+    /// A board change re-plans the buckets held for memory (`heard_free`). It runs again at the next
+    /// change, so a stop cancels it.
+    Replan,
+    /// The engine said what a seat did (`heard_from_engine`): the seat's act is settled. A stop waits for it.
+    Settle,
     Submit,
     Retire,
     /// Moving a bucket stranded under a base spelling to the catalog id (genome/training-trigger/rekey).
@@ -24,6 +30,29 @@ pub(crate) enum OwnedKind {
     Sweep,
     #[cfg(test)]
     Test,
+}
+
+/// What a stop does with an operation still running (8c78a414; the M5, 2026-11-28 03:25Z: a recovery pass
+/// held the trainer's save until it timed out, 1 of 65 modules unsaved).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AtStop {
+    /// Aborted. Safe only for an operation that runs again and whose every durable write is one ORM
+    /// transaction on the blocking pool, which an abort does not interrupt: a commit lands whole or not at
+    /// all. Its seats are let go after the join, as every seat is.
+    Cancel,
+    /// Joined: it settles something nothing else will redo.
+    Drain,
+}
+
+impl OwnedKind {
+    pub(crate) fn at_stop(self) -> AtStop {
+        match self {
+            Self::Recover | Self::Replan => AtStop::Cancel,
+            Self::Settle | Self::Submit | Self::Retire | Self::Rekey | Self::Transfer | Self::Sweep => AtStop::Drain,
+            #[cfg(test)]
+            Self::Test => AtStop::Drain,
+        }
+    }
 }
 
 /// One operation running now, as a shutdown report names it.

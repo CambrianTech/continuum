@@ -181,6 +181,8 @@ pub struct TrainingTriggerState {
     /// Finite admitted operations outlive a cancelled caller. Shutdown drains
     /// this set; dropping a caller never aborts a writer or releases its lease.
     operations: parking_lot::Mutex<tokio::task::JoinSet<()>>,
+    /// The operations in `operations` a stop aborts rather than joins (`owned::AtStop::Cancel`), by handle.
+    cancel_at_stop: parking_lot::Mutex<Vec<tokio::task::AbortHandle>>,
     /// What each operation in `operations` (and the serving wake's pass) is, while it runs.
     running: owned::Running,
     #[cfg(test)]
@@ -230,6 +232,7 @@ impl TrainingTriggerState {
             authority,
             on_engine: on_engine::OnEngine::default(),
             operations: parking_lot::Mutex::new(tokio::task::JoinSet::new()),
+            cancel_at_stop: parking_lot::Mutex::new(Vec::new()),
             running: owned::Running::default(),
             #[cfg(test)]
             operation_pause: std::sync::Mutex::new(None),
