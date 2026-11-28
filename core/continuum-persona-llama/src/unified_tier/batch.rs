@@ -19,6 +19,16 @@ pub fn same_genes(a: &Genes, b: &Genes) -> bool {
     Arc::ptr_eq(a, b) || (a.len() == b.len() && a.iter().zip(b.iter()).all(|((x, sx), (y, sy))| Arc::ptr_eq(x, y) && sx == sy))
 }
 
+/// The identity of a gene set, as [`same_genes`] compares them (each adapter by its pointer, with its scale): equal
+/// keys for gene sets that decode in one step. The base model's set is 0. A collision is caught by `same_genes`,
+/// which the batch and the tier still check, so it can only cost a batch, never decode one under other genes.
+pub fn genes_key(genes: &Genes) -> u64 {
+    genes.iter().fold(0, |key, (adapter, scale)| {
+        let pointer = Arc::as_ptr(adapter) as usize as u64;
+        (key ^ pointer ^ u64::from(scale.to_bits()).rotate_left(32)).wrapping_mul(0x0000_0100_0000_01b3) // FNV-1a step
+    })
+}
+
 impl UnifiedTier<'_, '_> {
     /// Decode `steps` in one engine step: each her tokens from her `from` on the stream she is bound to. The
     /// decode's outputs are the steps that asked for logits at their end, in order: output `i` is the `i`-th of

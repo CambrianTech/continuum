@@ -185,6 +185,7 @@ fn mind(turn: &Turn, history: &LaneHistory<PersonaId>) -> Mind<PersonaId> {
         switch_in: Measured::Unmeasured,
         overhead: Measured::Unmeasured,
         depth: Measured::Unmeasured,
+        genes: continuum_persona_llama::genes_key(&turn.genes),
         prefix_hit: Measured::Unmeasured,
     };
     history.fill(&mut mind, Fraction::HALF);
