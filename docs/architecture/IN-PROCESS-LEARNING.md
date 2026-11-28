@@ -304,6 +304,21 @@ but still works").
 | A fixed batch size | dynamic resolution | the labelled rows per frame scale to hold the lane's bound, up and down, from measured frame time |
 | Training as a job | async compute in the gaps | the device does one extra thing, the backward on the frame's labelled rows |
 
+**Detail by distance, decided every frame** (Joel: "It does what it can with what it has, and asks for what it needs,
+expands and contracts... like light or water effects... higher detail closely and potentially even some effects are
+off on the distance, but that only depends on current demands. It's able to do full resolution far off in the distance
+but it's making priority decisions continuously"). There are no modes. Every frame, each labelled row's detail is
+priced by its distance from her camera, which is what matters now:
+- **Near**: her current activity, a correction just received, a surprise her amygdala flagged. Every layer trained,
+  full precision, no culling, a short update period.
+- **Far**: routine stream content, an idle mind's backlog, a low-salience read. Fewer layers, more culling, a longer
+  period, or nothing this frame when the budget is tight.
+- **Headroom** raises everything: on a quiet node far rows learn at full detail, and a dream's exact walk runs.
+
+Learning asks for what it needs each frame (its owed rows, priced by her one importance) and is granted detail by the
+one controller that grants decode, prefill and memory; it expands when granted, contracts when serving needs the room,
+and never decides alone that it cannot run.
+
 **On the workers, concurrently, never in the frame:**
 - **Data:** marking labels in her stream, pricing rows by her importance, culling well-predicted rows, reading
   captures for a dream.
