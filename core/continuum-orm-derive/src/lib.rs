@@ -54,11 +54,11 @@
 //! | `u*` / `i*` / `f32` / `f64`     | `Number`           |                             |
 //! | `Vec<T>` / `HashMap` / `BTreeMap` | `Json`           | JSON-serialized container   |
 //! | `Option<T>`                     | inner T's FieldType + nullable | unwrapped one level     |
-//! | Enum (variant-only)             | `String`           | Serializes as variant name  |
-//! | Any other named struct          | `Json`             | Nested struct → JSON column |
+//! | Any other named type            | `Json`             | A macro cannot tell an enum from a struct by its path |
 //!
 //! Override with `#[entity(json)]` to force any field to a JSON column
-//! regardless of inferred type. The `BaseEntity` field marked
+//! regardless of inferred type, or `#[entity(string)]` to declare a String column for a named type that
+//! serializes as a string (a variant-only enum). The `BaseEntity` field marked
 //! `#[serde(flatten)]` is detected by type name and its columns are
 //! added via `base_entity_fields()` rather than appearing as a
 //! single JSON column.
@@ -530,6 +530,7 @@ fn parse_field(field: &Field) -> syn::Result<FieldInfo> {
     let mut unique = false;
     let mut nullable_override: Option<bool> = None;
     let mut force_json = false;
+    let mut force_string = false;
     let mut skip = false;
     let mut primary_key = false;
     let mut serde_rename: Option<String> = None;
@@ -546,6 +547,8 @@ fn parse_field(field: &Field) -> syn::Result<FieldInfo> {
                     nullable_override = Some(true);
                 } else if meta.path.is_ident("json") {
                     force_json = true;
+                } else if meta.path.is_ident("string") {
+                    force_string = true;
                 } else if meta.path.is_ident("skip") {
                     skip = true;
                 } else if meta.path.is_ident("primary_key") {
@@ -567,7 +570,7 @@ fn parse_field(field: &Field) -> syn::Result<FieldInfo> {
                         .unwrap_or_else(|| "<unknown>".to_string());
                     return Err(meta.error(format!(
                         "unknown field-level entity attribute `{}`. \
-                         Known keys: indexed, unique, nullable, json, skip, \
+                         Known keys: indexed, unique, nullable, json, string, skip, \
                          primary_key, foreign_key.",
                         key
                     )));
@@ -589,8 +592,13 @@ fn parse_field(field: &Field) -> syn::Result<FieldInfo> {
     }
 
     // Infer FieldType from the (unwrapped) Rust type, unless overridden.
+    if force_json && force_string {
+        return Err(syn::Error::new_spanned(ident, "a field is `json` or `string`, never both"));
+    }
     let field_type = if force_json {
         InferredFieldType::Json
+    } else if force_string {
+        InferredFieldType::String
     } else {
         infer_field_type(inner_ty)
     };

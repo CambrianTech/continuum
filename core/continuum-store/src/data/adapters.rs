@@ -90,10 +90,16 @@ impl DataState {
 /// probe naming the entity, the index and the error, counted in the store's report,
 /// and the store opens without it (Cormac's review of #5466).
 async fn ensure_declared_indexes(sqlite: &SqliteAdapter, handle: &str) -> Result<(), String> {
+    // A collection the Rust registry owns is declared there and only there (chat_messages, beside its
+    // writer): the TS declaration of it is never read by the core, as data_state's resolve already orders it.
+    let registry = crate::orm::OrmEntityRegistry::global();
     let schemas = crate::entity_schemas::get_entity_schemas()
         .map_err(|e| e.to_string())?
         .values()
-        .map(crate::entity_schemas::to_collection_schema)
+        .map(|entity| match registry.resolve(&entity.collection) {
+            Some(owned) => owned,
+            None => crate::entity_schemas::to_collection_schema(entity),
+        })
         .collect();
     let pass = sqlite.ensure_declared_indexes(schemas).await;
     for failure in &pass.failed {

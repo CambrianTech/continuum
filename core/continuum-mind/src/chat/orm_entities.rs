@@ -6,9 +6,11 @@ pub const CHAT_ORM_COLLECTIONS: &[&str] = &[
     <super::arrival::Arrival as crate::orm::OrmEntity>::COLLECTION,
     <super::import_watermark::ImportWatermarkRow as crate::orm::OrmEntity>::COLLECTION,
     <super::publication::PublicationObligation as crate::orm::OrmEntity>::COLLECTION,
+    <super::message_entity::ChatMessageRow as crate::orm::OrmEntity>::COLLECTION,
 ];
 
-/// Register the chat store's entities (arrivals with their unique indexes; import watermarks).
+/// Register the chat store's entities: its message rows, arrivals with their unique indexes, import
+/// watermarks and publication obligations.
 /// Idempotent; a conflicting shape refuses boot.
 pub fn register_chat_orm_entities(
     registry: &crate::orm::OrmEntityRegistry,
@@ -16,5 +18,6 @@ pub fn register_chat_orm_entities(
     registry.register::<super::arrival::Arrival>()?;
     registry.register::<super::import_watermark::ImportWatermarkRow>()?;
     registry.register::<super::publication::PublicationObligation>()?;
+    registry.register::<super::message_entity::ChatMessageRow>()?;
     Ok(())
 }
