@@ -18,6 +18,7 @@ chapter 6 (the genome) are on `fable/learning-l2-design` and are cited here by s
 - [The objects](#the-objects)
 - [Where lessons come from](#where-lessons-come-from)
 - [Learning in her stream](#learning-in-her-stream)
+- [The engine form](#the-engine-form)
 - [Memory: streamed, never reserved](#memory-streamed-never-reserved)
 - [On and off](#on-and-off)
 - [Checked against the engine](#checked-against-the-engine)
@@ -244,35 +245,83 @@ Labelled rows are rows of her stream with labels on, consumed as they arrive, ag
    rows touch: the shadow's slices for the layers they train, those slices' optimizer moments and gradient
    accumulators. On unified memory a slice is a pointer; on a discrete GPU, pinned host memory and a fenced DMA
    overlapped with the frame before.
-3. **Forward.** The rows decode as her inference already decodes them, against her K/V at their positions, with her
-   layer on. Her context is read in place, never recomputed for learning.
+3. **Forward.** Two kinds of labelled row, and the cost counts each (Cormac, 2026-11-28):
+   - **Labelled as they arrive** (a perceived message, a tool result, a file): the label is known when the row is
+     prefilled, so the serving prefill is the forward, with her layer on, and only the backward is extra.
+   - **Labelled after she decoded them** (her own output, corrected later): decode kept no activations for a backward,
+     so those rows run a learning forward, a prefill of just those rows against her K/V before them, in a later frame.
+     Its cost is in `cost(rows, layers)` as `rows_rerun`.
+
+   Her context is read in place, never recomputed for learning.
 4. **Loss and backward.** Cross-entropy at the labelled rows, at their weights, then the backward through her layer
    for those rows only, in the same graph and the same fence. Her layer's gradient accumulates into its slices in
    place. The backward's scratch is a transient of the frame's arena.
 5. **Stream out.** After the frame the slices it touched go back to the cheapest tier that holds them. Nothing of the
    learning stays on the device between frames.
 6. **Update.** The optimizer's update is its own unit, granted time before it runs, at a period the controller sets
-   from feedback (her owed labels, the frame budget). One durable update per period, persisted off the frame (0.2,
-   "persistence never stalls the frame").
+   from feedback (her owed labels, the frame budget). It normalizes by the summed label weight of every row in the
+   period, never per frame. One durable update per period, persisted off the frame (0.2, "persistence never stalls
+   the frame").
 
-Her served tail is never written by learning: the labelled rows are her rows as served, the backward writes only
-gradient slices, and the update swaps her shadow between frames.
+**She serves with what she learns: online, and the drift is measured** (Cormac). The forward is shared, so she serves
+with the shadow she is training: its front buffer, the generation of the last update. An update swaps in a new
+generation between frames, under K/V and recurrent state her earlier rows computed with the old one. That is the
+intended form (she improves as she works), and its cost is measured, never assumed: the next-logit KL on a fixed probe
+before and after each update, and the context owner validates cache reuse across the version boundary (as for any
+generation change). Learning never writes her served tail: the backward writes only gradient slices, and the update is
+a pointer swap.
 
 **Composed frames.** When the lane composes a frame from several minds (`Batch`, THE-LANE-ON-SAGE.md open question 1),
 one mind's labelled rows ride beside the others' decode rows in one dispatch and one fence, the backward only over
 those rows.
 
 **What the stream gives up, measured.** A row's gradient here flows through her layer at that row and the rows of its
-own frame, not back into the K/V of rows learned in earlier frames, which the exact walk (the fork's tiled reverse
-pass) keeps. Whether that matters is measured by what she retains on held-out work against the same base, not assumed;
-the exact walk stays the tool for a dream at idle, where it costs no one a frame.
+own frame. It does not flow back across the frame boundary: not into the K/V of rows learned in earlier frames, and
+not into the recurrent state her linear-attention layers carry across frames on a hybrid (Qwen3.6). The exact walk
+(the fork's tiled reverse pass) keeps both. Whether that matters is measured by what she retains on held-out work
+against the same base, with both truncations named in the measure, not assumed; the exact walk stays the tool for a
+dream at idle, where it costs no one a frame.
+
+## The engine form
+
+Conventional training is one fat synchronous loop: a batch, a forward, a backward, an optimizer step, every buffer
+reserved up front. A game engine inverts each of those: the frame is the only thing that cannot slip, every resource
+is transient or streamed, work is sized by measured budget, and whatever is not the frame runs on workers (Joel,
+2026-11-28: "take what we know about ml training and turn it upside down into something more like a graphics engine
+but still works").
+
+| Training habit | Engine form | Her learning |
+|---|---|---|
+| A batch | samples in a frame | a frame carries as many labelled rows as its budget holds; few per frame is enough, because the result accumulates |
+| Gradient accumulation | temporal accumulation (TAA) | each frame adds a cheap estimate into a history buffer in place; Adam's moments are exponential temporal filters already |
+| The optimizer step | a resolve pass on a worker | a low-rank layer's gradient is megabytes: read back, Adam on a CPU worker against host-resident moments, written to a back buffer; the device never runs the optimizer |
+| Weights updated in place | double buffering | the front buffer serves, the back buffer is written, a pointer swap at a frame boundary; no stall, no torn read |
+| Every parameter every step | LOD and update rate per layer | layers whose gradient is small or settled update less often, and their slices stream in less often |
+| fp32 everywhere | precision LOD | low-precision gradients into an error-bounded accumulation, judged by retention |
+| Uniform sampling | variable rate and culling | rows she already predicts well give almost no gradient and are culled before the backward; her surprise, weighed by her amygdala, sets the rate |
+| Activations kept for backprop | frame-graph transients | the forward's intermediates the backward reads alias in the frame's arena and die with it; only the history buffer survives |
+| All weights resident | virtual texturing (RAGE) | a frame records which slices its rows touched; workers stream exactly those in for the next frames and evict cold ones |
+| A fixed batch size | dynamic resolution | the labelled rows per frame scale to hold the lane's bound, up and down, from measured frame time |
+| Training as a job | async compute in the gaps | the device does one extra thing, the backward on the frame's labelled rows |
+
+**On the workers, concurrently, never in the frame:**
+- **Data:** marking labels in her stream, pricing rows by her importance, culling well-predicted rows, reading
+  captures for a dream.
+- **Memory:** streaming slices in and out from the frame's feedback, prefetching by predicted need, compaction,
+  flushing to her mapped region.
+- **The optimizer:** the resolve on host-resident moments and the back-buffer write.
+- **Persistence and checks:** generations written, held-out retention measured at idle.
+
+**What keeps it correct:** one owner each (the frame owns the device, the workers own everything else, the swap is the
+one point they meet); and every rate, threshold and level measured from feedback, never set as a constant: retention
+from accumulated small-sample gradients against the same base, the culling threshold, the per-layer update rates.
 
 ## Memory: streamed, never reserved
 
 What a frame's learning costs is measured, never assumed:
 
 ```text
-cost(rows, layers) = transient scratch of the backward over `rows` + the slices of `layers` streamed in
+cost(rows, rows_rerun, layers) = backward scratch over `rows` + a learning forward over `rows_rerun` + the slices of `layers` streamed in
 ```
 
 On the M5's 35B with native attention backward the scratch is about 12.2 MB per labelled row, most of it the
@@ -361,7 +410,7 @@ replaces.
 
 | Slice | Owner | Gate (a number on the named node) |
 |---|---|---|
-| 1. Labels in her stream: the tier marks labelled rows of her stream as they arrive, and her serving decode trains them in the same graph (the fork's `opt_mark_training` path); the update its own granted unit. Deleted: the whole-reply graph and its past-one-ubatch gate, `llama_opt_learn_graph_step`, `Learns::learn`'s blocking loop and `go_on`, `learn_next`'s idle-only path, the reply buffering | Fable (tier, driver, fork), Codex (review, the frame) | M5, 35B: learning's incremental high-water above the same warm serving resident, by owner, at most the frame's labelled rows' scratch; a partially arrived lesson with chat between, she answers between frames with her state intact; one durable update per period; matched 15-minute windows, no resident past her bound; held-out retention against the same base |
+| 1. Labels in her stream: the tier marks labelled rows of her stream as they arrive, and her serving decode runs the backward on them in the same graph (the fork's `opt_mark_training` path), accumulating into the history buffer; rows labelled after they were decoded run a learning forward first; the optimizer's resolve runs on a worker into a back buffer, swapped at a frame boundary. Until slice 3, a frame carries only the handful of labelled rows its budget holds (12.2 MB a row on the M5's 35B). Deleted: the whole-reply graph and its past-one-ubatch gate, `llama_opt_learn_graph_step`, `Learns::learn`'s blocking loop and `go_on`, `learn_next`'s idle-only path, the reply buffering | Fable (tier, driver, fork), Codex (review, the frame) | M5, 35B: learning's incremental high-water above the same warm serving resident, by owner, at most the frame's labelled rows' scratch; a partially arrived lesson with chat between, she answers between frames with her state intact; one durable update per period; matched 15-minute windows, no resident past her bound; held-out retention against the same base, both truncations named; next-logit KL on a fixed probe across each update |
 | 2. Streamed slices: the shadow's, moments' and gradients' slices for the layers a frame trains stream in ahead of it by predicted need and out after it (the Streamer) | Fable | between frames, zero device bytes held by learning; a slice's move measured in ms, zero serializations |
 | 3. The loss sliced over the vocabulary, labelled rows only | Fable | the per-row scratch (12.2 MB on the 35B) before and after; the update against the unsliced step at least 0.9999 |
 | 4. Her `LabelSource`s, as she works first, then corrections, the course room, the dreamer; the journal migrated; `TrainingTriggerModule`, the credit gate and `DreamConsolidationRegion` deleted | Fable (perception, dreamer), Cormac (corrections, courses, the migration) | M5 window: work rows learned per hour above zero with no example submitted; a reviewed correction kept across a restart on unseen tasks against the same base without it (plan goal 8) |
