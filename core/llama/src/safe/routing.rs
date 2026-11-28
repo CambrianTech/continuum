@@ -26,7 +26,7 @@ pub enum RoutingCaptureRefused {
     #[error("the lived-routing capture buffer could not be allocated")]
     NoRoom,
     #[error("the engine answered capture with a status this binding does not know ({0})")]
-    Unknown(u32),
+    Unknown(sys::llama_routing_capture),
 }
 
 impl Context<'_> {

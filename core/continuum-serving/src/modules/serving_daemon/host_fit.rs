@@ -171,10 +171,25 @@ pub(super) fn pool_fit(demand: u64, footprint: Option<&ModelFootprint>, rooms: R
 /// The Core's streams: the most minds, up to `roster`, whose whole trained windows all fit every room read, so the
 /// engine decodes them in one step (THE-LANE-ON-SAGE.md, open question 1); another stream is held only for another
 /// whole window, never by dividing one. One when not even two whole windows fit, or no room was read to say so.
+/// How many streams the Core holds, and the whole window each holds: the window it serves (the footprint's verified
+/// window, at most the trained one), never a smaller share.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct WholeWindows {
+    pub(super) streams: u32,
+    pub(super) window: u32,
+}
+
 impl Rooms {
-    pub(super) fn whole_window_streams(self, footprint: Option<&ModelFootprint>, host_cache_bytes: u64, roster: u32, trained: u32) -> u32 {
-        let fits = |streams: u32| matches!(pool_fit(u64::from(streams) * u64::from(trained), footprint, self, host_cache_bytes, streams, trained), PoolFit::Fits { .. });
-        (2..=roster).rev().find(|&streams| fits(streams)).unwrap_or(1) // unwrap_or: no second whole window fits, so the Core holds its one stream
+    pub(super) fn whole_window_streams(self, footprint: Option<&ModelFootprint>, host_cache_bytes: u64, roster: u32, trained: u32) -> WholeWindows {
+        // a footprint with no measured KV a token prices no stream: window_within answers the whole context for it
+        // before charging the weights or a stream's workspace (Codex on 8aab69b666), so it holds one
+        let Some(footprint) = footprint.filter(|footprint| footprint.kv_per_token > 0) else { return WholeWindows { streams: 1, window: trained } };
+        // the window a stream serves: the verified one where it sits below the trained (Codex on 8aab69b666: demand at
+        // the trained window against a fit capped at the verified one never qualified a second stream)
+        let window = trained.min(footprint.context_window);
+        let fits = |streams: u32| matches!(pool_fit(u64::from(streams) * u64::from(window), Some(footprint), self, host_cache_bytes, streams, window), PoolFit::Fits { .. });
+        let streams = (2..=roster).rev().find(|&streams| fits(streams)).unwrap_or(1); // unwrap_or: no second whole window fits, so the Core holds its one stream
+        WholeWindows { streams, window }
     }
 }
 
@@ -242,13 +257,28 @@ mod tests {
     fn the_core_holds_another_stream_only_for_another_whole_window() {
         let fp = crate::inference::planning::serving_plan::footprint::footprint_from_parts("m", 20 * GB, 262_144, true, None).expect("test: a footprint");
         let room_for = |windows: u32| fp.weights_bytes + u64::from(windows) * (fp.compute_buffer_per_lane() + fp.kv_per_token * 262_144 * 2);
-        let streams = |room: Option<u64>, roster| Rooms { host: None, device: room }.whole_window_streams(Some(&fp), 0, roster, fp.context_window);
+        let streams = |room: Option<u64>, roster| Rooms { host: None, device: room }.whole_window_streams(Some(&fp), 0, roster, fp.context_window).streams;
         assert_eq!(streams(None, 5), 1, "no room read: one stream");
         assert_eq!(streams(Some(fp.weights_bytes + fp.compute_buffer_per_lane()), 5), 1, "not two whole windows: one stream");
         let four = streams(Some(room_for(4)), 5);
         assert!((2..=5).contains(&four), "room for about four whole windows holds several streams: {four}");
         assert!(matches!(pool_fit(u64::from(four) * 262_144, Some(&fp), Rooms { host: None, device: Some(room_for(4)) }, 0, four, 262_144), PoolFit::Fits { .. }), "and every one of them whole");
         assert_eq!(streams(Some(room_for(8)), 2), 2, "never more than the roster");
+        // what this catches (Codex on 8aab69b666): a footprint priced at zero KV a token, whose window_within answers
+        // the whole context before charging anything, admitting the whole roster in any room; and a room that holds
+        // several streams' fixed workspace but not their windows
+        let mut free = fp.clone();
+        free.kv_per_token = 0;
+        assert_eq!(Rooms { host: None, device: Some(room_for(8)) }.whole_window_streams(Some(&free), 0, 5, fp.context_window).streams, 1, "zero KV a token prices no stream");
+        assert_eq!(Rooms { host: None, device: Some(room_for(8)) }.whole_window_streams(None, 0, 5, fp.context_window).streams, 1, "no footprint, no second stream");
+        let workspace_only = fp.weights_bytes + 5 * fp.compute_buffer_per_lane();
+        assert_eq!(streams(Some(workspace_only), 5), 1, "fixed cost for five, windows for none: one stream");
+        // a verified window below the trained one: whole windows are the verified ones, so ample memory holds several
+        let mut verified = fp.clone();
+        verified.context_window = 131_072;
+        let held = Rooms { host: None, device: Some(room_for(8)) }.whole_window_streams(Some(&verified), 0, 5, 262_144);
+        assert_eq!(held.window, 131_072, "each stream holds the verified window");
+        assert!(held.streams > 1, "and the room holds more than one of them: {held:?}");
     }
 
     // what this catches (the M5, 2026-11-14 01:22Z: the embedder's 186,908,672 B lease refused at

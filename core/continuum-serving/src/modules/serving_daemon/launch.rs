@@ -67,23 +67,24 @@ impl ServingDaemonModule {
         let rooms = host_fit::Rooms { host: self.host_room(released), device };
         // The Core decodes the minds it binds at once in one step: as many streams as whole trained windows fit,
         // each whole (`Rooms::whole_window_streams`); a roster's other layouts hold a sequence per mind.
-        let sequences = match layout {
+        let whole = match layout {
             StreamLayout::PersonaScheduler => rooms.whole_window_streams(footprint.as_ref(), host_cache_bytes, roster, model.context_window),
-            StreamLayout::Roster => layout.sequences(roster),
+            StreamLayout::Roster => host_fit::WholeWindows { streams: layout.sequences(roster), window: model.context_window },
         };
+        let sequences = whole.streams;
         // The size is the seated minds' need with the grants' growth margin; the plan's pool only
         // when no mind is remembered (`host_fit::need_with_growth`). Several streams are each a whole window.
         let demand = match (layout, sequences) {
-            (StreamLayout::PersonaScheduler, streams) if streams > 1 => u64::from(streams) * u64::from(model.context_window),
+            (StreamLayout::PersonaScheduler, streams) if streams > 1 => u64::from(streams) * u64::from(whole.window),
             _ => match host_fit::need_with_growth(&self.seated_claims(model), roster, model.context_window) {
                 Some(need) => need,
                 None => launch_pool(footprint.as_ref(), usable, served_ctx, lanes, sequences, model.context_window, seated),
             },
         };
-        let fit = host_fit::pool_fit(demand, footprint.as_ref(), rooms, host_cache_bytes, sequences, model.context_window);
+        let fit = host_fit::pool_fit(demand, footprint.as_ref(), rooms, host_cache_bytes, sequences, whole.window);
         let pool = fit.pool(sequences, layout.minimum_window(MIN_SERVE_CTX));
         // `-c` is the CLI's `slots x per-slot`: the pool carried in that shape, not anyone's window.
-        let per_sequence = layout.window(pool, sequences, model.context_window);
+        let per_sequence = layout.window(pool, sequences, whole.window);
         EnginePool { per_sequence, sequences, fit }
     }
 

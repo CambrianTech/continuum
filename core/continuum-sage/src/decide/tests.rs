@@ -163,15 +163,19 @@ fn the_lane_forces_an_overdue_mind_and_offers_batches_only_as_wide_as_the_core()
     let open = lane::Situation { running: Some(mind(1, 0)), ready: vec![mind(2, 10), mind(3, 20)], batch_width: 2, background_owed: false };
     let (gate, offered) = envelope::<Lane<u8>>(&open);
     assert_eq!(gate, Gate::Choose);
-    assert_eq!(offered, vec![lane::Action::Continue, lane::Action::Switch(0), lane::Action::Switch(1), lane::Action::Batch(0b1)]);
+    // the batch (the running mind and slot 0, as wide as the Core) replaces continuing her and switching to slot 0;
+    // a switch to slot 1, which the batch cannot hold, stays offered
+    assert_eq!(offered, vec![lane::Action::Switch(1), lane::Action::Batch(0b1)]);
 
     let alone = lane::Situation::<u8> { running: None, ready: vec![], batch_width: 1, background_owed: false };
     assert_eq!(envelope::<Lane<u8>>(&alone).0, Gate::Forced(lane::Action::Idle));
 
+    // the record ring, on one stream (where continuing is offered): what it keeps is the point, not the batch
+    let steady = lane::Situation { batch_width: 1, ..open.clone() };
     let mut decider: Decider<Lane<u8>> = Decider::new(Box::new(Baseline), capacity(4));
     let step = lane::Outcome { tokens: Measured::Value(1), engine: Duration::from_millis(26), worst_wait: Duration::from_millis(20), worst_deadline: Duration::from_secs(1), switching: Duration::ZERO, served: Measured::Unmeasured };
     for _ in 0..16 {
-        let Decided::Act(id, lane::Action::Continue) = decider.decide(&open, &read(1)) else { panic!("test: the baseline continues") };
+        let Decided::Act(id, lane::Action::Continue) = decider.decide(&steady, &read(1)) else { panic!("test: the baseline continues") };
         assert!(decider.outcome(id, step).is_some(), "each step's outcome closes its record");
     }
     assert_eq!(decider.records().count(), 4, "the ring keeps what it declared");
@@ -688,4 +692,20 @@ fn a_crowd_at_the_bound_is_served_by_one_batch_when_the_streams_hold_it() {
     let prefilling = Mind { phase: Phase::Prefill { remaining: 4_000, at: 0 }, ..mind(2, 950) };
     let with_prefill = lane::Situation { running: Some(running), ready: vec![prefilling, mind(3, 945), mind(4, 940)], batch_width: 4, background_owed: false };
     assert_eq!(envelope::<Lane<u8>>(&with_prefill).0, Gate::Forced(lane::Action::Switch(0)), "a waiter still prefilling is switched to, never batched");
+}
+
+// what this catches (the M5, 2026-11-28 06:06 to 06:21Z, Codex: 27 turns, 11,588 tokens, none batched, with four
+// streams bound): a batch offered beside the actions it dominates, so the learned policy, uncertain of an action it
+// never tried, kept continuing or switching between decoding minds. With decoding minds beside the running one, the
+// batch replaces continuing her and switching to a member; a switch to a mind still prefilling stays offered.
+#[test]
+fn a_batch_replaces_the_continue_and_switches_it_dominates() {
+    let running = mind(1, 0);
+    let prefilling = Mind { phase: Phase::Prefill { remaining: 4_000, at: 0 }, ..mind(4, 300) };
+    let calm = lane::Situation { running: Some(running), ready: vec![mind(2, 300), mind(3, 200), prefilling], batch_width: 4, background_owed: false };
+    let (gate, admissible) = envelope::<Lane<u8>>(&calm);
+    assert_eq!(gate, Gate::Choose);
+    assert_eq!(admissible, vec![lane::Action::Switch(2), lane::Action::Batch(0b011)], "the batch, and a switch to the mind it cannot hold");
+    let one_stream = lane::Situation { batch_width: 1, ..calm };
+    assert!(envelope::<Lane<u8>>(&one_stream).1.contains(&lane::Action::Continue), "with one stream nothing changes");
 }

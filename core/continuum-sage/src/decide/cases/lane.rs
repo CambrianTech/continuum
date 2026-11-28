@@ -279,6 +279,15 @@ impl<K: Copy + Debug + PartialEq + Send + 'static> UseCase for Lane<K> {
         if width > 0 && !outranked && decoding(running) {
             let mask = ready.iter().enumerate().filter(|(_, mind)| in_class(mind) && decoding(mind)).take(width).fold(0 as Mask, |mask, (slot, _)| mask | (1 << slot));
             if mask != 0 {
+                // One batch step serves the running mind and every member at about one step's cost (the M5, 2026-11-28:
+                // four minds 67.1 -> 141.6 tok/s aggregate; the 5090: 160.0 -> 435.8), so continuing her alone, or
+                // switching to a member and leaving her waiting, is dominated by it and not offered. A switch to a
+                // mind outside the batch (one still prefilling) stays the policy's to weigh against it.
+                admissible.retain(|action| match action {
+                    Action::Continue => false,
+                    Action::Switch(slot) => mask & (1 << slot) == 0,
+                    Action::Batch(_) | Action::Idle => true,
+                });
                 admissible.push(Action::Batch(mask));
             }
         }
