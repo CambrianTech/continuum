@@ -234,3 +234,67 @@ async fn the_runtime_hooks_drain_and_save_through_the_trigger() {
     assert_eq!(trigger.drain().await, Ok(1), "the runtime's drain counts the learning still running");
     trigger.save_state().await.expect("test: the save reaches the trigger and checkpoints its seats");
 }
+
+// what this catches (8c78a414; the M5, 2026-11-28 03:25Z: a recovery pass in flight held the trainer's
+// save until it timed out, 1 of 65 modules unsaved): a stop that waits for what runs again at the next
+// wake, or one that stops waiting for a seat's act it must settle. The pass is aborted, the settle is
+// waited for, and the drain reports no failure for the abort.
+#[tokio::test]
+async fn a_stop_cancels_a_recovery_pass_and_waits_for_a_settle() {
+    let state = Arc::new(TrainingTriggerState::new(authority(), &crate::commands::training_trigger::test_support::fixture_catalog()));
+    let recovering = Arc::clone(&state);
+    let pass = tokio::spawn(async move { recovering.run_operation(super::super::OwnedKind::Recover, None, std::future::pending::<()>()).await });
+    let (settled, settle) = tokio::sync::oneshot::channel::<()>();
+    let settling = Arc::clone(&state);
+    let act = tokio::spawn(async move { settling.run_operation(super::super::OwnedKind::Settle, None, async move { let _ = settle.await; }).await });
+    while state.operations.lock().len() < 2 {
+        tokio::task::yield_now().await;
+    }
+    let stopping = Arc::clone(&state);
+    let drain = tokio::spawn(async move { stopping.drain_operations().await });
+    // the abort lands when the pass leaves the running set; the settle is still held, so the drain cannot end
+    while state.running.now().iter().any(|op| op.kind == super::super::OwnedKind::Recover) {
+        tokio::task::yield_now().await;
+    }
+    assert!(!drain.is_finished(), "the stop waits for the settle");
+    assert_eq!(state.running.now().iter().map(|op| op.kind).collect::<Vec<_>>(), [super::super::OwnedKind::Settle], "the recovery pass was aborted, not waited for");
+    settled.send(()).expect("test: the settle waits");
+    assert_eq!(drain.await.expect("test: the drain joins"), Ok(()), "an abort at stop is not a failure");
+    assert!(pass.await.expect("test: the caller joins").is_err(), "the aborted pass's caller hears it did not finish");
+    act.await.expect("test: the caller joins").expect("test: the settle ran");
+    assert_eq!(state.operations.lock().len(), 0, "nothing is left in flight");
+}
+
+// what this catches (Fable on 8c78a414): the fact a cancel at stop rests on, that aborting an operation
+// does not interrupt a blocking write it started, broken by a later change. The ORM's writes run in
+// spawn_blocking (orm/sqlite/sqlite_adapter.rs `create`, `batch`); this pins the runtime's half: a pass
+// aborted while its blocking write is in flight still sees that write finish whole. (Whether a given
+// write goes through the pool is the adapter's, read there, not proven here.)
+#[tokio::test]
+async fn an_aborted_pass_never_interrupts_the_blocking_write_it_started() {
+    let state = Arc::new(TrainingTriggerState::new(authority(), &crate::commands::training_trigger::test_support::fixture_catalog()));
+    let (entered, in_write) = std::sync::mpsc::channel::<()>();
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let (landed, committed) = std::sync::mpsc::channel::<()>();
+    let recovering = Arc::clone(&state);
+    let pass = tokio::spawn(async move {
+        recovering
+            .run_operation(super::super::OwnedKind::Recover, None, async move {
+                let _ = tokio::task::spawn_blocking(move || {
+                    entered.send(()).expect("test: the write began"); // expect: the test's own channel
+                    released.recv().expect("test: the write is released"); // expect: the test's own channel
+                    landed.send(()).expect("test: the write landed"); // expect: the test's own channel
+                })
+                .await;
+            })
+            .await
+    });
+    tokio::task::spawn_blocking(move || in_write.recv()).await.expect("test: join").expect("test: the write began");
+    let stopping = Arc::clone(&state);
+    let drain = tokio::spawn(async move { stopping.drain_operations().await });
+    assert_eq!(drain.await.expect("test: the drain joins"), Ok(()), "the pass is aborted while its write is in flight");
+    assert!(pass.await.expect("test: the caller joins").is_err(), "the pass was aborted");
+    release.send(()).expect("test: release the write");
+    let finished = tokio::task::spawn_blocking(move || committed.recv()).await.expect("test: join");
+    assert!(finished.is_ok(), "the write the aborted pass started finished whole");
+}

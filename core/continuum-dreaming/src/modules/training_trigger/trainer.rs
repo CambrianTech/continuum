@@ -129,7 +129,7 @@ impl Component for Trainer {
             Wake::Said(said) => {
                 let state = Arc::clone(&self.state);
                 // owned, so shutdown's join waits for a seat's act in flight
-                if let Err(refused) = self.state.run_operation(OwnedKind::Recover, None, async move { state.heard_from_engine(said).await }).await {
+                if let Err(refused) = self.state.run_operation(OwnedKind::Settle, None, async move { state.heard_from_engine(said).await }).await {
                     continuum_base::probe!(class = "training.on_engine.refused", refused = %refused, "a Said arrived as the trigger stopped; its seat is settled at shutdown");
                 }
                 ctx.need(Urgency::Content);
@@ -138,7 +138,7 @@ impl Component for Trainer {
             Wake::Free(free) => {
                 let state = Arc::clone(&self.state);
                 // only the buckets held for memory are looked at: never a whole pass per board change
-                if let Err(refused) = self.state.run_operation(OwnedKind::Recover, None, async move { state.heard_free(&free).await }).await {
+                if let Err(refused) = self.state.run_operation(OwnedKind::Replan, None, async move { state.heard_free(&free).await }).await {
                     continuum_base::probe!(class = "training.on_engine.refused", refused = %refused, "a free-memory change arrived as the trigger stopped");
                 }
                 ctx.need(Urgency::Content);
