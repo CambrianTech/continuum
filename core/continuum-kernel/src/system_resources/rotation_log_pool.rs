@@ -35,9 +35,10 @@
 //! this class gets a real owner instead of a deferred entry: there is
 //! no hazard to defer FOR.
 //!
-//! The live file is never touched. Under sustained pressure the pool
-//! frees what history it has and reports honestly; the floor is one
-//! generation, which the writer needs to keep working.
+//! The live file is never touched, and neither is `.1`: the newest history, which holds the window
+//! just before the live file began (the minutes before a restart, which a deploy's comparison reads).
+//! Under sustained pressure the pool frees what older history it has and reports honestly; the floor
+//! is the live file and `.1`, at most two capped generations per ledger.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -189,7 +190,10 @@ impl ResourcePool for RotationLogPool {
             return 0;
         }
         let mut freed = 0u64;
-        for (_generation, path, size) in Self::generations_of(&root, &self.live_file) {
+        // `.1` holds the window just before the live file began: the minutes before a restart, which
+        // every deploy's comparison reads (the plan's rule 3). The IntelMac 2026-11-28 06:59:55Z: relief
+        // took .1 and .2 26 s after a boot, 16 MB toward a 58 GB want, and that window was gone (75ba2d17).
+        for (_generation, path, size) in Self::generations_of(&root, &self.live_file).into_iter().filter(|(generation, _, _)| *generation > 1) {
             if freed >= want_bytes.max(1) {
                 break;
             }
@@ -224,7 +228,7 @@ impl ResourcePool for RotationLogPool {
                     stranger_bytes,
                     largest_stranger = %largest.unwrap_or_default(),  // unwrap_or: probe label; "" = no stranger present
                     "a rotation pool was asked to evict and had no generation to give — \
-                     only the live file remains; strangers in the dir are not its to spend"
+                     only the live file and .1 remain; strangers in the dir are not its to spend"
                 );
             }
         }
@@ -240,7 +244,8 @@ impl ResourcePool for RotationLogPool {
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_default(), // unwrap_or_default: a read_dir entry always has a file name
                 size_bytes: size,
-                pinned_count: 0,
+                // .1 is held: the window before the live file (evict_at_least never takes it)
+                pinned_count: u32::from(generation == 1),
                 // Generation number IS the age ordering the appender
                 // maintains; we don't restate it as a fabricated
                 // timestamp. 0 = "not a clock-derived value" rather
@@ -277,12 +282,12 @@ mod tests {
         tracked
     }
 
-    /// what this catches: an eviction that takes the file the writer
-    /// currently holds open. The live file has no `.N` suffix and must
-    /// survive every rung, including a want_bytes larger than the whole
-    /// directory.
+    /// what this catches: an eviction that takes the file the writer currently holds open, or the
+    /// window just before it (75ba2d17: the IntelMac 2026-11-28, relief took .1 and .2 26 s after a
+    /// boot, and the minutes before the restart were gone). The live file and `.1` survive every rung,
+    /// including a want_bytes larger than the whole directory.
     #[test]
-    fn eviction_never_touches_the_live_file() {
+    fn eviction_never_touches_the_live_file_or_the_window_before_it() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = tmp.path().join("probes");
         let tracked = seeded(&root, 500, &[(1, 100), (2, 100), (3, 100)]);
@@ -290,13 +295,16 @@ mod tests {
 
         let freed = pool.evict_at_least(u64::MAX);
 
-        assert_eq!(freed, 300, "all three generations are reclaimable");
+        assert_eq!(freed, 200, "the older generations are reclaimable, never .1");
         assert!(
             root.join("continuum-probes.jsonl").exists(),
             "the live file must survive unbounded eviction pressure"
         );
-        assert!(!root.join("continuum-probes.jsonl.1").exists());
+        assert!(root.join("continuum-probes.jsonl.1").exists(), ".1 holds the window before the live file");
+        assert!(!root.join("continuum-probes.jsonl.2").exists());
         assert!(!root.join("continuum-probes.jsonl.3").exists());
+        assert_eq!(pool.evict_at_least(u64::MAX), 0, "asked again, nothing older is left to give");
+        assert!(root.join("continuum-probes.jsonl.1").exists());
     }
 
     /// what this catches: evicting newest-first, which would throw away
@@ -388,16 +396,17 @@ mod tests {
     fn a_stranger_file_is_neither_counted_nor_evicted() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = tmp.path().join("probes");
-        let tracked = seeded(&root, 100, &[(1, 100)]);
+        let tracked = seeded(&root, 100, &[(1, 100), (2, 100)]);
         std::fs::write(root.join("probes.jsonl"), vec![b'S'; 10_000]).expect("stranger");
-        tracked.set_bytes(10_200);
+        tracked.set_bytes(10_300);
         let pool = RotationLogPool::new(tracked, 500, "continuum-probes.jsonl");
-        assert_eq!(pool.usage_bytes(), 200, "usage is the ledger, not the directory");
+        assert_eq!(pool.usage_bytes(), 300, "usage is the ledger, not the directory");
         assert!(pool.pressure() < 1.0, "a stranger must not put the pool over budget");
         let freed = pool.evict_at_least(5_000);
-        assert_eq!(freed, 100, "only the ledger's own generation is reclaimable");
+        assert_eq!(freed, 100, "only the ledger's own older generation is reclaimable (.1 is held)");
         assert!(root.join("probes.jsonl").exists(), "the stranger is not the pool's to delete");
         assert!(root.join("continuum-probes.jsonl").exists());
+        assert!(root.join("continuum-probes.jsonl.1").exists());
         assert_eq!(pool.evict_at_least(5_000), 0, "nothing left of mine — freed 0, named in a probe");
     }
 }
