@@ -10,6 +10,7 @@ use uuid::Uuid;
 use super::arrival::{Arrival, ArrivalKind};
 use super::chat_data_handle::{now_iso, ChatModule};
 use super::import_watermark::{ImportHistory, ImportWatermark, ImportedThrough};
+use super::message_entity::{ChatMessageRow, ChatStatus, MessageMetadata, MessageSource};
 use super::publication::PublicationObligation;
 use super::types::CHAT_MESSAGES_COLLECTION;
 use crate::orm::types::{BatchOperation, BatchOperationType};
@@ -116,28 +117,42 @@ async fn ready() -> Result<std::sync::Arc<ChatModule>, String> {
     Ok(module)
 }
 
-/// The message row of `line` as one batch operation: the same ChatMessageEntity shape for every
-/// writer; WHO spoke is `senderId`, and `metadata.source: "user"` for all citizens alike.
+/// The message row of `line` as one batch operation: the one row shape every writer writes
+/// ([`ChatMessageRow`], the collection's declaration). WHO spoke is `senderId`, and
+/// `metadata.source: "user"` for all citizens alike.
 fn message_row(
     line: &PostedLine,
     operation_type: BatchOperationType,
     reply_to: Option<Uuid>,
     content: Value,
-) -> BatchOperation {
-    BatchOperation {
+) -> Result<BatchOperation, ChatRowEncoding> {
+    let row = ChatMessageRow {
+        id: line.message_id,
+        room_id: line.room,
+        sender_id: line.author,
+        timestamp: now_iso(line.occurred_at_ms),
+        content,
+        reply_to_id: reply_to,
+        metadata: Some(MessageMetadata { source: MessageSource::User }),
+        status: ChatStatus::Sent,
+    };
+    Ok(BatchOperation {
         operation_type,
         collection: CHAT_MESSAGES_COLLECTION.to_string(),
         id: Some(line.message_id.to_string()),
-        data: Some(json!({
-            "id": line.message_id.to_string(),
-            "roomId": line.room.as_uuid().to_string(),
-            "senderId": line.author.as_uuid().to_string(),
-            "timestamp": now_iso(line.occurred_at_ms),
-            "content": content,
-            "replyToId": reply_to.map(|id| id.to_string()),
-            "metadata": { "source": "user" },
-            "status": "sent",
-        })),
+        data: Some(serde_json::to_value(row)?), // boundary: the ORM's batch row, which data/batch takes as a Value
+    })
+}
+
+/// A chat row that could not be encoded for the store.
+#[derive(Debug, thiserror::Error)]
+#[error("a chat row could not be encoded for the store: {0}")]
+pub struct ChatRowEncoding(#[from] serde_json::Error);
+
+/// The line store's existing text contract, at its one boundary.
+impl From<ChatRowEncoding> for String {
+    fn from(encoding: ChatRowEncoding) -> Self {
+        encoding.to_string()
     }
 }
 
@@ -235,12 +250,7 @@ impl ChatModule {
         content: Value,
         extra: Vec<BatchOperation>,
     ) -> Result<(), String> {
-        let mut operations = vec![message_row(
-            line,
-            BatchOperationType::Create,
-            reply_to,
-            content,
-        )];
+        let mut operations = vec![message_row(line, BatchOperationType::Create, reply_to, content)?];
         operations.extend(extra);
         self.run_batch(operations).await.map(|_| ())
     }
@@ -254,7 +264,7 @@ impl ChatModule {
         reply_to: Option<Uuid>,
         content: Value,
     ) -> Result<Imported, String> {
-        let message_op = message_row(line, BatchOperationType::Ensure, reply_to, content);
+        let message_op = message_row(line, BatchOperationType::Ensure, reply_to, content)?;
         let arrival = Arrival::new(
             line.message_id,
             line.room,

@@ -65,6 +65,7 @@ pub mod drain;
 pub mod publication;
 pub mod import_watermark;
 pub mod orm_entities;
+pub mod message_entity;
 mod chat_data_handle;
 pub use chat_data_handle::*;
 mod chat_module;
