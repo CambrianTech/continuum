@@ -245,11 +245,15 @@ impl<K: Copy + Debug + PartialEq + Send + 'static> UseCase for Lane<K> {
             admissible.push(Action::Continue);
         }
         admissible.extend(switches);
-        // the running mind and the first `others` ready minds (the lowest `others` bits, 1..=SLOTS),
-        // when all of them are of the top class
-        let others = (situation.batch_width as usize).saturating_sub(1).min(ready.len());
-        if others > 0 && !outranked && ready[..others].iter().all(in_class) {
-            admissible.push(Action::Batch(!0 >> (SLOTS - others)));
+        // the running mind and the ready minds of the top class that decode, as many as the streams beside her hold:
+        // a batch is one decode step, so a mind still prefilling is never in one
+        let decoding = |mind: &Mind<K>| matches!(mind.phase, Phase::Decode);
+        let width = (situation.batch_width as usize).saturating_sub(1);
+        if width > 0 && !outranked && decoding(running) {
+            let mask = ready.iter().enumerate().filter(|(_, mind)| in_class(mind) && decoding(mind)).take(width).fold(0 as Mask, |mask, (slot, _)| mask | (1 << slot));
+            if mask != 0 {
+                admissible.push(Action::Batch(mask));
+            }
         }
         Gate::Choose
     }

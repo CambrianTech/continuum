@@ -15,7 +15,7 @@ use super::{refused, stream_at, Decoded, Genes, Step, UnifiedTier, TIER};
 
 /// Whether two gene sets are the same adapters at the same scales: what one decode of several minds needs, since
 /// the engine applies one set to the whole context.
-fn same_genes(a: &Genes, b: &Genes) -> bool {
+pub fn same_genes(a: &Genes, b: &Genes) -> bool {
     Arc::ptr_eq(a, b) || (a.len() == b.len() && a.iter().zip(b.iter()).all(|((x, sx), (y, sy))| Arc::ptr_eq(x, y) && sx == sy))
 }
 

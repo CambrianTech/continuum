@@ -14,6 +14,10 @@ impl Driver<'_, '_> {
     /// retried at the start of the next turn.
     pub(super) fn switch_to(&mut self, id: PersonaId, one_off: bool) -> Result<(), TurnError> {
         self.retire_previous()?;
+        // a mind bound beside the active one (a batch mate) trades places with her: both stay bound, no transfer
+        if self.engine.beside().any(|beside| beside == id) {
+            return self.engine.swap_active(id).map_err(TurnError::from);
+        }
         if self.engine.active() == Some(id) {
             return Ok(());
         }
@@ -52,6 +56,14 @@ impl Driver<'_, '_> {
 
     pub(super) fn finish_one_off(&mut self, turn: &Turn) {
         if turn.one_off {
+            // a one-off bound beside gives her stream back: she leaves through the one copy-out, then is forgotten
+            if self.engine.beside().any(|beside| beside == turn.id) {
+                let left = self.engine.unbind_beside(turn.id).map_err(TurnError::from).and_then(|()| self.engine.finish_retirement().map_err(TurnError::from));
+                if let Err(refused) = left {
+                    continuum_base::probe!(class = "persona.engine.beside_kept", persona = %turn.id.0, refused = %refused,
+                        "a finished one-off bound beside could not leave yet: she keeps her stream until a switch frees it");
+                }
+            }
             self.parked.remove(&turn.id);
             self.live_one_offs.remove(&turn.id);
             self.lane.observe(Observation::Left { mind: turn.id });

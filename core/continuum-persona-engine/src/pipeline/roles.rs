@@ -327,10 +327,13 @@ impl<U: Identified, F: Fence> Roles<U, F> {
     }
 
     /// Make `persona`, bound beside, the active mind; the active one moves beside her. No transfer: both stay bound.
+    /// With nobody active (a stop retired her), she is the active mind now.
     pub fn swap_active(&mut self, persona: PersonaId) -> Result<(), BesideRefusal> {
         let at = self.beside.iter().position(|unit| unit.persona() == persona).ok_or(BesideRefusal::NotBeside { persona })?;
-        let Some(active) = self.active.take() else { return Err(BesideRefusal::NoneActive) };
-        let next = std::mem::replace(&mut self.beside[at], active);
+        let next = match self.active.take() {
+            Some(active) => std::mem::replace(&mut self.beside[at], active),
+            None => self.beside.swap_remove(at),
+        };
         self.active = Some(next);
         Ok(())
     }

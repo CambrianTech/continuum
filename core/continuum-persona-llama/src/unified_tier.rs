@@ -22,6 +22,7 @@ use llama::{Batch, BindRefusal, ChatRefusal, Context, LoraAdapter, PersonaBlocks
 
 mod kv_home;
 mod batch;
+pub use batch::same_genes;
 mod graphs;
 mod learn;
 pub use kv_home::KvHome;

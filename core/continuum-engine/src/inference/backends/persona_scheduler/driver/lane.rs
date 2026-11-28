@@ -62,6 +62,8 @@ pub(super) struct Lanes {
     /// Ready slot `i` is turn `slots[i]`; the running mind's turn is `running`.
     slots: Vec<usize>,
     running: Option<usize>,
+    /// The turns of the batch the lane picked last, the running mind's first: refilled in place, never allocated a pick.
+    pub(super) batch: Vec<usize>,
     /// The last decision, closed with its outcome at the next decision.
     open: Option<Open>,
     /// Tokens the Core moved since the open decision: its outcome's throughput, the reward a learner reads.
@@ -91,8 +93,9 @@ impl Lanes {
         Ok(Self {
             decider: Decider::new(policy, lane::DECISIONS), // cold: the lane is built once, with the driver
             history: LaneHistory::new(Views::default()),
-            situation: lane::Situation { running: None, ready: Vec::with_capacity(SLOTS), batch_width: 1, background_owed: false }, // cold: built once; refilled in place
+            situation: lane::Situation { running: None, ready: Vec::with_capacity(SLOTS), batch_width: super::super::STREAMS.get(), background_owed: false }, // cold: built once; refilled in place. A batch is as wide as the streams the Core binds
             slots: Vec::with_capacity(SLOTS), // cold: built once; refilled in place
+            batch: Vec::with_capacity(SLOTS + 1), // cold: built once; refilled in place
             running: None,
             open: None,
             moved: 0,
@@ -183,10 +186,17 @@ fn mind(turn: &Turn, history: &LaneHistory<PersonaId>) -> Mind<PersonaId> {
     mind
 }
 
+/// What the lane picked to step: one turn, or a batch.
+pub(in crate::inference::backends::persona_scheduler) enum Picked {
+    One(usize),
+    /// The turns in `Lanes::batch`, the running mind's first: a buffer the lane owns and refills.
+    Batch,
+}
+
 impl Driver<'_, '_> {
     /// The turn the next step advances, or `None` with no turns. A mind is one serial queue, so only
     /// her oldest turn is offered.
-    pub(super) fn pick(&mut self, turns: &[Turn]) -> Option<usize> {
+    pub(super) fn pick(&mut self, turns: &[Turn]) -> Option<Picked> {
         let active = self.engine.active();
         let most = std::num::NonZeroU64::MIN.saturating_add(self.batch.get() as u64 - 1); // the batch is non-zero, so a step moves at least one token
         let learning_waiting = self.learning.waiting_jobs();
@@ -250,7 +260,7 @@ impl Driver<'_, '_> {
             // the oldest turn is stepped and the case is counted, never a stall
             Decided::Defer(..) | Decided::Full { .. } => {
                 continuum_base::probe!(class = "persona.lane.undecided", "the lane answered no action: the oldest turn steps");
-                return lanes.slots.first().copied().or(lanes.running);
+                return lanes.slots.first().copied().or(lanes.running).map(Picked::One);
             }
         };
         let stepped = match action {
@@ -263,9 +273,16 @@ impl Driver<'_, '_> {
             lanes.tokens = lane::step_tokens(&lanes.situation, mind, most) as usize; // lossless: at most `most`, the batch, itself a usize
         }
         match action {
-            lane::Action::Continue => lanes.running,
-            lane::Action::Switch(slot) => lanes.slots.get(usize::from(slot)).copied(),
-            lane::Action::Batch(_) | lane::Action::Idle => lanes.running.or(lanes.slots.first().copied()),
+            lane::Action::Continue => lanes.running.map(Picked::One),
+            lane::Action::Switch(slot) => lanes.slots.get(usize::from(slot)).copied().map(Picked::One),
+            // the running mind and the ready minds whose bits are set: one step for all of them
+            lane::Action::Batch(mask) => {
+                lanes.batch.clear();
+                lanes.batch.extend(lanes.running);
+                lanes.batch.extend(lanes.slots.iter().enumerate().filter(|&(bit, _)| (mask >> bit) & 1 == 1).map(|(_, &slot)| slot));
+                Some(Picked::Batch)
+            }
+            lane::Action::Idle => lanes.running.or(lanes.slots.first().copied()).map(Picked::One),
         }
     }
 }

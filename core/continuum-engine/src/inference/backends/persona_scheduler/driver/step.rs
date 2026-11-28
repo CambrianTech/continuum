@@ -42,6 +42,24 @@ impl Driver<'_, '_> {
             Phase::Prefilling { pos } => (self.prefill_chunk(turn, pos).map(|()| Advanced::Continues), false, Some(pos), pos),
             Phase::Decoding { token, pos, generated } => (self.decode_token(turn, token, pos, generated), true, None, usize::from(pos)),
         };
+        let moved = match (decoding, prefill_from) {
+            (true, _) => Moved::Decode,
+            (false, Some(from)) => Moved::Prefill { from },
+            (false, None) => Moved::Nothing,
+        };
+        self.account(turn, &advanced, Kind { moved, at, switched }, stepping);
+        advanced
+    }
+
+    /// What every step does once it ran, a single one or each mind's part of a batch: her wait restarts, the lane
+    /// hears what she moved, her time is booked by phase, and her first progress and her end are recorded.
+    pub(super) fn account(&mut self, turn: &mut Turn, advanced: &Result<Advanced, TurnError>, kind: Kind, stepping: Instant) {
+        let Kind { moved, at, switched } = kind;
+        let (decoding, prefill_from) = match moved {
+            Moved::Decode => (true, None),
+            Moved::Prefill { from } => (false, Some(from)),
+            Moved::Nothing => (false, None),
+        };
         let stepped = Instant::now();
         turn.ready_since = stepped;
         let took = stepped.saturating_duration_since(stepping);
@@ -52,7 +70,7 @@ impl Driver<'_, '_> {
             (Some(_), Phase::Waiting) | (None, _) => usize::from(decoding && advanced.is_ok()),
         };
         self.lane.observe(Observation::Stepped { mind: turn.id, took, tokens: tokens as u64, at: at as u64, prefill: !decoding, switched });
-        if let Ok(Advanced::Done { tokens_generated, .. }) = &advanced {
+        if let Ok(Advanced::Done { tokens_generated, .. }) = advanced {
             self.lane.observe(Observation::TurnEnded { mind: turn.id, decoded: *tokens_generated as u64 });
         }
         if decoding {
@@ -66,10 +84,9 @@ impl Driver<'_, '_> {
             let progress = transition::At::FirstProgress { since_admit_ms: record::whole_ms(turn.submitted.elapsed()), step_ms: record::whole_ms(took), prefill: !decoding };
             self.transition(turn, progress);
         }
-        if let Ok(Advanced::Done { .. }) = &advanced {
+        if let Ok(Advanced::Done { .. }) = advanced {
             self.report_footprint(turn.id, turn.one_off);
         }
-        advanced
     }
 
     /// Where her prefill starts once bound (`reuse::choose`): what she holds when the prompt extends it, her
@@ -174,26 +191,10 @@ impl Driver<'_, '_> {
 
     /// Emit her sampled token and, unless she stopped, decode it and sample the next.
     pub(super) fn decode_token(&mut self, turn: &mut Turn, token: i32, pos: Pos, generated: usize) -> Result<Advanced, TurnError> {
-        let done = |end| Ok(Advanced::Done { tokens_generated: generated, end });
-        if self.model.is_eog_token(token) {
-            return done(super::super::TurnEnd::Finished);
-        }
-        // Emit raised her cancel flag: a stop sequence ended her answer, or her caller hung up. What
-        // her blocks computed stays hers.
-        if turn.cancel.load(Ordering::Acquire) {
-            return done(super::super::TurnEnd::Stopped);
-        }
-        // The token goes to Emit (text, stop sequences, her caller) and the engine goes on.
-        self.emit.send(emit::Out::Token { answer: turn.answer, token });
-        let generated = generated + 1;
-        let done = |end| Ok(Advanced::Done { tokens_generated: generated, end });
-        if generated >= turn.req.max_tokens {
-            return done(super::super::TurnEnd::AtCap);
-        }
-        // Her reply grows into the context; at its last position her turn ends, everything kept.
-        if !self.capacity.holds(pos) {
-            return done(super::super::TurnEnd::CapacityReached);
-        }
+        let generated = match self.before_decode(turn, token, pos, generated) {
+            Before::Ends(advanced) => return Ok(advanced),
+            Before::Goes(generated) => generated,
+        };
         let forward = Instant::now();
         let reused_before = self.engine.tier().graphs_reused();
         self.engine.submit(Step { tokens: Tokens::One(token), from: pos, logits_at_end: true, genes: Arc::clone(&turn.genes) })?;
@@ -205,11 +206,67 @@ impl Driver<'_, '_> {
         let landing = Instant::now();
         self.engine.settle()?;
         turn.spent.gpu += landing.elapsed();
+        self.after_decode(turn, 0, pos, generated)
+    }
+
+    /// Before her token is decoded: her turn's end if it ends at this token (end of generation, a stop, her cap,
+    /// her context's last position), else the token emitted and counted.
+    pub(super) fn before_decode(&mut self, turn: &mut Turn, token: i32, pos: Pos, generated: usize) -> Before {
+        let done = |generated, end| Before::Ends(Advanced::Done { tokens_generated: generated, end });
+        if self.model.is_eog_token(token) {
+            return done(generated, super::super::TurnEnd::Finished);
+        }
+        // Emit raised her cancel flag: a stop sequence ended her answer, or her caller hung up. What
+        // her blocks computed stays hers.
+        if turn.cancel.load(Ordering::Acquire) {
+            return done(generated, super::super::TurnEnd::Stopped);
+        }
+        // The token goes to Emit (text, stop sequences, her caller) and the engine goes on.
+        self.emit.send(emit::Out::Token { answer: turn.answer, token });
+        let generated = generated + 1;
+        if generated >= turn.req.max_tokens {
+            return done(generated, super::super::TurnEnd::AtCap);
+        }
+        // Her reply grows into the context; at its last position her turn ends, everything kept.
+        if !self.capacity.holds(pos) {
+            return done(generated, super::super::TurnEnd::CapacityReached);
+        }
+        Before::Goes(generated)
+    }
+
+    /// Once her token's decode landed: her next token sampled from output `output` of that decode.
+    pub(super) fn after_decode(&mut self, turn: &mut Turn, output: i32, pos: Pos, generated: usize) -> Result<Advanced, TurnError> {
         let sampling = Instant::now();
-        let next = self.engine.tier().sample(&mut turn.req.sampler, 0)?;
+        let next = self.engine.tier().sample(&mut turn.req.sampler, output)?;
         turn.spent.sample += sampling.elapsed();
         turn.phase = Phase::Decoding { token: next, pos: pos.advanced(1).map_err(|_| TurnError::TooLong)?, generated };
         Ok(Advanced::Continues)
     }
 
+}
+
+/// What a step was, for its accounting ([`Driver::account`]).
+#[derive(Clone, Copy)]
+pub(super) struct Kind {
+    pub(super) moved: Moved,
+    /// Where the step began.
+    pub(super) at: usize,
+    pub(super) switched: bool,
+}
+
+/// What kind of work a step did.
+#[derive(Clone, Copy)]
+pub(super) enum Moved {
+    /// A token decoded.
+    Decode,
+    /// A prefill chunk from `from`.
+    Prefill { from: usize },
+    /// Nothing (a waiting turn that found nothing to decode).
+    Nothing,
+}
+
+/// Before a token's decode: her turn ends here, or it goes on with this many generated.
+pub(super) enum Before {
+    Ends(Advanced),
+    Goes(usize),
 }

@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
-use continuum_persona_engine::engine::{DecodeError, HandoffError, PersonaEngine, RetireError, StageError};
+use continuum_persona_engine::engine::{BatchError, DecodeError, HandoffError, PersonaEngine, RetireError, StageError};
 use continuum_persona_engine::persona::{Epoch, Footprint, Held, MindId, PersonaId, PersonaParts, PersonaUnit};
 use continuum_persona_engine::residency::TierRefusal;
 use continuum_persona_llama::{Blocks, Genes, KvHome, Step, Tokens, UnifiedTier};
@@ -41,6 +41,8 @@ pub(super) enum TurnError {
     Tier(#[from] TierRefusal),
     #[error(transparent)]
     Retire(#[from] RetireError),
+    #[error(transparent)]
+    Batch(#[from] BatchError),
     #[error("no mind is active after the switch")]
     NoneActive,
     #[error("only her genes' identity was kept (she was resumed from disk): her prefix cannot be prefilled under them")]
@@ -110,6 +112,8 @@ mod step;
 mod facts;
 mod switch;
 mod turn;
+mod batch;
+use step::{Before, Kind, Moved};
 use turn::{Advanced, Phase, Spent, Turn};
 pub(crate) use learning::{Job as LearningJob, Lesson as LearningLesson, Measuring as LearningMeasuring};
 
@@ -377,14 +381,26 @@ pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
                 driver.acknowledge(stop, &stages_on);
             }
         }
-        let Some(index) = driver.pick(&turns) else { continue };
-        match driver.step(&mut turns[index]) {
-            Ok(Advanced::Continues) => { if let Some(r) = &turns[index].req.request { crate::inference::llama_server::engine_step(crate::inference::llama_server::GenerationKey::of(r.as_str())); } } // completed progress the act deadline reads
-            Ok(Advanced::Done { tokens_generated, end }) => driver.end(turns.remove(index), Ending::Answered { tokens_generated, end }),
-            Err(refused) => {
-                log.warn(&format!("turn refused: {refused}"));
-                driver.end(turns.remove(index), Ending::Refused(refused));
+        let Some(picked) = driver.pick(&turns) else { continue };
+        let stepped = match picked {
+            lane::Picked::One(index) => vec![(index, driver.step(&mut turns[index]))],
+            lane::Picked::Batch => driver.step_batch(&mut turns),
+        };
+        // ended turns leave by descending index, so removing one never moves another's
+        let mut ended: Vec<(usize, Ending)> = Vec::new();
+        for (index, advanced) in stepped {
+            match advanced {
+                Ok(Advanced::Continues) => { if let Some(r) = &turns[index].req.request { crate::inference::llama_server::engine_step(crate::inference::llama_server::GenerationKey::of(r.as_str())); } } // completed progress the act deadline reads
+                Ok(Advanced::Done { tokens_generated, end }) => ended.push((index, Ending::Answered { tokens_generated, end })),
+                Err(refused) => {
+                    log.warn(&format!("turn refused: {refused}"));
+                    ended.push((index, Ending::Refused(refused)));
+                }
             }
+        }
+        ended.sort_by_key(|&(index, _)| std::cmp::Reverse(index));
+        for (index, ending) in ended {
+            driver.end(turns.remove(index), ending);
         }
     }
 }
