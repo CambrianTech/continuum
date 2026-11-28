@@ -38,11 +38,19 @@ impl Driver<'_, '_> {
                 Ok(()) => return self.engine.swap_active(id).map_err(TurnError::from),
                 Err(refused) => mind = refused.returned,
             }
+            // her unit is out of the parked minds now: every refusal below parks her again, so a switch that cannot
+            // finish never drops a waiting mind's state (Codex on 8aab69b666)
             match self.engine.retire_active() {
                 Ok(_) | Err(HandoffError::CopyOut { .. }) => {}
-                Err(refused) => return Err(refused.into()),
+                Err(refused) => {
+                    self.parked.insert(id, mind);
+                    return Err(refused.into());
+                }
             }
-            self.retire_previous()?;
+            if let Err(refused) = self.retire_previous() {
+                self.parked.insert(id, mind);
+                return Err(refused);
+            }
         }
         if let Err(refused) = self.engine.stage(mind) {
             self.parked.insert(refused.returned.id(), refused.returned);
