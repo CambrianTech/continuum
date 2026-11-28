@@ -42,6 +42,7 @@ impl Driver<'_, '_> {
             decode_ms: ms(turn.spent.decode),
             forward_ms: ms(turn.spent.forward),
             graphs_reused: turn.spent.graphs_reused,
+            batched: turn.spent.batched,
             gpu_ms: ms(turn.spent.gpu),
             sample_ms: ms(turn.spent.sample),
             generated: generated as u64,

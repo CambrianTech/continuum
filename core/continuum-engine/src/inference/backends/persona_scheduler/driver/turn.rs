@@ -60,6 +60,8 @@ pub(super) struct Spent {
     pub(super) sample: std::time::Duration,
     /// Of her decoded tokens, how many reused a built graph instead of rebuilding it on the CPU.
     pub(super) graphs_reused: u64,
+    /// Her tokens decoded in a batch step with other minds (driver/batch.rs).
+    pub(super) batched: u64,
     pub(super) switches: u64,
 }
 

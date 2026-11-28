@@ -168,6 +168,16 @@ pub(super) fn pool_fit(demand: u64, footprint: Option<&ModelFootprint>, rooms: R
     }
 }
 
+/// The Core's streams: the most minds, up to `roster`, whose whole trained windows all fit every room read, so the
+/// engine decodes them in one step (THE-LANE-ON-SAGE.md, open question 1); another stream is held only for another
+/// whole window, never by dividing one. One when not even two whole windows fit, or no room was read to say so.
+impl Rooms {
+    pub(super) fn whole_window_streams(self, footprint: Option<&ModelFootprint>, host_cache_bytes: u64, roster: u32, trained: u32) -> u32 {
+        let fits = |streams: u32| matches!(pool_fit(u64::from(streams) * u64::from(trained), footprint, self, host_cache_bytes, streams, trained), PoolFit::Fits { .. });
+        (2..=roster).rev().find(|&streams| fits(streams)).unwrap_or(1) // unwrap_or: no second whole window fits, so the Core holds its one stream
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -222,6 +232,23 @@ mod tests {
         let pool_in = |room| pool_fit(48_000, Some(&fp), Rooms { host: None, device: Some(room) }, 0, sequences, fp.context_window).pool(sequences, layout.minimum_window(MIN_SERVE_CTX));
         assert_eq!(pool_in(fp.weights_bytes + fp.compute_buffer_per_lane() / 2), 0, "below one stream's fixed bytes");
         assert!(pool_in(fp.weights_bytes + fp.compute_buffer_per_lane() * 3 / 2) > 0, "one stream's fixed bytes, and room for her tokens");
+    }
+
+    // what this catches (S6): batching that divides a mind's window to seat another (2026-11-21: two streams halved
+    // the Core's context and seven turns died at the half's end), or one admitted without the memory for it. A stream
+    // beyond the first is held only when a whole trained window more fits the room, up to the roster; with no room
+    // read, the Core keeps one.
+    #[test]
+    fn the_core_holds_another_stream_only_for_another_whole_window() {
+        let fp = crate::inference::planning::serving_plan::footprint::footprint_from_parts("m", 20 * GB, 262_144, true, None).expect("test: a footprint");
+        let room_for = |windows: u32| fp.weights_bytes + u64::from(windows) * (fp.compute_buffer_per_lane() + fp.kv_per_token * 262_144 * 2);
+        let streams = |room: Option<u64>, roster| Rooms { host: None, device: room }.whole_window_streams(Some(&fp), 0, roster, fp.context_window);
+        assert_eq!(streams(None, 5), 1, "no room read: one stream");
+        assert_eq!(streams(Some(fp.weights_bytes + fp.compute_buffer_per_lane()), 5), 1, "not two whole windows: one stream");
+        let four = streams(Some(room_for(4)), 5);
+        assert!((2..=5).contains(&four), "room for about four whole windows holds several streams: {four}");
+        assert!(matches!(pool_fit(u64::from(four) * 262_144, Some(&fp), Rooms { host: None, device: Some(room_for(4)) }, 0, four, 262_144), PoolFit::Fits { .. }), "and every one of them whole");
+        assert_eq!(streams(Some(room_for(8)), 2), 2, "never more than the roster");
     }
 
     // what this catches (the M5, 2026-11-14 01:22Z: the embedder's 186,908,672 B lease refused at

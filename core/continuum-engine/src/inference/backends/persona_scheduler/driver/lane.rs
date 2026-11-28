@@ -93,7 +93,7 @@ impl Lanes {
         Ok(Self {
             decider: Decider::new(policy, lane::DECISIONS), // cold: the lane is built once, with the driver
             history: LaneHistory::new(Views::default()),
-            situation: lane::Situation { running: None, ready: Vec::with_capacity(SLOTS), batch_width: super::super::STREAMS.get(), background_owed: false }, // cold: built once; refilled in place. A batch is as wide as the streams the Core binds
+            situation: lane::Situation { running: None, ready: Vec::with_capacity(SLOTS), batch_width: 1, background_owed: false }, // cold: built once; refilled in place. A batch is as wide as the streams the Core binds (batch_up_to)
             slots: Vec::with_capacity(SLOTS), // cold: built once; refilled in place
             batch: Vec::with_capacity(SLOTS + 1), // cold: built once; refilled in place
             running: None,
@@ -142,6 +142,11 @@ impl Lanes {
     pub(super) fn learned(&mut self, took: Duration) {
         self.learning_served += took;
         self.learning_job.observe(took.as_secs_f64());
+    }
+
+    /// A batch is as wide as the streams the Core's context binds at once.
+    pub(super) fn batch_up_to(&mut self, streams: std::num::NonZeroU32) {
+        self.situation.batch_width = streams.get();
     }
 
     pub(super) fn step_tokens(&self) -> usize {

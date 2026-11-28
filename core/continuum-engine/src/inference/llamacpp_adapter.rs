@@ -173,6 +173,9 @@ pub struct LlamaCppAdapter {
     /// See [`docs/architecture/INFERENCE-LANES-REALISTIC.md`]
     /// (Step 4) for the rollout plan.
     n_seq_max_override: Option<u32>,
+    /// The streams the persona scheduler's context binds at once (the launch's, from the fit; one for a context outside
+    /// the Core), handed to it through the allocation.
+    streams: std::num::NonZeroU32,
     /// Max ubatch size override — when set, the LlamaCppConfig built at
     /// `load()` time uses this instead of the hardcoded default. The
     /// compute graph is reserved for ubatches up to this size, so

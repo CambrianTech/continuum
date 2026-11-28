@@ -89,6 +89,7 @@ impl Driver<'_, '_> {
             turn.spent.forward += forwarded;
             turn.spent.gpu += landed;
             turn.spent.graphs_reused += reused;
+            turn.spent.batched += u64::from(going.len() > 1);
             let advanced = match &settled {
                 Err(refused) => Err(refused.clone().into()),
                 Ok(()) => i32::try_from(output).map_err(|_| TurnError::TooLong).and_then(|output| self.after_decode(turn, output, pos, generated)),

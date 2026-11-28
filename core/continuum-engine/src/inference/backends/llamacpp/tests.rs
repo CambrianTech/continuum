@@ -107,7 +107,7 @@
         );
 
         let tokens = std::num::NonZeroU32::new(512).expect("test allocation");
-        assert_eq!(backend.effective_context_length(GenerationAllocation::new(tokens)), Ok(512));
+        assert_eq!(backend.effective_context_length(GenerationAllocation::new(std::num::NonZeroU32::MIN, tokens)), Ok(512));
     }
 
     // what this catches (the M5, 2026-11-25 17:02Z: Benchy 38 asked, 0 completed, four minds on one
@@ -124,7 +124,7 @@
             return;
         }
         let backend = LlamaCppBackend::load(LlamaCppConfig { model_path: path, ..Default::default() }).expect("test: the 0.5B loads"); // expect: the test's own precondition
-        let allocation = GenerationAllocation::new(std::num::NonZeroU32::new(2048).expect("test: nonzero")); // expect: the test's own precondition
+        let allocation = GenerationAllocation::new(std::num::NonZeroU32::MIN, std::num::NonZeroU32::new(2048).expect("test: nonzero")); // expect: the test's own precondition
         let mut state = backend.start_scheduler(allocation).expect("test: the scheduler starts"); // expect: the test's own precondition
         state.wait_for(|state| state.ready().is_some()).await.expect("test: the engine becomes ready"); // expect: the test's own precondition
         let turn = |text: &'static str, tokens: usize| {
@@ -215,7 +215,7 @@
                 return;
             }
             let backend = LlamaCppBackend::load(LlamaCppConfig { model_path: path, ..Default::default() }).expect("test: the 0.5B loads");
-            let allocation = GenerationAllocation::new(std::num::NonZeroU32::new(2048).expect("test: nonzero"));
+            let allocation = GenerationAllocation::new(std::num::NonZeroU32::MIN, std::num::NonZeroU32::new(2048).expect("test: nonzero"));
             let mut state = backend.start_scheduler(allocation).expect("test: the scheduler starts");
             state.wait_for(|state| state.ready().is_some()).await.expect("test: the engine becomes ready");
 
@@ -330,7 +330,7 @@
             eprintln!("model: {}", path.display());
             let backend = LlamaCppBackend::load(LlamaCppConfig { model_path: path, ..Default::default() }).expect("test: the model loads");
             let nonzero = |n| std::num::NonZeroU32::new(n).expect("test: nonzero");
-            let allocation = GenerationAllocation::new(nonzero(backend.capabilities().n_ctx_train.min(4096)));
+            let allocation = GenerationAllocation::new(std::num::NonZeroU32::MIN, nonzero(backend.capabilities().n_ctx_train.min(4096)));
             let mut state = backend.start_scheduler(allocation).expect("test: the scheduler starts");
             state.wait_for(|state| state.ready().is_some()).await.expect("test: the engine becomes ready");
             let (tx, mut heard) = tokio::sync::mpsc::unbounded_channel();

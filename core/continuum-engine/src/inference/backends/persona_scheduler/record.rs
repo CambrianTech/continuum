@@ -71,6 +71,8 @@ pub(super) struct TurnRow {
     pub decode_ms: u64,
     pub forward_ms: u64,
     pub graphs_reused: u64,
+    /// Her tokens decoded in a batch step with other minds.
+    pub batched: u64,
     pub gpu_ms: u64,
     pub sample_ms: u64,
     pub generated: u64,
@@ -99,6 +101,7 @@ impl TurnRow {
             decode_ms = self.decode_ms,
             forward_ms = self.forward_ms,
             graphs_reused = self.graphs_reused,
+            batched = self.batched,
             gpu_ms = self.gpu_ms,
             sample_ms = self.sample_ms,
             generated = self.generated,
