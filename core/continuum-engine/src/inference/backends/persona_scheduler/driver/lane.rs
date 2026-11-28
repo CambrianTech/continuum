@@ -201,7 +201,7 @@ pub(in crate::inference::backends::persona_scheduler) enum Picked {
 impl Driver<'_, '_> {
     /// The turn the next step advances, or `None` with no turns. A mind is one serial queue, so only
     /// her oldest turn is offered.
-    pub(super) fn pick(&mut self, turns: &[Turn]) -> Option<Picked> {
+    pub(super) fn pick(&mut self, turns: &mut [Turn]) -> Option<Picked> {
         let active = self.engine.active();
         let most = std::num::NonZeroU64::MIN.saturating_add(self.batch.get() as u64 - 1); // the batch is non-zero, so a step moves at least one token
         let learning_waiting = self.learning.waiting_jobs();
@@ -268,6 +268,12 @@ impl Driver<'_, '_> {
                 return lanes.slots.first().copied().or(lanes.running).map(Picked::One);
             }
         };
+        // booked to the running mind's turn: each decision that offered her a batch, and each that chose one, so her
+        // row tells a batch never offered from one offered and not chosen
+        if let Some(turn) = lanes.running.and_then(|running| turns.get_mut(running)) {
+            turn.spent.batch_offered += u64::from(lanes.decider.admissible().iter().any(|offered| matches!(offered, lane::Action::Batch(_))));
+            turn.spent.batch_chosen += u64::from(matches!(action, lane::Action::Batch(_)));
+        }
         let stepped = match action {
             lane::Action::Continue => lanes.situation.running.as_ref(),
             lane::Action::Switch(slot) => lanes.situation.ready.get(usize::from(slot)),

@@ -120,6 +120,12 @@ impl<U: UseCase> Decider<U> {
         (id.0 % self.ring.len() as u64) as usize
     }
 
+    /// The actions the last decision's envelope offered, as it wrote them (a forced gate may write none): what a
+    /// caller reads to tell an action never offered from one offered and not chosen.
+    pub fn admissible(&self) -> &[U::Action] {
+        &self.admissible
+    }
+
     /// Decide in `situation`, which was built from the revisions in `read`.
     pub fn decide(&mut self, situation: &U::Situation, read: &[InputRevision]) -> Decided<U::Action> {
         let id = DecisionId(self.next);

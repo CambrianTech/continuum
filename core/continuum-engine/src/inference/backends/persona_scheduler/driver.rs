@@ -382,7 +382,7 @@ pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
                 driver.acknowledge(stop, &stages_on);
             }
         }
-        let Some(picked) = driver.pick(&turns) else { continue };
+        let Some(picked) = driver.pick(&mut turns) else { continue };
         let stepped = match picked {
             lane::Picked::One(index) => vec![(index, driver.step(&mut turns[index]))],
             lane::Picked::Batch => driver.step_batch(&mut turns),

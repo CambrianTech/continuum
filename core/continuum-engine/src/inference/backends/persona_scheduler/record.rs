@@ -73,6 +73,9 @@ pub(super) struct TurnRow {
     pub graphs_reused: u64,
     /// Her tokens decoded in a batch step with other minds.
     pub batched: u64,
+    /// Lane decisions while she ran that offered her a batch, and that chose one.
+    pub batch_offered: u64,
+    pub batch_chosen: u64,
     pub gpu_ms: u64,
     pub sample_ms: u64,
     pub generated: u64,
@@ -102,6 +105,8 @@ impl TurnRow {
             forward_ms = self.forward_ms,
             graphs_reused = self.graphs_reused,
             batched = self.batched,
+            batch_offered = self.batch_offered,
+            batch_chosen = self.batch_chosen,
             gpu_ms = self.gpu_ms,
             sample_ms = self.sample_ms,
             generated = self.generated,

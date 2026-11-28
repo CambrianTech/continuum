@@ -62,6 +62,9 @@ pub(super) struct Spent {
     pub(super) graphs_reused: u64,
     /// Her tokens decoded in a batch step with other minds (driver/batch.rs).
     pub(super) batched: u64,
+    /// Lane decisions while she ran that offered her a batch, and that chose one (driver/lane.rs).
+    pub(super) batch_offered: u64,
+    pub(super) batch_chosen: u64,
     pub(super) switches: u64,
 }
 
