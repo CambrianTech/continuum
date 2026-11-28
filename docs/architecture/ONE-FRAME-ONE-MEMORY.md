@@ -241,15 +241,19 @@ read by every consumer that needs it; only a change to one of those inputs makes
 | A choice under a budget (prefetch lead, demand forecast, learning detail) | `decide`: `UseCase`, `Policy<U>`, `Algorithms<U>`, the envelope | one `Policy` per candidate, compared behind the same interface |
 | The fork's side | its named-hook pattern: our own files, one-line hooks into upstream (`llama-graph-slots`, `llama-adapter-seq`, `llama-lived-routing`) | one parent per concept in our files, leaves for the backend's difference |
 
-**The frame's contract** (step 3, Fable). A frame is a draw list built from entries, each a `Units` leaf. The frame
-publishes three `Snapshot`s, each naming the inputs it was derived from:
-- **built**: its entries (whose rows, which unit each), the `Placements` revision its pages were ready at, and the lane
-  decision that chose it;
-- **landed**: the fence that made its outputs readable, and each entry's `did`;
-- **gave**: what each entry produced for its readers (a mind's next token, a gradient block's readiness at step 4).
+**The frame's contract** (step 3, Fable). A frame is a draw list built from entries, each a `Units` leaf. Two kinds of
+publication, by what a late reader may miss (Codex):
+- **Latest state** (`Snapshot`): demand and placements. A held snapshot stays valid, and a reader that wakes late reads
+  the newest and may skip the frames between, which is right for a forecast or a placement.
+- **Ordered receipts** (the dataflow's stream, `Event<T>` with its revision, and the topic's durable cursor for a reader
+  that falls behind): every frame's **built** (its entries, which unit each, the `Placements` revision its pages were
+  ready at, the lane decision that chose it), **landed** (the fence that made its outputs readable, each entry's
+  `did`) and **gave** (what each entry produced: a mind's tokens, at step 4 a gradient block's readiness), and every
+  correction. None is skipped, and each is read exactly once in order.
 
-A reader that wakes frames later reads the same publication; a recomputation or wake with no changed input is the
-waste the replay counts.
+Each names the inputs it was derived from; a recomputation or wake with no changed input is the waste the replay
+counts. Tested: a recorder delayed over several frames, and a subscription that wraps, both replay every receipt
+exactly once in order, and two readers of one result share one computation.
 
 **The block descriptor** (step 2, shared by Fable on the M5 and Codex on the 5090). A block keeps its stable key in
 `Block<K>`; the `InputRevision` rides on the publication that carries it (`Snapshot<Placements<K>>`), never on the
